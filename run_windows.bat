@@ -163,6 +163,7 @@ echo    ^| ^| / /       ^| ^|  ^| ^| (_) ^| (_^| ^|
 echo    ^|_^|/___^|      ^|_^|  ^|_^|\___/ \__,_^|
 echo.
 echo      TVRS ^| SGL Bureau ^| Registry ^| AI
+echo      GitHub sync test: 2026-07-15-A
 echo ============================================================
 echo.
 exit /b 0
