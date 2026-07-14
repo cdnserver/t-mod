@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+!.env.persistent.example
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+data/
+*.db
+*.sqlite

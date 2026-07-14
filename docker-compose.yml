@@ -1,0 +1,11 @@
+services:
+  tmod-discord-bot:
+    build: .
+    image: tmod-discord-bot:latest
+    container_name: tmod-discord-bot
+    restart: unless-stopped
+    env_file:
+      - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+    volumes:
+      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"

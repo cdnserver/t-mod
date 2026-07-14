@@ -1,0 +1,6 @@
+discord.py==2.4.0
+tzdata>=2024.1,<2027
+requests>=2.31.0,<3
+python-docx>=1.1.2,<2
+
+lxml>=5.2.0,<6
