@@ -14,11 +14,12 @@ import storage
 from modules.finance import (
     FINANCE_ADMIN_USER_ID,
     FINANCE_COMMAND_CHANNEL_ID,
-    FINANCE_LOG_CHANNEL_ID,
+    FINANCE_EVENT_LOG_CHANNEL_ID,
     money_text,
     parse_money,
     wake_notification_worker,
 )
+from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
 
 def _env_int(name: str, default: int) -> int:
@@ -29,7 +30,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-CRAFT_CHANNEL_ID = _env_int("CRAFT_CHANNEL_ID", FINANCE_LOG_CHANNEL_ID)
+CRAFT_CHANNEL_ID = ACTIVE_TASKS_CHANNEL_ID
 CRAFT_EMBED_COLOR = _env_int("CRAFT_EMBED_COLOR", 0xD9D9D9)
 CRAFT_QUIET_START_HOUR = max(0, min(23, _env_int("CRAFT_QUIET_START_HOUR", 2)))
 CRAFT_QUIET_END_HOUR = max(0, min(23, _env_int("CRAFT_QUIET_END_HOUR", 9)))
@@ -687,9 +688,106 @@ async def delete_plan_reminders(bot: commands.Bot, plan: dict[str, Any]) -> None
             traceback.print_exc()
 
 
+def migrated_plan_embed(plan: dict[str, Any], new_url: str) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"↪️ Крафт #{plan['id']} перенесён",
+        description=(
+            "Рабочая карточка этого плана теперь находится в едином операционном центре. "
+            f"Продолжайте работу здесь: [открыть актуальную карточку]({new_url})."
+        ),
+        color=discord.Color.light_grey(),
+    )
+    embed.set_footer(text="Старая карточка отключена и больше не получает обновления")
+    return embed
+
+
+async def migrate_active_plan_channels(bot: commands.Bot, guild: discord.Guild) -> None:
+    plans = await asyncio.to_thread(storage.craft_active_plans, guild.id, 100)
+    outdated = [plan for plan in plans if int(plan.get("channel_id") or 0) != CRAFT_CHANNEL_ID]
+    if not outdated:
+        return
+    target_channel = await _get_channel(bot, CRAFT_CHANNEL_ID)
+    if getattr(target_channel, "guild", None) is None or int(target_channel.guild.id) != guild.id:
+        raise RuntimeError("ACTIVE_TASKS_CHANNEL_ID не принадлежит серверу плана крафта")
+
+    for plan in outdated:
+        new_message: discord.Message | None = None
+        new_thread: discord.Thread | None = None
+        rebound: dict[str, Any] | None = None
+        old_channel_id = int(plan.get("channel_id") or 0)
+        old_message_id = int(plan.get("message_id") or 0)
+        old_thread_id = int(plan.get("thread_id") or 0)
+        old_url = (
+            f"https://discord.com/channels/{guild.id}/{old_channel_id}/{old_message_id}"
+            if old_channel_id and old_message_id
+            else None
+        )
+        try:
+            await delete_plan_reminders(bot, plan)
+            new_message = await target_channel.send(embed=plan_embed(plan), view=CraftPlanView(plan))
+            thread_name = f"крафт-{plan['id']}-{plan['recipe']['product_name']}"[:100]
+            new_thread = await new_message.create_thread(name=thread_name, auto_archive_duration=1440)
+            rebound = await asyncio.to_thread(
+                storage.craft_bind_plan_message,
+                plan_id=int(plan["id"]),
+                channel_id=CRAFT_CHANNEL_ID,
+                message_id=new_message.id,
+                thread_id=new_thread.id,
+            )
+            if rebound is None:
+                raise RuntimeError("craft_plan_rebind_failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            traceback.print_exc()
+            if new_message is not None:
+                try:
+                    await new_message.delete()
+                except discord.DiscordException:
+                    pass
+            continue
+
+        try:
+            await new_message.edit(embed=plan_embed(rebound), view=CraftPlanView(rebound))
+            history_note = "План автоматически перенесён в канал «Активные задачи»."
+            if old_url:
+                history_note += f" Предыдущая карточка и история: {old_url}"
+            await new_thread.send(history_note, allowed_mentions=discord.AllowedMentions.none())
+        except discord.DiscordException:
+            traceback.print_exc()
+        try:
+            bot.add_view(CraftPlanView(rebound), message_id=new_message.id)
+            _registered_plan_messages.add(new_message.id)
+        except Exception:
+            traceback.print_exc()
+
+        if old_channel_id and old_message_id:
+            try:
+                old_channel = await _get_channel(bot, old_channel_id)
+                old_message = await old_channel.fetch_message(old_message_id)
+                await old_message.edit(embed=migrated_plan_embed(plan, new_message.jump_url), view=None)
+            except discord.DiscordException:
+                pass
+        if old_thread_id:
+            try:
+                old_thread = await _get_channel(bot, old_thread_id)
+                if isinstance(old_thread, discord.Thread):
+                    if old_thread.archived:
+                        await old_thread.edit(archived=False)
+                    await old_thread.send(
+                        f"Работа продолжена в новой ветке: <#{new_thread.id}>.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    await old_thread.edit(archived=True)
+            except discord.DiscordException:
+                pass
+        wake_operations_worker()
+
+
 def wake_craft_worker() -> None:
     if _craft_wakeup is not None:
         _craft_wakeup.set()
+    wake_operations_worker()
 
 
 class RecipeModal(discord.ui.Modal):
@@ -1050,7 +1148,7 @@ class PlanCreateModal(discord.ui.Modal):
             member = interaction.guild.get_member(responsible_id)
             if member is None:
                 member = await interaction.guild.fetch_member(responsible_id)
-            target_channel_id = CRAFT_CHANNEL_ID if self.allow_any_channel else int(interaction.channel_id)
+            target_channel_id = CRAFT_CHANNEL_ID
             target_channel = await _get_channel(interaction.client, target_channel_id)
             plan = await asyncio.to_thread(
                 storage.craft_create_plan,
@@ -1431,7 +1529,7 @@ async def start_batch(interaction: discord.Interaction, plan_id: int, quantity: 
             quantity=quantity,
             actor_id=interaction.user.id,
             actor_display=display_name(interaction.user),
-            log_channel_id=FINANCE_LOG_CHANNEL_ID,
+            log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
             admin_user_id=FINANCE_ADMIN_USER_ID,
         )
         await delete_plan_reminders(interaction.client, plan)
@@ -1594,7 +1692,7 @@ class FinanceLinkView(discord.ui.View):
         super().__init__(timeout=300)
         self.add_item(
             discord.ui.Button(
-                label="Перейти в финансовый канал",
+                label="Перейти в активные задачи",
                 emoji="💼",
                 style=discord.ButtonStyle.link,
                 url=f"https://discord.com/channels/{guild_id}/{FINANCE_COMMAND_CHANNEL_ID}",
@@ -1931,6 +2029,8 @@ async def craft_worker(bot: commands.Bot) -> None:
     _craft_wakeup = asyncio.Event()
     while not bot.is_closed():
         try:
+            for guild in bot.guilds:
+                await migrate_active_plan_channels(bot, guild)
             changed = await asyncio.to_thread(storage.craft_complete_due_batches)
             for plan_id in changed:
                 await update_plan_message(bot, plan_id)

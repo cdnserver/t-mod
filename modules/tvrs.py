@@ -14,6 +14,7 @@ from discord.ext import commands
 
 import storage
 from localization import safe_command_description, safe_command_name, t
+from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
 
 def env_int(name: str, default: int = 0) -> int:
@@ -43,8 +44,6 @@ TVRS_DEFAULT_NEXT_PLENARY_NUMBER = env_int("TVRS_DEFAULT_NEXT_PLENARY_NUMBER", 4
 TVRS_EMBED_COLOR = env_color("TVRS_EMBED_COLOR", "0xD9D9D9")
 TVRS_STICKY_DEBOUNCE_SECONDS = max(1, env_int("TVRS_STICKY_DEBOUNCE_SECONDS", 2))
 TVRS_DISCUSSION_CATEGORY_ID = env_int("TVRS_DISCUSSION_CATEGORY_ID", 1496802341377020067)
-TVRS_FINANCE_LOG_CHANNEL_ID = env_int("FINANCE_LOG_CHANNEL_ID", 1526006974502670558)
-TVRS_CRAFT_CHANNEL_ID = env_int("CRAFT_CHANNEL_ID", TVRS_FINANCE_LOG_CHANNEL_ID)
 TVRS_TIMER_OPTIONS: list[tuple[str, int]] = [("30 сек", 30), ("1 мин", 60), ("3 мин", 180), ("5 мин", 300)]
 LOCAL_TZ = ZoneInfo(os.getenv("LOCAL_TIMEZONE", "Europe/Riga"))
 
@@ -234,6 +233,35 @@ def clean_stage_name(stage: str) -> str:
         "discussion_type": "выбор типа дискуссии",
         "discussion": "дискуссия",
     }.get(stage, stage)
+
+
+def active_consensus_snapshot(guild_id: int) -> dict[str, Any] | None:
+    session = _active_sessions.get(guild_id)
+    if session is None or session.finished:
+        return None
+    bill = session.current_bill or {}
+    return {
+        "guild_id": session.guild_id,
+        "session_key": session.session_key,
+        "plenary_number": session.plenary_number,
+        "stage": session.stage,
+        "stage_label": clean_stage_name(session.stage),
+        "leader_id": session.leader_id,
+        "leader_display": session.leader_display,
+        "confirmed_count": len(session.confirmed_participants()),
+        "participant_count": len(session.participants),
+        "timer_deadline": session.timer_deadline.isoformat() if session.timer_deadline else None,
+        "discussion_channel_id": session.discussion_channel_id,
+        "current_bill": (
+            {
+                "id": int(bill.get("id") or 0),
+                "bill_number": int(bill.get("bill_number") or 0),
+                "title": str(bill.get("title") or ""),
+            }
+            if bill
+            else None
+        ),
+    }
 
 
 def vote_split_lines(session: LiveConsensusSession) -> tuple[str, str, str]:
@@ -469,10 +497,10 @@ def build_universality_embed(guild: discord.Guild, requester_id: int) -> discord
         inline=False,
     )
     embed.add_field(
-        name="📍 Куда попадут результаты",
+        name="📍 Операционный центр",
         value=(
-            f"Финансовые операции → <#{TVRS_FINANCE_LOG_CHANNEL_ID}>\n"
-            f"Карточки крафтов → <#{TVRS_CRAFT_CHANNEL_ID}>\n"
+            f"Активные задачи и процессы → <#{ACTIVE_TASKS_CHANNEL_ID}>\n"
+            "Финансовая история и технические события не смешиваются с рабочими задачами.\n"
             f"Законопроекты → <#{TVRS_MATERIALS_CHANNEL_ID}>"
         ),
         inline=False,
@@ -1159,6 +1187,7 @@ class TVRSMainPanelView(TVRSBaseView):
         if interaction.user.id in session.participants:
             session.participants[interaction.user.id].confirmed = True
         _active_sessions[interaction.guild.id] = session
+        wake_operations_worker()
         await interaction.response.defer(ephemeral=True, thinking=True)
         await delete_sticky_message(interaction.client, interaction.guild)
         msg = await interaction.followup.send(embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key), ephemeral=True, wait=True, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
@@ -1224,6 +1253,7 @@ class TVRSRegistrationView(TVRSBaseView):
         if session:
             session.finished = True
             _active_sessions.pop(interaction.guild.id, None)
+            wake_operations_worker()
         await interaction.response.edit_message(content="Консенсус отменен.", embed=None, view=None)
 
 
@@ -1653,6 +1683,7 @@ async def request_discussion(bot: commands.Bot | discord.Client, guild: discord.
     session.previous_stage = session.stage
     session.stage = "discussion_type"
     session.discussion_initiator_id = initiator.user_id
+    wake_operations_worker()
     await update_all_vote_dms(guild, session, content=f"<@{initiator.user_id}> инициировал дискуссию. Голосование временно приостановлено.")
     await update_host_vote_message(bot, guild, session)
 
@@ -1662,6 +1693,7 @@ async def start_discussion_channel(bot: commands.Bot | discord.Client, guild: di
         return
     session.stage = "discussion"
     session.discussion_type = discussion_type
+    wake_operations_worker()
     category = guild.get_channel(TVRS_DISCUSSION_CATEGORY_ID)
     if category is None:
         try:
@@ -1787,6 +1819,7 @@ async def end_discussion(bot: commands.Bot | discord.Client, guild: discord.Guil
     session.discussion_allowed_user_ids.clear()
     for p in session.participants.values():
         p.discussion_message_id = None
+    wake_operations_worker()
     await update_all_vote_dms(guild, session, content="Дискуссия завершена. Голосование снова открыто.")
     await update_host_vote_message(bot, guild, session)
 
@@ -1799,6 +1832,7 @@ async def pause_session(bot: commands.Bot | discord.Client, guild: discord.Guild
     session.stage = "paused"
     session.paused_reason = reason
     session.pause_is_automatic = automatic
+    wake_operations_worker()
     await update_all_vote_dms(guild, session, content=reason)
     await update_host_vote_message(bot, guild, session)
 
@@ -1839,6 +1873,7 @@ async def resume_session(bot: commands.Bot | discord.Client, guild: discord.Guil
     else:
         session.stage = "voting" if session.current_bill else "after_result"
         content = "Кворум восстановлен. Голосование продолжается."
+    wake_operations_worker()
     await update_all_vote_dms(guild, session, content=content)
     await update_host_vote_message(bot, guild, session)
 
@@ -1927,6 +1962,7 @@ async def begin_next_bill_vote(bot: commands.Bot | discord.Client, guild: discor
     session.votes = {}
     session.stage = "voting"
     storage.tvrs_mark_bill_status(int(bill["id"]), "voting")
+    wake_operations_worker()
 
     for p in session.confirmed_participants():
         await edit_or_send_vote_dm(guild, session, p)
@@ -1999,6 +2035,7 @@ async def finalize_current_vote(bot: commands.Bot | discord.Client, guild: disco
     session.current_bill = None
     session.votes = {}
     session.stage = "after_result"
+    wake_operations_worker()
     channel = guild.get_channel(session.channel_id)
     if isinstance(channel, discord.abc.Messageable):
         # Public result for observers.
@@ -2067,6 +2104,7 @@ async def apply_veto(bot: commands.Bot | discord.Client, guild: discord.Guild, s
     session.current_bill = None
     session.votes = {}
     session.stage = "after_result"
+    wake_operations_worker()
     channel = guild.get_channel(session.channel_id)
     if isinstance(channel, discord.abc.Messageable):
         try:
@@ -2117,6 +2155,7 @@ async def finish_session(bot: commands.Bot | discord.Client, guild: discord.Guil
     storage.tvrs_increment_plenary_number(guild.id, session.plenary_number)
     await ensure_sticky_message(bot, guild, force_repost=True)
     _active_sessions.pop(guild.id, None)
+    wake_operations_worker()
 
 
 async def get_materials_channel(bot: commands.Bot | discord.Client, guild: discord.Guild | None = None) -> discord.TextChannel | None:

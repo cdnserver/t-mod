@@ -19,6 +19,7 @@ from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure
 from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
+from modules.operations import setup_operations
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -928,6 +929,8 @@ async def on_ready() -> None:
 
 
 boot_banner()
+boot_module("Operations Center")
+setup_operations(bot)
 boot_module("TVRS Consensus")
 setup_tvrs(bot, remember_command_activity)
 setup_links(bot)

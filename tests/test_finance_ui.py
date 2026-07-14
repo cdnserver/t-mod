@@ -1,5 +1,10 @@
 import unittest
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
+from modules import finance
 from modules.finance import FinanceDailyPromptView, FinancePanelView, MovementModal, parse_money
 
 
@@ -25,6 +30,20 @@ class FinanceComponentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.label for item in panel.children], ["Снял", "Положил", "Межотчёт"])
         self.assertEqual(len(modal.children), 3)
         self.assertRegex(modal.captcha_value, r"^[0-9]{3}$")
+
+    async def test_filled_daily_prompt_is_not_republished_after_channel_migration(self) -> None:
+        current = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("Europe/Riga"))
+        channel = SimpleNamespace(guild=SimpleNamespace(id=77))
+        filled = {"id": 1, "report_date": "2026-07-15", "status": "filled"}
+        create_prompt = Mock()
+        with (
+            patch.object(finance, "now_local", return_value=current),
+            patch.object(finance, "_get_channel", AsyncMock(return_value=channel)),
+            patch.object(finance.storage, "finance_recent_daily_prompts", return_value=[filled]),
+            patch.object(finance.storage, "finance_get_or_create_daily_prompt", create_prompt),
+        ):
+            self.assertTrue(await finance.ensure_today_prompt(Mock()))
+        create_prompt.assert_not_called()
 
 
 if __name__ == "__main__":

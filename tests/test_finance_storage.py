@@ -116,6 +116,36 @@ class FinanceStorageTests(unittest.TestCase):
         matching = [item for item in pending if item["event_id"] == event["id"]]
         self.assertEqual({item["destination_kind"] for item in matching}, {"log_channel", "admin_dm"})
 
+    def test_public_event_log_can_be_disabled_without_disabling_admin_dm(self) -> None:
+        event = storage.finance_record_snapshot(
+            guild_id=1,
+            event_kind="interim",
+            amount=123_000,
+            actor_id=10,
+            actor_display="Tester",
+            channel_id=100,
+            message_id=200,
+            log_channel_id=0,
+            admin_user_id=400,
+            report_date="2026-07-13",
+        )
+        pending = storage.finance_pending_notifications(10)
+        matching = [item for item in pending if item["event_id"] == event["id"]]
+        self.assertEqual({item["destination_kind"] for item in matching}, {"admin_dm"})
+
+    def test_operations_count_only_recent_running_audio(self) -> None:
+        record_id = storage.create_audio_generation(
+            guild_id=1,
+            channel_id=100,
+            user_id=10,
+            user_display="Tester",
+            prompt="Тест",
+            model="test-model",
+        )
+        self.assertEqual(storage.count_recent_running_audio_generations(1), 1)
+        storage.update_audio_generation(record_id, status="completed", completed_at=storage.utc_now_iso())
+        self.assertEqual(storage.count_recent_running_audio_generations(1), 0)
+
     def test_undo_reverses_latest_user_movement_without_deleting_history(self) -> None:
         self.snapshot(1_000_000, actor_id=99)
         movement = self.movement("deposit", 250_000, actor_id=10)

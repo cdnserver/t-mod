@@ -2579,6 +2579,20 @@ def update_audio_generation(record_id: int, **fields: Any) -> None:
         con.commit()
 
 
+def count_recent_running_audio_generations(guild_id: int, within_minutes: int = 30) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max(1, int(within_minutes)))).isoformat()
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM audio_generations
+            WHERE guild_id = ? AND status = 'running' AND updated_at >= ?
+            """,
+            (guild_id, cutoff),
+        ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
 def save_client_profile(
     *,
     guild_id: int,
@@ -3633,10 +3647,12 @@ def _finance_enqueue_notifications(
     admin_user_id: int,
     now: str,
 ) -> None:
-    for destination_kind, destination_id in (
-        ("log_channel", log_channel_id),
-        ("admin_dm", admin_user_id),
-    ):
+    destinations = []
+    if int(log_channel_id) > 0:
+        destinations.append(("log_channel", int(log_channel_id)))
+    if int(admin_user_id) > 0:
+        destinations.append(("admin_dm", int(admin_user_id)))
+    for destination_kind, destination_id in destinations:
         con.execute(
             """
             INSERT INTO finance_notifications(

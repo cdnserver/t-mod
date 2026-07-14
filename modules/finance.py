@@ -12,6 +12,7 @@ import discord
 from discord.ext import commands
 
 import storage
+from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
 
 def _env_int(name: str, default: int) -> int:
@@ -22,8 +23,9 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-FINANCE_LOG_CHANNEL_ID = _env_int("FINANCE_LOG_CHANNEL_ID", 1526006974502670558)
-FINANCE_COMMAND_CHANNEL_ID = _env_int("FINANCE_COMMAND_CHANNEL_ID", 1521266302889754747)
+FINANCE_DAILY_CHANNEL_ID = ACTIVE_TASKS_CHANNEL_ID
+FINANCE_COMMAND_CHANNEL_ID = ACTIVE_TASKS_CHANNEL_ID
+FINANCE_EVENT_LOG_CHANNEL_ID = _env_int("FINANCE_EVENT_LOG_CHANNEL_ID", 0)
 FINANCE_ADMIN_USER_ID = _env_int("FINANCE_ADMIN_USER_ID", 902235631952998410)
 FINANCE_REPORT_HOUR = max(0, min(23, _env_int("FINANCE_REPORT_HOUR", 18)))
 FINANCE_REPORT_MINUTE = max(0, min(59, _env_int("FINANCE_REPORT_MINUTE", 0)))
@@ -334,21 +336,65 @@ async def _find_unbound_prompt_message(channel: Any, prompt_id: int) -> discord.
     return None
 
 
+async def _retire_moved_prompt_message(
+    bot: commands.Bot,
+    previous_prompt: dict[str, Any] | None,
+    new_message: discord.Message,
+) -> None:
+    if not previous_prompt:
+        return
+    old_channel_id = int(previous_prompt.get("channel_id") or 0)
+    old_message_id = int(previous_prompt.get("message_id") or 0)
+    if not old_channel_id or not old_message_id or old_channel_id == new_message.channel.id:
+        return
+    try:
+        old_channel = await _get_channel(bot, old_channel_id)
+        old_message = await old_channel.fetch_message(old_message_id)
+        embed = discord.Embed(
+            title="↪️ Ежедневная сверка перенесена",
+            description=(
+                "Эта задача теперь находится в едином операционном центре: "
+                f"[открыть актуальную сверку]({new_message.jump_url})."
+            ),
+            color=discord.Color.light_grey(),
+        )
+        embed.set_footer(text="Старая кнопка отключена")
+        await old_message.edit(embed=embed, view=FinanceDailyPromptView(disabled=True))
+    except discord.DiscordException:
+        pass
+
+
 async def ensure_today_prompt(bot: commands.Bot) -> bool:
     local_now = now_local()
     due = (local_now.hour, local_now.minute) >= (FINANCE_REPORT_HOUR, FINANCE_REPORT_MINUTE)
     if not due:
         return False
-    channel = await _get_channel(bot, FINANCE_LOG_CHANNEL_ID)
+    channel = await _get_channel(bot, FINANCE_DAILY_CHANNEL_ID)
     guild = getattr(channel, "guild", None)
     if guild is None:
-        raise RuntimeError("FINANCE_LOG_CHANNEL_ID не указывает на канал сервера")
+        raise RuntimeError("ACTIVE_TASKS_CHANNEL_ID не указывает на канал сервера")
+    previous_prompt = next(
+        (
+            item
+            for item in await asyncio.to_thread(
+                storage.finance_recent_daily_prompts,
+                guild_id=guild.id,
+                limit=3,
+            )
+            if str(item.get("report_date")) == local_now.date().isoformat()
+        ),
+        None,
+    )
+    if previous_prompt is not None and str(previous_prompt.get("status")) == "filled":
+        return True
     prompt = await asyncio.to_thread(
         storage.finance_get_or_create_daily_prompt,
         guild_id=guild.id,
         report_date=local_now.date().isoformat(),
         channel_id=channel.id,
     )
+    if str(prompt.get("status")) == "filled":
+        return True
     if prompt.get("message_id"):
         try:
             await _edit_prompt_message(bot, prompt)
@@ -370,6 +416,8 @@ async def ensure_today_prompt(bot: commands.Bot) -> bool:
         channel_id=channel.id,
         message_id=existing.id,
     )
+    await _retire_moved_prompt_message(bot, previous_prompt, existing)
+    wake_operations_worker()
     return True
 
 
@@ -383,6 +431,13 @@ async def dispatch_pending_notifications(bot: commands.Bot) -> None:
             destination_kind = str(notification["destination_kind"])
             destination_id = int(notification["destination_id"])
             if destination_kind == "log_channel":
+                if FINANCE_EVENT_LOG_CHANNEL_ID <= 0 or destination_id != FINANCE_EVENT_LOG_CHANNEL_ID:
+                    await asyncio.to_thread(
+                        storage.finance_mark_notification_sent,
+                        int(notification["id"]),
+                        None,
+                    )
+                    continue
                 target = await _get_channel(bot, destination_id)
             elif destination_kind == "admin_dm":
                 target = bot.get_user(destination_id) or await bot.fetch_user(destination_id)
@@ -403,6 +458,7 @@ async def dispatch_pending_notifications(bot: commands.Bot) -> None:
 def wake_notification_worker() -> None:
     if _notification_wakeup is not None:
         _notification_wakeup.set()
+    wake_operations_worker()
 
 
 async def finance_worker(bot: commands.Bot) -> None:
@@ -434,7 +490,7 @@ async def interaction_wrong_channel(interaction: discord.Interaction) -> bool:
         return True
     if interaction.channel_id != FINANCE_COMMAND_CHANNEL_ID:
         await interaction.response.send_message(
-            f"Финансовая панель доступна только в канале <#{FINANCE_COMMAND_CHANNEL_ID}>.",
+            f"Финансовая панель доступна в операционном центре <#{FINANCE_COMMAND_CHANNEL_ID}>.",
             ephemeral=True,
         )
         return True
@@ -453,8 +509,8 @@ class FinanceDailyPromptView(discord.ui.View):
         custom_id="finance_daily_enter",
     )
     async def enter_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if interaction.guild is None or interaction.channel_id != FINANCE_LOG_CHANNEL_ID:
-            await interaction.response.send_message("Эта кнопка работает только в канале казначейства.", ephemeral=True)
+        if interaction.guild is None or interaction.channel_id != FINANCE_DAILY_CHANNEL_ID:
+            await interaction.response.send_message("Эта кнопка работает только в канале «Активные задачи».", ephemeral=True)
             return
         message_id = interaction.message.id if interaction.message else 0
         prompt = await asyncio.to_thread(
@@ -512,9 +568,9 @@ class DailySnapshotModal(discord.ui.Modal):
             amount=amount,
             actor_id=interaction.user.id,
             actor_display=getattr(interaction.user, "display_name", interaction.user.name),
-            channel_id=FINANCE_LOG_CHANNEL_ID,
+            channel_id=FINANCE_DAILY_CHANNEL_ID,
             message_id=None,
-            log_channel_id=FINANCE_LOG_CHANNEL_ID,
+            log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
             admin_user_id=FINANCE_ADMIN_USER_ID,
             prompt_id=self.prompt_id,
         )
@@ -581,7 +637,7 @@ class MovementModal(discord.ui.Modal):
         if interaction.guild is None or (
             not self.allow_any_channel and interaction.channel_id != FINANCE_COMMAND_CHANNEL_ID
         ):
-            await interaction.response.send_message("Операцию можно провести только через финансовый канал.", ephemeral=True)
+            await interaction.response.send_message("Операцию можно провести через канал «Активные задачи» или меню /tvrs.", ephemeral=True)
             return
         if self.captcha.value.strip() != self.captcha_value:
             await interaction.response.send_message(
@@ -612,7 +668,7 @@ class MovementModal(discord.ui.Modal):
             actor_display=getattr(interaction.user, "display_name", interaction.user.name),
             channel_id=interaction.channel_id,
             message_id=None,
-            log_channel_id=FINANCE_LOG_CHANNEL_ID,
+            log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
             admin_user_id=FINANCE_ADMIN_USER_ID,
         )
         wake_notification_worker()
@@ -655,7 +711,7 @@ class InterimSnapshotModal(discord.ui.Modal):
         if interaction.guild is None or (
             not self.allow_any_channel and interaction.channel_id != FINANCE_COMMAND_CHANNEL_ID
         ):
-            await interaction.response.send_message("Межотчёт можно заполнить только через финансовый канал.", ephemeral=True)
+            await interaction.response.send_message("Межотчёт можно заполнить через канал «Активные задачи» или меню /tvrs.", ephemeral=True)
             return
         try:
             amount = parse_money(self.amount.value, allow_zero=True)
@@ -672,7 +728,7 @@ class InterimSnapshotModal(discord.ui.Modal):
             actor_display=getattr(interaction.user, "display_name", interaction.user.name),
             channel_id=interaction.channel_id,
             message_id=None,
-            log_channel_id=FINANCE_LOG_CHANNEL_ID,
+            log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
             admin_user_id=FINANCE_ADMIN_USER_ID,
             report_date=now_local().date().isoformat(),
         )
@@ -784,7 +840,7 @@ async def execute_undo_interaction(
             undone_by_id=interaction.user.id,
             undone_by_display=getattr(interaction.user, "display_name", interaction.user.name),
             reason=reason,
-            log_channel_id=FINANCE_LOG_CHANNEL_ID,
+            log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
             admin_user_id=FINANCE_ADMIN_USER_ID,
             channel_id=interaction.channel_id,
             action_id=action_id,
@@ -798,7 +854,7 @@ async def execute_undo_interaction(
                 undone_by_display=getattr(interaction.user, "display_name", interaction.user.name),
                 channel_id=interaction.channel_id,
                 message_id=None,
-                log_channel_id=FINANCE_LOG_CHANNEL_ID,
+                log_channel_id=FINANCE_EVENT_LOG_CHANNEL_ID,
                 admin_user_id=FINANCE_ADMIN_USER_ID,
             )
             result = None if legacy is None else {"module": "finance", "finance": legacy, "action": None}
