@@ -14,7 +14,9 @@ from modules.control_center import (
     WORKSHOP_CHANNEL_ID,
     BotTestView,
     SettingsPanelView,
+    majestic_test_embed,
 )
+from modules.majestic_api import MajesticMarketplaceSummary
 from modules.finance import FINANCE_COMMAND_CHANNEL_ID, FINANCE_DAILY_CHANNEL_ID
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, build_operations_embed
 
@@ -133,6 +135,28 @@ class OperationsCenterTests(unittest.TestCase):
                     self.assertTrue(all(item.custom_id for item in view.children))
 
         asyncio.run(inspect_views())
+
+    def test_majestic_test_embed_is_safe_and_compact(self) -> None:
+        summary = MajesticMarketplaceSummary(
+            category="items",
+            server_id="RU15",
+            server_name="Phoenix",
+            record_count=1315,
+            total_count=412243656,
+            total_sold=497066243,
+            overall_average_price=56984373,
+            last_updated="2026-07-15T02:12:11.960Z",
+            period_days=30,
+        )
+        embed = majestic_test_embed(
+            summary,
+            {"remaining_process_budget": 4, "requests_per_window": 5},
+        )
+        rendered = "\n".join(str(field.value) for field in embed.fields)
+        self.assertIn("RU15", str(embed.description))
+        self.assertIn("1 315", rendered)
+        self.assertIn("4/5", rendered)
+        self.assertLessEqual(len(embed), 6000)
 
 
 if __name__ == "__main__":

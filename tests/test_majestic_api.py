@@ -6,6 +6,7 @@ from modules.majestic_api import (
     MajesticApiClient,
     MajesticApiConfig,
     MajesticApiDisabledError,
+    MajesticMarketplaceSummary,
     MajesticApiRateLimitError,
 )
 
@@ -49,19 +50,21 @@ class MajesticApiConfigTests(unittest.TestCase):
             "MAJESTIC_API_ENABLED": "true",
             "MAJESTIC_API_KEY": "primary-key",
             "MAJESTIC_API_KEYS": "backup-one; backup-two,primary-key",
+            "MAJESTIC_SERVER_ID": "RU15",
         }
         with patch.dict(os.environ, env, clear=False):
             config = MajesticApiConfig.from_env()
         self.assertEqual(config.api_keys, ("primary-key", "backup-one", "backup-two"))
         self.assertNotIn("primary-key", repr(config))
         self.assertEqual(config.safe_summary()["configured_key_count"], 3)
+        self.assertEqual(config.safe_summary()["server_id"], "RU15")
         self.assertEqual(config.safe_summary()["key_pool_mode"], "primary-only")
 
     def test_disabled_client_never_sends_request(self) -> None:
         session = FakeSession(FakeResponse(200, {"ok": True}))
         client = MajesticApiClient(MajesticApiConfig(), session=session)
         with self.assertRaises(MajesticApiDisabledError):
-            client.marketplace("items", 1)
+            client.marketplace("items")
         self.assertEqual(session.calls, [])
 
 
@@ -70,15 +73,15 @@ class MajesticApiClientTests(unittest.TestCase):
         session = FakeSession(FakeResponse(200, {"items": [1, 2, 3]}))
         client = MajesticApiClient(enabled_config(), session=session)
 
-        first = client.marketplace("items", 7)
+        first = client.marketplace("items", "RU15")
         first["items"].append(999)
-        second = client.marketplace("items", 7)
+        second = client.marketplace("items", "RU15")
 
         self.assertEqual(second, {"items": [1, 2, 3]})
         self.assertEqual(len(session.calls), 1)
         call = session.calls[0]
         self.assertEqual(call["method"], "GET")
-        self.assertEqual(call["url"], "https://api.majestic-files.net/v1/ext/marketplace/items/7")
+        self.assertEqual(call["url"], "https://api.majestic-files.net/v1/ext/marketplace/items/RU15")
         self.assertEqual(call["headers"]["x-api-key"], "super-secret")
         self.assertEqual(call["headers"]["x-language"], "ru")
 
@@ -114,6 +117,34 @@ class MajesticApiClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.marketplace("unknown", 1)
         self.assertEqual(session.calls, [])
+
+    def test_invalid_server_id_is_rejected_before_http(self) -> None:
+        session = FakeSession(FakeResponse(200, {}))
+        client = MajesticApiClient(enabled_config(), session=session)
+        with self.assertRaises(ValueError):
+            client.marketplace("items", "../RU15")
+        self.assertEqual(session.calls, [])
+
+    def test_marketplace_summary_parses_live_response_shape(self) -> None:
+        payload = {
+            "code": 200,
+            "status": True,
+            "result": {
+                "serverId": "RU15",
+                "serverName": "Phoenix",
+                "itemStatistics": [{"itemId": 39, "itemName": "7.62x39mm"}],
+                "totalItems": 412243656,
+                "totalSold": 497066243,
+                "overallAveragePrice": 56984373,
+                "lastUpdated": "2026-07-15T02:12:11.960Z",
+                "periodDays": 30,
+            },
+        }
+        summary = MajesticMarketplaceSummary.from_payload("items", payload)
+        self.assertEqual(summary.server_id, "RU15")
+        self.assertEqual(summary.server_name, "Phoenix")
+        self.assertEqual(summary.record_count, 1)
+        self.assertEqual(summary.total_count, 412243656)
 
 
 if __name__ == "__main__":

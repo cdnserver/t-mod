@@ -12,6 +12,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 import os
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -31,6 +32,7 @@ MARKETPLACE_CATEGORIES = frozenset(
         "clothes",
     }
 )
+SERVER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -72,6 +74,7 @@ class MajesticApiConfig:
     base_url: str = "https://api.majestic-files.net"
     api_keys: tuple[str, ...] = field(default_factory=tuple, repr=False)
     language: str = "ru"
+    server_id: str = "RU15"
     requests_per_window: int = 5
     window_seconds: int = 60
     timeout_seconds: float = 15.0
@@ -86,6 +89,7 @@ class MajesticApiConfig:
             base_url=os.getenv("MAJESTIC_API_BASE_URL", "https://api.majestic-files.net").strip().rstrip("/"),
             api_keys=_parse_api_keys(),
             language=os.getenv("MAJESTIC_API_LANGUAGE", "ru").strip() or "ru",
+            server_id=os.getenv("MAJESTIC_SERVER_ID", "RU15").strip().upper() or "RU15",
             requests_per_window=_env_int("MAJESTIC_API_REQUESTS_PER_WINDOW", 5, minimum=1),
             window_seconds=_env_int("MAJESTIC_API_WINDOW_SECONDS", 60, minimum=1),
             timeout_seconds=_env_float("MAJESTIC_API_TIMEOUT_SECONDS", 15.0, minimum=1.0),
@@ -108,6 +112,7 @@ class MajesticApiConfig:
             "base_url": self.base_url,
             "configured_key_count": len(self.api_keys),
             "language": self.language,
+            "server_id": self.server_id,
             "requests_per_window": self.requests_per_window,
             "window_seconds": self.window_seconds,
             "cache_ttl_seconds": self.cache_ttl_seconds,
@@ -158,6 +163,58 @@ class MajesticApiRateLimitError(MajesticApiHttpError):
 
 class MajesticApiServerError(MajesticApiHttpError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class MajesticMarketplaceSummary:
+    category: str
+    server_id: str
+    server_name: str
+    record_count: int
+    total_count: int | None
+    total_sold: int | None
+    overall_average_price: int | float | None
+    last_updated: str | None
+    period_days: int | None
+
+    @classmethod
+    def from_payload(cls, category: str, payload: JsonValue) -> MajesticMarketplaceSummary:
+        if not isinstance(payload, dict) or payload.get("status") is not True:
+            raise MajesticApiResponseError("Majestic API вернул неуспешный ответ.")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise MajesticApiResponseError("В ответе Majestic API отсутствует объект result.")
+
+        statistics = next(
+            (
+                value
+                for key, value in result.items()
+                if str(key).lower().endswith("statistics") and isinstance(value, list)
+            ),
+            [],
+        )
+        total_key = f"total{category[:1].upper()}{category[1:]}"
+
+        def optional_int(value: Any) -> int | None:
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        average = result.get("overallAveragePrice")
+        if not isinstance(average, (int, float)):
+            average = None
+        return cls(
+            category=category,
+            server_id=str(result.get("serverId") or "—"),
+            server_name=str(result.get("serverName") or "—"),
+            record_count=len(statistics),
+            total_count=optional_int(result.get(total_key)),
+            total_sold=optional_int(result.get("totalSold")),
+            overall_average_price=average,
+            last_updated=str(result["lastUpdated"]) if result.get("lastUpdated") else None,
+            period_days=optional_int(result.get("periodDays")),
+        )
 
 
 class SlidingWindowLimiter:
@@ -375,19 +432,61 @@ class MajesticApiClient:
     ) -> JsonValue:
         return await asyncio.to_thread(self.get_json, path, params=params, use_cache=use_cache)
 
-    def marketplace(self, category: str, server_id: int, *, use_cache: bool = True) -> JsonValue:
+    def _marketplace_server_id(self, server_id: str | int | None) -> str:
+        clean_server_id = str(server_id if server_id is not None else self.config.server_id).strip().upper()
+        if not SERVER_ID_PATTERN.fullmatch(clean_server_id):
+            raise ValueError("server_id должен состоять только из букв, цифр, дефиса или подчёркивания.")
+        return clean_server_id
+
+    def marketplace(
+        self,
+        category: str,
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> JsonValue:
         clean_category = str(category).strip().lower()
         if clean_category not in MARKETPLACE_CATEGORIES:
             raise ValueError(f"Неизвестная категория маркетплейса: {category}")
-        if int(server_id) <= 0:
-            raise ValueError("server_id должен быть положительным числом.")
+        clean_server_id = self._marketplace_server_id(server_id)
         return self.get_json(
-            f"/v1/ext/marketplace/{clean_category}/{int(server_id)}",
+            f"/v1/ext/marketplace/{clean_category}/{clean_server_id}",
             use_cache=use_cache,
         )
 
-    async def marketplace_async(self, category: str, server_id: int, *, use_cache: bool = True) -> JsonValue:
+    async def marketplace_async(
+        self,
+        category: str,
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> JsonValue:
         return await asyncio.to_thread(self.marketplace, category, server_id, use_cache=use_cache)
+
+    def marketplace_summary(
+        self,
+        category: str = "items",
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> MajesticMarketplaceSummary:
+        clean_category = str(category).strip().lower()
+        payload = self.marketplace(clean_category, server_id, use_cache=use_cache)
+        return MajesticMarketplaceSummary.from_payload(clean_category, payload)
+
+    async def marketplace_summary_async(
+        self,
+        category: str = "items",
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> MajesticMarketplaceSummary:
+        return await asyncio.to_thread(
+            self.marketplace_summary,
+            category,
+            server_id,
+            use_cache=use_cache,
+        )
 
 
 _default_client: MajesticApiClient | None = None

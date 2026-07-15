@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands
 
 import storage
+from modules.majestic_api import MajesticApiError, MajesticMarketplaceSummary, get_majestic_api_client
 
 
 def _env_int(name: str, default: int = 0) -> int:
@@ -340,6 +341,11 @@ def _test_embed() -> discord.Embed:
         ),
         color=CONTROL_CENTER_COLOR,
     )
+    embed.add_field(
+        name="🌐 Majestic API",
+        value="Администратор может приватно проверить подключение к рыночной статистике RU15.",
+        inline=False,
+    )
     embed.set_footer(text=f"T-Mod • тестовый контур • {PANEL_MARKERS['test']}")
     return embed
 
@@ -418,6 +424,42 @@ def tech_health_embed(bot: commands.Bot | discord.Client, guild: discord.Guild) 
     return embed
 
 
+def majestic_test_embed(summary: MajesticMarketplaceSummary, diagnostics: dict[str, object]) -> discord.Embed:
+    def number(value: int | float | None) -> str:
+        if value is None:
+            return "нет данных"
+        return f"{value:,.0f}".replace(",", " ")
+
+    embed = discord.Embed(
+        title="✅ Majestic API отвечает",
+        description=f"Сервер **{summary.server_id} · {summary.server_name}** доступен из T-Mod.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Каталог", value=f"Предметы: **{number(summary.record_count)}** позиций", inline=True)
+    embed.add_field(name="Период", value=f"**{summary.period_days or '—'} дней**", inline=True)
+    embed.add_field(
+        name="Лимит клиента",
+        value=(
+            f"Осталось **{diagnostics.get('remaining_process_budget', '—')}/"
+            f"{diagnostics.get('requests_per_window', '—')}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Рыночная статистика",
+        value=(
+            f"Размещено: **{number(summary.total_count)}**\n"
+            f"Продано: **{number(summary.total_sold)}**\n"
+            f"Средняя цена: **{number(summary.overall_average_price)}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Данные Majestic обновлены", value=summary.last_updated or "нет данных", inline=False)
+    embed.set_footer(text="Ответ приватный • одинаковые проверки кэшируются на 60 секунд")
+    return embed
+
+
 class SettingsPanelView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -493,6 +535,45 @@ class BotTestView(discord.ui.View):
         embed.title = "✅ T-Mod отвечает"
         embed.description = "Тест выполнен без создания рабочих записей."
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="Проверить Majestic",
+        emoji="🌐",
+        style=discord.ButtonStyle.primary,
+        custom_id="tmod_majestic_test",
+    )
+    async def run_majestic_test(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Проверка работает только на сервере.", ephemeral=True)
+            return
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if not permissions or not permissions.administrator:
+            await interaction.response.send_message(
+                "Проверка Majestic доступна только администратору.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            client = get_majestic_api_client()
+            summary = await client.marketplace_summary_async("items", use_cache=True)
+            embed = majestic_test_embed(summary, client.diagnostics())
+        except MajesticApiError as exc:
+            embed = discord.Embed(
+                title="⚠️ Majestic API пока недоступен",
+                description=str(exc),
+                color=discord.Color.orange(),
+            )
+            embed.set_footer(text="Проверьте MAJESTIC_API_ENABLED, ключ и настройки сервера")
+        except Exception as exc:
+            traceback.print_exc()
+            embed = discord.Embed(
+                title="❌ Не удалось проверить Majestic API",
+                description=f"Безопасная ошибка: `{type(exc).__name__}`",
+                color=discord.Color.red(),
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def ensure_public_control_panel(
