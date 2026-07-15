@@ -122,6 +122,7 @@ _setup_lock = asyncio.Lock()
 _persistent_views_registered = False
 _startup_logged_guilds: set[int] = set()
 _tech_event_last_sent: dict[tuple[int, str], float] = {}
+_TRANSIENT_DISCORD_STATUSES = frozenset({500, 502, 503, 504})
 
 
 def _channel_meta_key(guild_id: int, key: str) -> str:
@@ -273,6 +274,51 @@ def _panel_marker(message: discord.Message, marker: str) -> bool:
     )
 
 
+def is_transient_discord_error(exc: BaseException) -> bool:
+    return isinstance(exc, discord.HTTPException) and int(exc.status) in _TRANSIENT_DISCORD_STATUSES
+
+
+def _embed_semantic_payload(embed: discord.Embed) -> dict:
+    payload = embed.to_dict()
+    payload.pop("timestamp", None)
+    return payload
+
+
+def message_payload_matches(
+    message: discord.Message,
+    *,
+    embed: discord.Embed,
+    view: discord.ui.View | None = None,
+) -> bool:
+    if str(getattr(message, "content", "") or ""):
+        return False
+    current_embeds = list(getattr(message, "embeds", ()) or ())
+    if len(current_embeds) != 1:
+        return False
+    if _embed_semantic_payload(current_embeds[0]) != _embed_semantic_payload(embed):
+        return False
+    current_components = [
+        component.to_dict()
+        for component in (getattr(message, "components", ()) or ())
+    ]
+    expected_components = view.to_components() if view is not None else []
+    return current_components == expected_components
+
+
+async def edit_message_with_retry(
+    message: discord.Message,
+    **kwargs: object,
+) -> discord.Message:
+    for attempt in range(3):
+        try:
+            return await message.edit(**kwargs)
+        except discord.HTTPException as exc:
+            if not is_transient_discord_error(exc) or attempt >= 2:
+                raise
+            await asyncio.sleep(0.75 * (2**attempt))
+    raise RuntimeError("unreachable")
+
+
 async def _find_panel_message(channel: discord.TextChannel, marker: str) -> discord.Message | None:
     async for message in channel.history(limit=50):
         if message.author.bot and _panel_marker(message, marker):
@@ -303,8 +349,9 @@ async def ensure_panel_message(
             view=view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
-    else:
-        await message.edit(
+    elif not message_payload_matches(message, embed=embed, view=view):
+        await edit_message_with_retry(
+            message,
             content=None,
             embed=embed,
             view=view,

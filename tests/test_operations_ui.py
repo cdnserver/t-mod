@@ -1,11 +1,13 @@
 import asyncio
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
+
+import discord
 
 import storage
 from modules.craft import CRAFT_CHANNEL_ID
@@ -15,8 +17,11 @@ from modules.control_center import (
     WORKSHOP_CHANNEL_ID,
     BotTestView,
     SettingsPanelView,
+    edit_message_with_retry,
+    is_transient_discord_error,
     log_technical_event,
     majestic_test_embed,
+    message_payload_matches,
 )
 from modules.majestic_api import MajesticMarketplaceSummary
 from modules.finance import FINANCE_COMMAND_CHANNEL_ID, FINANCE_DAILY_CHANNEL_ID
@@ -197,6 +202,47 @@ class OperationsCenterTests(unittest.TestCase):
         self.assertTrue(kwargs["allowed_mentions"].everyone)
         self.assertFalse(kwargs["allowed_mentions"].users)
         self.assertFalse(kwargs["allowed_mentions"].roles)
+
+    def test_unchanged_panel_ignores_timestamp_and_skips_edit(self) -> None:
+        first = discord.Embed(
+            title="Панель",
+            description="Состояние не изменилось",
+            timestamp=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc),
+        )
+        second = discord.Embed(
+            title="Панель",
+            description="Состояние не изменилось",
+            timestamp=datetime(2026, 7, 15, 18, 1, tzinfo=timezone.utc),
+        )
+        message = SimpleNamespace(content="", embeds=[first], components=[])
+
+        self.assertTrue(message_payload_matches(message, embed=second))
+
+        changed = discord.Embed(
+            title="Панель",
+            description="Теперь есть новая задача",
+            timestamp=datetime(2026, 7, 15, 18, 1, tzinfo=timezone.utc),
+        )
+        self.assertFalse(message_payload_matches(message, embed=changed))
+
+    def test_message_edit_retries_temporary_discord_503(self) -> None:
+        response = SimpleNamespace(status=503, reason="Service Unavailable")
+        temporary_error = discord.HTTPException(
+            response,
+            {"code": 0, "message": "upstream connect error"},
+        )
+        edited = SimpleNamespace(id=123)
+        message = SimpleNamespace(edit=AsyncMock(side_effect=[temporary_error, edited]))
+
+        async def retry_edit() -> object:
+            with patch("modules.control_center.asyncio.sleep", new=AsyncMock()) as sleep:
+                result = await edit_message_with_retry(message, embed=discord.Embed(title="Панель"))
+                sleep.assert_awaited_once_with(0.75)
+                return result
+
+        self.assertTrue(is_transient_discord_error(temporary_error))
+        self.assertIs(asyncio.run(retry_edit()), edited)
+        self.assertEqual(message.edit.await_count, 2)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,11 @@ import storage
 from modules.control_center import (
     ACTIVE_TASKS_CHANNEL_ID,
     OPERATIONS_CATEGORY_ID,
+    edit_message_with_retry,
     ensure_public_control_panel,
+    is_transient_discord_error,
     log_technical_event,
+    message_payload_matches,
     public_panel_url,
     resolve_control_channel,
 )
@@ -294,7 +297,13 @@ async def ensure_operations_dashboard(
                     raise
 
         if old_message is not None and not force_repost:
-            await old_message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            if message_payload_matches(old_message, embed=embed):
+                return
+            await edit_message_with_retry(
+                old_message,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
 
         if old_message is not None:
@@ -355,7 +364,14 @@ def schedule_operations_sticky(bot: commands.Bot, guild: discord.Guild) -> None:
             await ensure_operations_dashboard(bot, guild, force_repost=True)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            if is_transient_discord_error(exc):
+                print(
+                    f"[OPERATIONS] Discord API temporarily unavailable ({exc.status}); "
+                    "the deferred dashboard refresh will retry on the next cycle.",
+                    flush=True,
+                )
+                return
             traceback.print_exc()
             await log_technical_event(
                 bot,
@@ -385,7 +401,14 @@ async def operations_worker(bot: commands.Bot) -> None:
                 await ensure_public_control_panel(bot, guild)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if is_transient_discord_error(exc):
+                    print(
+                        f"[OPERATIONS] Discord API temporarily unavailable ({exc.status}); "
+                        "the next cycle will retry automatically.",
+                        flush=True,
+                    )
+                    continue
                 traceback.print_exc()
                 await log_technical_event(
                     bot,
