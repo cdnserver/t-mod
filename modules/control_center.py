@@ -670,6 +670,7 @@ async def log_technical_event(
     level: str = "error",
     dedupe_key: str | None = None,
     cooldown_seconds: int = 300,
+    mention_everyone: bool = False,
 ) -> None:
     key = (guild.id, dedupe_key or title)
     now = asyncio.get_running_loop().time()
@@ -694,7 +695,16 @@ async def log_technical_event(
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(text="T-Mod • технический журнал")
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await channel.send(
+            content="@everyone" if mention_everyone else None,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(
+                everyone=mention_everyone,
+                users=False,
+                roles=False,
+                replied_user=False,
+            ),
+        )
     except Exception:
         traceback.print_exc()
 

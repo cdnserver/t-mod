@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import storage
@@ -14,6 +15,7 @@ from modules.control_center import (
     WORKSHOP_CHANNEL_ID,
     BotTestView,
     SettingsPanelView,
+    log_technical_event,
     majestic_test_embed,
 )
 from modules.majestic_api import MajesticMarketplaceSummary
@@ -167,6 +169,34 @@ class OperationsCenterTests(unittest.TestCase):
         self.assertIn("1 315", rendered)
         self.assertIn("4/5", rendered)
         self.assertLessEqual(len(embed), 6000)
+
+    def test_technical_event_can_deliberately_ping_everyone(self) -> None:
+        channel = SimpleNamespace(send=AsyncMock())
+        guild = SimpleNamespace(id=987)
+
+        async def send_notice() -> None:
+            with patch(
+                "modules.control_center.resolve_control_channel",
+                new=AsyncMock(return_value=channel),
+            ):
+                await log_technical_event(
+                    SimpleNamespace(),
+                    guild,
+                    title="Новый срез Majestic · RU15",
+                    details="Каталог обновлён.",
+                    level="info",
+                    dedupe_key="market-snapshot:test",
+                    cooldown_seconds=0,
+                    mention_everyone=True,
+                )
+
+        asyncio.run(send_notice())
+        channel.send.assert_awaited_once()
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(kwargs["content"], "@everyone")
+        self.assertTrue(kwargs["allowed_mentions"].everyone)
+        self.assertFalse(kwargs["allowed_mentions"].users)
+        self.assertFalse(kwargs["allowed_mentions"].roles)
 
 
 if __name__ == "__main__":

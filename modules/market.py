@@ -185,6 +185,13 @@ class MarketSearchHit:
     score: int
 
 
+@dataclass(frozen=True, slots=True)
+class MarketSnapshotChange:
+    category: str
+    source_updated_at: str
+    record_count: int
+
+
 class MarketCatalogService:
     """Reusable local market catalog backed by Majestic snapshots and SQLite."""
 
@@ -378,6 +385,37 @@ def _discord_time(value: str | None, style: str = "R") -> str:
         return f"<t:{int(parsed.timestamp())}:{style}>"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _market_snapshot_change(
+    category: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> MarketSnapshotChange | None:
+    previous_source = str(before.get("source_updated_at") or "").strip()
+    current_source = str(after.get("source_updated_at") or "").strip()
+    if not previous_source or not current_source or previous_source == current_source:
+        return None
+    return MarketSnapshotChange(
+        category=_clean_market_category(category),
+        source_updated_at=current_source,
+        record_count=max(0, int(after.get("record_count") or 0)),
+    )
+
+
+def _market_snapshot_change_details(changes: list[MarketSnapshotChange]) -> str:
+    lines = []
+    for change in changes:
+        info = _category_info(change.category)
+        lines.append(
+            f"{info['emoji']} **{info['label']}** — {_discord_time(change.source_updated_at, 'F')} "
+            f"· {change.record_count:,} позиций".replace(",", " ")
+        )
+    return (
+        f"Majestic опубликовал новые данные для **{MARKET_SERVER_ID}**. "
+        "Локальный каталог T-Mod обновлён, условия личных сигналов проверены.\n\n"
+        + "\n".join(lines)
+    )
 
 
 def _alert_status_text(alert: dict[str, Any]) -> str:
@@ -907,18 +945,20 @@ class MarketAlertModal(discord.ui.Modal):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message("Это личное рыночное меню открыто не для вас.", ephemeral=True)
             return
+        # A modal must be acknowledged within roughly three seconds. Do this before any
+        # SQLite access because a large marketplace snapshot can briefly hold the DB lock.
+        await interaction.response.defer()
         try:
             target_price = _positive_integer(str(self.target_price.value), "Цена")
             min_quantity = _positive_integer(str(self.min_quantity.value), "Количество")
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
         catalog = get_market_catalog(self.category)
         item = await asyncio.to_thread(catalog.get_item, self.item_id)
         if item is None:
-            await interaction.response.send_message("Позиция уже отсутствует в текущем каталоге.", ephemeral=True)
+            await interaction.followup.send("Позиция уже отсутствует в текущем каталоге.", ephemeral=True)
             return
-        await interaction.response.defer()
         try:
             await asyncio.to_thread(
                 storage.market_upsert_alert,
@@ -1402,6 +1442,7 @@ async def market_worker(bot: commands.Bot) -> None:
     client = get_majestic_api_client()
     while not bot.is_closed():
         started = asyncio.get_running_loop().time()
+        snapshot_changes: list[MarketSnapshotChange] = []
         if client.config.enabled and client.config.api_keys:
             for category, catalog in market_catalogs.items():
                 try:
@@ -1413,6 +1454,9 @@ async def market_worker(bot: commands.Bot) -> None:
                         str(status.get("source_updated_at") or ""),
                         category,
                     )
+                    change = _market_snapshot_change(category, before, status)
+                    if change is not None:
+                        snapshot_changes.append(change)
                     if int(before.get("consecutive_failures") or 0) > 0:
                         for guild in bot.guilds:
                             await log_technical_event(
@@ -1458,6 +1502,22 @@ async def market_worker(bot: commands.Bot) -> None:
             raise
         except Exception:
             traceback.print_exc()
+        if snapshot_changes:
+            snapshot_key = "|".join(
+                f"{change.category}:{change.source_updated_at}" for change in snapshot_changes
+            )
+            details = _market_snapshot_change_details(snapshot_changes)
+            for guild in bot.guilds:
+                await log_technical_event(
+                    bot,
+                    guild,
+                    title=f"Новый срез Majestic · {MARKET_SERVER_ID}",
+                    details=details,
+                    level="info",
+                    dedupe_key=f"market-snapshot:{snapshot_key}",
+                    cooldown_seconds=604800,
+                    mention_everyone=True,
+                )
         elapsed = asyncio.get_running_loop().time() - started
         await asyncio.sleep(max(1.0, MARKET_REFRESH_SECONDS - elapsed))
 

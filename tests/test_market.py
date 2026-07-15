@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import discord
 from discord.ext import commands
@@ -17,6 +17,8 @@ from modules.market import (
     MarketItemView,
     MarketSearchHit,
     _market_internal_id,
+    _market_snapshot_change,
+    _market_snapshot_change_details,
     market_alert_dm_embed,
     market_alerts_embed,
     market_home_embed,
@@ -384,6 +386,54 @@ class MarketStorageTests(unittest.TestCase):
 
         asyncio.run(inspect_ui())
 
+    def test_alert_modal_acknowledges_before_reading_busy_catalog(self) -> None:
+        source = "2026-07-15T02:12:11.960Z"
+        self.save(source, [item(39, "Железная руда", 100, total_count=20)])
+        item_row = storage.market_get_item("RU15", 39)
+        events: list[str] = []
+
+        class FakeResponse:
+            deferred = False
+
+            async def defer(self) -> None:
+                self.deferred = True
+                events.append("acknowledged")
+
+            async def send_message(self, *_args, **_kwargs) -> None:
+                raise AssertionError("Valid modal must defer instead of sending an initial error")
+
+        class FakeFollowup:
+            async def send(self, *_args, **_kwargs) -> None:
+                events.append("followup")
+
+        response = FakeResponse()
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=100, display_name="Tester"),
+            guild_id=200,
+            response=response,
+            followup=FakeFollowup(),
+        )
+
+        def guarded_get_item(item_id: int) -> dict:
+            self.assertTrue(response.deferred)
+            events.append("catalog_read")
+            self.assertEqual(item_id, 39)
+            return item_row
+
+        async def submit() -> None:
+            modal = MarketAlertModal(100, item_row, query=None, back_to_tvrs=False, alert=None)
+            catalog = SimpleNamespace(get_item=guarded_get_item)
+            with (
+                patch("modules.market.get_market_catalog", return_value=catalog),
+                patch("modules.market._show_item", new_callable=AsyncMock) as show_item,
+            ):
+                await modal.on_submit(interaction)
+            show_item.assert_awaited_once()
+
+        asyncio.run(submit())
+        self.assertEqual(events[:2], ["acknowledged", "catalog_read"])
+        self.assertIsNotNone(storage.market_get_alert(100, "RU15", 39))
+
     def test_long_popular_and_alert_lists_fit_each_discord_field(self) -> None:
         status = {
             "record_count": 1360,
@@ -426,6 +476,30 @@ class MarketStorageTests(unittest.TestCase):
         listing = market_alerts_embed(alerts, status)
         assert_discord_embed_limits(self, listing)
         self.assertIn("в списке ниже", listing.fields[0].value)
+
+    def test_snapshot_notice_only_tracks_real_updates_after_initial_sync(self) -> None:
+        initial = {
+            "source_updated_at": "2026-07-15T02:12:11.960Z",
+            "record_count": 1315,
+        }
+        updated = {
+            "source_updated_at": "2026-07-16T02:12:11.960Z",
+            "record_count": 1320,
+        }
+
+        self.assertIsNone(_market_snapshot_change("items", {}, initial))
+        self.assertIsNone(_market_snapshot_change("items", initial, initial))
+
+        change = _market_snapshot_change("items", initial, updated)
+        self.assertIsNotNone(change)
+        self.assertEqual(change.category, "items")
+        self.assertEqual(change.source_updated_at, updated["source_updated_at"])
+        self.assertEqual(change.record_count, 1320)
+
+        details = _market_snapshot_change_details([change])
+        self.assertIn("Majestic опубликовал новые данные", details)
+        self.assertIn("**Предметы**", details)
+        self.assertIn("1 320 позиций", details)
 
     def test_failed_dm_delivery_retries_then_pauses_alert(self) -> None:
         first_source = "2026-07-15T02:12:11.960Z"
