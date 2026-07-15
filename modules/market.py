@@ -328,6 +328,29 @@ def _price(value: int | float | None) -> str:
     return f"{_number(value)} $" if value is not None else "—"
 
 
+def _discord_field_list(blocks: list[str], *, separator: str = "\n") -> str:
+    """Fit whole list entries into Discord's 1024-character embed-field limit."""
+    clean_blocks = [str(block).strip() for block in blocks if str(block).strip()]
+    if not clean_blocks:
+        return "—"
+    selected: list[str] = []
+    for index, block in enumerate(clean_blocks):
+        candidate = separator.join((*selected, block))
+        if len(candidate) <= 1024:
+            selected.append(block)
+            continue
+        omitted = len(clean_blocks) - len(selected)
+        suffix = f"\n…ещё **{omitted}** — выберите их в списке ниже."
+        while selected and len(separator.join(selected) + suffix) > 1024:
+            selected.pop()
+            omitted += 1
+            suffix = f"\n…ещё **{omitted}** — выберите их в списке ниже."
+        if selected:
+            return separator.join(selected) + suffix
+        return block[: 1024 - len(suffix)].rstrip() + suffix
+    return separator.join(selected)
+
+
 def _positive_integer(value: str, label: str) -> int:
     raw = str(value or "").strip()
     if not raw or not re.fullmatch(r"[0-9\s.,_'’]+", raw):
@@ -457,7 +480,11 @@ def market_results_embed(
             f"`{index:02d}` **{str(item.get('item_name') or 'Без названия')[:70]}**\n"
             f"      `{_item_identity(item)[:70]}` · средняя **{_price(item.get('average_price'))}** · продаж **{_number(item.get('sold_count'))}**"
         )
-    embed.add_field(name=f"Найдено вариантов: {len(hits)}", value="\n".join(lines)[:4000], inline=False)
+    embed.add_field(
+        name=f"Найдено вариантов: {len(hits)}",
+        value=_discord_field_list(lines),
+        inline=False,
+    )
     embed.add_field(
         name="Актуальность",
         value=f"Срез Majestic обновлён {_discord_time(status.get('source_updated_at'))}.",
@@ -599,7 +626,11 @@ def market_alerts_embed(alerts: list[dict[str, Any]], status: dict[str, Any]) ->
                 f"{_alert_status_text(alert)} · ≤ **{_price(alert.get('target_price'))}** · "
                 f"от **{_number(alert.get('min_quantity'))} шт.**"
             )
-        embed.add_field(name=f"Сигналов: {len(alerts)} / {MARKET_MAX_ALERTS_PER_USER}", value="\n\n".join(lines)[:4000], inline=False)
+        embed.add_field(
+            name=f"Сигналов: {len(alerts)} / {MARKET_MAX_ALERTS_PER_USER}",
+            value=_discord_field_list(lines, separator="\n\n"),
+            inline=False,
+        )
     embed.add_field(
         name="Свежесть выбранного раздела",
         value=(

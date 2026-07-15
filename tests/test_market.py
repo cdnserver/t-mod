@@ -15,11 +15,13 @@ from modules.market import (
     MarketCatalogService,
     MarketHomeView,
     MarketItemView,
+    MarketSearchHit,
     _market_internal_id,
     market_alert_dm_embed,
     market_alerts_embed,
     market_home_embed,
     market_item_embed,
+    market_results_embed,
     normalize_market_text,
     setup_market,
 )
@@ -44,6 +46,16 @@ def item(
         "min_price": max(1, average_price // 2),
         "max_price": average_price * 2,
     }
+
+
+def assert_discord_embed_limits(test_case: unittest.TestCase, embed: discord.Embed) -> None:
+    test_case.assertLessEqual(len(embed), 6000)
+    test_case.assertLessEqual(len(embed.title or ""), 256)
+    test_case.assertLessEqual(len(embed.description or ""), 4096)
+    test_case.assertLessEqual(len(embed.fields), 25)
+    for field in embed.fields:
+        test_case.assertLessEqual(len(field.name), 256)
+        test_case.assertLessEqual(len(field.value), 1024)
 
 
 class MarketStorageTests(unittest.TestCase):
@@ -236,8 +248,8 @@ class MarketStorageTests(unittest.TestCase):
         home = market_home_embed(status)
         detail = market_item_embed(current, status, history)
 
-        self.assertLessEqual(len(home), 6000)
-        self.assertLessEqual(len(detail), 6000)
+        assert_discord_embed_limits(self, home)
+        assert_discord_embed_limits(self, detail)
         self.assertIn("750 $", "\n".join(str(field.value) for field in detail.fields))
 
         async def inspect_view() -> None:
@@ -356,8 +368,8 @@ class MarketStorageTests(unittest.TestCase):
             "source_updated_at": source,
         }
         dm = market_alert_dm_embed(notification)
-        self.assertLessEqual(len(listing), 6000)
-        self.assertLessEqual(len(dm), 6000)
+        assert_discord_embed_limits(self, listing)
+        assert_discord_embed_limits(self, dm)
 
         async def inspect_ui() -> None:
             item_row = storage.market_get_item("RU15", 39)
@@ -371,6 +383,49 @@ class MarketStorageTests(unittest.TestCase):
             self.assertTrue(any(getattr(child, "label", None) == "Изменить сигнал" for child in item_view.children))
 
         asyncio.run(inspect_ui())
+
+    def test_long_popular_and_alert_lists_fit_each_discord_field(self) -> None:
+        status = {
+            "record_count": 1360,
+            "source_updated_at": "2026-07-15T01:06:28.191Z",
+        }
+        hits = [
+            MarketSearchHit(
+                item={
+                    **item(index, f"Pegassi очень длинное название модели {index}" * 2, 10**12),
+                    "category": "vehicles",
+                    "external_id": f"extremely_long_vehicle_model_code_{index}",
+                },
+                score=0,
+            )
+            for index in range(25)
+        ]
+        popular = market_results_embed("Популярное по продажам", hits, status, "vehicles")
+        assert_discord_embed_limits(self, popular)
+        self.assertIn("в списке ниже", popular.fields[0].value)
+
+        alerts = [
+            {
+                "item_id": index,
+                "item_name": f"Очень длинное название варианта одежды {index}" * 2,
+                "category": "clothes",
+                "external_id": f"1:6:12:{index}:0",
+                "metadata": {
+                    "gender": 1,
+                    "component": 6,
+                    "drawable": 12,
+                    "texture": index,
+                    "isProp": 0,
+                },
+                "status": "active",
+                "target_price": 10**12,
+                "min_quantity": 1000,
+            }
+            for index in range(20)
+        ]
+        listing = market_alerts_embed(alerts, status)
+        assert_discord_embed_limits(self, listing)
+        self.assertIn("в списке ниже", listing.fields[0].value)
 
     def test_failed_dm_delivery_retries_then_pauses_alert(self) -> None:
         first_source = "2026-07-15T02:12:11.960Z"
