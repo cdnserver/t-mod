@@ -14,6 +14,7 @@ from discord.ext import commands
 
 import storage
 from localization import safe_command_description, safe_command_name, t
+from modules.control_center import log_technical_event
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
 
@@ -453,12 +454,16 @@ def _hub_money(value: int | None) -> str:
     return f"{int(value):,} $".replace(",", " ")
 
 
-def build_universality_embed(guild: discord.Guild, requester_id: int) -> discord.Embed:
+def build_universality_embed(guild: discord.Guild, requester_id: int | None) -> discord.Embed:
     """Build the read-only overview for the common /tvrs entry point."""
     finance = storage.finance_get_latest_state(guild.id)
     active_plans = storage.craft_active_plans(guild.id, 100)
     recipes = storage.craft_list_recipes(guild.id, active_only=True, limit=200)
-    actions = storage.bot_list_actions(guild.id, actor_id=requester_id, status="active", limit=100)
+    actions = (
+        storage.bot_list_actions(guild.id, actor_id=requester_id, status="active", limit=100)
+        if requester_id is not None
+        else []
+    )
     queue_count = len(storage.tvrs_queue_bills(guild.id, limit=100))
     active = _active_sessions.get(guild.id)
     consensus = "🟢 свободно"
@@ -488,7 +493,11 @@ def build_universality_embed(guild: discord.Guild, requester_id: int) -> discord
     )
     embed.add_field(
         name="🧾 Контроль",
-        value=f"Ваших активных действий: **{len(actions)}**\nДоступны аудит, статистика и отмена",
+        value=(
+            f"Ваших активных действий: **{len(actions)}**\nДоступны аудит, статистика и отмена"
+            if requester_id is not None
+            else "Личный аудит, статистика и безопасная отмена действий"
+        ),
         inline=True,
     )
     embed.add_field(
@@ -506,6 +515,18 @@ def build_universality_embed(guild: discord.Guild, requester_id: int) -> discord
         inline=False,
     )
     embed.set_footer(text="Панель видна только вам • старые команды остаются быстрыми путями")
+    return embed
+
+
+def build_public_universality_embed(guild: discord.Guild) -> discord.Embed:
+    """Build the shared entry panel; button responses remain ephemeral."""
+    embed = build_universality_embed(guild, None)
+    embed.title = "🏛️ Панель управления Товариществом"
+    embed.description = (
+        "Это общая точка входа T-Mod. Меню видят все участники, но нажатие любой "
+        "рабочей кнопки открывает отдельную личную панель и не изменяет это сообщение."
+    )
+    embed.set_footer(text="Общее меню • взаимодействия личные • tmod-public-control-panel")
     return embed
 
 
@@ -868,6 +889,15 @@ def voice_participants(guild: discord.Guild) -> tuple[list[LiveParticipant], str
 class TVRSBaseView(discord.ui.View):
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: Any) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
+        if interaction.guild is not None:
+            await log_technical_event(
+                interaction.client,
+                interaction.guild,
+                title="Ошибка интерфейса TVRS",
+                details=f"Элемент: `{getattr(item, 'custom_id', None) or getattr(item, 'label', 'неизвестно')}`\nОшибка: `{type(error).__name__}: {str(error)[:700]}`",
+                dedupe_key=f"tvrs-view:{type(error).__name__}",
+                cooldown_seconds=60,
+            )
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Внутренняя ошибка действия. Попробуйте ещё раз или обновите панель /tvrs.", ephemeral=True)
@@ -994,6 +1024,170 @@ class TVRSUniversalityView(TVRSRequesterView):
         await interaction.response.defer()
         embed = await asyncio.to_thread(build_universality_embed, interaction.guild, interaction.user.id)
         await interaction.edit_original_response(content=None, embed=embed, view=self)
+
+
+class TVRSPublicPanelView(TVRSBaseView):
+    """Persistent shared menu whose working surfaces are always private."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Панель работает только на сервере Discord.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Казна",
+        emoji="💼",
+        style=discord.ButtonStyle.primary,
+        row=0,
+        custom_id="tmod_public_tvrs_finance",
+    )
+    async def finance(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        from modules.finance import FinancePanelView, finance_panel_embed
+
+        assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        state = await asyncio.to_thread(storage.finance_get_latest_state, interaction.guild.id)
+        await interaction.followup.send(
+            embed=finance_panel_embed(state),
+            view=FinancePanelView(
+                allow_any_channel=True,
+                requester_id=interaction.user.id,
+                back_to_tvrs=True,
+            ),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Крафты",
+        emoji="🏭",
+        style=discord.ButtonStyle.success,
+        row=0,
+        custom_id="tmod_public_tvrs_craft",
+    )
+    async def craft(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        from modules.craft import CraftMenuView, craft_menu_embed
+
+        assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await asyncio.to_thread(craft_menu_embed, interaction.guild.id)
+        await interaction.followup.send(
+            embed=embed,
+            view=CraftMenuView(
+                allow_any_channel=True,
+                requester_id=interaction.user.id,
+                back_to_tvrs=True,
+            ),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Аудит",
+        emoji="🧾",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+        custom_id="tmod_public_tvrs_audit",
+    )
+    async def audit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        from modules.finance import AuditCenterView, audit_center_embed
+
+        assert interaction.guild is not None
+        embed = await asyncio.to_thread(audit_center_embed, interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(
+            embed=embed,
+            view=AuditCenterView(interaction.user.id, back_to_tvrs=True),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Консенсус",
+        emoji="⚖️",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="tmod_public_tvrs_consensus",
+    )
+    async def consensus(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
+        if not is_chair(interaction.user):
+            await interaction.response.send_message(
+                "Пленарной панелью могут управлять председатели. Остальные разделы доступны вам без ограничений.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            embed=build_main_panel_embed(interaction.guild),
+            view=TVRSMainPanelView(interaction.user.id, back_to_hub=True),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Законопроекты",
+        emoji="📜",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="tmod_public_tvrs_bills",
+    )
+    async def bills(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        assert interaction.guild is not None
+        await interaction.response.send_message(
+            embed=build_queue_embed(interaction.guild),
+            view=TVRSQueueHubView(interaction.user.id, interaction.guild.id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Справка",
+        emoji="🧭",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+        custom_id="tmod_public_tvrs_help",
+    )
+    async def help(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_message(
+            embed=build_universality_help_embed(),
+            view=TVRSHelpView(interaction.user.id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Ссылки",
+        emoji="🔗",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+        custom_id="tmod_public_tvrs_links",
+    )
+    async def links(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="🔗 Ссылки Товарищества",
+            description="Выберите нужное направление. Ссылки открываются обычными кнопками Discord.",
+            color=TVRS_EMBED_COLOR,
+        )
+        embed.set_footer(text="Меню видно только вам")
+        await interaction.response.send_message(
+            embed=embed,
+            view=TVRSLinksView(interaction.user.id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Обновить",
+        emoji="🔄",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+        custom_id="tmod_public_tvrs_refresh",
+    )
+    async def personal(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await asyncio.to_thread(build_universality_embed, interaction.guild, interaction.user.id)
+        await interaction.followup.send(
+            embed=embed,
+            view=TVRSUniversalityView(interaction.user.id),
+            ephemeral=True,
+        )
 
 
 class TVRSQueueHubView(TVRSRequesterView):
@@ -1178,7 +1372,9 @@ class TVRSMainPanelView(TVRSBaseView):
         session = LiveConsensusSession(
             session_key=f"{interaction.guild.id}:{int(datetime.now(timezone.utc).timestamp())}",
             guild_id=interaction.guild.id,
-            channel_id=interaction.channel_id or 0,
+            # Public results always go to the established TVRS results channel. The host
+            # interface remains ephemeral even when consensus starts from the shared panel.
+            channel_id=TVRS_BILLS_CHANNEL_ID,
             leader_id=interaction.user.id,
             leader_display=interaction.user.display_name,
             plenary_number=plenary,
@@ -2216,6 +2412,7 @@ def schedule_sticky_refresh(bot: commands.Bot, guild: discord.Guild) -> None:
 
 def register_tvrs_persistent_views(bot: commands.Bot) -> None:
     bot.add_view(TVRSStickyView())
+    bot.add_view(TVRSPublicPanelView())
 
 
 async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:

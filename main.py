@@ -19,6 +19,7 @@ from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure
 from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
+from modules.control_center import log_technical_event, setup_control_center
 from modules.operations import setup_operations
 
 
@@ -684,6 +685,20 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     error_id = int(utc_now().timestamp())
     print(t("console.interaction_failed", error=f"interaction_error_{error_id}: {error}"), file=sys.stderr)
     traceback.print_exception(type(error), error, error.__traceback__)
+    if interaction.guild is not None:
+        await log_technical_event(
+            bot,
+            interaction.guild,
+            title=f"Ошибка взаимодействия #{error_id}",
+            details=(
+                f"Команда: `{getattr(interaction.command, 'qualified_name', 'неизвестно')}`\n"
+                f"Канал: <#{interaction.channel_id}>\n"
+                f"Пользователь: `{interaction.user.id}`\n"
+                f"Ошибка: `{type(error).__name__}: {str(error)[:700]}`"
+            ),
+            dedupe_key=f"app-command:{type(error).__name__}:{getattr(interaction.command, 'qualified_name', 'unknown')}",
+            cooldown_seconds=60,
+        )
     message = t("errors.generic_interaction_error_with_id", error_id=error_id)
     try:
         if interaction.response.is_done():
@@ -929,6 +944,8 @@ async def on_ready() -> None:
 
 
 boot_banner()
+boot_module("TVRS Control Center")
+setup_control_center(bot)
 boot_module("Operations Center")
 setup_operations(bot)
 boot_module("TVRS Consensus")

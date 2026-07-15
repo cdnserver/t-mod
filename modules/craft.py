@@ -13,12 +13,14 @@ from discord.ext import commands
 import storage
 from modules.finance import (
     FINANCE_ADMIN_USER_ID,
-    FINANCE_COMMAND_CHANNEL_ID,
     FINANCE_EVENT_LOG_CHANNEL_ID,
+    FinancePanelView,
+    finance_panel_embed,
     money_text,
     parse_money,
     wake_notification_worker,
 )
+from modules.control_center import WORKSHOP_CHANNEL_ID, log_technical_event
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
 
@@ -30,7 +32,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-CRAFT_CHANNEL_ID = ACTIVE_TASKS_CHANNEL_ID
+CRAFT_CHANNEL_ID = WORKSHOP_CHANNEL_ID
 CRAFT_EMBED_COLOR = _env_int("CRAFT_EMBED_COLOR", 0xD9D9D9)
 CRAFT_QUIET_START_HOUR = max(0, min(23, _env_int("CRAFT_QUIET_START_HOUR", 2)))
 CRAFT_QUIET_END_HOUR = max(0, min(23, _env_int("CRAFT_QUIET_END_HOUR", 9)))
@@ -139,6 +141,15 @@ def error_text(exc: Exception) -> str:
 
 async def send_interaction_error(interaction: discord.Interaction, exc: Exception) -> None:
     traceback.print_exception(type(exc), exc, exc.__traceback__)
+    if interaction.guild is not None:
+        await log_technical_event(
+            interaction.client,
+            interaction.guild,
+            title="Ошибка системы крафтов",
+            details=f"Канал: <#{interaction.channel_id}>\nПользователь: `{interaction.user.id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:700]}`",
+            dedupe_key=f"craft-interaction:{type(exc).__name__}",
+            cooldown_seconds=60,
+        )
     text = error_text(exc)
     if interaction.response.is_done():
         await interaction.followup.send(text, ephemeral=True)
@@ -639,12 +650,6 @@ async def craft_channel_only(
     if interaction.guild is None:
         await interaction.response.send_message("Система крафтов работает только на сервере.", ephemeral=True)
         return False
-    if not allow_any_channel and interaction.channel_id != CRAFT_CHANNEL_ID:
-        await interaction.response.send_message(
-            f"Меню крафтов доступно только в канале <#{CRAFT_CHANNEL_ID}>.",
-            ephemeral=True,
-        )
-        return False
     return True
 
 
@@ -692,7 +697,7 @@ def migrated_plan_embed(plan: dict[str, Any], new_url: str) -> discord.Embed:
     embed = discord.Embed(
         title=f"↪️ Крафт #{plan['id']} перенесён",
         description=(
-            "Рабочая карточка этого плана теперь находится в едином операционном центре. "
+            "Единственная рабочая карточка этого плана теперь находится в мастерской. "
             f"Продолжайте работу здесь: [открыть актуальную карточку]({new_url})."
         ),
         color=discord.Color.light_grey(),
@@ -708,7 +713,7 @@ async def migrate_active_plan_channels(bot: commands.Bot, guild: discord.Guild) 
         return
     target_channel = await _get_channel(bot, CRAFT_CHANNEL_ID)
     if getattr(target_channel, "guild", None) is None or int(target_channel.guild.id) != guild.id:
-        raise RuntimeError("ACTIVE_TASKS_CHANNEL_ID не принадлежит серверу плана крафта")
+        raise RuntimeError("WORKSHOP_CHANNEL_ID не принадлежит серверу плана крафта")
 
     for plan in outdated:
         new_message: discord.Message | None = None
@@ -749,7 +754,7 @@ async def migrate_active_plan_channels(bot: commands.Bot, guild: discord.Guild) 
 
         try:
             await new_message.edit(embed=plan_embed(rebound), view=CraftPlanView(rebound))
-            history_note = "План автоматически перенесён в канал «Активные задачи»."
+            history_note = "План автоматически перенесён в «Мастерскую»."
             if old_url:
                 history_note += f" Предыдущая карточка и история: {old_url}"
             await new_thread.send(history_note, allowed_mentions=discord.AllowedMentions.none())
@@ -765,7 +770,10 @@ async def migrate_active_plan_channels(bot: commands.Bot, guild: discord.Guild) 
             try:
                 old_channel = await _get_channel(bot, old_channel_id)
                 old_message = await old_channel.fetch_message(old_message_id)
-                await old_message.edit(embed=migrated_plan_embed(plan, new_message.jump_url), view=None)
+                if old_channel_id == ACTIVE_TASKS_CHANNEL_ID:
+                    await old_message.delete()
+                else:
+                    await old_message.edit(embed=migrated_plan_embed(plan, new_message.jump_url), view=None)
             except discord.DiscordException:
                 pass
         if old_thread_id:
@@ -1688,15 +1696,26 @@ class ListingModal(discord.ui.Modal):
 
 
 class FinanceLinkView(discord.ui.View):
-    def __init__(self, guild_id: int) -> None:
+    def __init__(self, requester_id: int) -> None:
         super().__init__(timeout=300)
-        self.add_item(
-            discord.ui.Button(
-                label="Перейти в активные задачи",
-                emoji="💼",
-                style=discord.ButtonStyle.link,
-                url=f"https://discord.com/channels/{guild_id}/{FINANCE_COMMAND_CHANNEL_ID}",
-            )
+        self.requester_id = int(requester_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Эта личная кнопка открыта не для вас.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Открыть казну", emoji="💼", style=discord.ButtonStyle.primary)
+    async def open_finance(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Казна работает только на сервере.", ephemeral=True)
+            return
+        state = await asyncio.to_thread(storage.finance_get_latest_state, interaction.guild.id)
+        await interaction.response.send_message(
+            embed=finance_panel_embed(state),
+            view=FinancePanelView(allow_any_channel=True, requester_id=interaction.user.id),
+            ephemeral=True,
         )
 
 
@@ -1740,14 +1759,14 @@ class SaleModal(discord.ui.Modal):
                 f"Продажа записана: **{format_quantity(quantity)} шт.** за **{money_text(amount)}**. "
                 f"Действие: **#{plan['action_id']}**.\n"
                 f"Осталось продать: **{format_quantity(remaining)} шт.**\n\n"
-                f"Перейдите в <#{FINANCE_COMMAND_CHANNEL_ID}>, вызовите `/finance` → **«Положил»** "
+                f"Откройте казну кнопкой ниже или вызовите `/finance` здесь → **«Положил»** "
                 f"и внесите **{money_text(amount)}** в казну."
             )
             if plan["stage"] == "completed":
                 text += "\n\nВсе предметы проданы. План завершён."
             await interaction.followup.send(
                 text,
-                view=FinanceLinkView(interaction.guild.id),
+                view=FinanceLinkView(interaction.user.id),
                 ephemeral=True,
             )
         except Exception as exc:

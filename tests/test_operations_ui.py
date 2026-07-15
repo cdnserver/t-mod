@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime
@@ -7,6 +8,13 @@ from zoneinfo import ZoneInfo
 
 import storage
 from modules.craft import CRAFT_CHANNEL_ID
+from modules.control_center import (
+    CHANNEL_SPECS,
+    FINANCE_LOG_CHANNEL_ID,
+    WORKSHOP_CHANNEL_ID,
+    BotTestView,
+    SettingsPanelView,
+)
 from modules.finance import FINANCE_COMMAND_CHANNEL_ID, FINANCE_DAILY_CHANNEL_ID
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, build_operations_embed
 
@@ -31,10 +39,15 @@ class OperationsCenterTests(unittest.TestCase):
     def test_dashboard_separates_attention_and_running_work(self) -> None:
         guild_id = 77
         report_date = "2026-07-15"
-        storage.finance_get_or_create_daily_prompt(
+        prompt = storage.finance_get_or_create_daily_prompt(
             guild_id=guild_id,
             report_date=report_date,
-            channel_id=ACTIVE_TASKS_CHANNEL_ID,
+            channel_id=FINANCE_DAILY_CHANNEL_ID,
+        )
+        storage.finance_bind_daily_prompt_message(
+            prompt_id=int(prompt["id"]),
+            channel_id=FINANCE_DAILY_CHANNEL_ID,
+            message_id=900,
         )
         recipe = storage.craft_create_recipe(
             guild_id=guild_id,
@@ -46,15 +59,21 @@ class OperationsCenterTests(unittest.TestCase):
             created_by_id=10,
             created_by_display="Автор",
         )
-        storage.craft_create_plan(
+        plan = storage.craft_create_plan(
             guild_id=guild_id,
             recipe_id=recipe["id"],
-            channel_id=ACTIVE_TASKS_CHANNEL_ID,
+            channel_id=CRAFT_CHANNEL_ID,
             attempts_total=10,
             responsible_id=20,
             responsible_display="Ответственный",
             created_by_id=10,
             created_by_display="Автор",
+        )
+        storage.craft_bind_plan_message(
+            plan_id=int(plan["id"]),
+            channel_id=CRAFT_CHANNEL_ID,
+            message_id=901,
+            thread_id=902,
         )
         storage.create_audio_generation(
             guild_id=guild_id,
@@ -73,15 +92,18 @@ class OperationsCenterTests(unittest.TestCase):
         rendered = "\n".join(str(field.value) for field in embed.fields)
         self.assertIn("Ежедневная сверка казны", rendered)
         self.assertIn("Крафт #", rendered)
-        self.assertIn("AI-аудио", rendered)
+        self.assertNotIn("AI-аудио", rendered)
+        self.assertIn("https://discord.com/channels/77", rendered)
         self.assertIn("Требует действия", embed.fields[0].name)
         self.assertLessEqual(len(embed), 6000)
         self.assertLessEqual(len(embed.fields), 25)
 
-    def test_all_public_work_routes_to_active_tasks(self) -> None:
-        self.assertEqual(FINANCE_DAILY_CHANNEL_ID, ACTIVE_TASKS_CHANNEL_ID)
-        self.assertEqual(FINANCE_COMMAND_CHANNEL_ID, ACTIVE_TASKS_CHANNEL_ID)
-        self.assertEqual(CRAFT_CHANNEL_ID, ACTIVE_TASKS_CHANNEL_ID)
+    def test_source_messages_stay_in_their_sections(self) -> None:
+        self.assertEqual(FINANCE_DAILY_CHANNEL_ID, FINANCE_LOG_CHANNEL_ID)
+        self.assertEqual(FINANCE_COMMAND_CHANNEL_ID, 0)
+        self.assertEqual(CRAFT_CHANNEL_ID, WORKSHOP_CHANNEL_ID)
+        self.assertNotEqual(FINANCE_DAILY_CHANNEL_ID, ACTIVE_TASKS_CHANNEL_ID)
+        self.assertNotEqual(CRAFT_CHANNEL_ID, ACTIVE_TASKS_CHANNEL_ID)
 
     def test_paused_consensus_is_attention_not_history(self) -> None:
         embed = build_operations_embed(
@@ -97,6 +119,20 @@ class OperationsCenterTests(unittest.TestCase):
         )
         self.assertIn("4-й консенсус", str(embed.fields[0].value))
         self.assertIn("пауза", str(embed.fields[0].value))
+
+    def test_service_channel_scaffolds_are_persistent(self) -> None:
+        self.assertEqual(
+            [spec.key for spec in CHANNEL_SPECS],
+            ["control_panel", "active_tasks", "workshop", "finance_log", "tech_log", "reports", "settings", "test"],
+        )
+        async def inspect_views() -> None:
+            for view in (SettingsPanelView(), BotTestView()):
+                with self.subTest(view=type(view).__name__):
+                    self.assertIsNone(view.timeout)
+                    self.assertTrue(view.children)
+                    self.assertTrue(all(item.custom_id for item in view.children))
+
+        asyncio.run(inspect_views())
 
 
 if __name__ == "__main__":

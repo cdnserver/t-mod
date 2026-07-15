@@ -6,7 +6,13 @@ from types import SimpleNamespace
 import storage
 from modules.craft import CraftMenuView, PlanCreateModal, RecipeSelectView
 from modules.finance import AuditCenterView, FinanceAuditSearchModal, FinancePanelView, UndoActionModal
-from modules.tvrs import TVRSLinksView, TVRSUniversalityView, build_universality_embed
+from modules.tvrs import (
+    TVRSLinksView,
+    TVRSPublicPanelView,
+    TVRSUniversalityView,
+    build_public_universality_embed,
+    build_universality_embed,
+)
 
 
 class TVRSUniversalityTests(unittest.IsolatedAsyncioTestCase):
@@ -62,6 +68,18 @@ class TVRSUniversalityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(selector.allow_any_channel)
         self.assertTrue(selector.children[0].allow_any_channel)
         self.assertTrue(PlanCreateModal(1, allow_any_channel=True).allow_any_channel)
+
+    async def test_public_panel_is_persistent_and_uses_private_entry_buttons(self) -> None:
+        view = TVRSPublicPanelView()
+        self.assertIsNone(view.timeout)
+        self.assertEqual(
+            [item.label for item in view.children],
+            ["Казна", "Крафты", "Аудит", "Консенсус", "Законопроекты", "Справка", "Ссылки", "Обновить"],
+        )
+        self.assertTrue(all(item.custom_id for item in view.children))
+        embed = build_public_universality_embed(SimpleNamespace(id=77))
+        self.assertIn("видят все", embed.description)
+        self.assertIn("взаимодействия личные", embed.footer.text)
 
     async def test_hub_overview_uses_current_finance_and_craft_state(self) -> None:
         storage.finance_record_snapshot(

@@ -9,6 +9,14 @@ import discord
 from discord.ext import commands
 
 import storage
+from modules.control_center import (
+    ACTIVE_TASKS_CHANNEL_ID,
+    OPERATIONS_CATEGORY_ID,
+    ensure_public_control_panel,
+    log_technical_event,
+    public_panel_url,
+    resolve_control_channel,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -19,8 +27,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-OPERATIONS_CATEGORY_ID = _env_int("OPERATIONS_CATEGORY_ID", 1526605447878934589)
-ACTIVE_TASKS_CHANNEL_ID = _env_int("ACTIVE_TASKS_CHANNEL_ID", 1526606213826220198)
 OPERATIONS_REFRESH_SECONDS = max(10, _env_int("OPERATIONS_REFRESH_SECONDS", 30))
 OPERATIONS_STICKY_DEBOUNCE_SECONDS = max(1, _env_int("OPERATIONS_STICKY_DEBOUNCE_SECONDS", 2))
 OPERATIONS_EMBED_COLOR = _env_int("OPERATIONS_EMBED_COLOR", 0xD9D9D9)
@@ -35,6 +41,7 @@ _sticky_tasks: dict[int, asyncio.Task[None]] = {}
 _worker_task: asyncio.Task[None] | None = None
 _worker_wakeup: asyncio.Event | None = None
 _category_warning_shown: set[int] = set()
+_pruned_guilds: set[int] = set()
 
 
 def now_local() -> datetime:
@@ -168,7 +175,8 @@ def build_operations_embed(
         bill_text = ""
         if bill:
             bill_text = f" · проект `{int(bill.get('bill_number') or 0):03d}`"
-        line = f"⚖️ **{plenary}-й консенсус** — {stage_label}{bill_text} · ведущий <@{leader_id}>"
+        title = _linked_title(f"{plenary}-й консенсус", public_panel_url(guild_id))
+        line = f"⚖️ **{title}** — {stage_label}{bill_text} · ведущий <@{leader_id}>"
         if stage in {"registration", "paused", "after_result", "discussion_type"}:
             attention.append(line)
         else:
@@ -177,41 +185,17 @@ def build_operations_embed(
     bills = storage.tvrs_queue_bills(guild_id, limit=100)
     if bills:
         if active_consensus is None:
-            attention.append(f"📜 **Законопроекты** — {len(bills)} ожидают запуска консенсуса")
-        preview = [
-            f"`{int(item.get('bill_number') or 0):03d}` · {str(item.get('title') or 'Без названия')[:80]}"
-            for item in bills[:5]
-        ]
+            title = _linked_title("Законопроекты", public_panel_url(guild_id))
+            attention.append(f"📜 **{title}** — {len(bills)} ожидают запуска консенсуса")
+        preview = []
+        for item in bills[:5]:
+            number = int(item.get("bill_number") or 0)
+            title = str(item.get("title") or "Без названия")[:80]
+            link = _message_url(guild_id, item.get("channel_id"), item.get("message_id"))
+            preview.append(f"`{number:03d}` · {_linked_title(title, link)}")
         queue.extend(preview)
         if len(bills) > len(preview):
             queue.append(f"…и ещё **{len(bills) - len(preview)}**")
-
-    cases = [case for case in storage.list_sgl_cases_with_channels(guild_id) if case.status != "closed"]
-    if cases:
-        missing = sum(
-            1
-            for case in cases
-            if not all(
-                (
-                    case.request_type,
-                    case.client_nick,
-                    case.static_id,
-                    case.bank_account,
-                    case.phone,
-                    case.passport_url,
-                    (case.situation_text or "").strip(),
-                )
-            )
-        )
-        in_work = len(cases) - missing
-        if missing:
-            attention.append(f"🔒 **Бюро SGL** — дел требуют заполнения данных: **{missing}**")
-        if in_work:
-            progress.append(f"🔒 **Бюро SGL** — дел в работе: **{in_work}**; детали остаются в закрытых каналах")
-
-    running_audio = storage.count_recent_running_audio_generations(guild_id, within_minutes=30)
-    if running_audio:
-        progress.append(f"🎙️ **AI-аудио** — выполняется генераций: **{running_audio}**")
 
     craft_attention: list[str] = []
     craft_progress: list[str] = []
@@ -226,9 +210,9 @@ def build_operations_embed(
         title="🧭 Операционный центр",
         description=(
             f"Сейчас отслеживается активных элементов: **{active_count}**. "
-            "Здесь остаётся только работа, которая требует участия людей или ещё не завершена."
+            "Здесь остаются только дела Товарищества, которые требуют участия людей или ещё не завершены."
             if active_count
-            else "🟢 Сейчас нет задач, требующих внимания, и активных процессов."
+            else "🟢 Сейчас у Товарищества нет задач, требующих внимания, и активных процессов."
         ),
         color=OPERATIONS_EMBED_COLOR,
         timestamp=current,
@@ -247,10 +231,10 @@ def build_operations_embed(
     if queue:
         embed.add_field(name=f"📥 Очередь решений · {len(bills)}", value=_field_value(queue), inline=False)
     embed.add_field(
-        name="Как читать центр",
+        name="Как устроен центр",
         value=(
-            "Карточки ниже/выше этой сводки — рабочие места конкретных задач. "
-            "Завершённые события остаются в базе и не считаются активной работой."
+            "Каждый пункт ведёт к единственному исходному сообщению в нужном разделе. "
+            "Карточки здесь не копируются, поэтому рабочая история не распадается."
         ),
         inline=False,
     )
@@ -258,10 +242,10 @@ def build_operations_embed(
     return embed
 
 
-async def _get_operations_channel(bot: commands.Bot | discord.Client) -> Any:
-    channel = bot.get_channel(ACTIVE_TASKS_CHANNEL_ID)
+async def _get_operations_channel(guild: discord.Guild) -> Any:
+    channel = await resolve_control_channel(guild, "active_tasks")
     if channel is None:
-        channel = await bot.fetch_channel(ACTIVE_TASKS_CHANNEL_ID)
+        raise RuntimeError("Канал «активные-задачи» не найден")
     return channel
 
 
@@ -282,7 +266,7 @@ async def ensure_operations_dashboard(
     *,
     force_repost: bool = False,
 ) -> None:
-    channel = await _get_operations_channel(bot)
+    channel = await _get_operations_channel(guild)
     if getattr(channel, "guild", None) is None or int(channel.guild.id) != guild.id:
         raise RuntimeError("ACTIVE_TASKS_CHANNEL_ID не принадлежит текущему серверу")
     if OPERATIONS_CATEGORY_ID and getattr(channel, "category_id", None) != OPERATIONS_CATEGORY_ID:
@@ -322,6 +306,43 @@ async def ensure_operations_dashboard(
         await asyncio.to_thread(storage.set_meta_value, meta_key, str(message.id))
 
 
+async def prune_legacy_bot_messages(bot: commands.Bot, guild: discord.Guild) -> None:
+    """Leave only the live dashboard in active tasks; source records live elsewhere."""
+    if guild.id in _pruned_guilds or bot.user is None:
+        return
+    channel = await _get_operations_channel(guild)
+    current_raw = await asyncio.to_thread(storage.get_meta, _dashboard_meta_key(guild.id, int(channel.id)))
+    current_id = int(current_raw) if current_raw and str(current_raw).isdigit() else None
+    preserve_ids = {
+        int(plan["message_id"])
+        for plan in await asyncio.to_thread(storage.craft_active_plans, guild.id, 100)
+        if int(plan.get("channel_id") or 0) == int(channel.id) and plan.get("message_id")
+    }
+    preserve_ids.update(
+        int(prompt["message_id"])
+        for prompt in await asyncio.to_thread(
+            storage.finance_recent_daily_prompts,
+            guild_id=guild.id,
+            limit=30,
+        )
+        if (
+            str(prompt.get("status")) == "open"
+            and int(prompt.get("channel_id") or 0) == int(channel.id)
+            and prompt.get("message_id")
+        )
+    )
+    async for message in channel.history(limit=250):
+        if message.author.id != bot.user.id or message.id == current_id or message.id in preserve_ids:
+            continue
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.DiscordException:
+            traceback.print_exc()
+    _pruned_guilds.add(guild.id)
+
+
 def schedule_operations_sticky(bot: commands.Bot, guild: discord.Guild) -> None:
     key = guild.id
     task = _sticky_tasks.get(key)
@@ -336,6 +357,13 @@ def schedule_operations_sticky(bot: commands.Bot, guild: discord.Guild) -> None:
             raise
         except Exception:
             traceback.print_exc()
+            await log_technical_event(
+                bot,
+                guild,
+                title="Не удалось обновить активные задачи",
+                details="Проверьте доступ T-Mod к каналу и состояние базы данных.",
+                dedupe_key="operations-dashboard-refresh",
+            )
         finally:
             _sticky_tasks.pop(key, None)
 
@@ -354,10 +382,18 @@ async def operations_worker(bot: commands.Bot) -> None:
         for guild in bot.guilds:
             try:
                 await ensure_operations_dashboard(bot, guild)
+                await ensure_public_control_panel(bot, guild)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 traceback.print_exc()
+                await log_technical_event(
+                    bot,
+                    guild,
+                    title="Сбой рабочего цикла активных задач",
+                    details="Автоматическое обновление будет повторено. Проверьте лог контейнера для трассировки.",
+                    dedupe_key="operations-worker",
+                )
         try:
             await asyncio.wait_for(_worker_wakeup.wait(), timeout=OPERATIONS_REFRESH_SECONDS)
             _worker_wakeup.clear()
@@ -368,6 +404,14 @@ async def operations_worker(bot: commands.Bot) -> None:
 def setup_operations(bot: commands.Bot) -> None:
     async def operations_ready_listener() -> None:
         global _worker_task
+        for guild in bot.guilds:
+            try:
+                await ensure_operations_dashboard(bot, guild)
+                await prune_legacy_bot_messages(bot, guild)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                traceback.print_exc()
         if _worker_task is None or _worker_task.done():
             _worker_task = asyncio.create_task(operations_worker(bot), name="tmod-operations-worker")
 
