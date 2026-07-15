@@ -15,6 +15,7 @@ from modules.market import (
     MarketCatalogService,
     MarketHomeView,
     MarketItemView,
+    _market_internal_id,
     market_alert_dm_embed,
     market_alerts_embed,
     market_home_embed,
@@ -22,7 +23,7 @@ from modules.market import (
     normalize_market_text,
     setup_market,
 )
-from modules.majestic_api import MajesticApiResponseError, MajesticMarketplaceItem, MajesticMarketplaceSummary
+from modules.majestic_api import MajesticApiResponseError, MajesticMarketplaceEntry, MajesticMarketplaceSummary
 
 
 def item(
@@ -60,9 +61,12 @@ class MarketStorageTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def save(self, source_updated_at: str, items: list[dict]) -> dict:
+        return self.save_category("items", source_updated_at, items)
+
+    def save_category(self, category: str, source_updated_at: str, items: list[dict]) -> dict:
         return storage.market_replace_snapshot(
             server_id="RU15",
-            category="items",
+            category=category,
             server_name="Phoenix",
             source_updated_at=source_updated_at,
             period_days=30,
@@ -127,22 +131,23 @@ class MarketStorageTests(unittest.TestCase):
         )
         snapshot = SimpleNamespace(
             summary=summary,
-            items=tuple(
-                MajesticMarketplaceItem(
-                    item_id=index,
+            entries=tuple(
+                MajesticMarketplaceEntry(
+                    external_id=str(index),
                     item_name=f"Предмет {index}",
                     total_count=10,
                     sold_count=5,
                     average_price=100,
                     min_price=50,
                     max_price=150,
+                    metadata={"item_id": index, "quantity_metric": "total_count"},
                 )
                 for index in range(1, 11)
             ),
         )
 
         class FakeClient:
-            async def marketplace_items_snapshot_async(self, *_args, **_kwargs):
+            async def marketplace_snapshot_async(self, *_args, **_kwargs):
                 return snapshot
 
         catalog = MarketCatalogService("RU15")
@@ -150,6 +155,79 @@ class MarketStorageTests(unittest.TestCase):
             with self.assertRaises(MajesticApiResponseError):
                 asyncio.run(catalog.sync())
         self.assertEqual(storage.market_catalog_status("RU15")["record_count"], 101)
+
+    def test_vehicle_search_accepts_russian_transliteration_and_model(self) -> None:
+        vehicle_id = _market_internal_id("vehicles", "faggio")
+        self.save_category(
+            "vehicles",
+            "2026-07-15T02:12:11.960Z",
+            [
+                {
+                    **item(vehicle_id, "Pegassi Faggio Sport", 150000, total_count=42, sold_count=9),
+                    "external_id": "faggio",
+                    "metadata": {"model": "faggio", "quantity_metric": "total_count"},
+                }
+            ],
+        )
+        catalog = MarketCatalogService("RU15", "vehicles")
+        self.assertEqual(catalog.search("пегасси")[0].item["external_id"], "faggio")
+        self.assertEqual(catalog.search("фаджио")[0].item["external_id"], "faggio")
+        self.assertEqual(catalog.search("faggio")[0].item["item_id"], vehicle_id)
+
+    def test_clothing_variants_with_same_name_remain_distinct(self) -> None:
+        rows = []
+        for texture in (2, 3):
+            external_id = f"1:6:12:{texture}:0"
+            internal_id = _market_internal_id("clothes", external_id)
+            rows.append(
+                {
+                    **item(internal_id, "Чёрная сумка", 50000, total_count=17, sold_count=17),
+                    "external_id": external_id,
+                    "metadata": {
+                        "gender": 1,
+                        "component": 6,
+                        "drawable": 12,
+                        "texture": texture,
+                        "isProp": 0,
+                        "quantity_metric": "sold_count",
+                    },
+                }
+            )
+        self.save_category("clothes", "2026-07-15T02:12:11.960Z", rows)
+        catalog = MarketCatalogService("RU15", "clothes")
+        hits = catalog.search("черная сумка")
+        self.assertEqual(len(hits), 2)
+        self.assertEqual({hit.item["metadata"]["texture"] for hit in hits}, {2, 3})
+        self.assertEqual(len({hit.item["item_id"] for hit in hits}), 2)
+
+    def test_vehicle_alert_keeps_category_and_model_in_dm(self) -> None:
+        vehicle_id = _market_internal_id("vehicles", "faggio")
+        vehicle = {
+            **item(vehicle_id, "Pegassi Faggio Sport", 150000, total_count=42, sold_count=9),
+            "external_id": "faggio",
+            "metadata": {"model": "faggio", "quantity_metric": "total_count"},
+        }
+        first_source = "2026-07-15T01:06:28.191Z"
+        second_source = "2026-07-16T01:06:28.191Z"
+        self.save_category("vehicles", first_source, [vehicle])
+        storage.market_upsert_alert(
+            discord_user_id=100,
+            user_display="Tester",
+            guild_id=200,
+            server_id="RU15",
+            category="vehicles",
+            item_id=vehicle_id,
+            target_price=100000,
+            min_quantity=40,
+            current_source_updated_at=first_source,
+        )
+        self.save_category("vehicles", second_source, [vehicle])
+        self.assertEqual(storage.market_evaluate_alerts("RU15", second_source, "vehicles"), 1)
+        notification = storage.market_pending_alert_notifications()[0]
+        self.assertEqual(notification["category"], "vehicles")
+        self.assertEqual(notification["external_id"], "faggio")
+        self.assertEqual(notification["metadata"]["model"], "faggio")
+        self.assertIn("model: faggio", market_alert_dm_embed(notification).fields[-1].value)
 
     def test_menu_and_item_card_are_private_and_compact(self) -> None:
         status = self.save("2026-07-15T02:12:11.960Z", [item(39, "Железная руда", 750)])
@@ -175,6 +253,10 @@ class MarketStorageTests(unittest.TestCase):
         command = bot.tree.get_command("market")
         self.assertIsNotNone(command)
         self.assertEqual(command.name, "market")
+        self.assertEqual([parameter.name for parameter in command.parameters], ["category", "query"])
+        category = command.parameters[0]
+        self.assertFalse(category.required)
+        self.assertEqual({choice.value for choice in category.choices}, {"items", "vehicles", "clothes"})
 
     def test_personal_alert_waits_for_new_snapshot_and_is_one_shot(self) -> None:
         first_source = "2026-07-15T02:12:11.960Z"

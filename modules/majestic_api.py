@@ -257,33 +257,144 @@ class MajesticMarketplaceItem:
 
 
 @dataclass(frozen=True, slots=True)
+class MajesticMarketplaceEntry:
+    external_id: str
+    item_name: str
+    total_count: int
+    sold_count: int
+    average_price: int | None
+    min_price: int | None
+    max_price: int | None
+    metadata: dict[str, Any]
+
+    @classmethod
+    def from_payload(cls, category: str, payload: dict[str, Any]) -> MajesticMarketplaceEntry:
+        clean_category = str(category).strip().lower()
+
+        def non_negative(value: Any, *, optional: bool = False) -> int | None:
+            if value is None and optional:
+                return None
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return None if optional else 0
+
+        if clean_category == "items":
+            try:
+                raw_id = int(payload["itemId"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Majestic itemId отсутствует или некорректен.") from exc
+            if raw_id < 0:
+                raise ValueError("Majestic itemId не может быть отрицательным.")
+            external_id = str(raw_id)
+            item_name = str(payload.get("itemName") or "").strip() or f"Неизвестный предмет #{raw_id}"
+            metadata: dict[str, Any] = {"item_id": raw_id, "quantity_metric": "total_count"}
+            total_count = int(non_negative(payload.get("totalCount")) or 0)
+        elif clean_category == "vehicles":
+            external_id = str(payload.get("model") or "").strip().lower()
+            if not external_id:
+                raise ValueError("Majestic vehicle model отсутствует.")
+            item_name = str(payload.get("modelName") or "").strip() or external_id
+            metadata = {
+                "model": external_id,
+                "model_name": item_name,
+                "quantity_metric": "total_count",
+            }
+            total_count = int(non_negative(payload.get("totalCount")) or 0)
+        elif clean_category == "clothes":
+            required = ("gender", "component", "drawable", "texture", "isProp")
+            try:
+                values = {key: int(payload[key]) for key in required}
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Majestic вернул неполный идентификатор варианта одежды.") from exc
+            if any(value < 0 for value in values.values()):
+                raise ValueError("Majestic вернул отрицательный идентификатор одежды.")
+            if values["gender"] not in {0, 1} or values["isProp"] not in {0, 1}:
+                raise ValueError("Majestic вернул некорректный тип варианта одежды.")
+            external_id = ":".join(str(values[key]) for key in required)
+            item_name = str(payload.get("itemName") or "").strip() or f"Неизвестная одежда {external_id}"
+            metadata = {
+                **values,
+                "quantity_metric": "sold_count",
+            }
+            # Clothes do not expose totalCount. Keep the searchable quantity metric useful and
+            # explicit by mirroring soldCount; the UI labels it as sales rather than availability.
+            total_count = int(non_negative(payload.get("soldCount")) or 0)
+        else:
+            raise ValueError(f"Категория {category} не поддерживает подробный каталог.")
+
+        return cls(
+            external_id=external_id,
+            item_name=item_name,
+            total_count=total_count,
+            sold_count=int(non_negative(payload.get("soldCount")) or 0),
+            average_price=non_negative(payload.get("averagePrice"), optional=True),
+            min_price=non_negative(payload.get("minPrice"), optional=True),
+            max_price=non_negative(payload.get("maxPrice"), optional=True),
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MajesticMarketplaceSnapshot:
+    summary: MajesticMarketplaceSummary
+    entries: tuple[MajesticMarketplaceEntry, ...]
+
+    @classmethod
+    def from_payload(cls, category: str, payload: JsonValue) -> MajesticMarketplaceSnapshot:
+        clean_category = str(category).strip().lower()
+        statistics_keys = {
+            "items": "itemStatistics",
+            "vehicles": "vehicleStatistics",
+            "clothes": "clothesStatistics",
+        }
+        statistics_key = statistics_keys.get(clean_category)
+        if statistics_key is None:
+            raise MajesticApiResponseError(f"Подробный каталог {clean_category} пока не поддерживается.")
+        summary = MajesticMarketplaceSummary.from_payload(clean_category, payload)
+        if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
+            raise MajesticApiResponseError("В ответе Majestic API отсутствует объект каталога.")
+        raw_entries = payload["result"].get(statistics_key)
+        if not isinstance(raw_entries, list):
+            raise MajesticApiResponseError(f"В ответе Majestic API отсутствует {statistics_key}.")
+        entries: list[MajesticMarketplaceEntry] = []
+        for raw in raw_entries:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                entries.append(MajesticMarketplaceEntry.from_payload(clean_category, raw))
+            except ValueError:
+                continue
+        if not entries:
+            raise MajesticApiResponseError(f"Majestic API вернул пустой каталог {clean_category}.")
+        if len(entries) != len(raw_entries):
+            raise MajesticApiResponseError(f"Majestic API вернул неполные строки {clean_category}.")
+        if len({entry.external_id for entry in entries}) != len(entries):
+            raise MajesticApiResponseError(f"Majestic API вернул повторяющиеся ключи {clean_category}.")
+        return cls(summary=summary, entries=tuple(entries))
+
+
+@dataclass(frozen=True, slots=True)
 class MajesticItemsSnapshot:
     summary: MajesticMarketplaceSummary
     items: tuple[MajesticMarketplaceItem, ...]
 
     @classmethod
     def from_payload(cls, payload: JsonValue) -> MajesticItemsSnapshot:
-        summary = MajesticMarketplaceSummary.from_payload("items", payload)
-        if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
-            raise MajesticApiResponseError("В ответе Majestic API отсутствует каталог предметов.")
-        raw_items = payload["result"].get("itemStatistics")
-        if not isinstance(raw_items, list):
-            raise MajesticApiResponseError("В ответе Majestic API отсутствует itemStatistics.")
-        items: list[MajesticMarketplaceItem] = []
-        for raw in raw_items:
-            if not isinstance(raw, dict):
-                continue
-            try:
-                items.append(MajesticMarketplaceItem.from_payload(raw))
-            except ValueError:
-                continue
-        if not items:
-            raise MajesticApiResponseError("Majestic API вернул пустой каталог предметов.")
-        if len(items) != len(raw_items):
-            raise MajesticApiResponseError("Majestic API вернул неполные строки предметов.")
-        if len({item.item_id for item in items}) != len(items):
-            raise MajesticApiResponseError("Majestic API вернул повторяющиеся itemId.")
-        return cls(summary=summary, items=tuple(items))
+        snapshot = MajesticMarketplaceSnapshot.from_payload("items", payload)
+        items = tuple(
+            MajesticMarketplaceItem(
+                item_id=int(entry.external_id),
+                item_name=entry.item_name,
+                total_count=entry.total_count,
+                sold_count=entry.sold_count,
+                average_price=entry.average_price,
+                min_price=entry.min_price,
+                max_price=entry.max_price,
+            )
+            for entry in snapshot.entries
+        )
+        return cls(summary=snapshot.summary, items=items)
 
 
 class SlidingWindowLimiter:
@@ -552,6 +663,31 @@ class MajesticApiClient:
     ) -> MajesticMarketplaceSummary:
         return await asyncio.to_thread(
             self.marketplace_summary,
+            category,
+            server_id,
+            use_cache=use_cache,
+        )
+
+    def marketplace_snapshot(
+        self,
+        category: str,
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> MajesticMarketplaceSnapshot:
+        clean_category = str(category).strip().lower()
+        payload = self.marketplace(clean_category, server_id, use_cache=use_cache)
+        return MajesticMarketplaceSnapshot.from_payload(clean_category, payload)
+
+    async def marketplace_snapshot_async(
+        self,
+        category: str,
+        server_id: str | int | None = None,
+        *,
+        use_cache: bool = True,
+    ) -> MajesticMarketplaceSnapshot:
+        return await asyncio.to_thread(
+            self.marketplace_snapshot,
             category,
             server_id,
             use_cache=use_cache,

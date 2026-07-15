@@ -7,6 +7,7 @@ from modules.majestic_api import (
     MajesticApiConfig,
     MajesticApiDisabledError,
     MajesticItemsSnapshot,
+    MajesticMarketplaceSnapshot,
     MajesticMarketplaceSummary,
     MajesticApiRateLimitError,
     MajesticApiResponseError,
@@ -161,6 +162,78 @@ class MajesticApiClientTests(unittest.TestCase):
         payload["result"]["itemStatistics"].append({"itemId": 40, "itemName": "Дубликат"})
         with self.assertRaises(MajesticApiResponseError):
             MajesticItemsSnapshot.from_payload(payload)
+
+    def test_vehicle_snapshot_uses_model_as_stable_external_id(self) -> None:
+        payload = {
+            "status": True,
+            "result": {
+                "serverId": "RU15",
+                "serverName": "Phoenix",
+                "lastUpdated": "2026-07-15T02:12:11.960Z",
+                "periodDays": 30,
+                "vehicleStatistics": [
+                    {
+                        "model": "faggio",
+                        "modelName": "Pegassi Faggio Sport",
+                        "totalCount": 42,
+                        "soldCount": 9,
+                        "averagePrice": 150000,
+                        "minPrice": 100000,
+                        "maxPrice": 200000,
+                    }
+                ],
+            },
+        }
+        snapshot = MajesticMarketplaceSnapshot.from_payload("vehicles", payload)
+        self.assertEqual(snapshot.entries[0].external_id, "faggio")
+        self.assertEqual(snapshot.entries[0].item_name, "Pegassi Faggio Sport")
+        self.assertEqual(snapshot.entries[0].metadata["model"], "faggio")
+        self.assertEqual(snapshot.entries[0].total_count, 42)
+
+    def test_clothes_snapshot_preserves_each_variant_and_sales_quantity(self) -> None:
+        payload = {
+            "status": True,
+            "result": {
+                "serverId": "RU15",
+                "serverName": "Phoenix",
+                "lastUpdated": "2026-07-15T02:12:11.960Z",
+                "periodDays": 30,
+                "clothesStatistics": [
+                    {
+                        "gender": 1,
+                        "component": 6,
+                        "drawable": 12,
+                        "texture": 2,
+                        "isProp": 0,
+                        "itemName": "Чёрная сумка",
+                        "soldCount": 17,
+                        "averagePrice": 50000,
+                        "minPrice": 30000,
+                        "maxPrice": 90000,
+                    },
+                    {
+                        "gender": 1,
+                        "component": 6,
+                        "drawable": 12,
+                        "texture": 3,
+                        "isProp": 0,
+                        "itemName": "Чёрная сумка",
+                        "soldCount": 4,
+                        "averagePrice": 45000,
+                        "minPrice": 25000,
+                        "maxPrice": 80000,
+                    },
+                ],
+            },
+        }
+        snapshot = MajesticMarketplaceSnapshot.from_payload("clothes", payload)
+        self.assertEqual([entry.external_id for entry in snapshot.entries], ["1:6:12:2:0", "1:6:12:3:0"])
+        self.assertEqual(snapshot.entries[0].total_count, 17)
+        self.assertEqual(snapshot.entries[0].metadata["quantity_metric"], "sold_count")
+
+        payload["result"]["clothesStatistics"].append(dict(payload["result"]["clothesStatistics"][0]))
+        with self.assertRaises(MajesticApiResponseError):
+            MajesticMarketplaceSnapshot.from_payload("clothes", payload)
 
 
 if __name__ == "__main__":

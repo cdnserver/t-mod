@@ -389,8 +389,16 @@ def diagnostics_embed(bot: commands.Bot | discord.Client, guild: discord.Guild) 
     active_crafts = len(storage.craft_active_plans(guild.id, 100))
     open_bills = len(storage.tvrs_queue_bills(guild.id, 100))
     finance = storage.finance_get_latest_state(guild.id)
-    market = storage.market_catalog_status(os.getenv("MAJESTIC_SERVER_ID", "RU15"), "items")
-    market_alerts = storage.market_alert_stats(os.getenv("MAJESTIC_SERVER_ID", "RU15"), "items")
+    market_server_id = os.getenv("MAJESTIC_SERVER_ID", "RU15")
+    market_categories = ("items", "vehicles", "clothes")
+    market = {
+        category: storage.market_catalog_status(market_server_id, category)
+        for category in market_categories
+    }
+    market_alerts = [
+        storage.market_alert_stats(market_server_id, category)
+        for category in market_categories
+    ]
     embed = discord.Embed(
         title="🩺 Диагностика T-Mod",
         color=discord.Color.green() if ready == len(CHANNEL_SPECS) else discord.Color.orange(),
@@ -404,9 +412,12 @@ def diagnostics_embed(bot: commands.Bot | discord.Client, guild: discord.Guild) 
             f"Крафтов в работе: **{active_crafts}**\n"
             f"Законопроектов в очереди: **{open_bills}**\n"
             f"Остаток казны рассчитан: **{'да' if finance.get('estimated_balance') is not None else 'нет'}**\n"
-            f"Предметов в рынке RU15: **{int(market.get('record_count') or 0)}**\n"
-            f"Активных рыночных сигналов: **{market_alerts['active'] + market_alerts['notifying']}** "
-            f"(в очереди ЛС: **{market_alerts['pending_notifications']}**)"
+            f"Рынок RU15: **{int(market['items'].get('record_count') or 0)}** предметов · "
+            f"**{int(market['vehicles'].get('record_count') or 0)}** авто · "
+            f"**{int(market['clothes'].get('record_count') or 0)}** вариантов одежды\n"
+            f"Активных рыночных сигналов: "
+            f"**{sum(entry['active'] + entry['notifying'] for entry in market_alerts)}** "
+            f"(в очереди ЛС: **{sum(entry['pending_notifications'] for entry in market_alerts)}**)"
         ),
         inline=False,
     )

@@ -786,8 +786,10 @@ def init_db() -> None:
                 server_id TEXT NOT NULL,
                 category TEXT NOT NULL,
                 item_id INTEGER NOT NULL,
+                external_id TEXT NOT NULL DEFAULT '',
                 item_name TEXT NOT NULL,
                 normalized_name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 total_count INTEGER NOT NULL DEFAULT 0,
                 sold_count INTEGER NOT NULL DEFAULT 0,
                 average_price INTEGER,
@@ -805,7 +807,9 @@ def init_db() -> None:
                 server_id TEXT NOT NULL,
                 category TEXT NOT NULL,
                 item_id INTEGER NOT NULL,
+                external_id TEXT NOT NULL DEFAULT '',
                 item_name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 total_count INTEGER NOT NULL DEFAULT 0,
                 sold_count INTEGER NOT NULL DEFAULT 0,
                 average_price INTEGER,
@@ -864,6 +868,16 @@ def init_db() -> None:
         _add_column_if_missing(con, "activity_events", "category_name", "TEXT")
         _add_column_if_missing(con, "activity_summary", "last_category_id", "INTEGER")
         _add_column_if_missing(con, "activity_summary", "last_category_name", "TEXT")
+        _add_column_if_missing(con, "market_items", "external_id", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "market_items", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(con, "market_item_history", "external_id", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(con, "market_item_history", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        con.execute(
+            "UPDATE market_items SET external_id = CAST(item_id AS TEXT) WHERE external_id IS NULL OR external_id = ''"
+        )
+        con.execute(
+            "UPDATE market_item_history SET external_id = CAST(item_id AS TEXT) WHERE external_id IS NULL OR external_id = ''"
+        )
         _add_column_if_missing(con, "bureau_announcements", "global_channel_id", "INTEGER")
         _add_column_if_missing(con, "bureau_announcements", "global_message_id", "INTEGER")
         _add_column_if_missing(con, "bureau_announcements", "title", "TEXT")
@@ -1151,6 +1165,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_market_items_popular
             ON market_items(server_id, category, active, sold_count DESC);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_market_items_external
+            ON market_items(server_id, category, external_id);
 
             CREATE INDEX IF NOT EXISTS idx_market_history_item
             ON market_item_history(server_id, category, item_id, source_updated_at DESC);
@@ -6776,6 +6793,19 @@ def _market_optional_non_negative_int(value: Any) -> int | None:
         return None
 
 
+def _market_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    result = dict(row)
+    try:
+        metadata = json.loads(str(result.get("metadata_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    result["metadata"] = metadata if isinstance(metadata, dict) else {}
+    result["external_id"] = str(result.get("external_id") or result.get("item_id") or "")
+    return result
+
+
 def market_replace_snapshot(
     *,
     server_id: str,
@@ -6796,23 +6826,32 @@ def market_replace_snapshot(
     now = str(fetched_at or utc_now_iso())
     prepared: list[tuple[Any, ...]] = []
     seen_ids: set[int] = set()
+    seen_external_ids: set[str] = set()
     for raw in items:
         try:
             item_id = int(raw.get("item_id"))
         except (TypeError, ValueError):
             continue
         item_name = str(raw.get("item_name") or "").strip()
-        if item_id < 0 or not item_name or item_id in seen_ids:
+        external_id = str(raw.get("external_id") or item_id).strip()
+        if item_id < 0 or not item_name or not external_id:
             continue
+        if item_id in seen_ids or external_id in seen_external_ids:
+            raise ValueError("market_snapshot_duplicate_key")
         seen_ids.add(item_id)
+        seen_external_ids.add(external_id)
         normalized_name = str(raw.get("normalized_name") or item_name.casefold()).strip()
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         prepared.append(
             (
                 clean_server_id,
                 clean_category,
                 item_id,
+                external_id,
                 item_name,
                 normalized_name,
+                metadata_json,
                 _market_optional_non_negative_int(raw.get("total_count")) or 0,
                 _market_optional_non_negative_int(raw.get("sold_count")) or 0,
                 _market_optional_non_negative_int(raw.get("average_price")),
@@ -6835,13 +6874,15 @@ def market_replace_snapshot(
         con.executemany(
             """
             INSERT INTO market_items(
-                server_id, category, item_id, item_name, normalized_name,
+                server_id, category, item_id, external_id, item_name, normalized_name, metadata_json,
                 total_count, sold_count, average_price, min_price, max_price,
                 source_updated_at, fetched_at, active, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT(server_id, category, item_id) DO UPDATE SET
+                external_id = excluded.external_id,
                 item_name = excluded.item_name,
                 normalized_name = excluded.normalized_name,
+                metadata_json = excluded.metadata_json,
                 total_count = excluded.total_count,
                 sold_count = excluded.sold_count,
                 average_price = excluded.average_price,
@@ -6857,11 +6898,13 @@ def market_replace_snapshot(
         con.executemany(
             """
             INSERT INTO market_item_history(
-                server_id, category, item_id, item_name, total_count, sold_count,
+                server_id, category, item_id, external_id, item_name, metadata_json, total_count, sold_count,
                 average_price, min_price, max_price, source_updated_at, fetched_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_id, category, item_id, source_updated_at) DO UPDATE SET
+                external_id = excluded.external_id,
                 item_name = excluded.item_name,
+                metadata_json = excluded.metadata_json,
                 total_count = excluded.total_count,
                 sold_count = excluded.sold_count,
                 average_price = excluded.average_price,
@@ -6871,8 +6914,8 @@ def market_replace_snapshot(
             """,
             [
                 (
-                    row[0], row[1], row[2], row[3], row[5], row[6],
-                    row[7], row[8], row[9], row[10], row[11],
+                    row[0], row[1], row[2], row[3], row[4], row[6], row[7], row[8],
+                    row[9], row[10], row[11], row[12], row[13],
                 )
                 for row in prepared
             ],
@@ -6972,7 +7015,7 @@ def market_list_items(
             f"SELECT * FROM market_items WHERE {' AND '.join(clauses)} ORDER BY item_name COLLATE NOCASE LIMIT ?",
             params,
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
 
 
 def market_get_item(server_id: str, item_id: int, category: str = "items") -> dict[str, Any] | None:
@@ -6984,7 +7027,7 @@ def market_get_item(server_id: str, item_id: int, category: str = "items") -> di
             """,
             (str(server_id).strip().upper(), str(category).strip().lower(), int(item_id)),
         ).fetchone()
-    return dict(row) if row is not None else None
+    return _market_row_dict(row)
 
 
 def market_popular_items(server_id: str, category: str = "items", limit: int = 10) -> list[dict[str, Any]]:
@@ -7002,7 +7045,7 @@ def market_popular_items(server_id: str, category: str = "items", limit: int = 1
                 max(1, min(int(limit), 25)),
             ),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
 
 
 def market_item_history(
@@ -7026,7 +7069,7 @@ def market_item_history(
                 max(1, min(int(limit), 365)),
             ),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
 
 
 def market_upsert_alert(
@@ -7125,7 +7168,8 @@ def market_upsert_alert(
         )
         row = con.execute(
             """
-            SELECT a.*, i.item_name, i.average_price, i.min_price, i.total_count,
+            SELECT a.*, i.external_id, i.item_name, i.metadata_json, i.average_price,
+                   i.min_price, i.total_count, i.sold_count,
                    i.source_updated_at AS item_source_updated_at
             FROM market_alerts a
             JOIN market_items i
@@ -7134,7 +7178,10 @@ def market_upsert_alert(
             """,
             (clean_user_id, clean_server_id, clean_category, clean_item_id),
         ).fetchone()
-    return dict(row)
+    parsed = _market_row_dict(row)
+    if parsed is None:
+        raise RuntimeError("market_alert_not_saved")
+    return parsed
 
 
 def market_get_alert(
@@ -7146,7 +7193,8 @@ def market_get_alert(
     with _db_lock, connect() as con:
         row = con.execute(
             """
-            SELECT a.*, i.item_name, i.average_price, i.min_price, i.total_count,
+            SELECT a.*, i.external_id, i.item_name, i.metadata_json, i.average_price,
+                   i.min_price, i.total_count, i.sold_count,
                    i.source_updated_at AS item_source_updated_at
             FROM market_alerts a
             LEFT JOIN market_items i
@@ -7160,14 +7208,15 @@ def market_get_alert(
                 int(item_id),
             ),
         ).fetchone()
-    return dict(row) if row is not None else None
+    return _market_row_dict(row)
 
 
 def market_list_user_alerts(discord_user_id: int, limit: int = 20) -> list[dict[str, Any]]:
     with _db_lock, connect() as con:
         rows = con.execute(
             """
-            SELECT a.*, i.item_name, i.average_price, i.min_price, i.total_count,
+            SELECT a.*, i.external_id, i.item_name, i.metadata_json, i.average_price,
+                   i.min_price, i.total_count, i.sold_count,
                    i.source_updated_at AS item_source_updated_at
             FROM market_alerts a
             LEFT JOIN market_items i
@@ -7180,7 +7229,7 @@ def market_list_user_alerts(discord_user_id: int, limit: int = 20) -> list[dict[
             """,
             (int(discord_user_id), max(1, min(int(limit), 25))),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
 
 
 def market_alert_stats(server_id: str, category: str = "items") -> dict[str, int]:
@@ -7356,9 +7405,11 @@ def market_pending_alert_notifications(limit: int = 25) -> list[dict[str, Any]]:
         rows = con.execute(
             """
             SELECT n.*, a.discord_user_id, a.server_id, a.category, a.item_id,
-                   a.target_price, a.min_quantity
+                   a.target_price, a.min_quantity, i.external_id, i.metadata_json
             FROM market_alert_notifications n
             JOIN market_alerts a ON a.id = n.alert_id
+            LEFT JOIN market_items i
+              ON i.server_id = a.server_id AND i.category = a.category AND i.item_id = a.item_id
             WHERE n.status IN ('pending', 'retry') AND n.next_attempt_at <= ?
               AND a.status = 'notifying'
             ORDER BY n.next_attempt_at, n.id
@@ -7366,7 +7417,7 @@ def market_pending_alert_notifications(limit: int = 25) -> list[dict[str, Any]]:
             """,
             (now, max(1, min(int(limit), 100))),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
 
 
 def market_mark_alert_delivery(
