@@ -6,8 +6,10 @@ from modules.majestic_api import (
     MajesticApiClient,
     MajesticApiConfig,
     MajesticApiDisabledError,
+    MajesticItemsSnapshot,
     MajesticMarketplaceSummary,
     MajesticApiRateLimitError,
+    MajesticApiResponseError,
 )
 
 
@@ -145,6 +147,20 @@ class MajesticApiClientTests(unittest.TestCase):
         self.assertEqual(summary.server_name, "Phoenix")
         self.assertEqual(summary.record_count, 1)
         self.assertEqual(summary.total_count, 412243656)
+
+        snapshot = MajesticItemsSnapshot.from_payload(payload)
+        self.assertEqual(len(snapshot.items), 1)
+        self.assertEqual(snapshot.items[0].item_id, 39)
+        self.assertEqual(snapshot.items[0].item_name, "7.62x39mm")
+
+        payload["result"]["itemStatistics"].append({"itemId": 40, "itemName": None})
+        snapshot_with_missing_name = MajesticItemsSnapshot.from_payload(payload)
+        self.assertEqual(len(snapshot_with_missing_name.items), 2)
+        self.assertEqual(snapshot_with_missing_name.items[1].item_name, "Неизвестный предмет #40")
+
+        payload["result"]["itemStatistics"].append({"itemId": 40, "itemName": "Дубликат"})
+        with self.assertRaises(MajesticApiResponseError):
+            MajesticItemsSnapshot.from_payload(payload)
 
 
 if __name__ == "__main__":

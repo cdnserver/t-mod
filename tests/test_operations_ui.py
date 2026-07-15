@@ -19,6 +19,7 @@ from modules.control_center import (
 from modules.majestic_api import MajesticMarketplaceSummary
 from modules.finance import FINANCE_COMMAND_CHANNEL_ID, FINANCE_DAILY_CHANNEL_ID
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, build_operations_embed
+from modules.tvrs import TVRSPublicPanelView
 
 
 class OperationsCenterTests(unittest.TestCase):
@@ -135,6 +136,15 @@ class OperationsCenterTests(unittest.TestCase):
                     self.assertTrue(all(item.custom_id for item in view.children))
 
         asyncio.run(inspect_views())
+
+    def test_public_tvrs_panel_contains_private_market_entry(self) -> None:
+        async def inspect_view() -> None:
+            view = TVRSPublicPanelView()
+            market_buttons = [item for item in view.children if item.custom_id == "tmod_public_tvrs_market"]
+            self.assertEqual(len(market_buttons), 1)
+            self.assertEqual(market_buttons[0].label, "Рынок")
+
+        asyncio.run(inspect_view())
 
     def test_majestic_test_embed_is_safe_and_compact(self) -> None:
         summary = MajesticMarketplaceSummary(

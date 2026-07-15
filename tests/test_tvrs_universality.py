@@ -42,9 +42,9 @@ class TVRSUniversalityTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(
             [item.label for item in views[0].children],
-            ["Казна", "Крафты", "Аудит", "Консенсус", "Законопроекты", "Справка", "Ссылки", "Обновить"],
+            ["Казна", "Крафты", "Аудит", "Консенсус", "Законопроекты", "Справка", "Ссылки", "Рынок", "Обновить"],
         )
-        self.assertEqual([len(view.children) for view in views], [8, 4, 4, 7, 3])
+        self.assertEqual([len(view.children) for view in views], [9, 4, 4, 7, 3])
         self.assertEqual(
             [item.label for item in views[-1].children],
             ["Назад", "Доступ к Бюро", "Заявка в Товарищество"],
@@ -74,7 +74,7 @@ class TVRSUniversalityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(view.timeout)
         self.assertEqual(
             [item.label for item in view.children],
-            ["Казна", "Крафты", "Аудит", "Консенсус", "Законопроекты", "Справка", "Ссылки", "Обновить"],
+            ["Казна", "Крафты", "Аудит", "Консенсус", "Законопроекты", "Справка", "Ссылки", "Рынок", "Обновить"],
         )
         self.assertTrue(all(item.custom_id for item in view.children))
         embed = build_public_universality_embed(SimpleNamespace(id=77))

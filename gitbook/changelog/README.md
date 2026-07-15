@@ -6,6 +6,7 @@
 
 ## 2026 год
 
+* [15 июля — русский поиск по рынку RU15](2026-07-15-market-catalog.md)
 * [15 июля — подключение Majestic API](2026-07-15-majestic-api-connection.md)
 * [15 июля — операционный центр и гибкие циклы крафтов](2026-07-15-operations-center-and-flexible-craft.md)
 

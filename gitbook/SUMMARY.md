@@ -5,6 +5,7 @@
 ## Что нового
 
 * [Журнал изменений](changelog/README.md)
+  * [15 июля 2026 — русский поиск по рынку RU15](changelog/2026-07-15-market-catalog.md)
   * [15 июля 2026 — подключение Majestic API](changelog/2026-07-15-majestic-api-connection.md)
   * [15 июля 2026 — операционный центр и гибкие крафты](changelog/2026-07-15-operations-center-and-flexible-craft.md)
 
@@ -17,6 +18,7 @@
 ## Универсалитет Товарищества
 
 * [Операционный центр и его каналы](tvrs/operations-center.md)
+* [Рынок RU15 и поиск цен](tvrs/market.md)
 * [Главное меню `/tvrs`](tvrs/universality.md)
 * [Казна и финансовые операции](tvrs/finance.md)
 * [Крафты и производственные планы](tvrs/craft.md)

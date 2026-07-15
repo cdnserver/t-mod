@@ -3,7 +3,7 @@ import os
 import sys
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import discord
@@ -20,6 +20,7 @@ from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
 from modules.control_center import log_technical_event, setup_control_center
+from modules.market import setup_market
 from modules.operations import setup_operations
 
 
@@ -93,6 +94,7 @@ TVRS_EVENT_TYPES = {
     "command_finance",
     "command_finance_undo",
     "command_craft",
+    "command_market",
 }
 
 
@@ -955,6 +957,8 @@ boot_module("Treasury Finance")
 setup_finance(bot, remember_command_activity)
 boot_module("Craft Production")
 setup_craft(bot, remember_command_activity)
+boot_module("RU15 Market")
+setup_market(bot, remember_command_activity)
 boot_module("SGL Bureau")
 setup_sgbureau(bot, remember_command_activity)
 boot_module("SGL Contracts")

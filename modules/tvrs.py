@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import storage
-from localization import safe_command_description, safe_command_name, t
+from localization import safe_command_description, safe_command_name
 from modules.control_center import log_technical_event
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
@@ -541,6 +541,7 @@ def build_universality_help_embed() -> discord.Embed:
         value=(
             "**Казна** — посмотреть остаток, снять, положить или провести межотчёт.\n"
             "**Крафты** — планы, рецепты и производство.\n"
+            "**Рынок** — русский поиск предметов и подробная статистика цен RU15.\n"
             "**Аудит** — действия, поиск по кодам, статистика и отмена.\n"
             "**Консенсус** — пленарная панель председателя.\n"
             "**Законопроекты** — очередь и переход к подаче проекта.\n"
@@ -1018,6 +1019,18 @@ class TVRSUniversalityView(TVRSRequesterView):
             view=TVRSLinksView(self.requester_id),
         )
 
+    @discord.ui.button(label="Рынок", emoji="📈", style=discord.ButtonStyle.primary, row=2)
+    async def market(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        from modules.market import MarketHomeView, market_catalog, market_home_embed
+
+        await interaction.response.defer()
+        status = await market_catalog.ensure_ready()
+        await interaction.edit_original_response(
+            content=None,
+            embed=market_home_embed(status),
+            view=MarketHomeView(self.requester_id, back_to_tvrs=True),
+        )
+
     @discord.ui.button(label="Обновить", emoji="🔄", style=discord.ButtonStyle.secondary, row=2)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         assert interaction.guild is not None
@@ -1171,6 +1184,18 @@ class TVRSPublicPanelView(TVRSBaseView):
             view=TVRSLinksView(interaction.user.id),
             ephemeral=True,
         )
+
+    @discord.ui.button(
+        label="Рынок",
+        emoji="📈",
+        style=discord.ButtonStyle.primary,
+        row=2,
+        custom_id="tmod_public_tvrs_market",
+    )
+    async def market(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        from modules.market import send_market_panel
+
+        await send_market_panel(interaction, back_to_tvrs=True)
 
     @discord.ui.button(
         label="Обновить",
