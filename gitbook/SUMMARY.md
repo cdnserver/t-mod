@@ -1,50 +1,37 @@
-# SUMMARY
+# Table of contents
 
-* [Добро пожаловать](README.md)
-
-## Начало работы
-
-* [Первые пять минут](start/first-steps.md)
-* [Роли, приватность и доступ](start/roles-and-privacy.md)
-* [Карта команд](start/commands.md)
-
-## Универсалитет Товарищества
-
-* [Операционный центр и его каналы](tvrs/operations-center.md)
-* [Главное меню `/tvrs`](tvrs/universality.md)
-* [Казна и финансовые операции](tvrs/finance.md)
-* [Крафты и производственные планы](tvrs/craft.md)
-* [Аудит, статистика и отмена](tvrs/audit.md)
-* [Законопроекты](tvrs/bills.md)
-
-## Пленарный консенсус
-
-* [Участнику: подтверждение и голосование](consensus/participant.md)
-* [Председателю: проведение консенсуса](consensus/chair.md)
-* [Как принимаются решения](consensus/decision-rules.md)
-
-## SGL Bureau
-
-* [Что такое Бюро и кому доступно](sgl/overview.md)
-* [Путь клиентского кейса](sgl/case-lifecycle.md)
-* [Чеки, оплата и договоры](sgl/payments-and-contracts.md)
-* [Реестры, сотрудники и новости](sgl/registry-and-news.md)
-
-## Общие инструменты
-
-* [Ссылки и активность](tools/links-and-activity.md)
-* [AI-аудио и изображения](tools/ai.md)
-
-## Для ответственных лиц
-
-* [Обслуживание Товарищества](responsible/tvrs-care.md)
-* [Исправление данных SGL](responsible/sgl-care.md)
-
-## Помощь
-
-* [Как читать панели и карточки](interface.md)
-* [Решение частых проблем](troubleshooting.md)
-* [Частые вопросы](help/faq.md)
-* [Безопасность и личные данные](privacy.md)
-* [Словарь](glossary.md)
-* [Версия руководства](version.md)
+* [Документация T-Mod.](README.md)
+* [VERSION](version.md)
+* [SUMMARY](summary.md)
+* [README](readme.md)
+* [tvrs](tvrs/README.md)
+  * [bills](tvrs/bills.md)
+  * [audit](tvrs/audit.md)
+  * [craft](tvrs/craft.md)
+  * [universality](tvrs/universality.md)
+  * [finance](tvrs/finance.md)
+* [tools](tools/README.md)
+  * [ai](tools/ai.md)
+  * [links and activity](tools/links-and-activity.md)
+* [start](start/README.md)
+  * [roles and privacy](start/roles-and-privacy.md)
+  * [commands](start/commands.md)
+  * [first steps](start/first-steps.md)
+* [sgl](sgl/README.md)
+  * [payments and contracts](sgl/payments-and-contracts.md)
+  * [case lifecycle](sgl/case-lifecycle.md)
+  * [overview](sgl/overview.md)
+  * [registry and news](sgl/registry-and-news.md)
+* [responsible](responsible/README.md)
+  * [sgl care](responsible/sgl-care.md)
+  * [tvrs care](responsible/tvrs-care.md)
+* [help](help/README.md)
+  * [faq](help/faq.md)
+* [privacy](privacy.md)
+* [glossary](glossary.md)
+* [interface](interface.md)
+* [consensus](consensus/README.md)
+  * [decision rules](consensus/decision-rules.md)
+  * [chair](consensus/chair.md)
+  * [participant](consensus/participant.md)
+* [troubleshooting](troubleshooting.md)
