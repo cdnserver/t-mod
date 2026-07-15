@@ -116,6 +116,6 @@
 
 <summary>Я не нашёл нужный термин</summary>
 
-Откройте [словарь](/broken/pages/3ff17bfdcdf55e283ad3b4385e02c443abdbd288) или [карту команд](file:///2660782/start/commands.md).
+Откройте [словарь](../glossary.md) или [карту команд](../start/commands.md).
 
 </details>

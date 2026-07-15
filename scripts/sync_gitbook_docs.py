@@ -25,7 +25,7 @@ AGENT_APPENDIX = "\n---\n\n# Agent Instructions"
 PAGE_URL_PATTERN = re.compile(r"https://txsg\.gitbook\.io/txsg-docs/[^)\s]+\.md")
 PUBLISHED_HEADER_PATTERN = re.compile(r"^> For the complete documentation index,.*?\n\n", re.DOTALL)
 FILE_LINK_PATTERN = re.compile(r"file:///\d+/([^)#]+\.md)")
-BROKEN_LINK_PATTERN = re.compile(r"broken://pages/([a-f0-9]+)")
+BROKEN_LINK_PATTERN = re.compile(r"(?:broken://pages/|/broken/pages/)([a-f0-9]+)")
 BROKEN_LINK_TARGETS = {
     "68f60ac647a7810c201d37f90a6737237a381c55": PurePosixPath("tvrs/finance.md"),
     "399642652a0d8325fb8d57811ca94121d01d7637": PurePosixPath("tvrs/craft.md"),
