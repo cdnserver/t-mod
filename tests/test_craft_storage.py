@@ -136,6 +136,71 @@ class CraftStorageTests(unittest.TestCase):
         self.assertEqual(plan["purchase_cost_total"], 100_000)
         self.assertTrue(all(item["stock_quantity"] == item["required_total"] for item in plan["materials"]))
 
+    def test_partial_materials_can_start_and_restock_multiple_cycles(self) -> None:
+        self.exact_finance_balance()
+        plan = storage.craft_get_plan(self.plan["id"])
+        for material in plan["materials"]:
+            result = storage.craft_add_purchase(
+                guild_id=1,
+                plan_id=plan["id"],
+                plan_material_id=material["id"],
+                quantity=material["quantity_per_unit"] * 3,
+                total_cost=0,
+                finance_code=None,
+                actor_id=30,
+                actor_display="Buyer",
+            )
+        self.assertEqual(result["plan"]["stage"], "procurement")
+
+        result = storage.craft_start_batch(
+            guild_id=1,
+            plan_id=plan["id"],
+            quantity=3,
+            actor_id=40,
+            actor_display="Crafter",
+            log_channel_id=300,
+            admin_user_id=400,
+        )
+        self.assertEqual(result["plan"]["stage"], "crafting")
+        self.assertEqual(result["plan"]["attempts_queued"], 3)
+        self.assertTrue(all(material["stock_quantity"] == 0 for material in result["plan"]["materials"]))
+        due = datetime.fromisoformat(result["batch"]["due_at"]) + timedelta(seconds=1)
+        storage.craft_complete_due_batches(due.isoformat())
+
+        plan = storage.craft_get_plan(plan["id"])
+        for material in plan["materials"]:
+            storage.craft_add_purchase(
+                guild_id=1,
+                plan_id=plan["id"],
+                plan_material_id=material["id"],
+                quantity=material["quantity_per_unit"] * 2,
+                total_cost=0,
+                finance_code=None,
+                actor_id=30,
+                actor_display="Buyer",
+            )
+        with self.assertRaisesRegex(ValueError, "craft_batch_materials_missing"):
+            storage.craft_start_batch(
+                guild_id=1,
+                plan_id=plan["id"],
+                quantity=3,
+                actor_id=40,
+                actor_display="Crafter",
+                log_channel_id=300,
+                admin_user_id=400,
+            )
+        result = storage.craft_start_batch(
+            guild_id=1,
+            plan_id=plan["id"],
+            quantity=2,
+            actor_id=40,
+            actor_display="Crafter",
+            log_channel_id=300,
+            admin_user_id=400,
+        )
+        self.assertEqual(result["plan"]["attempts_queued"], 5)
+        self.assertTrue(all(material["stock_quantity"] == 0 for material in result["plan"]["materials"]))
+
     def test_purchase_can_link_exact_finance_withdrawal_code(self) -> None:
         storage.finance_record_snapshot(
             guild_id=1,

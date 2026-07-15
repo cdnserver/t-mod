@@ -1,0 +1,146 @@
+{
+  "page_count": 35,
+  "pages": {
+    "README.md": {
+      "sha256": "cd92837996d7fe113abcf56e877944529bc4a5b4deb45120f27e5c6b092ccfe6",
+      "source": "https://txsg.gitbook.io/txsg-docs/readme.md"
+    },
+    "SUMMARY.md": {
+      "sha256": "262e789cfd52ef70f74e5a0b97cc558e8e869985aca54c3775896ebe838a898e",
+      "source": "https://txsg.gitbook.io/txsg-docs/summary.md"
+    },
+    "consensus.md": {
+      "sha256": "7ceb11e944d67a62c53aa3c3b192908e4f7686549db6a23efde0c216a095c0d9",
+      "source": "https://txsg.gitbook.io/txsg-docs/consensus.md"
+    },
+    "consensus/chair.md": {
+      "sha256": "528c59e99d486a7016811141254cb7b94fbdba0456ae93540b1f1895e220e372",
+      "source": "https://txsg.gitbook.io/txsg-docs/consensus/chair.md"
+    },
+    "consensus/decision-rules.md": {
+      "sha256": "49848634f96b5e4b479661767ab1f96234954b39337f035722887f48c4d7d71f",
+      "source": "https://txsg.gitbook.io/txsg-docs/consensus/decision-rules.md"
+    },
+    "consensus/participant.md": {
+      "sha256": "a0977b86eed34a3b2cfa5db41a3bc615388bbead6108e665c19ad154d0680b37",
+      "source": "https://txsg.gitbook.io/txsg-docs/consensus/participant.md"
+    },
+    "dokumentaciya-t-mod.md": {
+      "sha256": "1f0fa26c7938f77437e475c1e9ec4be257f5fda970d916282cb2684a88ffe6c3",
+      "source": "https://txsg.gitbook.io/txsg-docs/dokumentaciya-t-mod.md"
+    },
+    "glossary.md": {
+      "sha256": "1505f6796598efb2c2a04b77a2a01dd54d4659e30a80a7c2f787184fb493f75a",
+      "source": "https://txsg.gitbook.io/txsg-docs/glossary.md"
+    },
+    "help.md": {
+      "sha256": "8aecb5521346f88f6da33ba1d5be3f5c07e11db123e68512a0ab83a3cd04b385",
+      "source": "https://txsg.gitbook.io/txsg-docs/help.md"
+    },
+    "help/faq.md": {
+      "sha256": "e19fe8b92d0c505dc0a4b1170967c100fa287ff383ecf2b49bef7cebd30cb610",
+      "source": "https://txsg.gitbook.io/txsg-docs/help/faq.md"
+    },
+    "interface.md": {
+      "sha256": "a7d546ef0a5317cb9b14aa22ae76faceb9083ae1659a6153d54361a9d9ecfe8e",
+      "source": "https://txsg.gitbook.io/txsg-docs/interface.md"
+    },
+    "privacy.md": {
+      "sha256": "b42ed48ed2692a7ad7e2e5515272fbd76098a598cfff2723f5e0620dfc31cbb5",
+      "source": "https://txsg.gitbook.io/txsg-docs/privacy.md"
+    },
+    "responsible.md": {
+      "sha256": "de3b072e3b1fb90ba828226b0614f5d683920007b543c033896f4371ef0e756d",
+      "source": "https://txsg.gitbook.io/txsg-docs/responsible.md"
+    },
+    "responsible/sgl-care.md": {
+      "sha256": "37787ceb36903a73c65bce82f97f5920197b5da88344f29c61d1243419570e71",
+      "source": "https://txsg.gitbook.io/txsg-docs/responsible/sgl-care.md"
+    },
+    "responsible/tvrs-care.md": {
+      "sha256": "2d07549da43ac803aed481192cdd4a8f65473fe9384aab8e9ee2092114050fd5",
+      "source": "https://txsg.gitbook.io/txsg-docs/responsible/tvrs-care.md"
+    },
+    "sgl.md": {
+      "sha256": "3b7cb86492e8f060827ba63e90feacfa28d70d7edfdd7ac386fe3cd4de8fe355",
+      "source": "https://txsg.gitbook.io/txsg-docs/sgl.md"
+    },
+    "sgl/case-lifecycle.md": {
+      "sha256": "e073715054a3f4639297f5e8e8a41416e1c53d9625b37750194430ad9e0e6434",
+      "source": "https://txsg.gitbook.io/txsg-docs/sgl/case-lifecycle.md"
+    },
+    "sgl/overview.md": {
+      "sha256": "b2901c3f6fbe98c65d2bdb0ea967eda3bc8db87fe1ef40f2e2715ed31fe85366",
+      "source": "https://txsg.gitbook.io/txsg-docs/sgl/overview.md"
+    },
+    "sgl/payments-and-contracts.md": {
+      "sha256": "8f97e16997659c1d2124e8a8902f41e9f765476c06a3e6c06d60d3692dc9d7b6",
+      "source": "https://txsg.gitbook.io/txsg-docs/sgl/payments-and-contracts.md"
+    },
+    "sgl/registry-and-news.md": {
+      "sha256": "68056bb5b86aaf82cb1580cc6e7dba258249f67472d804db9dc7a26db28af856",
+      "source": "https://txsg.gitbook.io/txsg-docs/sgl/registry-and-news.md"
+    },
+    "start.md": {
+      "sha256": "ae75bff3edb07d911c7539d32ab1a97eb25d325956424a19e5c8350e3bd4ce0f",
+      "source": "https://txsg.gitbook.io/txsg-docs/start.md"
+    },
+    "start/commands.md": {
+      "sha256": "dd2a3358135286097f692d20c80ae4647204cabcbf14c206af17415f61f181b9",
+      "source": "https://txsg.gitbook.io/txsg-docs/start/commands.md"
+    },
+    "start/first-steps.md": {
+      "sha256": "05bc201ff0809676a5f7604a1d5a04140165077c94f731f7027086e104618d44",
+      "source": "https://txsg.gitbook.io/txsg-docs/start/first-steps.md"
+    },
+    "start/roles-and-privacy.md": {
+      "sha256": "f71c582603c81d507365abc3da710534dde028e80fe7273dcb8dab756eeaa4f3",
+      "source": "https://txsg.gitbook.io/txsg-docs/start/roles-and-privacy.md"
+    },
+    "tools.md": {
+      "sha256": "55ad28a1fe36d2e9c4e9c958a4f41e274cbaf6ce810c358501d02ad1dadaa6d3",
+      "source": "https://txsg.gitbook.io/txsg-docs/tools.md"
+    },
+    "tools/ai.md": {
+      "sha256": "cc51d71c034c76f78c61f652d4d7c5ae03e340c096d5351bb57c351dc56be60e",
+      "source": "https://txsg.gitbook.io/txsg-docs/tools/ai.md"
+    },
+    "tools/links-and-activity.md": {
+      "sha256": "b3dbcac5f3e5d711e9d31188aa21261297bc58d5f65a071b6dd68efbb80096b3",
+      "source": "https://txsg.gitbook.io/txsg-docs/tools/links-and-activity.md"
+    },
+    "troubleshooting.md": {
+      "sha256": "4c148dfeb2df5ff19821b321c5ad202f90f7506c3e0cea8a957ad76fc704d4bd",
+      "source": "https://txsg.gitbook.io/txsg-docs/troubleshooting.md"
+    },
+    "tvrs.md": {
+      "sha256": "3c755e352012ae13ff4d0424b4937e57f3a45c0c457e3c67804adb96cef2d92c",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs.md"
+    },
+    "tvrs/audit.md": {
+      "sha256": "76e3babab015e06f3f9c1448fa7d07e9728586f1807fd51422c151d0f083d2b5",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs/audit.md"
+    },
+    "tvrs/bills.md": {
+      "sha256": "9bc1f5acab45655521f66c4618e54bbd162e86208d30403b03df477b5b1b9740",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs/bills.md"
+    },
+    "tvrs/craft.md": {
+      "sha256": "476958ef1fb76ba74d1c87b095de301d49132ba2a9767cd63c99a67861b959d3",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs/craft.md"
+    },
+    "tvrs/finance.md": {
+      "sha256": "9996057a31e7a2477aad08c016756c32c88c4d860f1715c384f233fd3c3cd2a3",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs/finance.md"
+    },
+    "tvrs/universality.md": {
+      "sha256": "35e3ea373f623556f25eb75a4c47aea3b731e4f51112239d0469dbbd210eb9db",
+      "source": "https://txsg.gitbook.io/txsg-docs/tvrs/universality.md"
+    },
+    "version.md": {
+      "sha256": "06f757f8ae52db5a8022a135db52ce00d9096f775f8b316e15b15f59868e79cb",
+      "source": "https://txsg.gitbook.io/txsg-docs/version.md"
+    }
+  },
+  "source_index": "https://txsg.gitbook.io/txsg-docs/llms.txt"
+}

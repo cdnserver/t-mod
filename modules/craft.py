@@ -67,7 +67,7 @@ ERROR_MESSAGES = {
     "craft_recipe_not_found": "Рецепт не найден или отключён.",
     "craft_plan_not_found": "План крафта не найден.",
     "craft_plan_not_active": "Этот план уже завершён или недоступен.",
-    "craft_not_procurement": "Закупка для этого плана уже завершена.",
+    "craft_not_procurement": "Пополнять материалы можно только во время закупки или производства.",
     "craft_material_not_found": "Материал не найден в плане.",
     "craft_bad_purchase": "Количество должно быть больше нуля, а общая стоимость — неотрицательной.",
     "craft_purchase_too_large": "Нельзя закупить больше, чем осталось собрать по этому материалу. Обновите меню и введите актуальный остаток.",
@@ -117,6 +117,25 @@ def progress_bar(done: int, total: int, width: int = 10) -> str:
         return "░" * width
     filled = max(0, min(width, round(width * done / total)))
     return "█" * filled + "░" * (width - filled)
+
+
+def remaining_unqueued_attempts(plan: dict[str, Any]) -> int:
+    return max(0, int(plan["attempts_total"]) - int(plan["attempts_queued"]))
+
+
+def material_target_stock(plan: dict[str, Any], material: dict[str, Any]) -> int:
+    return int(material["quantity_per_unit"]) * remaining_unqueued_attempts(plan)
+
+
+def available_attempts_from_stock(plan: dict[str, Any]) -> int:
+    remaining = remaining_unqueued_attempts(plan)
+    if remaining <= 0 or not plan["materials"]:
+        return 0
+    material_capacity = min(
+        int(material["stock_quantity"]) // int(material["quantity_per_unit"])
+        for material in plan["materials"]
+    )
+    return min(remaining, material_capacity)
 
 
 def discord_time(iso_value: str | None, style: str = "F") -> str:
@@ -380,26 +399,36 @@ def plan_embed(plan: dict[str, Any]) -> discord.Embed:
     material_lines = []
     for material in plan["materials"]:
         stock = int(material["stock_quantity"])
-        required = int(material["required_total"])
-        remaining = max(0, required - stock) if stage == "procurement" else stock
-        if stage == "procurement":
-            icon = "✅" if stock >= required else "🟡"
-            tail = f"осталось {format_quantity(max(0, required - stock))}"
+        if stage in {"procurement", "crafting"}:
+            target = material_target_stock(plan, material)
+            missing = max(0, target - stock)
+            icon = "✅" if missing == 0 else "🟡"
+            line = (
+                f"{icon} **{material['material_name']}** — склад {format_quantity(stock)} · "
+                f"нужно на следующие циклы {format_quantity(target)}"
+            )
+            if missing:
+                line += f" · не хватает {format_quantity(missing)}"
         else:
-            icon = "📦"
-            tail = f"на складе {format_quantity(stock)}"
-        material_lines.append(
-            f"{icon} **{material['material_name']}** — {format_quantity(stock)} / {format_quantity(required)} · {tail}"
-        )
+            required = int(material["required_total"])
+            line = (
+                f"📦 **{material['material_name']}** — склад {format_quantity(stock)} · "
+                f"всего по плану {format_quantity(required)}"
+            )
+        material_lines.append(line)
     add_chunked_field(embed, "🧱 Материалы", material_lines)
 
     if stage == "procurement":
-        total_required = sum(int(item["required_total"]) for item in plan["materials"])
-        total_stock = sum(min(int(item["stock_quantity"]), int(item["required_total"])) for item in plan["materials"])
+        total_required = sum(material_target_stock(plan, item) for item in plan["materials"])
+        total_stock = sum(
+            min(int(item["stock_quantity"]), material_target_stock(plan, item))
+            for item in plan["materials"]
+        )
         embed.add_field(
             name="🛒 Закупка",
             value=(
                 f"Готовность: `{progress_bar(total_stock, total_required)}`\n"
+                f"Можно поставить сейчас: **{format_quantity(available_attempts_from_stock(plan))} шт.**\n"
                 f"Партий записано: **{plan['purchase_count']}**\n"
                 f"Потрачено: **{money_text(plan['purchase_cost_total'])}**"
             ),
@@ -455,7 +484,7 @@ def event_log_embed(event: dict[str, Any]) -> discord.Embed:
     titles = {
         "plan_created": "📋 Создан план крафта",
         "purchase": "🛒 Закуплена партия материала",
-        "stage_crafting": "⚙️ Все материалы собраны",
+        "stage_crafting": "⚙️ Производство начато",
         "inventory_check": "📦 Проведена сверка склада",
         "batch_started": "▶️ Цикл крафта поставлен",
         "batch_completed": "✅ Цикл крафта завершён",
@@ -1388,7 +1417,12 @@ class PurchaseModal(discord.ui.Modal):
         super().__init__(title=f"Закупка: {str(material['material_name'])[:32]}", timeout=600)
         self.plan_id = plan_id
         self.material_id = int(material["id"])
-        remaining = max(0, int(material["required_total"]) - int(material["stock_quantity"]))
+        remaining = int(
+            material.get(
+                "remaining_to_collect",
+                max(0, int(material["required_total"]) - int(material["stock_quantity"])),
+            )
+        )
         self.quantity = discord.ui.TextInput(
             label="Количество материала",
             placeholder=f"Осталось собрать: {format_quantity(remaining)}",
@@ -1779,9 +1813,13 @@ class CraftPlanView(discord.ui.View):
         self.plan_id = int(plan["id"])
         stage = str(plan["stage"])
         row = 0
-        if stage == "procurement":
+        if stage in {"procurement", "crafting"}:
             for material in plan["materials"]:
-                if int(material["stock_quantity"]) >= int(material["required_total"]):
+                remaining_to_collect = max(
+                    0,
+                    material_target_stock(plan, material) - int(material["stock_quantity"]),
+                )
+                if remaining_to_collect == 0:
                     continue
                 button = discord.ui.Button(
                     label=("Добавить " + str(material["material_name"]))[:80],
@@ -1793,7 +1831,10 @@ class CraftPlanView(discord.ui.View):
 
                 async def purchase_callback(
                     interaction: discord.Interaction,
-                    material_data: dict[str, Any] = dict(material),
+                    material_data: dict[str, Any] = dict(
+                        material,
+                        remaining_to_collect=remaining_to_collect,
+                    ),
                 ) -> None:
                     if not await craft_channel_only(interaction):
                         return
@@ -1802,17 +1843,19 @@ class CraftPlanView(discord.ui.View):
                 button.callback = purchase_callback
                 self.add_item(button)
                 row += 1
-        elif stage == "crafting":
+
             active = plan.get("active_batch") is not None
-            remaining = max(0, int(plan["attempts_total"]) - int(plan["attempts_queued"]))
-            max_batch = min(int(plan["recipe"]["max_batch_size"]), remaining)
+            remaining = remaining_unqueued_attempts(plan)
+            available = available_attempts_from_stock(plan)
+            max_batch = min(int(plan["recipe"]["max_batch_size"]), remaining, available)
             if remaining > 0:
                 one = discord.ui.Button(
-                    label="Поставил 1 шт.",
+                    label="Поставил 1 шт." if available else "Пока не хватает материалов",
                     emoji="▶️",
                     style=discord.ButtonStyle.primary,
                     custom_id=f"craft:batch1:{self.plan_id}",
-                    disabled=active,
+                    disabled=active or available < 1,
+                    row=4,
                 )
 
                 async def one_callback(interaction: discord.Interaction) -> None:
@@ -1829,6 +1872,7 @@ class CraftPlanView(discord.ui.View):
                         style=discord.ButtonStyle.success,
                         custom_id=f"craft:batchmax:{self.plan_id}",
                         disabled=active,
+                        row=4,
                     )
 
                     async def max_callback(interaction: discord.Interaction, qty: int = max_batch) -> None:
@@ -1844,6 +1888,7 @@ class CraftPlanView(discord.ui.View):
                         style=discord.ButtonStyle.secondary,
                         custom_id=f"craft:batchcustom:{self.plan_id}",
                         disabled=active,
+                        row=4,
                     )
 
                     async def custom_callback(interaction: discord.Interaction, maximum_value: int = max_batch) -> None:

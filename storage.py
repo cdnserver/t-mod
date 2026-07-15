@@ -4981,7 +4981,7 @@ def craft_add_purchase(
         if plan is None:
             con.rollback()
             raise ValueError("craft_plan_not_found")
-        if str(plan["stage"]) != "procurement":
+        if str(plan["stage"]) not in {"procurement", "crafting"}:
             con.rollback()
             raise ValueError("craft_not_procurement")
         material = con.execute(
@@ -4991,7 +4991,9 @@ def craft_add_purchase(
         if material is None:
             con.rollback()
             raise ValueError("craft_material_not_found")
-        remaining_quantity = max(0, int(material["required_total"]) - int(material["stock_quantity"]))
+        remaining_attempts = max(0, int(plan["attempts_total"]) - int(plan["attempts_queued"]))
+        target_stock = int(material["quantity_per_unit"]) * remaining_attempts
+        remaining_quantity = max(0, target_stock - int(material["stock_quantity"]))
         if int(quantity) > remaining_quantity:
             con.rollback()
             raise ValueError("craft_purchase_too_large")
@@ -5071,21 +5073,23 @@ def craft_add_purchase(
                 "average_unit_price": (float(total_cost) / int(quantity)),
                 "stock_after": int(updated_material["stock_quantity"]),
                 "required_total": int(updated_material["required_total"]),
-                "remaining": max(0, int(updated_material["required_total"]) - int(updated_material["stock_quantity"])),
+                "required_for_unqueued": target_stock,
+                "remaining": max(0, target_stock - int(updated_material["stock_quantity"])),
                 "finance_code": clean_code,
                 "finance_event_id": finance_event_id,
             },
             now=now,
         )
 
-        missing = con.execute(
-            """
-            SELECT COUNT(*) AS n FROM craft_plan_materials
-            WHERE plan_id = ? AND stock_quantity < required_total
-            """,
+        material_rows = con.execute(
+            "SELECT quantity_per_unit, stock_quantity FROM craft_plan_materials WHERE plan_id = ?",
             (plan_id,),
-        ).fetchone()
-        stage_changed = int(missing["n"] or 0) == 0
+        ).fetchall()
+        materials_ready = all(
+            int(row["stock_quantity"]) >= int(row["quantity_per_unit"]) * remaining_attempts
+            for row in material_rows
+        )
+        stage_changed = str(plan["stage"]) == "procurement" and materials_ready
         if stage_changed:
             con.execute(
                 "UPDATE craft_plans SET stage = 'crafting', updated_at = ? WHERE id = ?",
@@ -5098,7 +5102,7 @@ def craft_add_purchase(
                 event_kind="stage_crafting",
                 actor_id=None,
                 actor_display=None,
-                details={"message": "Все материалы собраны. Можно начинать крафт."},
+                details={"message": "Все материалы для оставшихся циклов собраны. Можно начинать крафт."},
                 now=now,
             )
         else:
@@ -5269,7 +5273,8 @@ def craft_start_batch(
         if plan is None:
             con.rollback()
             raise ValueError("craft_plan_not_found")
-        if str(plan["stage"]) != "crafting":
+        stage_before = str(plan["stage"])
+        if stage_before not in {"procurement", "crafting"}:
             con.rollback()
             raise ValueError("craft_not_crafting")
         active = con.execute(
@@ -5380,9 +5385,24 @@ def craft_start_batch(
         )
         batch_id = int(batch_cur.lastrowid)
         con.execute(
-            "UPDATE craft_plans SET attempts_queued = attempts_queued + ?, updated_at = ? WHERE id = ?",
+            """
+            UPDATE craft_plans
+            SET stage = 'crafting', attempts_queued = attempts_queued + ?, updated_at = ?
+            WHERE id = ?
+            """,
             (int(quantity), now, plan_id),
         )
+        if stage_before == "procurement":
+            _craft_add_event(
+                con,
+                plan_id=plan_id,
+                guild_id=guild_id,
+                event_kind="stage_crafting",
+                actor_id=actor_id,
+                actor_display=actor_display,
+                details={"message": "Материалов достаточно для выбранного цикла. Производство начато."},
+                now=now,
+            )
         event_id = _craft_add_event(
             con,
             plan_id=plan_id,
@@ -5419,6 +5439,7 @@ def craft_start_batch(
                 "finance_event_id": finance_event_id,
                 "log_channel_id": log_channel_id,
                 "admin_user_id": admin_user_id,
+                "stage_before": stage_before,
             },
             now=now,
         )
@@ -6450,11 +6471,18 @@ def bot_undo_action(
                     SET attempts_queued = MAX(0, attempts_queued - ?),
                         attempts_completed = MAX(0, attempts_completed - ?),
                         product_stock = MAX(0, product_stock - ?),
-                        stage = 'crafting', completed_at = NULL,
+                        stage = ?, completed_at = NULL,
                         completion_message_id = NULL, updated_at = ?
                     WHERE id = ?
                     """,
-                    (quantity, quantity if was_completed else 0, quantity if was_completed else 0, now, plan_id),
+                    (
+                        quantity,
+                        quantity if was_completed else 0,
+                        quantity if was_completed else 0,
+                        str(payload.get("stage_before") or "crafting"),
+                        now,
+                        plan_id,
+                    ),
                 )
                 con.execute(
                     "UPDATE craft_batches SET status = 'cancelled', undone_at = ?, undone_by_id = ?, undo_reason = ? WHERE id = ?",

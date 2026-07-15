@@ -115,8 +115,18 @@ class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_adaptive_plan_views_fit_discord_limits(self) -> None:
         procurement = CraftPlanView(sample_plan("procurement", material_count=20))
-        self.assertEqual(len(procurement.children), 21)
+        self.assertEqual(len(procurement.children), 22)
         self.assertTrue(all((item.row or 0) <= 4 for item in procurement.children))
+        self.assertEqual(procurement.children[-2].label, "Пока не хватает материалов")
+
+        partial = sample_plan("procurement")
+        for material in partial["materials"]:
+            material["stock_quantity"] = material["quantity_per_unit"] * 3
+        partial_labels = [item.label for item in CraftPlanView(partial).children]
+        self.assertEqual(
+            partial_labels[-4:],
+            ["Поставил 1 шт.", "Поставил 3 шт.", "Другое количество", "Сверка склада"],
+        )
 
         idle_crafting = CraftPlanView(sample_plan("crafting"))
         self.assertEqual(
