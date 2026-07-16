@@ -70,7 +70,6 @@ ERROR_MESSAGES = {
     "craft_not_procurement": "Пополнять материалы можно только во время закупки или производства.",
     "craft_material_not_found": "Материал не найден в плане.",
     "craft_bad_purchase": "Количество должно быть больше нуля, а общая стоимость — неотрицательной.",
-    "craft_purchase_too_large": "Нельзя закупить больше, чем осталось собрать по этому материалу. Обновите меню и введите актуальный остаток.",
     "craft_bad_finance_code": "Финансовый код должен состоять ровно из четырёх букв.",
     "craft_finance_code_not_found": "Активное снятие с таким кодом не найдено или уже связано с другой закупкой.",
     "craft_finance_amount_mismatch": "Сумма снятия с этим кодом не совпадает с общей стоимостью партии.",
@@ -158,17 +157,26 @@ def error_text(exc: Exception) -> str:
     return ERROR_MESSAGES.get(raw, "Не удалось выполнить действие. Попробуйте ещё раз или обратитесь к ответственному.")
 
 
+def is_expected_craft_error(exc: Exception) -> bool:
+    """Return True for normal validation failures that must not page tech logs."""
+    if not isinstance(exc, ValueError):
+        return False
+    raw = str(exc)
+    return raw in ERROR_MESSAGES or raw.startswith("craft_batch_materials_missing:")
+
+
 async def send_interaction_error(interaction: discord.Interaction, exc: Exception) -> None:
-    traceback.print_exception(type(exc), exc, exc.__traceback__)
-    if interaction.guild is not None:
-        await log_technical_event(
-            interaction.client,
-            interaction.guild,
-            title="Ошибка системы крафтов",
-            details=f"Канал: <#{interaction.channel_id}>\nПользователь: `{interaction.user.id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:700]}`",
-            dedupe_key=f"craft-interaction:{type(exc).__name__}",
-            cooldown_seconds=60,
-        )
+    if not is_expected_craft_error(exc):
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        if interaction.guild is not None:
+            await log_technical_event(
+                interaction.client,
+                interaction.guild,
+                title="Ошибка системы крафтов",
+                details=f"Канал: <#{interaction.channel_id}>\nПользователь: `{interaction.user.id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:700]}`",
+                dedupe_key=f"craft-interaction:{type(exc).__name__}",
+                cooldown_seconds=60,
+            )
     text = error_text(exc)
     if interaction.response.is_done():
         await interaction.followup.send(text, ephemeral=True)
@@ -409,6 +417,8 @@ def plan_embed(plan: dict[str, Any]) -> discord.Embed:
             )
             if missing:
                 line += f" · не хватает {format_quantity(missing)}"
+            elif stock > target:
+                line += f" · запас **+{format_quantity(stock - target)}**"
         else:
             required = int(material["required_total"])
             line = (
@@ -1464,6 +1474,13 @@ class PurchaseModal(discord.ui.Modal):
             await update_plan_message(interaction.client, self.plan_id)
             wake_craft_worker()
             message = f"Закупка записана и добавлена на склад. Действие: **#{result['action_id']}**."
+            updated_material = next(
+                item for item in result["plan"]["materials"] if int(item["id"]) == self.material_id
+            )
+            target_stock = material_target_stock(result["plan"], updated_material)
+            surplus = max(0, int(updated_material["stock_quantity"]) - target_stock)
+            if surplus:
+                message += f"\nМатериал закуплен с запасом: **+{format_quantity(surplus)} шт.**"
             if not self.finance_code.value.strip():
                 message += " ⚠️ Финансовый код не указан — связь со снятием не подтверждена."
             if result["stage_changed"]:

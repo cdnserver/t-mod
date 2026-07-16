@@ -13,6 +13,7 @@ from typing import Any, Iterable
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/persistent/data"))
 DATABASE_FILE = Path(os.getenv("DATABASE_FILE", str(DATA_DIR / "tmod.db")))
 LEGACY_ACTIVITY_FILE = Path(os.getenv("LEGACY_ACTIVITY_FILE", str(DATA_DIR / "activity.json")))
+CONSENSUS_V2_RESET_ID = "2026-07-16-clean-consensus-v2"
 
 _db_lock = threading.RLock()
 
@@ -487,6 +488,33 @@ def init_db() -> None:
                 votes_json TEXT,
                 veto_by_id INTEGER,
                 veto_by_display TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tvrs_consensus_sessions (
+                session_key TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                plenary_number INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                leader_id INTEGER NOT NULL,
+                current_bill_id INTEGER,
+                snapshot_json TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS tvrs_consensus_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                actor_id INTEGER,
+                actor_display TEXT,
+                stage_from TEXT,
+                stage_to TEXT,
+                details_json TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -1110,6 +1138,13 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tvrs_live_results_session
             ON tvrs_live_results(guild_id, session_key, id ASC);
 
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_consensus_one_active_guild
+            ON tvrs_consensus_sessions(guild_id)
+            WHERE finished_at IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_consensus_events_session
+            ON tvrs_consensus_events(session_key, id ASC);
+
             CREATE INDEX IF NOT EXISTS idx_client_profiles_user
             ON client_profiles(guild_id, discord_user_id, updated_at DESC);
 
@@ -1275,8 +1310,50 @@ def init_db() -> None:
         set_meta(con, "client_profiles_last_case_migration_count", str(migrated_case_profiles))
         set_meta(con, "client_profiles_last_case_migration_at", utc_now_iso())
 
-        set_meta(con, "schema_version", "2026-07-13-universal-audit")
+        _apply_consensus_v2_reset_in_connection(con, CONSENSUS_V2_RESET_ID)
+        set_meta(con, "schema_version", "2026-07-16-consensus-v2")
         con.commit()
+
+
+def _consensus_reset_meta_key(reset_id: str) -> str:
+    return f"migration:consensus-reset:{str(reset_id).strip()}"
+
+
+def _apply_consensus_v2_reset_in_connection(con: sqlite3.Connection, reset_id: str) -> dict[str, int | str]:
+    meta_key = _consensus_reset_meta_key(reset_id)
+    existing = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
+    if existing is not None:
+        return {"status": "already_applied", "bills": 0, "votes": 0, "results": 0, "sessions": 0}
+    counts = {
+        "bills": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_bills").fetchone()["n"]),
+        "votes": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_votes").fetchone()["n"]),
+        "results": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_live_results").fetchone()["n"]),
+        "sessions": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_consensus_sessions").fetchone()["n"]),
+    }
+    con.execute("DELETE FROM tvrs_consensus_events")
+    con.execute("DELETE FROM tvrs_consensus_sessions")
+    con.execute("DELETE FROM tvrs_votes")
+    con.execute("DELETE FROM tvrs_live_results")
+    con.execute("DELETE FROM tvrs_bills")
+    con.execute("DELETE FROM bot_actions WHERE module = 'tvrs'")
+    con.execute(
+        "DELETE FROM meta WHERE key LIKE 'tvrs_next_bill_number:%' OR key LIKE 'tvrs_next_plenary_number:%'"
+    )
+    con.execute(
+        "DELETE FROM sqlite_sequence WHERE name IN "
+        "('tvrs_bills', 'tvrs_votes', 'tvrs_live_results', 'tvrs_consensus_events')"
+    )
+    summary: dict[str, int | str] = {"status": "applied", **counts}
+    set_meta(con, meta_key, json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return summary
+
+
+def tvrs_apply_consensus_v2_reset(reset_id: str = CONSENSUS_V2_RESET_ID) -> dict[str, int | str]:
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        result = _apply_consensus_v2_reset_in_connection(con, reset_id)
+        con.commit()
+        return result
 
 
 def get_meta(key: str) -> str | None:
@@ -3390,6 +3467,153 @@ def tvrs_recent_bills(guild_id: int, limit: int = 10) -> list[TVRSBill]:
 
 # ---------------- TVRS live plenary consensus ----------------
 
+
+def tvrs_consensus_save_session(
+    snapshot: dict[str, Any],
+    *,
+    event_type: str,
+    actor_id: int | None = None,
+    actor_display: str | None = None,
+    stage_from: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session_key = str(snapshot.get("session_key") or "").strip()
+    if not session_key:
+        raise ValueError("consensus_session_key_required")
+    guild_id = int(snapshot.get("guild_id") or 0)
+    if guild_id <= 0:
+        raise ValueError("consensus_guild_id_required")
+    stage = str(snapshot.get("stage") or "").strip()
+    if not stage:
+        raise ValueError("consensus_stage_required")
+    current_bill = snapshot.get("current_bill") if isinstance(snapshot.get("current_bill"), dict) else {}
+    current_bill_id = int(current_bill.get("id") or 0) or None
+    now = utc_now_iso()
+    created_at = str(snapshot.get("created_at") or now)
+    finished = bool(snapshot.get("finished")) or stage in {"finished", "cancelled"}
+    payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        existing = con.execute(
+            "SELECT revision, stage, created_at FROM tvrs_consensus_sessions WHERE session_key = ?",
+            (session_key,),
+        ).fetchone()
+        revision = int(existing["revision"] or 0) + 1 if existing else 1
+        previous_stage = stage_from if stage_from is not None else (str(existing["stage"]) if existing else None)
+        con.execute(
+            """
+            INSERT INTO tvrs_consensus_sessions(
+                session_key, guild_id, plenary_number, stage, leader_id,
+                current_bill_id, snapshot_json, revision, created_at, updated_at, finished_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_key) DO UPDATE SET
+                guild_id = excluded.guild_id,
+                plenary_number = excluded.plenary_number,
+                stage = excluded.stage,
+                leader_id = excluded.leader_id,
+                current_bill_id = excluded.current_bill_id,
+                snapshot_json = excluded.snapshot_json,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at,
+                finished_at = excluded.finished_at
+            """,
+            (
+                session_key,
+                guild_id,
+                int(snapshot.get("plenary_number") or 0),
+                stage,
+                int(snapshot.get("leader_id") or 0),
+                current_bill_id,
+                payload,
+                revision,
+                str(existing["created_at"] if existing else created_at),
+                now,
+                now if finished else None,
+            ),
+        )
+        con.execute(
+            """
+            INSERT INTO tvrs_consensus_events(
+                session_key, guild_id, event_type, actor_id, actor_display,
+                stage_from, stage_to, details_json, created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_key,
+                guild_id,
+                str(event_type)[:80],
+                actor_id,
+                actor_display,
+                previous_stage,
+                stage,
+                json.dumps(details or {}, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM tvrs_consensus_sessions WHERE session_key = ?",
+            (session_key,),
+        ).fetchone()
+        con.commit()
+    return dict(row) if row else {}
+
+
+def tvrs_consensus_active_sessions(guild_id: int | None = None) -> list[dict[str, Any]]:
+    with _db_lock, connect() as con:
+        if guild_id is None:
+            rows = con.execute(
+                """
+                SELECT * FROM tvrs_consensus_sessions
+                WHERE finished_at IS NULL
+                ORDER BY updated_at ASC
+                """
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT * FROM tvrs_consensus_sessions
+                WHERE guild_id = ? AND finished_at IS NULL
+                ORDER BY updated_at ASC
+                """,
+                (int(guild_id),),
+            ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            snapshot = json.loads(str(row["snapshot_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(snapshot, dict):
+            snapshot["revision"] = int(row["revision"] or 0)
+            snapshot["persisted_updated_at"] = str(row["updated_at"] or "")
+            result.append(snapshot)
+    return result
+
+
+def tvrs_consensus_events(session_key: str, limit: int = 200) -> list[dict[str, Any]]:
+    with _db_lock, connect() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM tvrs_consensus_events
+            WHERE session_key = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (str(session_key), max(1, min(int(limit), 1000))),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        item = dict(row)
+        try:
+            item["details"] = json.loads(str(item.get("details_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["details"] = {}
+        result.append(item)
+    return result
+
+
 def tvrs_bill_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -5121,10 +5345,6 @@ def craft_add_purchase(
             raise ValueError("craft_material_not_found")
         remaining_attempts = max(0, int(plan["attempts_total"]) - int(plan["attempts_queued"]))
         target_stock = int(material["quantity_per_unit"]) * remaining_attempts
-        remaining_quantity = max(0, target_stock - int(material["stock_quantity"]))
-        if int(quantity) > remaining_quantity:
-            con.rollback()
-            raise ValueError("craft_purchase_too_large")
 
         finance_event_id = None
         if clean_code is not None:

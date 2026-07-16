@@ -1,6 +1,8 @@
 import json
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 from modules.craft import (
@@ -17,11 +19,14 @@ from modules.craft import (
     RecipeModal,
     RecipeSelectView,
     SaleModal,
+    error_text,
+    is_expected_craft_error,
     parse_material_lines,
     plan_embed,
     quiet_hours,
     recipe_embed,
     recipe_list_embed,
+    send_interaction_error,
 )
 
 
@@ -88,8 +93,55 @@ class CraftFormatTests(unittest.TestCase):
         self.assertTrue(quiet_hours(datetime(2026, 7, 13, 8, 59, tzinfo=tz)))
         self.assertFalse(quiet_hours(datetime(2026, 7, 13, 9, 0, tzinfo=tz)))
 
+    def test_bad_purchase_is_a_friendly_validation_error(self) -> None:
+        exc = ValueError("craft_bad_purchase")
+        self.assertTrue(is_expected_craft_error(exc))
+        self.assertIn("Количество должно быть больше нуля", error_text(exc))
+
+    def test_unknown_failure_is_not_hidden_as_validation(self) -> None:
+        self.assertFalse(is_expected_craft_error(RuntimeError("database unavailable")))
+
 
 class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expected_validation_does_not_alert_technical_log(self) -> None:
+        response = SimpleNamespace(is_done=lambda: True)
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            guild=object(),
+            client=object(),
+            channel_id=123,
+            user=SimpleNamespace(id=456),
+            response=response,
+            followup=followup,
+        )
+
+        with patch("modules.craft.log_technical_event", new=AsyncMock()) as technical_log:
+            await send_interaction_error(interaction, ValueError("craft_bad_purchase"))
+
+        technical_log.assert_not_awaited()
+        followup.send.assert_awaited_once()
+        self.assertIn("Количество должно быть больше нуля", followup.send.await_args.args[0])
+        self.assertTrue(followup.send.await_args.kwargs["ephemeral"])
+
+    async def test_unexpected_failure_still_alerts_technical_log(self) -> None:
+        response = SimpleNamespace(is_done=lambda: False, send_message=AsyncMock())
+        interaction = SimpleNamespace(
+            guild=object(),
+            client=object(),
+            channel_id=123,
+            user=SimpleNamespace(id=456),
+            response=response,
+        )
+
+        with (
+            patch("modules.craft.log_technical_event", new=AsyncMock()) as technical_log,
+            patch("modules.craft.traceback.print_exception"),
+        ):
+            await send_interaction_error(interaction, RuntimeError("database unavailable"))
+
+        technical_log.assert_awaited_once()
+        response.send_message.assert_awaited_once()
+
     async def test_all_modals_match_discord_component_limits(self) -> None:
         plan = sample_plan("procurement")
         material = plan["materials"][0]
@@ -148,6 +200,13 @@ class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(len(embed), 6000)
                 self.assertLessEqual(len(embed.fields), 25)
                 self.assertTrue(all(len(field.value) <= 1024 for field in embed.fields))
+
+    async def test_plan_embed_shows_material_surplus_as_stock(self) -> None:
+        plan = sample_plan("procurement")
+        plan["materials"][0]["stock_quantity"] = plan["materials"][0]["required_total"] + 15
+        embed = plan_embed(plan)
+        materials_field = next(field for field in embed.fields if field.name == "🧱 Материалы")
+        self.assertIn("запас **+15**", materials_field.value)
 
     async def test_large_recipe_catalog_is_paginated_and_embeds_stay_small(self) -> None:
         recipes = [

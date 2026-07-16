@@ -135,20 +135,24 @@ class UniversalAuditTests(unittest.TestCase):
         self.assertEqual(restored["purchase_count"], 0)
         self.assertEqual(restored["stage"], "procurement")
 
-    def test_stale_purchase_modal_cannot_overfill_material(self) -> None:
+    def test_purchase_can_add_material_surplus_in_one_operation(self) -> None:
         plan = self.create_plan(attempts=2)
         material = storage.craft_get_plan(plan["id"])["materials"][0]
-        with self.assertRaisesRegex(ValueError, "craft_purchase_too_large"):
-            storage.craft_add_purchase(
-                guild_id=1,
-                plan_id=plan["id"],
-                plan_material_id=material["id"],
-                quantity=material["required_total"] + 1,
-                total_cost=100,
-                finance_code=None,
-                actor_id=30,
-                actor_display="Закупщик",
-            )
+        quantity = material["required_total"] + 1
+        result = storage.craft_add_purchase(
+            guild_id=1,
+            plan_id=plan["id"],
+            plan_material_id=material["id"],
+            quantity=quantity,
+            total_cost=100,
+            finance_code=None,
+            actor_id=30,
+            actor_display="Закупщик",
+        )
+        updated = next(item for item in result["plan"]["materials"] if item["id"] == material["id"])
+        self.assertEqual(updated["stock_quantity"], quantity)
+        self.assertEqual(updated["purchased_quantity"], quantity)
+        self.assertEqual(result["plan"]["purchase_count"], 1)
 
     def test_completed_batch_undo_returns_materials_and_treasury(self) -> None:
         self.snapshot()

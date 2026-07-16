@@ -3,9 +3,9 @@ import json
 import os
 import re
 import traceback
-from dataclasses import dataclass, field
+import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Callable, Literal, Any
+from typing import Callable, Any
 from zoneinfo import ZoneInfo
 
 import discord
@@ -14,6 +14,16 @@ from discord.ext import commands
 
 import storage
 from localization import safe_command_description, safe_command_name
+from modules.consensus_core import (
+    LiveConsensusSession,
+    LiveParticipant,
+    LiveResult,
+    calculate_consensus as calculate_consensus_v2,
+    clean_stage_name as clean_consensus_stage_name,
+    session_from_snapshot,
+    session_to_snapshot,
+    transition_session,
+)
 from modules.control_center import log_technical_event
 from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
 
@@ -60,82 +70,8 @@ TVRS_ADMIN_COMMAND_DESCRIPTION = safe_command_description("tvrs.commands.admin_d
 _sticky_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task] = {}
 _active_sessions: dict[int, "LiveConsensusSession"] = {}
-
-
-@dataclass
-class LiveParticipant:
-    user_id: int
-    display_name: str
-    mention: str
-    kind: Literal["chair", "senator"]
-    permanent: bool = False
-    confirmed: bool = False
-    dm_message_id: int | None = None
-    dm_failed: bool = False
-    vote_message_id: int | None = None
-    discussion_message_id: int | None = None
-
-
-@dataclass
-class LiveResult:
-    bill_id: int
-    bill_number: int
-    title: str
-    status: str
-    internal_percent: float
-    overall_percent: float
-    internal_active: bool
-    votes: dict[int, str]
-    veto_by_id: int | None = None
-    retry_bill_number: int | None = None
-
-
-@dataclass
-class LiveConsensusSession:
-    session_key: str
-    guild_id: int
-    channel_id: int
-    leader_id: int
-    leader_display: str
-    plenary_number: int
-    participants: dict[int, LiveParticipant]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    host_message_id: int | None = None
-    host_message_obj: object | None = None
-    stage: str = "registration"
-    current_bill: dict | None = None
-    votes: dict[int, str] = field(default_factory=dict)
-    results: list[LiveResult] = field(default_factory=list)
-    finished: bool = False
-    timer_task: asyncio.Task | None = None
-    timer_deadline: datetime | None = None
-    timer_seconds: int | None = None
-    previous_stage: str | None = None
-    paused_reason: str | None = None
-    pause_is_automatic: bool = False
-    discussion_channel_id: int | None = None
-    discussion_initiator_id: int | None = None
-    discussion_type: str | None = None
-    discussion_allowed_user_ids: set[int] = field(default_factory=set)
-    discussion_note_message_id: int | None = None
-
-    def confirmed_participants(self) -> list[LiveParticipant]:
-        return [p for p in self.participants.values() if p.confirmed]
-
-    def confirmed_chairs(self) -> list[LiveParticipant]:
-        return [p for p in self.confirmed_participants() if p.kind == "chair"]
-
-    def confirmed_senators(self) -> list[LiveParticipant]:
-        return [p for p in self.confirmed_participants() if p.kind == "senator"]
-
-    def quorum_ready(self) -> bool:
-        chairs = len(self.confirmed_chairs())
-        senators = len(self.confirmed_senators())
-        return chairs >= 2 and senators >= 1 and senators % 2 == 1
-
-    def all_voted(self) -> bool:
-        ids = {p.user_id for p in self.confirmed_participants()}
-        return bool(ids) and ids.issubset(set(self.votes.keys()))
+_session_locks: dict[int, asyncio.Lock] = {}
+_restored_consensus_guilds: set[int] = set()
 
 
 def now_local() -> datetime:
@@ -226,14 +162,7 @@ def vote_progress(session: LiveConsensusSession) -> tuple[int, int, float]:
 
 
 def clean_stage_name(stage: str) -> str:
-    return {
-        "registration": "регистрация",
-        "voting": "голосование",
-        "after_result": "итог проекта",
-        "paused": "пауза",
-        "discussion_type": "выбор типа дискуссии",
-        "discussion": "дискуссия",
-    }.get(stage, stage)
+    return clean_consensus_stage_name(stage)
 
 
 def active_consensus_snapshot(guild_id: int) -> dict[str, Any] | None:
@@ -263,6 +192,49 @@ def active_consensus_snapshot(guild_id: int) -> dict[str, Any] | None:
             else None
         ),
     }
+
+
+def consensus_session_lock(guild_id: int) -> asyncio.Lock:
+    return _session_locks.setdefault(int(guild_id), asyncio.Lock())
+
+
+def persist_consensus_session(
+    session: LiveConsensusSession,
+    event_type: str,
+    *,
+    actor_id: int | None = None,
+    actor_display: str | None = None,
+    stage_from: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    storage.tvrs_consensus_save_session(
+        session_to_snapshot(session),
+        event_type=event_type,
+        actor_id=actor_id,
+        actor_display=actor_display,
+        stage_from=stage_from,
+        details=details,
+    )
+
+
+def change_consensus_stage(
+    session: LiveConsensusSession,
+    target_stage: str,
+    event_type: str,
+    *,
+    actor_id: int | None = None,
+    actor_display: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    previous, _ = transition_session(session, target_stage)
+    persist_consensus_session(
+        session,
+        event_type,
+        actor_id=actor_id,
+        actor_display=actor_display,
+        stage_from=previous,
+        details=details,
+    )
 
 
 def vote_split_lines(session: LiveConsensusSession) -> tuple[str, str, str]:
@@ -626,25 +598,7 @@ def vote_label(vote: str | None) -> str:
 
 
 def calculate_consensus(session: LiveConsensusSession) -> dict:
-    senators = [p for p in session.confirmed_participants() if p.kind == "senator"]
-    chairs = [p for p in session.confirmed_participants() if p.kind == "chair"]
-    senator_votes = [session.votes.get(p.user_id) for p in senators if p.user_id in session.votes]
-    senator_yes = sum(1 for v in senator_votes if v == "yes")
-    internal_percent = (senator_yes / len(senator_votes) * 100.0) if senator_votes else 0.0
-    internal_active = internal_percent > 51.0
-    chair_yes = sum(1 for p in chairs if session.votes.get(p.user_id) == "yes")
-    overall = min(100.0, chair_yes * 49.0 + (2.0 if internal_active else 0.0))
-    return {
-        "senators": senators,
-        "chairs": chairs,
-        "senator_votes": senator_votes,
-        "senator_yes": senator_yes,
-        "internal_percent": round(internal_percent, 2),
-        "internal_active": internal_active,
-        "chair_yes": chair_yes,
-        "overall_percent": round(overall, 2),
-        "accepted": overall >= 51.0,
-    }
+    return calculate_consensus_v2(session)
 
 
 def vote_lines(session: LiveConsensusSession) -> str:
@@ -1380,34 +1334,83 @@ class TVRSMainPanelView(TVRSBaseView):
             return False
         return True
 
+    @discord.ui.button(label="Открыть заседание", emoji="⚖️", style=discord.ButtonStyle.primary)
+    async def open_active_consensus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        assert interaction.guild is not None
+        session = _active_sessions.get(interaction.guild.id)
+        if session is None or session.finished:
+            await interaction.response.send_message("Активного заседания сейчас нет.", ephemeral=True)
+            return
+        if interaction.user.id != session.leader_id:
+            await interaction.response.send_message(
+                f"Активным заседанием управляет ведущий <@{session.leader_id}>.",
+                ephemeral=True,
+            )
+            return
+        session.host_message_obj = interaction.message
+        session.host_message_id = getattr(interaction.message, "id", None)
+        persist_consensus_session(
+            session,
+            "host_panel_reopened",
+            actor_id=interaction.user.id,
+            actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+        )
+        if session.stage == "registration":
+            embed = build_registration_embed(session)
+            view: discord.ui.View = TVRSRegistrationView(session.session_key)
+        elif session.stage == "after_result" and session.results:
+            embed = build_result_embed(session.results[-1], session)
+            view = TVRSAfterResultView(session.session_key)
+        else:
+            embed = build_live_vote_embed(session)
+            view = TVRSHostVoteView(session.session_key)
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+
     @discord.ui.button(label="Начать консенсус", style=discord.ButtonStyle.secondary)
     async def start_consensus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        if interaction.guild.id in _active_sessions and not _active_sessions[interaction.guild.id].finished:
-            await interaction.response.send_message("На сервере уже идет пленарный консенсус.", ephemeral=True)
-            return
-        participants, error = voice_participants(interaction.guild)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        if interaction.user.id not in {p.user_id for p in participants}:
-            await interaction.response.send_message(f"Ведущий должен находиться в голосовом канале <#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>.", ephemeral=True)
-            return
-        plenary = storage.tvrs_get_next_plenary_number(interaction.guild.id, TVRS_DEFAULT_NEXT_PLENARY_NUMBER)
-        session = LiveConsensusSession(
-            session_key=f"{interaction.guild.id}:{int(datetime.now(timezone.utc).timestamp())}",
-            guild_id=interaction.guild.id,
-            # Public results always go to the established TVRS results channel. The host
-            # interface remains ephemeral even when consensus starts from the shared panel.
-            channel_id=TVRS_BILLS_CHANNEL_ID,
-            leader_id=interaction.user.id,
-            leader_display=interaction.user.display_name,
-            plenary_number=plenary,
-            participants={p.user_id: p for p in participants},
-        )
-        if interaction.user.id in session.participants:
-            session.participants[interaction.user.id].confirmed = True
-        _active_sessions[interaction.guild.id] = session
+        async with consensus_session_lock(interaction.guild.id):
+            if interaction.guild.id in _active_sessions and not _active_sessions[interaction.guild.id].finished:
+                await interaction.response.send_message("На сервере уже идет пленарный консенсус.", ephemeral=True)
+                return
+            participants, error = voice_participants(interaction.guild)
+            if error:
+                await interaction.response.send_message(error, ephemeral=True)
+                return
+            if interaction.user.id not in {participant.user_id for participant in participants}:
+                await interaction.response.send_message(
+                    f"Ведущий должен находиться в голосовом канале <#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>.",
+                    ephemeral=True,
+                )
+                return
+            plenary = storage.tvrs_get_next_plenary_number(
+                interaction.guild.id,
+                TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
+            )
+            session = LiveConsensusSession(
+                session_key=f"{interaction.guild.id}:{uuid.uuid4().hex[:12]}",
+                guild_id=interaction.guild.id,
+                channel_id=TVRS_BILLS_CHANNEL_ID,
+                leader_id=interaction.user.id,
+                leader_display=interaction.user.display_name,
+                plenary_number=plenary,
+                participants={participant.user_id: participant for participant in participants},
+            )
+            if interaction.user.id in session.participants:
+                session.participants[interaction.user.id].confirmed = True
+            _active_sessions[interaction.guild.id] = session
+            persist_consensus_session(
+                session,
+                "session_created",
+                actor_id=interaction.user.id,
+                actor_display=interaction.user.display_name,
+                details={"participant_count": len(session.participants)},
+            )
         wake_operations_worker()
         await interaction.response.defer(ephemeral=True, thinking=True)
         await delete_sticky_message(interaction.client, interaction.guild)
@@ -1415,6 +1418,7 @@ class TVRSMainPanelView(TVRSBaseView):
         session.host_message_obj = msg
         session.host_message_id = getattr(msg, "id", None)
         await send_confirmation_messages(interaction.client, interaction.guild, session)
+        persist_consensus_session(session, "registration_invitations_sent")
         await edit_session_host_message(session, embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key))
 
     @discord.ui.button(label="Очередь", style=discord.ButtonStyle.secondary)
@@ -1472,20 +1476,34 @@ class TVRSRegistrationView(TVRSBaseView):
         assert interaction.guild is not None
         session = self.session(interaction.guild.id)
         if session:
-            session.finished = True
+            change_consensus_stage(
+                session,
+                "cancelled",
+                "session_cancelled",
+                actor_id=interaction.user.id,
+                actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+            )
             _active_sessions.pop(interaction.guild.id, None)
             wake_operations_worker()
         await interaction.response.edit_message(content="Консенсус отменен.", embed=None, view=None)
+        await ensure_sticky_message(interaction.client, interaction.guild, force_repost=True)
 
 
 class TVRSConfirmView(TVRSBaseView):
     def __init__(self, session_key: str, user_id: int) -> None:
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.session_key = session_key
         self.user_id = user_id
+        button = discord.ui.Button(
+            label="Подтвердить участие",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id=f"tvrs_confirm:{session_key}:{user_id}",
+        )
+        button.callback = self.confirm  # type: ignore[assignment]
+        self.add_item(button)
 
-    @discord.ui.button(label="Подтвердить", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def confirm(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Это подтверждение не для вас.", ephemeral=True)
             return
@@ -1497,7 +1515,17 @@ class TVRSConfirmView(TVRSBaseView):
         if p is None:
             await interaction.response.send_message("Вы не указаны как участник консенсуса.", ephemeral=True)
             return
+        if session.stage != "registration":
+            await interaction.response.send_message("Регистрация на это заседание уже завершена.", ephemeral=True)
+            return
         p.confirmed = True
+        p.dm_failed = False
+        persist_consensus_session(
+            session,
+            "participant_confirmed",
+            actor_id=interaction.user.id,
+            actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+        )
         await interaction.response.edit_message(content="Участие подтверждено.", embed=None, view=None)
         guild = interaction.client.get_guild(session.guild_id)
         if guild:
@@ -1506,7 +1534,7 @@ class TVRSConfirmView(TVRSBaseView):
 
 class TVRSVoteView(TVRSBaseView):
     def __init__(self, session_key: str, user_id: int, host_panel: bool = False) -> None:
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.session_key = session_key
         self.user_id = user_id
         self.host_panel = host_panel
@@ -1586,7 +1614,19 @@ class TVRSVoteView(TVRSBaseView):
         if self.user_id not in {p.user_id for p in session.confirmed_participants()}:
             await interaction.response.send_message("Вы не зарегистрированы в этом голосовании.", ephemeral=True)
             return
-        session.votes[self.user_id] = vote
+        async with consensus_session_lock(session.guild_id):
+            if session.stage != "voting" or session.current_bill is None:
+                await interaction.response.send_message("Голосование уже завершено.", ephemeral=True)
+                return
+            session.votes[self.user_id] = vote
+            persist_consensus_session(
+                session,
+                "vote_cast",
+                actor_id=interaction.user.id,
+                actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+                details={"vote": vote, "bill_id": int(session.current_bill.get("id") or 0)},
+            )
+            should_finalize = session.all_voted()
         await interaction.response.defer()
         try:
             await interaction.message.edit(embed=build_dm_vote_embed(session, session.participants[self.user_id]), view=TVRSVoteView(session.session_key, self.user_id))  # type: ignore[union-attr]
@@ -1595,7 +1635,7 @@ class TVRSVoteView(TVRSBaseView):
         guild = interaction.client.get_guild(session.guild_id)
         if guild:
             await update_host_vote_message(interaction.client, guild, session)
-        if session.all_voted() and guild:
+        if should_finalize and guild:
             await finalize_current_vote(interaction.client, guild, session, forced=False)
 
 
@@ -1687,9 +1727,21 @@ class TVRSHostVoteView(TVRSBaseView):
             if session.stage != "voting":
                 await interaction.response.send_message("Сейчас голосование недоступно.", ephemeral=True)
                 return
-            session.votes[session.leader_id] = "yes"
+            async with consensus_session_lock(session.guild_id):
+                if session.stage != "voting" or session.current_bill is None:
+                    await interaction.response.send_message("Голосование уже завершено.", ephemeral=True)
+                    return
+                session.votes[session.leader_id] = "yes"
+                persist_consensus_session(
+                    session,
+                    "vote_cast",
+                    actor_id=interaction.user.id,
+                    actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+                    details={"vote": "yes", "bill_id": int(session.current_bill.get("id") or 0)},
+                )
+                should_finalize = session.all_voted()
             await interaction.response.edit_message(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-            if session.all_voted():
+            if should_finalize:
                 await finalize_current_vote(interaction.client, interaction.guild, session, forced=False)
 
     async def host_no(self, interaction: discord.Interaction) -> None:
@@ -1699,9 +1751,21 @@ class TVRSHostVoteView(TVRSBaseView):
             if session.stage != "voting":
                 await interaction.response.send_message("Сейчас голосование недоступно.", ephemeral=True)
                 return
-            session.votes[session.leader_id] = "no"
+            async with consensus_session_lock(session.guild_id):
+                if session.stage != "voting" or session.current_bill is None:
+                    await interaction.response.send_message("Голосование уже завершено.", ephemeral=True)
+                    return
+                session.votes[session.leader_id] = "no"
+                persist_consensus_session(
+                    session,
+                    "vote_cast",
+                    actor_id=interaction.user.id,
+                    actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
+                    details={"vote": "no", "bill_id": int(session.current_bill.get("id") or 0)},
+                )
+                should_finalize = session.all_voted()
             await interaction.response.edit_message(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-            if session.all_voted():
+            if should_finalize:
                 await finalize_current_vote(interaction.client, interaction.guild, session, forced=False)
 
     async def finish(self, interaction: discord.Interaction) -> None:
@@ -1839,6 +1903,13 @@ async def set_vote_timer(bot: commands.Bot | discord.Client, guild: discord.Guil
     await cancel_vote_timer(session)
     session.timer_seconds = int(seconds)
     session.timer_deadline = datetime.now(timezone.utc) + timedelta(seconds=int(seconds))
+    persist_consensus_session(
+        session,
+        "timer_set",
+        actor_id=session.leader_id,
+        actor_display=session.leader_display,
+        details={"seconds": int(seconds)},
+    )
 
     async def runner() -> None:
         try:
@@ -1902,8 +1973,14 @@ async def request_discussion(bot: commands.Bot | discord.Client, guild: discord.
         return
     await cancel_vote_timer(session)
     session.previous_stage = session.stage
-    session.stage = "discussion_type"
     session.discussion_initiator_id = initiator.user_id
+    change_consensus_stage(
+        session,
+        "discussion_type",
+        "discussion_requested",
+        actor_id=initiator.user_id,
+        actor_display=initiator.display_name,
+    )
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content=f"<@{initiator.user_id}> инициировал дискуссию. Голосование временно приостановлено.")
     await update_host_vote_message(bot, guild, session)
@@ -1912,8 +1989,14 @@ async def request_discussion(bot: commands.Bot | discord.Client, guild: discord.
 async def start_discussion_channel(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, discussion_type: str) -> None:
     if session.current_bill is None:
         return
-    session.stage = "discussion"
     session.discussion_type = discussion_type
+    change_consensus_stage(
+        session,
+        "discussion",
+        "discussion_started",
+        actor_id=session.discussion_initiator_id,
+        details={"discussion_type": discussion_type},
+    )
     wake_operations_worker()
     category = guild.get_channel(TVRS_DISCUSSION_CATEGORY_ID)
     if category is None:
@@ -1968,6 +2051,11 @@ async def start_discussion_channel(bot: commands.Bot | discord.Client, guild: di
             p.discussion_message_id = msg.id
         except discord.DiscordException:
             p.dm_failed = True
+    persist_consensus_session(
+        session,
+        "discussion_channel_ready",
+        details={"discussion_channel_id": session.discussion_channel_id},
+    )
     await update_all_vote_dms(guild, session, content="Дискуссия начата. Голосование временно скрыто.")
     await update_host_vote_message(bot, guild, session)
 
@@ -2034,12 +2122,18 @@ async def end_discussion(bot: commands.Bot | discord.Client, guild: discord.Guil
                 await channel.send("Дискуссия завершена ведущим. Голосование возвращено в активный режим.")  # type: ignore[attr-defined]
             except discord.DiscordException:
                 pass
-    session.stage = "voting"
     session.discussion_type = None
     session.discussion_initiator_id = None
     session.discussion_allowed_user_ids.clear()
     for p in session.participants.values():
         p.discussion_message_id = None
+    change_consensus_stage(
+        session,
+        "voting",
+        "discussion_finished",
+        actor_id=session.leader_id,
+        actor_display=session.leader_display,
+    )
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content="Дискуссия завершена. Голосование снова открыто.")
     await update_host_vote_message(bot, guild, session)
@@ -2050,9 +2144,16 @@ async def pause_session(bot: commands.Bot | discord.Client, guild: discord.Guild
         return
     await cancel_vote_timer(session)
     session.previous_stage = session.stage
-    session.stage = "paused"
     session.paused_reason = reason
     session.pause_is_automatic = automatic
+    change_consensus_stage(
+        session,
+        "paused",
+        "session_paused_automatically" if automatic else "session_paused",
+        actor_id=None if automatic else session.leader_id,
+        actor_display=None if automatic else session.leader_display,
+        details={"reason": reason},
+    )
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content=reason)
     await update_host_vote_message(bot, guild, session)
@@ -2086,14 +2187,21 @@ async def resume_session(bot: commands.Bot | discord.Client, guild: discord.Guil
         await update_host_vote_message(bot, guild, session)
         return
     previous = session.previous_stage or "voting"
-    session.stage = previous if previous != "paused" else "voting"
+    target_stage = previous if previous != "paused" else "voting"
     session.paused_reason = None
     session.pause_is_automatic = False
-    if session.stage in {"discussion_pending", "discussion_type", "discussion"}:
+    if target_stage in {"discussion_type", "discussion"}:
         content = "Кворум восстановлен. Дискуссия продолжается."
     else:
-        session.stage = "voting" if session.current_bill else "after_result"
+        target_stage = "voting" if session.current_bill else "after_result"
         content = "Кворум восстановлен. Голосование продолжается."
+    change_consensus_stage(
+        session,
+        target_stage,
+        "session_resumed",
+        actor_id=session.leader_id,
+        actor_display=session.leader_display,
+    )
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content=content)
     await update_host_vote_message(bot, guild, session)
@@ -2169,6 +2277,8 @@ async def update_host_vote_message(bot: commands.Bot | discord.Client, guild: di
 
 
 async def begin_next_bill_vote(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, channel) -> None:
+    if session.finished or session.stage not in {"registration", "after_result"}:
+        return
     await cancel_vote_timer(session)
     session.discussion_channel_id = None
     session.discussion_initiator_id = None
@@ -2181,8 +2291,18 @@ async def begin_next_bill_vote(bot: commands.Bot | discord.Client, guild: discor
     bill = bills[0]
     session.current_bill = bill
     session.votes = {}
-    session.stage = "voting"
     storage.tvrs_mark_bill_status(int(bill["id"]), "voting")
+    change_consensus_stage(
+        session,
+        "voting",
+        "bill_voting_started",
+        actor_id=session.leader_id,
+        actor_display=session.leader_display,
+        details={
+            "bill_id": int(bill["id"]),
+            "bill_number": int(bill["bill_number"]),
+        },
+    )
     wake_operations_worker()
 
     for p in session.confirmed_participants():
@@ -2199,6 +2319,7 @@ async def begin_next_bill_vote(bot: commands.Bot | discord.Client, guild: discor
         msg = await channel.send(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         session.host_message_id = msg.id
         session.host_message_obj = msg
+        persist_consensus_session(session, "host_panel_bound")
 
 
 async def notify_participants(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, embed: discord.Embed, content: str | None = None) -> None:
@@ -2218,9 +2339,9 @@ async def notify_participants(bot: commands.Bot | discord.Client, guild: discord
 
 
 async def finalize_current_vote(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, forced: bool) -> None:
-    await cancel_vote_timer(session)
-    if session.current_bill is None:
+    if session.stage != "voting" or session.current_bill is None:
         return
+    await cancel_vote_timer(session)
     bill = session.current_bill
     calc = calculate_consensus(session)
     status = "accepted" if calc["accepted"] else "rejected"
@@ -2250,12 +2371,24 @@ async def finalize_current_vote(bot: commands.Bot | discord.Client, guild: disco
         votes_json=votes_json,
     )
     storage.tvrs_mark_bill_status(result.bill_id, status, f"{result_status_text(status)} • общий консенсус {result.overall_percent}%")
+    session.current_bill = None
+    session.votes = {}
+    change_consensus_stage(
+        session,
+        "after_result",
+        "vote_finalized_manually" if forced else "vote_finalized",
+        actor_id=session.leader_id if forced else None,
+        actor_display=session.leader_display if forced else None,
+        details={
+            "bill_id": result.bill_id,
+            "bill_number": result.bill_number,
+            "status": status,
+            "overall_percent": result.overall_percent,
+        },
+    )
     embed = build_result_embed(result, session)
     for p in session.confirmed_participants():
         await edit_vote_dm_to_result(guild, session, p, embed, content="Голосование по текущему законопроекту завершено.")
-    session.current_bill = None
-    session.votes = {}
-    session.stage = "after_result"
     wake_operations_worker()
     channel = guild.get_channel(session.channel_id)
     if isinstance(channel, discord.abc.Messageable):
@@ -2277,9 +2410,9 @@ async def finalize_current_vote(bot: commands.Bot | discord.Client, guild: disco
 
 
 async def apply_veto(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, user: discord.User | discord.Member) -> None:
-    await cancel_vote_timer(session)
-    if session.current_bill is None:
+    if session.stage != "voting" or session.current_bill is None:
         return
+    await cancel_vote_timer(session)
     bill = session.current_bill
     retry = storage.tvrs_create_retry_bill(int(bill["id"]), user.id, getattr(user, "display_name", str(user)))
     if retry is not None:
@@ -2319,12 +2452,23 @@ async def apply_veto(bot: commands.Bot | discord.Client, guild: discord.Guild, s
         veto_by_id=user.id,
         veto_by_display=getattr(user, "display_name", str(user)),
     )
+    session.current_bill = None
+    session.votes = {}
+    change_consensus_stage(
+        session,
+        "after_result",
+        "veto_applied",
+        actor_id=user.id,
+        actor_display=getattr(user, "display_name", str(user)),
+        details={
+            "bill_id": result.bill_id,
+            "bill_number": result.bill_number,
+            "retry_bill_number": result.retry_bill_number,
+        },
+    )
     embed = build_result_embed(result, session)
     for p in session.confirmed_participants():
         await edit_vote_dm_to_result(guild, session, p, embed, content="Постоянный председатель применил право вето. Голосование отменено.")
-    session.current_bill = None
-    session.votes = {}
-    session.stage = "after_result"
     wake_operations_worker()
     channel = guild.get_channel(session.channel_id)
     if isinstance(channel, discord.abc.Messageable):
@@ -2345,9 +2489,18 @@ async def apply_veto(bot: commands.Bot | discord.Client, guild: discord.Guild, s
 
 
 async def finish_session(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession, channel) -> None:
+    if session.finished:
+        return
     await cancel_vote_timer(session)
     await requeue_current_bill_if_any(session)
-    session.finished = True
+    change_consensus_stage(
+        session,
+        "finished",
+        "session_finished",
+        actor_id=session.leader_id,
+        actor_display=session.leader_display,
+        details={"result_count": len(session.results)},
+    )
     embed = build_final_summary_embed(session)
     try:
         if not await edit_session_host_message(session, embed=embed, view=None):
