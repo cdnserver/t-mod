@@ -1,127 +1,39 @@
 import asyncio
 import os
 import traceback
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
 import storage
-from modules.majestic_api import MajesticApiError, MajesticMarketplaceSummary, get_majestic_api_client
-
-
-def _env_int(name: str, default: int = 0) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        return int(raw, 0)
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name, "true" if default else "false").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-def _positive_env_int(name: str, default: int) -> int:
-    value = _env_int(name, default)
-    return value if value > 0 else default
-
-
-OPERATIONS_CATEGORY_ID = _env_int("OPERATIONS_CATEGORY_ID", 1526605447878934589)
-CONTROL_PANEL_CHANNEL_ID = _env_int("CONTROL_PANEL_CHANNEL_ID", 0)
-ACTIVE_TASKS_CHANNEL_ID = _positive_env_int("ACTIVE_TASKS_CHANNEL_ID", 1526606213826220198)
-WORKSHOP_CHANNEL_ID = _positive_env_int("WORKSHOP_CHANNEL_ID", 1526606361369116672)
-FINANCE_LOG_CHANNEL_ID = _positive_env_int("FINANCE_EVENT_LOG_CHANNEL_ID", 1526606262035550369)
-TECH_LOG_CHANNEL_ID = _env_int("TECH_LOG_CHANNEL_ID", 0)
-REPORTS_CHANNEL_ID = _env_int("REPORTS_CHANNEL_ID", 0)
-BOT_SETTINGS_CHANNEL_ID = _env_int("BOT_SETTINGS_CHANNEL_ID", 0)
-BOT_TEST_CHANNEL_ID = _env_int("BOT_TEST_CHANNEL_ID", 0)
-OPERATIONS_AUTO_CREATE_CHANNELS = _env_bool("OPERATIONS_AUTO_CREATE_CHANNELS", True)
-CONTROL_CENTER_COLOR = _env_int("CONTROL_CENTER_COLOR", 0xD9D9D9)
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelSpec:
-    key: str
-    name: str
-    env_name: str
-    configured_id: int
-    topic: str
-
-
-CHANNEL_SPECS: tuple[ChannelSpec, ...] = (
-    ChannelSpec(
-        "control_panel",
-        "панель-управления",
-        "CONTROL_PANEL_CHANNEL_ID",
-        CONTROL_PANEL_CHANNEL_ID,
-        "Единое публичное меню T-Mod. Все рабочие ответы открываются лично пользователю.",
-    ),
-    ChannelSpec(
-        "active_tasks",
-        "активные-задачи",
-        "ACTIVE_TASKS_CHANNEL_ID",
-        ACTIVE_TASKS_CHANNEL_ID,
-        "Только активные задачи Товарищества и ссылки на их исходные сообщения.",
-    ),
-    ChannelSpec(
-        "workshop",
-        "мастерская",
-        "WORKSHOP_CHANNEL_ID",
-        WORKSHOP_CHANNEL_ID,
-        "Рецепты, планы, напоминания и история крафтов Товарищества.",
-    ),
-    ChannelSpec(
-        "finance_log",
-        "лог-финансы",
-        "FINANCE_EVENT_LOG_CHANNEL_ID",
-        FINANCE_LOG_CHANNEL_ID,
-        "Сверки казны и неизменяемая история финансовых операций.",
-    ),
-    ChannelSpec(
-        "tech_log",
-        "лог-тех",
-        "TECH_LOG_CHANNEL_ID",
-        TECH_LOG_CHANNEL_ID,
-        "Состояние T-Mod, запуски и технические ошибки.",
-    ),
-    ChannelSpec(
-        "reports",
-        "отчёты",
-        "REPORTS_CHANNEL_ID",
-        REPORTS_CHANNEL_ID,
-        "Каркас регулярных отчётов Товарищества.",
-    ),
-    ChannelSpec(
-        "settings",
-        "настройки-бота",
-        "BOT_SETTINGS_CHANNEL_ID",
-        BOT_SETTINGS_CHANNEL_ID,
-        "Диагностика и безопасное обслуживание T-Mod администраторами.",
-    ),
-    ChannelSpec(
-        "test",
-        "тест-бота",
-        "BOT_TEST_CHANNEL_ID",
-        BOT_TEST_CHANNEL_ID,
-        "Безопасная проверка доступности T-Mod без записей в рабочие журналы.",
-    ),
+from modules.control_center_config import (
+    ACTIVE_TASKS_CHANNEL_ID,
+    BOT_SETTINGS_CHANNEL_ID,
+    BOT_TEST_CHANNEL_ID,
+    CHANNEL_SPEC_BY_KEY,
+    CHANNEL_SPECS,
+    CONTROL_CENTER_COLOR,
+    CONTROL_PANEL_CHANNEL_ID,
+    FINANCE_LOG_CHANNEL_ID,
+    OPERATIONS_AUTO_CREATE_CHANNELS,
+    OPERATIONS_CATEGORY_ID,
+    PANEL_MARKERS,
+    REPORTS_CHANNEL_ID,
+    TECH_LOG_CHANNEL_ID,
+    WORKSHOP_CHANNEL_ID,
+    env_bool as _env_bool,
+    env_int as _env_int,
+    positive_env_int as _positive_env_int,
 )
-CHANNEL_SPEC_BY_KEY = {spec.key: spec for spec in CHANNEL_SPECS}
-
-PANEL_MARKERS = {
-    "control_panel": "tmod-public-control-panel",
-    "reports": "tmod-reports-scaffold",
-    "settings": "tmod-settings-panel",
-    "test": "tmod-test-panel",
-    "tech_log": "tmod-tech-health",
-}
+from modules.control_center_runtime import register_channel_resolver
+from modules.majestic_api import MajesticApiError, MajesticMarketplaceSummary, get_majestic_api_client
+from modules.operations_runtime import refresh_operations_dashboard
+from modules.public_panel_runtime import public_panel_provider
+from modules.technical_log import log_technical_event as _log_technical_event
 
 _setup_lock = asyncio.Lock()
 _persistent_views_registered = False
 _startup_logged_guilds: set[int] = set()
-_tech_event_last_sent: dict[tuple[int, str], float] = {}
 _TRANSIENT_DISCORD_STATUSES = frozenset({500, 502, 503, 504})
 
 
@@ -574,9 +486,7 @@ class SettingsPanelView(discord.ui.View):
         assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True, thinking=True)
         await ensure_control_center(interaction.client, interaction.guild)
-        from modules.operations import ensure_operations_dashboard
-
-        await ensure_operations_dashboard(interaction.client, interaction.guild)
+        await refresh_operations_dashboard(interaction.client, interaction.guild)
         await interaction.followup.send("Публичные панели обновлены.", ephemeral=True)
 
 
@@ -646,14 +556,16 @@ async def ensure_public_control_panel(
     channel = await resolve_control_channel(guild, "control_panel")
     if channel is None:
         return None
-    from modules.tvrs import TVRSPublicPanelView, build_public_universality_embed
-
-    panel = await asyncio.to_thread(build_public_universality_embed, guild)
+    provider = public_panel_provider()
+    if provider is None:
+        return None
+    panel_factory, view_factory = provider
+    panel = await asyncio.to_thread(panel_factory, guild)
     return await ensure_panel_message(
         channel,
         "control_panel",
         embed=panel,
-        view=TVRSPublicPanelView(),
+        view=view_factory(),
     )
 
 
@@ -719,44 +631,23 @@ async def log_technical_event(
     cooldown_seconds: int = 300,
     mention_everyone: bool = False,
 ) -> None:
-    key = (guild.id, dedupe_key or title)
-    now = asyncio.get_running_loop().time()
-    previous = _tech_event_last_sent.get(key)
-    if previous is not None and now - previous < cooldown_seconds:
-        return
-    _tech_event_last_sent[key] = now
-    try:
-        channel = await resolve_control_channel(guild, "tech_log")
-        if channel is None:
-            return
-        colors = {
-            "warning": discord.Color.orange(),
-            "info": discord.Color.blue(),
-            "error": discord.Color.red(),
-        }
-        icons = {"warning": "🟠", "info": "🔵", "error": "🔴"}
-        embed = discord.Embed(
-            title=f"{icons.get(level, '🔴')} {title}",
-            description=str(details)[:3900],
-            color=colors.get(level, discord.Color.red()),
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_footer(text="T-Mod • технический журнал")
-        await channel.send(
-            content="@everyone" if mention_everyone else None,
-            embed=embed,
-            allowed_mentions=discord.AllowedMentions(
-                everyone=mention_everyone,
-                users=False,
-                roles=False,
-                replied_user=False,
-            ),
-        )
-    except Exception:
-        traceback.print_exc()
+    """Compatibility facade for integrations importing from control_center."""
+    register_channel_resolver(resolve_control_channel)
+    await _log_technical_event(
+        bot,
+        guild,
+        title=title,
+        details=details,
+        level=level,
+        dedupe_key=dedupe_key,
+        cooldown_seconds=cooldown_seconds,
+        mention_everyone=mention_everyone,
+    )
 
 
 def setup_control_center(bot: commands.Bot) -> None:
+    register_channel_resolver(resolve_control_channel)
+
     async def control_center_ready_listener() -> None:
         global _persistent_views_registered
         if not _persistent_views_registered:

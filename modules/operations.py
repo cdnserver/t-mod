@@ -9,17 +9,22 @@ import discord
 from discord.ext import commands
 
 import storage
+from modules.consensus_runtime import active_consensus_snapshot as _active_consensus_snapshot
+from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, OPERATIONS_CATEGORY_ID
 from modules.control_center import (
-    ACTIVE_TASKS_CHANNEL_ID,
-    OPERATIONS_CATEGORY_ID,
     edit_message_with_retry,
     ensure_public_control_panel,
     is_transient_discord_error,
-    log_technical_event,
     message_payload_matches,
     public_panel_url,
     resolve_control_channel,
 )
+from modules.operations_runtime import (
+    bind_worker_wakeup,
+    register_dashboard_refresher,
+    wake_operations_worker,
+)
+from modules.technical_log import log_technical_event
 
 
 def _env_int(name: str, default: int) -> int:
@@ -42,7 +47,6 @@ DASHBOARD_MARKER = "tmod-operations-dashboard"
 _dashboard_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task[None]] = {}
 _worker_task: asyncio.Task[None] | None = None
-_worker_wakeup: asyncio.Event | None = None
 _category_warning_shown: set[int] = set()
 _pruned_guilds: set[int] = set()
 
@@ -108,15 +112,6 @@ def _craft_operation_line(plan: dict[str, Any]) -> tuple[str, str]:
         remaining = max(0, int(plan.get("final_product_qty") or 0) - int(plan.get("sold_qty") or 0))
         return "progress", f"💰 **{title}** — продажи на маркете, осталось {remaining} · {responsible}"
     return "progress", f"🟡 **{title}** — {stage or 'в работе'} · {responsible}"
-
-
-def _active_consensus_snapshot(guild_id: int) -> dict[str, Any] | None:
-    try:
-        from modules.tvrs import active_consensus_snapshot
-
-        return active_consensus_snapshot(guild_id)
-    except (ImportError, RuntimeError):
-        return None
 
 
 def _append_limited(lines: list[str], additions: list[str], *, limit: int = 8) -> None:
@@ -386,14 +381,8 @@ def schedule_operations_sticky(bot: commands.Bot, guild: discord.Guild) -> None:
     _sticky_tasks[key] = asyncio.create_task(runner(), name=f"tmod-operations-sticky-{key}")
 
 
-def wake_operations_worker() -> None:
-    if _worker_wakeup is not None:
-        _worker_wakeup.set()
-
-
 async def operations_worker(bot: commands.Bot) -> None:
-    global _worker_wakeup
-    _worker_wakeup = asyncio.Event()
+    worker_wakeup = bind_worker_wakeup(asyncio.Event())
     while not bot.is_closed():
         for guild in bot.guilds:
             try:
@@ -418,13 +407,15 @@ async def operations_worker(bot: commands.Bot) -> None:
                     dedupe_key="operations-worker",
                 )
         try:
-            await asyncio.wait_for(_worker_wakeup.wait(), timeout=OPERATIONS_REFRESH_SECONDS)
-            _worker_wakeup.clear()
+            await asyncio.wait_for(worker_wakeup.wait(), timeout=OPERATIONS_REFRESH_SECONDS)
+            worker_wakeup.clear()
         except asyncio.TimeoutError:
             pass
 
 
 def setup_operations(bot: commands.Bot) -> None:
+    register_dashboard_refresher(ensure_operations_dashboard)
+
     async def operations_ready_listener() -> None:
         global _worker_task
         for guild in bot.guilds:

@@ -1,44 +1,36 @@
 import asyncio
 import hashlib
-import os
 import re
 import secrets
 import traceback
 from datetime import datetime
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
 
 import storage
-from modules.control_center import FINANCE_LOG_CHANNEL_ID, log_technical_event
-from modules.operations import wake_operations_worker
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name, str(default)).strip()
-    try:
-        return int(raw, 0)
-    except (TypeError, ValueError):
-        return default
-
-
-_configured_finance_log_id = _env_int("FINANCE_EVENT_LOG_CHANNEL_ID", FINANCE_LOG_CHANNEL_ID)
-FINANCE_EVENT_LOG_CHANNEL_ID = (
-    _configured_finance_log_id if _configured_finance_log_id > 0 else FINANCE_LOG_CHANNEL_ID
+from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, FINANCE_LOG_CHANNEL_ID
+from modules.craft_runtime import build_craft_stats_embed, refresh_craft_plan, wake_craft_worker
+from modules.finance_config import (
+    FINANCE_ADMIN_USER_ID,
+    FINANCE_COMMAND_CHANNEL_ID,
+    FINANCE_DAILY_CHANNEL_ID,
+    FINANCE_EMBED_COLOR,
+    FINANCE_EVENT_LOG_CHANNEL_ID,
+    FINANCE_REPORT_HOUR,
+    FINANCE_REPORT_MINUTE,
+    GAME_CODE_ALPHABET,
+    LOCAL_TZ,
+    MAX_MONEY_AMOUNT,
+    env_int as _env_int,
 )
-FINANCE_DAILY_CHANNEL_ID = FINANCE_EVENT_LOG_CHANNEL_ID
-# Kept as a compatibility constant. A value of 0 means direct commands work in every server channel.
-FINANCE_COMMAND_CHANNEL_ID = 0
-FINANCE_ADMIN_USER_ID = _env_int("FINANCE_ADMIN_USER_ID", 902235631952998410)
-FINANCE_REPORT_HOUR = max(0, min(23, _env_int("FINANCE_REPORT_HOUR", 18)))
-FINANCE_REPORT_MINUTE = max(0, min(59, _env_int("FINANCE_REPORT_MINUTE", 0)))
-FINANCE_EMBED_COLOR = _env_int("FINANCE_EMBED_COLOR", 0xD9D9D9)
-LOCAL_TZ = ZoneInfo(os.getenv("LOCAL_TIMEZONE", "Europe/Riga"))
-
-MAX_MONEY_AMOUNT = 10**15
-GAME_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+from modules.finance_formatting import money_text, parse_money
+from modules.finance_runtime import register_finance_runtime, wake_notification_worker
+from modules.hub_runtime import HubSurface, register_hub_section
+from modules.operations_runtime import wake_operations_worker
+from modules.tvrs_navigation_runtime import open_tvrs_hub
+from modules.technical_log import log_technical_event
 
 _worker_task: asyncio.Task[None] | None = None
 _notification_wakeup: asyncio.Event | None = None
@@ -47,34 +39,6 @@ _persistent_view_registered = False
 
 def now_local() -> datetime:
     return datetime.now(LOCAL_TZ)
-
-
-def parse_money(value: str, *, allow_zero: bool) -> int:
-    raw = str(value or "").strip()
-    if not raw or not re.fullmatch(r"[0-9\s.,_'’]+", raw):
-        raise ValueError("Введите сумму цифрами, например: 1 250 000")
-    compact = re.sub(r"[\s_'’]", "", raw)
-    if "." in compact or "," in compact:
-        if not re.fullmatch(r"[0-9]{1,3}(?:[.,][0-9]{3})+", compact):
-            raise ValueError("Точки и запятые можно использовать только как разделители тысяч")
-    elif not compact.isdigit():
-        raise ValueError("Сумма не распознана")
-    digits = re.sub(r"[^0-9]", "", compact)
-    if not digits:
-        raise ValueError("Сумма не распознана")
-    amount = int(digits)
-    if amount < 0 or (amount == 0 and not allow_zero):
-        raise ValueError("Сумма должна быть больше нуля")
-    if amount > MAX_MONEY_AMOUNT:
-        raise ValueError("Сумма слишком большая")
-    return amount
-
-
-def money_text(amount: int | None) -> str:
-    if amount is None:
-        return "нет исходного отчёта"
-    sign = "−" if int(amount) < 0 else ""
-    return f"{sign}{abs(int(amount)):,}".replace(",", " ") + " $"
 
 
 def actor_text(event: dict[str, Any]) -> str:
@@ -355,8 +319,6 @@ async def _retire_moved_prompt_message(
     try:
         old_channel = await _get_channel(bot, old_channel_id)
         old_message = await old_channel.fetch_message(old_message_id)
-        from modules.operations import ACTIVE_TASKS_CHANNEL_ID
-
         if old_channel_id == ACTIVE_TASKS_CHANNEL_ID:
             await old_message.delete()
             return
@@ -465,7 +427,7 @@ async def dispatch_pending_notifications(bot: commands.Bot) -> None:
             )
 
 
-def wake_notification_worker() -> None:
+def _wake_notification_worker_impl() -> None:
     if _notification_wakeup is not None:
         _notification_wakeup.set()
     wake_operations_worker()
@@ -772,8 +734,6 @@ class FinancePanelView(discord.ui.View):
             back = discord.ui.Button(label="Назад", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
 
             async def back_callback(interaction: discord.Interaction) -> None:
-                from modules.tvrs import open_tvrs_hub
-
                 await open_tvrs_hub(interaction)
 
             back.callback = back_callback
@@ -802,6 +762,18 @@ class FinancePanelView(discord.ui.View):
         if not self.allow_any_channel and await interaction_wrong_channel(interaction):
             return
         await interaction.response.send_modal(InterimSnapshotModal(allow_any_channel=self.allow_any_channel))
+
+
+async def _open_finance_panel_impl(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Казна работает только на сервере.", ephemeral=True)
+        return
+    state = await asyncio.to_thread(storage.finance_get_latest_state, interaction.guild.id)
+    await interaction.response.send_message(
+        embed=finance_panel_embed(state),
+        view=FinancePanelView(allow_any_channel=True, requester_id=interaction.user.id),
+        ephemeral=True,
+    )
 
 
 async def execute_undo_interaction(
@@ -873,6 +845,10 @@ async def execute_undo_interaction(
             "bot_action_already_undone": "Это действие уже отменено.",
             "bot_action_not_reversible": "Действие имеет внешний необратимый эффект и автоматически не отменяется.",
             "bot_action_unsupported": "Для этого старого типа действия безопасный компенсатор ещё недоступен.",
+            "bot_action_locked_by_active_consensus": (
+                "Действие относится к незавершённому консенсусу. "
+                "Сначала завершите заседание, затем повторите отмену."
+            ),
         }
         if raw.startswith("bot_action_has_dependents:"):
             dependent_id = raw.split(":", 1)[1]
@@ -896,10 +872,8 @@ async def execute_undo_interaction(
         wake_notification_worker()
     plan_id = result.get("refresh_plan_id")
     if plan_id:
-        from modules.craft import update_plan_message, wake_craft_worker
-
         try:
-            await update_plan_message(interaction.client, int(plan_id))
+            await refresh_craft_plan(interaction.client, int(plan_id))
         except discord.DiscordException:
             traceback.print_exc()
         completion_message_id = result.get("completion_message_id")
@@ -1079,8 +1053,6 @@ class AuditCenterView(discord.ui.View):
             back = discord.ui.Button(label="Назад", emoji="⬅️", style=discord.ButtonStyle.secondary, row=2)
 
             async def back_callback(interaction: discord.Interaction) -> None:
-                from modules.tvrs import open_tvrs_hub
-
                 await open_tvrs_hub(interaction)
 
             back.callback = back_callback
@@ -1122,11 +1094,16 @@ class AuditCenterView(discord.ui.View):
 
     @discord.ui.button(label="Статистика крафтов", emoji="🏭", style=discord.ButtonStyle.secondary, row=1)
     async def craft_stats(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        from modules.craft import craft_stats_embed
-
         assert interaction.guild is not None
         stats = await asyncio.to_thread(storage.craft_stats, interaction.guild.id, 30)
-        await interaction.response.send_message(embed=craft_stats_embed(stats), ephemeral=True)
+        embed = build_craft_stats_embed(stats)
+        if embed is None:
+            await interaction.response.send_message(
+                "Модуль крафтов ещё запускается. Повторите действие через несколько секунд.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Обновить", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1135,10 +1112,54 @@ class AuditCenterView(discord.ui.View):
         await interaction.response.edit_message(content=None, embed=embed, view=self)
 
 
+async def _open_finance_hub_section(
+    interaction: discord.Interaction,
+    requester_id: int,
+    surface: HubSurface,
+) -> None:
+    assert interaction.guild is not None
+    if surface == "replace":
+        await interaction.response.defer()
+    else:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    state = await asyncio.to_thread(storage.finance_get_latest_state, interaction.guild.id)
+    embed = finance_panel_embed(state)
+    view = FinancePanelView(
+        allow_any_channel=True,
+        requester_id=requester_id,
+        back_to_tvrs=True,
+    )
+    if surface == "replace":
+        await interaction.edit_original_response(content=None, embed=embed, view=view)
+    else:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+async def _open_audit_hub_section(
+    interaction: discord.Interaction,
+    requester_id: int,
+    surface: HubSurface,
+) -> None:
+    assert interaction.guild is not None
+    embed = await asyncio.to_thread(audit_center_embed, interaction.guild.id, interaction.user.id)
+    view = AuditCenterView(requester_id, back_to_tvrs=True)
+    if surface == "replace":
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
 def setup_finance(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None],
 ) -> None:
+    register_finance_runtime(
+        panel_opener=_open_finance_panel_impl,
+        worker_wakeup=_wake_notification_worker_impl,
+    )
+    register_hub_section("finance", _open_finance_hub_section)
+    register_hub_section("audit", _open_audit_hub_section)
+
     @bot.tree.command(name="finance", description="Открыть обозреватель казны Товарищества")
     async def finance(interaction: discord.Interaction) -> None:
         if await interaction_wrong_channel(interaction):

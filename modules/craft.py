@@ -11,17 +11,15 @@ import discord
 from discord.ext import commands
 
 import storage
-from modules.finance import (
-    FINANCE_ADMIN_USER_ID,
-    FINANCE_EVENT_LOG_CHANNEL_ID,
-    FinancePanelView,
-    finance_panel_embed,
-    money_text,
-    parse_money,
-    wake_notification_worker,
-)
-from modules.control_center import WORKSHOP_CHANNEL_ID, log_technical_event
-from modules.operations import ACTIVE_TASKS_CHANNEL_ID, wake_operations_worker
+from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, WORKSHOP_CHANNEL_ID
+from modules.craft_runtime import register_craft_runtime
+from modules.finance_config import FINANCE_ADMIN_USER_ID, FINANCE_EVENT_LOG_CHANNEL_ID
+from modules.finance_formatting import money_text, parse_money
+from modules.finance_runtime import open_finance_panel, wake_notification_worker
+from modules.hub_runtime import HubSurface, register_hub_section
+from modules.operations_runtime import wake_operations_worker
+from modules.tvrs_navigation_runtime import open_tvrs_hub
+from modules.technical_log import log_technical_event
 
 
 def _env_int(name: str, default: int) -> int:
@@ -221,13 +219,6 @@ def add_chunked_field(embed: discord.Embed, name: str, lines: list[str], *, inli
         chunks.append(current)
     for index, chunk in enumerate(chunks):
         embed.add_field(name=name if index == 0 else f"{name} • продолжение", value=chunk, inline=inline)
-
-
-def recipe_summary(recipe: dict[str, Any]) -> str:
-    materials = "\n".join(
-        f"• **{item['material_name']}** — {format_quantity(item['quantity_per_unit'])} шт."
-        for item in recipe["materials"]
-    )
 
 
 def recipe_embed(recipe: dict[str, Any]) -> discord.Embed:
@@ -1334,8 +1325,6 @@ class CraftMenuView(discord.ui.View):
             back = discord.ui.Button(label="Назад", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
 
             async def back_callback(interaction: discord.Interaction) -> None:
-                from modules.tvrs import open_tvrs_hub
-
                 await open_tvrs_hub(interaction)
 
             back.callback = back_callback
@@ -1759,15 +1748,7 @@ class FinanceLinkView(discord.ui.View):
 
     @discord.ui.button(label="Открыть казну", emoji="💼", style=discord.ButtonStyle.primary)
     async def open_finance(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if interaction.guild is None:
-            await interaction.response.send_message("Казна работает только на сервере.", ephemeral=True)
-            return
-        state = await asyncio.to_thread(storage.finance_get_latest_state, interaction.guild.id)
-        await interaction.response.send_message(
-            embed=finance_panel_embed(state),
-            view=FinancePanelView(allow_any_channel=True, requester_id=interaction.user.id),
-            ephemeral=True,
-        )
+        await open_finance_panel(interaction)
 
 
 class SaleModal(discord.ui.Modal):
@@ -2131,10 +2112,39 @@ async def craft_worker(bot: commands.Bot) -> None:
             pass
 
 
+async def _open_craft_hub_section(
+    interaction: discord.Interaction,
+    requester_id: int,
+    surface: HubSurface,
+) -> None:
+    assert interaction.guild is not None
+    if surface == "replace":
+        await interaction.response.defer()
+    else:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    embed = await asyncio.to_thread(craft_menu_embed, interaction.guild.id)
+    view = CraftMenuView(
+        allow_any_channel=True,
+        requester_id=requester_id,
+        back_to_tvrs=True,
+    )
+    if surface == "replace":
+        await interaction.edit_original_response(content=None, embed=embed, view=view)
+    else:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
 def setup_craft(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None],
 ) -> None:
+    register_craft_runtime(
+        plan_refresher=update_plan_message,
+        worker_wakeup=wake_craft_worker,
+        stats_presenter=craft_stats_embed,
+    )
+    register_hub_section("craft", _open_craft_hub_section)
+
     @bot.tree.command(name="craft", description="Открыть центр крафтов Товарищества")
     async def craft(interaction: discord.Interaction) -> None:
         if not await craft_channel_only(interaction):

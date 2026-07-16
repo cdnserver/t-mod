@@ -19,9 +19,11 @@ from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure
 from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
-from modules.control_center import log_technical_event, setup_control_center
+from modules.control_center import setup_control_center
 from modules.market import setup_market
 from modules.operations import setup_operations
+from modules.technical_log import log_technical_event
+from modules.delivery_runtime import setup_delivery
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -120,9 +122,12 @@ def boot_module(name: str) -> None:
     boot_line(f"[LOAD] {name} ... OK")
 
 
-if not TOKEN or TOKEN.strip() in {"", "paste_new_token_here", "YOUR_TOKEN_HERE"}:
-    print(t("console.token_missing"), file=sys.stderr)
-    raise SystemExit(1)
+def require_discord_token() -> str:
+    token = str(TOKEN or "").strip()
+    if token in {"", "paste_new_token_here", "YOUR_TOKEN_HERE"}:
+        print(t("console.token_missing"), file=sys.stderr)
+        raise SystemExit(1)
+    return token
 
 
 def utc_now() -> datetime:
@@ -946,6 +951,8 @@ async def on_ready() -> None:
 
 
 boot_banner()
+boot_module("Durable Delivery")
+setup_delivery(bot)
 boot_module("TVRS Control Center")
 setup_control_center(bot)
 boot_module("Operations Center")
@@ -969,6 +976,7 @@ setup_zigmund(bot, remember_command_activity)
 
 
 if __name__ == "__main__":
+    runtime_token = require_discord_token()
     boot_line("[DB] SQLite migration check ...")
     storage.init_db()
     boot_line(f"[DB] Ready: {storage.DATABASE_FILE}")
@@ -977,4 +985,4 @@ if __name__ == "__main__":
         print(t("console.db_migration", events=migration.get("events", 0), users=migration.get("users", 0), counters=migration.get("counters", 0)))
     else:
         print(t("console.db_migration_skipped", reason=migration.get("reason", "unknown")))
-    bot.run(TOKEN)
+    bot.run(runtime_token)
