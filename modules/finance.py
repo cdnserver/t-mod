@@ -10,11 +10,11 @@ import discord
 from discord.ext import commands
 
 from persistence import finance_context as storage
-from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, FINANCE_LOG_CHANNEL_ID
+from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID
 from modules.craft_runtime import build_craft_stats_embed, refresh_craft_plan, wake_craft_worker
 from modules.finance_config import (
     FINANCE_ADMIN_USER_ID,
-    FINANCE_COMMAND_CHANNEL_ID,
+    FINANCE_COMMAND_CHANNEL_ID as FINANCE_COMMAND_CHANNEL_ID,
     FINANCE_DAILY_CHANNEL_ID,
     FINANCE_EMBED_COLOR,
     FINANCE_EVENT_LOG_CHANNEL_ID,
@@ -22,13 +22,12 @@ from modules.finance_config import (
     FINANCE_REPORT_MINUTE,
     GAME_CODE_ALPHABET,
     LOCAL_TZ,
-    MAX_MONEY_AMOUNT,
-    env_int as _env_int,
 )
 from modules.finance_formatting import money_text, parse_money
 from modules.finance_runtime import register_finance_runtime, wake_notification_worker
 from modules.hub_runtime import HubSurface, register_hub_section
 from modules.operations_runtime import wake_operations_worker
+from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_navigation_runtime import open_tvrs_hub
 from modules.technical_log import log_technical_event
 
@@ -412,6 +411,26 @@ async def dispatch_pending_notifications(bot: commands.Bot) -> None:
                     continue
                 target = await _get_channel(bot, destination_id)
             elif destination_kind == "admin_dm":
+                decision = await asyncio.to_thread(
+                    evaluate_profile_notification,
+                    int(event.get("guild_id") or 0),
+                    destination_id,
+                    "finance",
+                )
+                if not decision.allowed:
+                    if decision.resume_at is not None:
+                        await asyncio.to_thread(
+                            storage.finance_defer_notification,
+                            int(notification["id"]),
+                            decision.resume_at.isoformat(),
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            storage.finance_mark_notification_sent,
+                            int(notification["id"]),
+                            None,
+                        )
+                    continue
                 target = bot.get_user(destination_id) or await bot.fetch_user(destination_id)
             else:
                 raise RuntimeError(f"Неизвестный адрес уведомления: {destination_kind}")

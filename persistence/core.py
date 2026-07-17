@@ -57,8 +57,21 @@ class MemberProfile:
     status_note: str | None
     visibility: str
     show_activity: bool
+    show_availability: bool
+    show_position: bool
+    show_characters: bool
+    show_join_date: bool
     theme: str
     primary_character_id: int | None
+    dm_notifications: bool
+    dm_market: bool
+    dm_craft: bool
+    dm_consensus: bool
+    dm_finance: bool
+    dm_system: bool
+    quiet_hours_enabled: bool
+    quiet_start_minute: int
+    quiet_end_minute: int
     created_at: str
     updated_at: str
 

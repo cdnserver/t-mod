@@ -25,7 +25,6 @@ from modules.market_config import (
     MARKET_REFRESH_SECONDS,
     MARKET_SEARCH_LIMIT,
     MARKET_SERVER_ID,
-    env_int as _env_int,
 )
 from modules.market_domain import (
     MarketSearchHit,
@@ -34,11 +33,8 @@ from modules.market_domain import (
     _clean_market_category,
     _item_identity,
     _market_internal_id,
-    _market_search_score,
     _quantity_label,
     _quantity_value,
-    _text_match_score,
-    _transliterate_ru,
     normalize_market_text,
     rank_market_items,
 )
@@ -50,6 +46,7 @@ from modules.majestic_api import (
     MajesticApiResponseError,
     get_majestic_api_client,
 )
+from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_navigation_runtime import open_tvrs_hub
 from modules.technical_log import log_technical_event
 
@@ -1256,6 +1253,28 @@ async def dispatch_market_alerts(bot: commands.Bot) -> None:
     for notification in notifications:
         try:
             user_id = int(notification["discord_user_id"])
+            decision = await asyncio.to_thread(
+                evaluate_profile_notification,
+                int(notification.get("guild_id") or 0),
+                user_id,
+                "market",
+            )
+            if not decision.allowed:
+                if decision.resume_at is not None:
+                    await asyncio.to_thread(
+                        storage.market_defer_alert_notification,
+                        int(notification["id"]),
+                        decision.resume_at.isoformat(),
+                    )
+                else:
+                    await asyncio.to_thread(
+                        storage.market_mark_alert_delivery,
+                        int(notification["id"]),
+                        delivered=True,
+                        max_attempts=MARKET_ALERT_MAX_DELIVERY_ATTEMPTS,
+                        retry_seconds=MARKET_ALERT_RETRY_SECONDS,
+                    )
+                continue
             user = bot.get_user(user_id)
             if user is None:
                 user = await bot.fetch_user(user_id)

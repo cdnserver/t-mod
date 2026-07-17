@@ -1,9 +1,11 @@
+import asyncio
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import storage
+from modules.finance import dispatch_pending_notifications
 
 
 class FinanceStorageTests(unittest.TestCase):
@@ -132,6 +134,29 @@ class FinanceStorageTests(unittest.TestCase):
         pending = storage.finance_pending_notifications(10)
         matching = [item for item in pending if item["event_id"] == event["id"]]
         self.assertEqual({item["destination_kind"] for item in matching}, {"admin_dm"})
+
+    def test_disabled_personal_finance_dm_is_suppressed_without_delivery_attempt(self) -> None:
+        event = storage.finance_record_snapshot(
+            guild_id=1,
+            event_kind="interim",
+            amount=123_000,
+            actor_id=10,
+            actor_display="Tester",
+            channel_id=100,
+            message_id=200,
+            log_channel_id=0,
+            admin_user_id=400,
+            report_date="2026-07-13",
+        )
+        storage.update_member_profile_preferences(1, 400, dm_finance=False)
+
+        class NoDmBot:
+            def get_user(self, _user_id):
+                raise AssertionError("DM must not be requested")
+
+        asyncio.run(dispatch_pending_notifications(NoDmBot()))
+        pending = storage.finance_pending_notifications(10)
+        self.assertFalse(any(item["event_id"] == event["id"] for item in pending))
 
     def test_operations_count_only_recent_running_audio(self) -> None:
         record_id = storage.create_audio_generation(

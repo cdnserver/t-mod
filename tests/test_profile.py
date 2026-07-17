@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import discord
 from discord.ext import commands
@@ -14,12 +15,17 @@ import storage
 from modules.profile import (
     CharacterModal,
     ProfileHomeView,
+    ProfileNotificationsView,
+    ProfilePrivacyView,
+    ProfileQuietHoursView,
     ProfileSettingsView,
     ProfileStatusView,
     profile_embed,
     profile_settings_embed,
+    parse_profile_clock,
     setup_profile,
 )
+from modules.profile_notifications import evaluate_profile_notification
 
 
 class ProfileStorageTests(unittest.TestCase):
@@ -87,6 +93,8 @@ class ProfileStorageTests(unittest.TestCase):
         self.assertEqual(initial.visibility, "members")
         self.assertTrue(initial.show_activity)
         self.assertEqual(initial.theme, "indigo")
+        self.assertTrue(initial.dm_notifications)
+        self.assertFalse(initial.quiet_hours_enabled)
 
         configured = storage.update_member_profile_preferences(
             10,
@@ -162,8 +170,47 @@ class ProfileStorageTests(unittest.TestCase):
             self.assertTrue(migrated.show_activity)
             self.assertEqual(migrated.theme, "indigo")
             self.assertIsNone(migrated.primary_character_id)
+            self.assertTrue(migrated.show_availability)
+            self.assertTrue(migrated.show_position)
+            self.assertTrue(migrated.show_characters)
+            self.assertTrue(migrated.show_join_date)
+            self.assertTrue(migrated.dm_notifications)
+            self.assertTrue(migrated.dm_market)
+            self.assertFalse(migrated.quiet_hours_enabled)
+            self.assertEqual(migrated.quiet_end_minute, 480)
         finally:
             storage.DATABASE_FILE = current_database
+
+    def test_dm_policy_honors_module_switch_and_cross_midnight_quiet_hours(self) -> None:
+        storage.update_member_profile_preferences(10, 100, dm_market=False)
+        disabled = evaluate_profile_notification(10, 100, "market")
+        self.assertFalse(disabled.allowed)
+        self.assertEqual(disabled.reason, "market_dm_disabled")
+
+        storage.update_member_profile_preferences(
+            10,
+            100,
+            dm_market=True,
+            quiet_hours_enabled=True,
+            quiet_start_minute=23 * 60,
+            quiet_end_minute=7 * 60,
+        )
+        with patch("modules.profile_notifications.PROFILE_TIMEZONE", timezone.utc):
+            quiet = evaluate_profile_notification(
+                10,
+                100,
+                "market",
+                now=datetime(2026, 7, 18, 23, 30, tzinfo=timezone.utc),
+            )
+        self.assertFalse(quiet.allowed)
+        self.assertEqual(quiet.reason, "quiet_hours")
+        self.assertEqual(
+            quiet.resume_at,
+            datetime(2026, 7, 19, 7, 0, tzinfo=timezone.utc),
+        )
+        self.assertTrue(
+            evaluate_profile_notification(10, 100, "consensus", critical=True).allowed
+        )
 
 
 class ProfileUiTests(unittest.TestCase):
@@ -233,12 +280,21 @@ class ProfileUiTests(unittest.TestCase):
             settings_labels = {
                 item.label for item in settings.children if isinstance(item, discord.ui.Button)
             }
-            self.assertIn("Активность: видна", settings_labels)
+            self.assertIn("Приватность", settings_labels)
+            self.assertIn("Уведомления", settings_labels)
+            self.assertIn("Тихие часы", settings_labels)
             self.assertIn("По умолчанию", settings_labels)
             self.assertEqual(
                 len([item for item in settings.children if isinstance(item, discord.ui.Select)]),
-                2,
+                1,
             )
+
+            privacy = ProfilePrivacyView(100, member, None)
+            self.assertEqual(len(privacy.children), 7)
+            notifications = ProfileNotificationsView(100, member, None)
+            self.assertEqual(len(notifications.children), 7)
+            quiet_hours = ProfileQuietHoursView(100, member, None)
+            self.assertEqual(len(quiet_hours.children), 3)
 
             characters = [
                 SimpleNamespace(
@@ -256,10 +312,10 @@ class ProfileUiTests(unittest.TestCase):
                 primary_character_id=2,
             )
             full_settings = ProfileSettingsView(100, member, configured, characters)
-            self.assertEqual(len(full_settings.children), 6)
+            self.assertEqual(len(full_settings.children), 7)
             self.assertEqual(
                 len([item for item in full_settings.children if isinstance(item, discord.ui.Select)]),
-                3,
+                2,
             )
             self.assertTrue(all(0 <= int(item.row) <= 4 for item in full_settings.children))
 
@@ -283,6 +339,10 @@ class ProfileUiTests(unittest.TestCase):
             status_note=None,
             visibility="members",
             show_activity=False,
+            show_availability=False,
+            show_position=False,
+            show_characters=False,
+            show_join_date=False,
             theme="rose",
             primary_character_id=2,
         )
@@ -291,11 +351,17 @@ class ProfileUiTests(unittest.TestCase):
             total_events=500,
         )
         own = profile_embed(member, profile, characters, activity, editable=True)
-        rendered = "\n".join(str(field.value) for field in own.fields)
+        own_rendered = "\n".join(str(field.value) for field in own.fields)
         self.assertEqual(own.color.value, 0xEB459E)
-        self.assertIn("скрыта владельцем", rendered)
-        self.assertNotIn("500", rendered)
+        self.assertIn("Последняя активность", own_rendered)
+        self.assertIn("500", own_rendered)
         self.assertTrue(any(field.name.startswith("⭐ ②") for field in own.fields))
+
+        foreign = profile_embed(member, profile, characters, activity, editable=False)
+        foreign_rendered = "\n".join(str(field.value) for field in foreign.fields)
+        self.assertEqual(len(foreign.fields), 0)
+        self.assertNotIn("Последняя активность", foreign_rendered)
+        self.assertNotIn("500", foreign_rendered)
 
         profile.visibility = "private"
         foreign = profile_embed(member, profile, characters, activity, editable=False)
@@ -305,6 +371,13 @@ class ProfileUiTests(unittest.TestCase):
         settings = profile_settings_embed(member, profile, characters)
         self.assertEqual(settings.color.value, 0xEB459E)
         self.assertIn("Main Hero", "\n".join(str(field.value) for field in settings.fields))
+
+    def test_quiet_clock_parser_is_strict(self) -> None:
+        self.assertEqual(parse_profile_clock("02:30"), 150)
+        self.assertEqual(parse_profile_clock("2:05"), 125)
+        for invalid in ("24:00", "23:60", "2", "ночь", "02.30"):
+            with self.assertRaisesRegex(ValueError, "profile_quiet_hours_invalid"):
+                parse_profile_clock(invalid)
 
     def test_profile_command_has_optional_member_argument(self) -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())

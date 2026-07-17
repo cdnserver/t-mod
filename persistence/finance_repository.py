@@ -707,6 +707,21 @@ def finance_mark_notification_sent(notification_id: int, message_id: int | None)
         con.commit()
 
 
+def finance_defer_notification(notification_id: int, available_at: str) -> bool:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            UPDATE finance_notifications
+            SET next_attempt_at = ?, last_error = NULL, updated_at = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (str(available_at), now, int(notification_id)),
+        )
+        con.commit()
+        return cursor.rowcount == 1
+
+
 def finance_mark_notification_failed(notification_id: int, error: str) -> None:
     now_dt = datetime.now(timezone.utc)
     with _db_lock, connect() as con:
@@ -730,4 +745,4 @@ def finance_mark_notification_failed(notification_id: int, error: str) -> None:
 
 # ---------------- Craft production system ----------------
 
-__all__ = ['FINANCE_SNAPSHOT_KINDS', 'FINANCE_MOVEMENT_KINDS', '_finance_row', 'finance_get_or_create_daily_prompt', 'finance_get_daily_prompt', 'finance_get_daily_prompt_by_message', 'finance_bind_daily_prompt_message', 'finance_recent_daily_prompts', '_finance_enqueue_notifications', 'finance_record_snapshot', 'finance_record_movement', 'finance_get_event', '_finance_replay_balance', 'finance_undo_last_action', 'finance_get_latest_state', 'finance_search_events', 'finance_stats', 'finance_pending_notifications', 'finance_mark_notification_sent', 'finance_mark_notification_failed']
+__all__ = ['FINANCE_SNAPSHOT_KINDS', 'FINANCE_MOVEMENT_KINDS', '_finance_row', 'finance_get_or_create_daily_prompt', 'finance_get_daily_prompt', 'finance_get_daily_prompt_by_message', 'finance_bind_daily_prompt_message', 'finance_recent_daily_prompts', '_finance_enqueue_notifications', 'finance_record_snapshot', 'finance_record_movement', 'finance_get_event', '_finance_replay_balance', 'finance_undo_last_action', 'finance_get_latest_state', 'finance_search_events', 'finance_stats', 'finance_pending_notifications', 'finance_mark_notification_sent', 'finance_defer_notification', 'finance_mark_notification_failed']

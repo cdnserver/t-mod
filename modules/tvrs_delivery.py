@@ -16,7 +16,8 @@ from persistence import tvrs_repository as storage
 
 from modules.consensus_core import ConsensusRules, LiveConsensusSession, LiveParticipant, LiveResult
 from modules.consensus_runtime import active_consensus_snapshot
-from modules.delivery_outbox import DeliveryReceipt, OutboxMessage
+from modules.delivery_outbox import DeliveryDeferred, DeliveryReceipt, OutboxMessage
+from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_embeds import build_bill_embed, build_final_summary_embed, build_result_embed
 
@@ -555,6 +556,16 @@ def make_session_summary_delivery_handler(bot: Any):
         if destination != "participant_dm":
             raise ValueError(f"tvrs_summary_destination_invalid:{destination}")
         user_id = int(payload.get("destination_user_id") or 0)
+        decision = await asyncio.to_thread(
+            evaluate_profile_notification,
+            session.guild_id,
+            user_id,
+            "consensus",
+        )
+        if not decision.allowed:
+            if decision.resume_at is not None:
+                raise DeliveryDeferred(decision.resume_at, "profile_quiet_hours")
+            return DeliveryReceipt()
         member = guild.get_member(user_id)
         if member is None:
             member = await guild.fetch_member(user_id)

@@ -10,7 +10,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import storage
-from modules.delivery_outbox import DeliveryReceipt, OutboxDispatcher, StorageOutboxRepository
+from modules.delivery_outbox import (
+    DeliveryDeferred,
+    DeliveryReceipt,
+    OutboxDispatcher,
+    StorageOutboxRepository,
+)
 from modules.delivery_runtime import _report_dead_deliveries, delivery_worker
 
 
@@ -315,6 +320,37 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
 
 
 class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAsyncioTestCase):
+    async def test_policy_deferral_preserves_attempt_and_delivers_when_ready(self) -> None:
+        item_id = int(self.enqueue("quiet-hours", max_attempts=2)["id"])
+        clock = FakeClock(self.started_at)
+        dispatcher = OutboxDispatcher(
+            StorageOutboxRepository(),
+            worker_id="quiet-hours-worker",
+            clock=clock,
+        )
+        calls = 0
+
+        async def handler(_message) -> DeliveryReceipt:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise DeliveryDeferred(self.started_at + timedelta(hours=2), "quiet_hours")
+            return DeliveryReceipt(message_id=9001)
+
+        dispatcher.register("test.delivery", handler)
+        self.assertEqual(await dispatcher.run_once(), 1)
+        deferred = storage.delivery_outbox_get(item_id)
+        self.assertEqual(deferred["status"], "retry")  # type: ignore[index]
+        self.assertEqual(deferred["attempts"], 0)  # type: ignore[index]
+        self.assertEqual(await dispatcher.run_once(), 0)
+
+        clock.advance(seconds=2 * 60 * 60)
+        self.assertEqual(await dispatcher.run_once(), 1)
+        delivered = storage.delivery_outbox_get(item_id)
+        self.assertEqual(delivered["status"], "delivered")  # type: ignore[index]
+        self.assertEqual(delivered["attempts"], 1)  # type: ignore[index]
+        self.assertEqual(delivered["message_id"], 9001)  # type: ignore[index]
+
     async def test_slow_handler_heartbeat_prevents_parallel_external_effect(self) -> None:
         item_id = int(self.enqueue("slow-handler", max_attempts=3)["id"])
         first_clock = FakeClock(self.started_at)

@@ -19,6 +19,7 @@ from modules.market import (
     _market_internal_id,
     _market_snapshot_change,
     _market_snapshot_change_details,
+    dispatch_market_alerts,
     market_alert_dm_embed,
     market_alerts_embed,
     market_home_embed,
@@ -534,6 +535,33 @@ class MarketStorageTests(unittest.TestCase):
         self.assertEqual(second["status"], "retry")
         self.assertEqual(third["status"], "failed")
         self.assertEqual(storage.market_get_alert(100, "RU15", 39)["status"], "paused")
+
+    def test_disabled_personal_market_dm_suppresses_delivery_without_retrying(self) -> None:
+        first_source = "2026-07-15T02:12:11.960Z"
+        second_source = "2026-07-16T02:12:11.960Z"
+        self.save(first_source, [item(39, "Железная руда", 100, total_count=20)])
+        storage.market_upsert_alert(
+            discord_user_id=100,
+            user_display="Tester",
+            guild_id=200,
+            server_id="RU15",
+            category="items",
+            item_id=39,
+            target_price=100,
+            min_quantity=10,
+            current_source_updated_at=first_source,
+        )
+        self.save(second_source, [item(39, "Железная руда", 90, total_count=20)])
+        storage.market_evaluate_alerts("RU15", second_source)
+        storage.update_member_profile_preferences(200, 100, dm_market=False)
+
+        class NoDmBot:
+            def get_user(self, _user_id):
+                raise AssertionError("DM must not be requested")
+
+        asyncio.run(dispatch_market_alerts(NoDmBot()))
+        self.assertEqual(storage.market_pending_alert_notifications(), [])
+        self.assertEqual(storage.market_get_alert(100, "RU15", 39)["status"], "triggered")
 
 
 if __name__ == "__main__":

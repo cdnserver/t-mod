@@ -64,12 +64,25 @@ def _profile_from_row(row: sqlite3.Row | None) -> MemberProfile | None:
         status_note=row["status_note"],
         visibility=str(row["visibility"] or "members"),
         show_activity=bool(row["show_activity"]),
+        show_availability=bool(row["show_availability"]),
+        show_position=bool(row["show_position"]),
+        show_characters=bool(row["show_characters"]),
+        show_join_date=bool(row["show_join_date"]),
         theme=str(row["theme"] or "indigo"),
         primary_character_id=(
             int(row["primary_character_id"])
             if row["primary_character_id"] is not None
             else None
         ),
+        dm_notifications=bool(row["dm_notifications"]),
+        dm_market=bool(row["dm_market"]),
+        dm_craft=bool(row["dm_craft"]),
+        dm_consensus=bool(row["dm_consensus"]),
+        dm_finance=bool(row["dm_finance"]),
+        dm_system=bool(row["dm_system"]),
+        quiet_hours_enabled=bool(row["quiet_hours_enabled"]),
+        quiet_start_minute=int(row["quiet_start_minute"] or 0),
+        quiet_end_minute=int(row["quiet_end_minute"] or 0),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -213,8 +226,21 @@ def update_member_profile_preferences(
     *,
     visibility: str | None = None,
     show_activity: bool | None = None,
+    show_availability: bool | None = None,
+    show_position: bool | None = None,
+    show_characters: bool | None = None,
+    show_join_date: bool | None = None,
     theme: str | None = None,
     primary_character_id: int | None | object = _PREFERENCE_UNSET,
+    dm_notifications: bool | None = None,
+    dm_market: bool | None = None,
+    dm_craft: bool | None = None,
+    dm_consensus: bool | None = None,
+    dm_finance: bool | None = None,
+    dm_system: bool | None = None,
+    quiet_hours_enabled: bool | None = None,
+    quiet_start_minute: int | None = None,
+    quiet_end_minute: int | None = None,
 ) -> MemberProfile:
     assignments: list[str] = []
     values: list[object] = []
@@ -224,22 +250,75 @@ def update_member_profile_preferences(
             raise ValueError("profile_visibility_invalid")
         assignments.append("visibility = ?")
         values.append(clean_visibility)
-    if show_activity is not None:
-        if not isinstance(show_activity, bool):
-            raise ValueError("profile_show_activity_invalid")
-        assignments.append("show_activity = ?")
-        values.append(1 if show_activity else 0)
+    boolean_preferences = {
+        "show_activity": show_activity,
+        "show_availability": show_availability,
+        "show_position": show_position,
+        "show_characters": show_characters,
+        "show_join_date": show_join_date,
+        "dm_notifications": dm_notifications,
+        "dm_market": dm_market,
+        "dm_craft": dm_craft,
+        "dm_consensus": dm_consensus,
+        "dm_finance": dm_finance,
+        "dm_system": dm_system,
+        "quiet_hours_enabled": quiet_hours_enabled,
+    }
+    for column, preference in boolean_preferences.items():
+        if preference is None:
+            continue
+        if not isinstance(preference, bool):
+            raise ValueError("profile_boolean_preference_invalid")
+        assignments.append(f"{column} = ?")
+        values.append(1 if preference else 0)
     if theme is not None:
         clean_theme = str(theme).strip().lower()
         if clean_theme not in PROFILE_THEMES:
             raise ValueError("profile_theme_invalid")
         assignments.append("theme = ?")
         values.append(clean_theme)
+    for column, minute in {
+        "quiet_start_minute": quiet_start_minute,
+        "quiet_end_minute": quiet_end_minute,
+    }.items():
+        if minute is None:
+            continue
+        try:
+            clean_minute = int(minute)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("profile_quiet_hours_invalid") from exc
+        if isinstance(minute, bool) or not 0 <= clean_minute < 1440:
+            raise ValueError("profile_quiet_hours_invalid")
+        assignments.append(f"{column} = ?")
+        values.append(clean_minute)
 
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         _ensure_profile(con, guild_id, user_id, now=now)
+        current = con.execute(
+            "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+        if current is None:  # pragma: no cover
+            raise RuntimeError("profile_write_failed")
+        final_quiet_enabled = (
+            quiet_hours_enabled
+            if quiet_hours_enabled is not None
+            else bool(current["quiet_hours_enabled"])
+        )
+        final_quiet_start = (
+            int(quiet_start_minute)
+            if quiet_start_minute is not None
+            else int(current["quiet_start_minute"])
+        )
+        final_quiet_end = (
+            int(quiet_end_minute)
+            if quiet_end_minute is not None
+            else int(current["quiet_end_minute"])
+        )
+        if final_quiet_enabled and final_quiet_start == final_quiet_end:
+            raise ValueError("profile_quiet_hours_invalid")
         if primary_character_id is not _PREFERENCE_UNSET:
             clean_character_id = None
             if primary_character_id is not None:

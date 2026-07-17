@@ -284,6 +284,38 @@ def delivery_outbox_mark_failed(
         return True
 
 
+def delivery_outbox_defer(
+    item_id: int,
+    *,
+    lease_token: str,
+    available_at: str,
+    reason: str,
+    now: str | None = None,
+) -> bool:
+    """Return a leased delivery to the queue without consuming an attempt."""
+
+    updated_at = str(now or utc_now_iso())
+    with _db_lock, connect() as con:
+        cur = con.execute(
+            """
+            UPDATE delivery_outbox
+            SET status = 'retry', attempts = MAX(0, attempts - 1), available_at = ?,
+                lease_owner = NULL, lease_token = NULL, lease_until = NULL,
+                last_error = ?, updated_at = ?
+            WHERE id = ? AND status = 'processing' AND lease_token = ?
+            """,
+            (
+                str(available_at),
+                f"deferred:{str(reason or 'policy')[:200]}",
+                updated_at,
+                int(item_id),
+                str(lease_token),
+            ),
+        )
+        con.commit()
+        return cur.rowcount == 1
+
+
 def delivery_outbox_get(item_id: int) -> dict[str, Any] | None:
     with _db_lock, connect() as con:
         row = con.execute("SELECT * FROM delivery_outbox WHERE id = ?", (int(item_id),)).fetchone()
@@ -363,4 +395,4 @@ def delivery_outbox_requeue_dead(
         con.commit()
         return cur.rowcount == 1
 
-__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_get', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']
+__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']

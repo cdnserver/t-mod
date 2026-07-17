@@ -13,6 +13,7 @@ from discord.ext import commands
 
 from persistence import profile_context as storage
 from modules.technical_log import log_technical_event
+from modules.profile_notifications import PROFILE_TIMEZONE_NAME
 
 
 PROFILE_COLOR = 0x5865F2
@@ -44,6 +45,13 @@ PROFILE_VISIBILITY_INFO = {
     "members": ("🌐", "Участникам", "Профиль доступен участникам сервера"),
     "private": ("🔒", "Только мне", "Другие увидят закрытую карточку"),
 }
+PROFILE_DM_INFO = {
+    "dm_market": ("📈", "Рынок"),
+    "dm_craft": ("🛠️", "Крафт"),
+    "dm_consensus": ("🏛️", "Консенсус"),
+    "dm_finance": ("💰", "Финансы"),
+    "dm_system": ("🤖", "Системные"),
+}
 PROFILE_ERROR_MESSAGES = {
     "profile_nickname_invalid": "Ник должен содержать от 2 до 48 символов.",
     "profile_static_invalid": "Статик должен состоять из 1–12 цифр.",
@@ -57,6 +65,10 @@ PROFILE_ERROR_MESSAGES = {
     "profile_show_activity_invalid": "Не удалось изменить видимость активности.",
     "profile_theme_invalid": "Не удалось распознать оформление профиля.",
     "profile_primary_character_invalid": "Выбранный персонаж больше не находится в вашем профиле.",
+    "profile_boolean_preference_invalid": "Не удалось изменить персональную настройку.",
+    "profile_quiet_hours_invalid": (
+        "Проверьте время тихих часов: используйте ЧЧ:ММ, начало и конец должны отличаться."
+    ),
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
 
@@ -138,30 +150,36 @@ def profile_embed(
         )
         embed.set_footer(text="Личная настройка участника • T-Mod Profile")
         return embed
-    status_value = f"{emoji} **{status_label}** — {status_description}"
-    if status_note:
-        status_value += f"\n> {_clean_display(status_note)}"
-    embed.add_field(name="Доступность", value=status_value[:1024], inline=False)
+    if editable or bool(getattr(profile, "show_availability", True)):
+        status_value = f"{emoji} **{status_label}** — {status_description}"
+        if status_note:
+            status_value += f"\n> {_clean_display(status_note)}"
+        embed.add_field(name="Доступность", value=status_value[:1024], inline=False)
 
     joined_at = getattr(member, "joined_at", None)
-    show_activity = bool(getattr(profile, "show_activity", True))
+    show_activity = editable or bool(getattr(profile, "show_activity", True))
+    show_join_date = editable or bool(getattr(profile, "show_join_date", True))
     last_activity = getattr(activity, "last_activity_at", None)
     total_events = max(0, int(getattr(activity, "total_events", 0) or 0))
-    participation = (
-        f"На сервере: {_discord_time(joined_at, 'D')}\n"
-        f"Последняя активность: "
-        f"{_discord_time(last_activity) if show_activity else 'скрыта владельцем'}"
-    )
-    if total_events and show_activity:
-        participation += f" · событий: **{total_events:,}**".replace(",", " ")
-    embed.add_field(name="Участие", value=participation, inline=False)
-    embed.add_field(
-        name="Положение в Товариществе",
-        value=member_position_text(member)[:1024],
-        inline=False,
-    )
+    participation_lines = []
+    if show_join_date:
+        participation_lines.append(f"На сервере: {_discord_time(joined_at, 'D')}")
+    if show_activity:
+        activity_line = f"Последняя активность: {_discord_time(last_activity)}"
+        if total_events:
+            activity_line += f" · событий: **{total_events:,}**".replace(",", " ")
+        participation_lines.append(activity_line)
+    if participation_lines:
+        embed.add_field(name="Участие", value="\n".join(participation_lines), inline=False)
+    if editable or bool(getattr(profile, "show_position", True)):
+        embed.add_field(
+            name="Положение в Товариществе",
+            value=member_position_text(member)[:1024],
+            inline=False,
+        )
 
-    if not characters:
+    show_characters = editable or bool(getattr(profile, "show_characters", True))
+    if show_characters and not characters:
         embed.add_field(
             name="Персонажи · 0/3",
             value=(
@@ -170,7 +188,7 @@ def profile_embed(
             ),
             inline=False,
         )
-    else:
+    elif show_characters:
         primary_character_id = getattr(profile, "primary_character_id", None)
         for character in characters[: storage.PROFILE_MAX_CHARACTERS]:
             position = int(getattr(character, "position", 0) or 0)
@@ -239,7 +257,23 @@ def profile_settings_embed(
         PROFILE_VISIBILITY_INFO["members"],
     )
     theme_emoji, theme_label, theme_color = _profile_theme(profile)
-    show_activity = bool(getattr(profile, "show_activity", True))
+    privacy_fields = (
+        ("show_availability", "доступность"),
+        ("show_position", "положение"),
+        ("show_characters", "персонажи"),
+        ("show_join_date", "дата вступления"),
+        ("show_activity", "активность"),
+    )
+    hidden_fields = [
+        label for field, label in privacy_fields if not bool(getattr(profile, field, True))
+    ]
+    dm_enabled = bool(getattr(profile, "dm_notifications", True))
+    enabled_dm_kinds = sum(
+        1 for field in PROFILE_DM_INFO if bool(getattr(profile, field, True))
+    )
+    quiet_enabled = bool(getattr(profile, "quiet_hours_enabled", False))
+    quiet_start = int(getattr(profile, "quiet_start_minute", 0) or 0)
+    quiet_end = int(getattr(profile, "quiet_end_minute", 480) or 0)
     primary_character_id = getattr(profile, "primary_character_id", None)
     primary = next(
         (character for character in characters if character.id == primary_character_id),
@@ -259,26 +293,129 @@ def profile_settings_embed(
         color=theme_color,
     )
     embed.add_field(
-        name="Видимость",
-        value=f"{visibility_emoji} **{visibility_label}**\n{visibility_description}",
-        inline=True,
-    )
-    embed.add_field(
-        name="Активность",
+        name="Приватность",
         value=(
-            "👁️ **Показывается**\nПоследняя активность видна в карточке"
-            if show_activity
-            else "🙈 **Скрыта**\nВ карточке остаётся только дата вступления"
+            f"{visibility_emoji} **{visibility_label}**\n"
+            + (
+                f"Скрыто разделов: **{len(hidden_fields)}**"
+                if hidden_fields
+                else visibility_description
+            )
         ),
         inline=True,
     )
     embed.add_field(
-        name="Оформление",
-        value=f"{theme_emoji} **{theme_label}**",
+        name="Уведомления в ЛС",
+        value=(
+            f"🔔 **Включены** · разделов {enabled_dm_kinds}/{len(PROFILE_DM_INFO)}"
+            if dm_enabled
+            else "🔕 **Все отключены**"
+        ),
         inline=True,
     )
+    embed.add_field(
+        name="Тихие часы",
+        value=(
+            f"🌙 **{quiet_start // 60:02d}:{quiet_start % 60:02d}–"
+            f"{quiet_end // 60:02d}:{quiet_end % 60:02d}**"
+            if quiet_enabled
+            else "☀️ **Выключены**"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="Оформление", value=f"{theme_emoji} **{theme_label}**", inline=True)
     embed.add_field(name="Основной персонаж", value=primary_text, inline=False)
     embed.set_footer(text="Настройки можно вернуть к стандартным одной кнопкой • T-Mod Profile")
+    return embed
+
+
+def profile_privacy_embed(member: discord.Member, profile: Any | None) -> discord.Embed:
+    visibility = str(getattr(profile, "visibility", None) or "members")
+    emoji, label, description = PROFILE_VISIBILITY_INFO.get(
+        visibility,
+        PROFILE_VISIBILITY_INFO["members"],
+    )
+    settings = (
+        ("show_availability", "Доступность"),
+        ("show_position", "Положение в Товариществе"),
+        ("show_characters", "Персонажи"),
+        ("show_join_date", "Дата вступления"),
+        ("show_activity", "Последняя активность"),
+    )
+    lines = [
+        f"{'👁️' if bool(getattr(profile, field, True)) else '🙈'} **{name}**"
+        for field, name in settings
+    ]
+    embed = discord.Embed(
+        title="Приватность профиля",
+        description=f"Настройки видимости **{_clean_display(member.display_name)}**.",
+        color=_profile_theme(profile)[2],
+    )
+    embed.add_field(name="Доступ к профилю", value=f"{emoji} **{label}**\n{description}", inline=False)
+    embed.add_field(name="Отдельные разделы", value="\n".join(lines), inline=False)
+    embed.set_footer(text="Настройки влияют только на просмотр профиля другими участниками")
+    return embed
+
+
+def profile_notifications_embed(member: discord.Member, profile: Any | None) -> discord.Embed:
+    all_enabled = bool(getattr(profile, "dm_notifications", True))
+    lines = [
+        f"{'🔔' if bool(getattr(profile, field, True)) else '🔕'} {emoji} **{label}**"
+        for field, (emoji, label) in PROFILE_DM_INFO.items()
+    ]
+    embed = discord.Embed(
+        title="Уведомления в ЛС",
+        description=f"Личные уведомления **{_clean_display(member.display_name)}**.",
+        color=_profile_theme(profile)[2],
+    )
+    embed.add_field(
+        name="Общий переключатель",
+        value=(
+            "🔔 **Уведомления разрешены**"
+            if all_enabled
+            else "🔕 **Все необязательные уведомления отключены**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Разделы", value="\n".join(lines), inline=False)
+    embed.add_field(
+        name="Важно",
+        value=(
+            "Служебные сообщения, без которых нельзя подтвердить участие, проголосовать или "
+            "завершить обязательное действие, не блокируются этой настройкой."
+        ),
+        inline=False,
+    )
+    return embed
+
+
+def profile_quiet_hours_embed(member: discord.Member, profile: Any | None) -> discord.Embed:
+    enabled = bool(getattr(profile, "quiet_hours_enabled", False))
+    start = int(getattr(profile, "quiet_start_minute", 0) or 0)
+    end = int(getattr(profile, "quiet_end_minute", 480) or 0)
+    embed = discord.Embed(
+        title="Тихие часы",
+        description=f"Период без необязательных ЛС для **{_clean_display(member.display_name)}**.",
+        color=_profile_theme(profile)[2],
+    )
+    embed.add_field(
+        name="Текущий режим",
+        value=(
+            f"🌙 **{start // 60:02d}:{start % 60:02d}–{end // 60:02d}:{end % 60:02d}**"
+            if enabled
+            else "☀️ **Выключен**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Часовой пояс", value=f"`{PROFILE_TIMEZONE_NAME}`", inline=True)
+    embed.add_field(
+        name="Как работает",
+        value=(
+            "Уведомления не теряются и не расходуют попытки доставки. T-Mod откладывает их до "
+            "конца тихого периода. Обязательные интерактивные сообщения приходят сразу."
+        ),
+        inline=False,
+    )
     return embed
 
 
@@ -327,6 +464,51 @@ async def _edit_profile_settings(
     )
 
 
+async def _edit_profile_privacy(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    profile = await asyncio.to_thread(storage.get_member_profile, member.guild.id, member.id)
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_privacy_embed(member, profile),
+        view=ProfilePrivacyView(requester_id, member, profile),
+    )
+
+
+async def _edit_profile_notifications(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    profile = await asyncio.to_thread(storage.get_member_profile, member.guild.id, member.id)
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_notifications_embed(member, profile),
+        view=ProfileNotificationsView(requester_id, member, profile),
+    )
+
+
+async def _edit_profile_quiet_hours(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    profile = await asyncio.to_thread(storage.get_member_profile, member.guild.id, member.id)
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_quiet_hours_embed(member, profile),
+        view=ProfileQuietHoursView(requester_id, member, profile),
+    )
+
+
 async def _send_profile_error(interaction: discord.Interaction, exc: ValueError) -> None:
     message = PROFILE_ERROR_MESSAGES.get(str(exc), "Не удалось сохранить изменения профиля.")
     await interaction.followup.send(message, ephemeral=True)
@@ -336,6 +518,8 @@ async def _save_profile_preferences(
     interaction: discord.Interaction,
     requester_id: int,
     member: discord.Member,
+    *,
+    return_to: str = "settings",
     **changes: Any,
 ) -> None:
     if not interaction.response.is_done():
@@ -350,7 +534,12 @@ async def _save_profile_preferences(
     except ValueError as exc:
         await _send_profile_error(interaction, exc)
         return
-    await _edit_profile_settings(interaction, requester_id, member)
+    destination = {
+        "privacy": _edit_profile_privacy,
+        "notifications": _edit_profile_notifications,
+        "quiet_hours": _edit_profile_quiet_hours,
+    }.get(return_to, _edit_profile_settings)
+    await destination(interaction, requester_id, member)
 
 
 async def _report_unexpected_profile_error(
@@ -592,6 +781,7 @@ class ProfileVisibilitySelect(discord.ui.Select):
             interaction,
             self.requester_id,
             self.member,
+            return_to="privacy",
             visibility=self.values[0],
         )
 
@@ -610,7 +800,7 @@ class ProfileThemeSelect(discord.ui.Select):
             )
             for key, (emoji, label, _) in PROFILE_THEME_INFO.items()
         ]
-        super().__init__(placeholder="Оформление карточки", options=options, row=1)
+        super().__init__(placeholder="Оформление карточки", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await _save_profile_preferences(
@@ -650,7 +840,7 @@ class ProfilePrimaryCharacterSelect(discord.ui.Select):
             )
             for character in characters
         )
-        super().__init__(placeholder="Основной персонаж", options=options, row=2)
+        super().__init__(placeholder="Основной персонаж", options=options, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         selected_id = None if self.values[0] == "none" else int(self.values[0])
@@ -660,6 +850,233 @@ class ProfilePrimaryCharacterSelect(discord.ui.Select):
             self.member,
             primary_character_id=selected_id,
         )
+
+
+class ProfilePreferenceToggle(discord.ui.Button):
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        *,
+        field: str,
+        label: str,
+        current: bool,
+        return_to: str,
+        row: int,
+        emoji: str,
+    ) -> None:
+        super().__init__(
+            label=label,
+            emoji=emoji,
+            style=discord.ButtonStyle.success if current else discord.ButtonStyle.secondary,
+            row=row,
+        )
+        self.requester_id = int(requester_id)
+        self.member = member
+        self.field = field
+        self.current = bool(current)
+        self.return_to = return_to
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            return_to=self.return_to,
+            **{self.field: not self.current},
+        )
+
+
+class ProfilePrivacyView(ProfileBaseView):
+    def __init__(self, requester_id: int, member: discord.Member, profile: Any | None) -> None:
+        super().__init__(requester_id)
+        self.member = member
+        visibility = str(getattr(profile, "visibility", None) or "members")
+        self.add_item(ProfileVisibilitySelect(requester_id, member, visibility))
+        for field, label, emoji, row in (
+            ("show_availability", "Доступность", "🟢", 1),
+            ("show_position", "Положение", "🏛️", 1),
+            ("show_characters", "Персонажи", "🎭", 1),
+            ("show_join_date", "Дата вступления", "📅", 2),
+            ("show_activity", "Активность", "📊", 2),
+        ):
+            self.add_item(
+                ProfilePreferenceToggle(
+                    requester_id,
+                    member,
+                    field=field,
+                    label=label,
+                    current=bool(getattr(profile, field, True)),
+                    return_to="privacy",
+                    row=row,
+                    emoji=emoji,
+                )
+            )
+
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_settings(interaction, self.requester_id, self.member)
+
+
+class ProfileNotificationsView(ProfileBaseView):
+    def __init__(self, requester_id: int, member: discord.Member, profile: Any | None) -> None:
+        super().__init__(requester_id)
+        self.member = member
+        self.add_item(
+            ProfilePreferenceToggle(
+                requester_id,
+                member,
+                field="dm_notifications",
+                label="Все уведомления",
+                current=bool(getattr(profile, "dm_notifications", True)),
+                return_to="notifications",
+                row=0,
+                emoji="🔔",
+            )
+        )
+        for field, (emoji, label) in PROFILE_DM_INFO.items():
+            self.add_item(
+                ProfilePreferenceToggle(
+                    requester_id,
+                    member,
+                    field=field,
+                    label=label,
+                    current=bool(getattr(profile, field, True)),
+                    return_to="notifications",
+                    row=1,
+                    emoji=emoji,
+                )
+            )
+
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=2)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_settings(interaction, self.requester_id, self.member)
+
+
+def parse_profile_clock(value: str) -> int:
+    raw = str(value or "").strip()
+    parts = raw.split(":")
+    if len(parts) != 2 or not all(part.isascii() and part.isdigit() for part in parts):
+        raise ValueError("profile_quiet_hours_invalid")
+    hour, minute = (int(part) for part in parts)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError("profile_quiet_hours_invalid")
+    return hour * 60 + minute
+
+
+class QuietHoursModal(ProfileModal, title="Свои тихие часы"):
+    start = discord.ui.TextInput(label="Начало", placeholder="23:00", min_length=4, max_length=5)
+    end = discord.ui.TextInput(label="Конец", placeholder="08:00", min_length=4, max_length=5)
+
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        start_minute: int,
+        end_minute: int,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.requester_id = int(requester_id)
+        self.member = member
+        self.start.default = f"{start_minute // 60:02d}:{start_minute % 60:02d}"
+        self.end.default = f"{end_minute // 60:02d}:{end_minute % 60:02d}"
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Нельзя изменить чужие настройки.", ephemeral=True)
+            return
+        try:
+            start_minute = parse_profile_clock(str(self.start.value))
+            end_minute = parse_profile_clock(str(self.end.value))
+            if start_minute == end_minute:
+                raise ValueError("profile_quiet_hours_invalid")
+        except ValueError as exc:
+            await interaction.response.send_message(
+                PROFILE_ERROR_MESSAGES.get(str(exc), "Укажите время в формате ЧЧ:ММ."),
+                ephemeral=True,
+            )
+            return
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            return_to="quiet_hours",
+            quiet_hours_enabled=True,
+            quiet_start_minute=start_minute,
+            quiet_end_minute=end_minute,
+        )
+
+
+class QuietHoursPresetSelect(discord.ui.Select):
+    PRESETS = {
+        "off": (False, 0, 480),
+        "23-07": (True, 23 * 60, 7 * 60),
+        "00-08": (True, 0, 8 * 60),
+        "02-09": (True, 2 * 60, 9 * 60),
+    }
+
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        profile: Any | None,
+    ) -> None:
+        self.requester_id = int(requester_id)
+        self.member = member
+        enabled = bool(getattr(profile, "quiet_hours_enabled", False))
+        start = int(getattr(profile, "quiet_start_minute", 0) or 0)
+        end = int(getattr(profile, "quiet_end_minute", 480) or 0)
+        current = next(
+            (
+                key
+                for key, values in self.PRESETS.items()
+                if values == (enabled, start, end)
+            ),
+            None,
+        )
+        options = [
+            discord.SelectOption(label="Выключить", value="off", emoji="☀️", default=current == "off"),
+            discord.SelectOption(label="23:00–07:00", value="23-07", emoji="🌙", default=current == "23-07"),
+            discord.SelectOption(label="00:00–08:00", value="00-08", emoji="🌙", default=current == "00-08"),
+            discord.SelectOption(label="02:00–09:00", value="02-09", emoji="🌙", default=current == "02-09"),
+        ]
+        super().__init__(placeholder="Выберите готовый режим", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        enabled, start, end = self.PRESETS[self.values[0]]
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            return_to="quiet_hours",
+            quiet_hours_enabled=enabled,
+            quiet_start_minute=start,
+            quiet_end_minute=end,
+        )
+
+
+class ProfileQuietHoursView(ProfileBaseView):
+    def __init__(self, requester_id: int, member: discord.Member, profile: Any | None) -> None:
+        super().__init__(requester_id)
+        self.member = member
+        self.start_minute = int(getattr(profile, "quiet_start_minute", 0) or 0)
+        self.end_minute = int(getattr(profile, "quiet_end_minute", 480) or 0)
+        self.add_item(QuietHoursPresetSelect(requester_id, member, profile))
+
+    @discord.ui.button(label="Своё время", emoji="✍️", style=discord.ButtonStyle.primary, row=1)
+    async def custom(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            QuietHoursModal(
+                self.requester_id,
+                self.member,
+                self.start_minute,
+                self.end_minute,
+            )
+        )
+
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_settings(interaction, self.requester_id, self.member)
 
 
 class ProfileSettingsView(ProfileBaseView):
@@ -673,11 +1090,8 @@ class ProfileSettingsView(ProfileBaseView):
         super().__init__(requester_id)
         self.member = member
         self.characters = characters
-        self.show_activity = bool(getattr(profile, "show_activity", True))
-        visibility = str(getattr(profile, "visibility", None) or "members")
         theme = str(getattr(profile, "theme", None) or "indigo")
         primary_character_id = getattr(profile, "primary_character_id", None)
-        self.add_item(ProfileVisibilitySelect(requester_id, member, visibility))
         self.add_item(ProfileThemeSelect(requester_id, member, theme))
         if characters:
             self.add_item(
@@ -688,21 +1102,20 @@ class ProfileSettingsView(ProfileBaseView):
                     primary_character_id,
                 )
             )
-        self.activity.label = (
-            "Активность: видна" if self.show_activity else "Активность: скрыта"
-        )
-        self.activity.emoji = "👁️" if self.show_activity else "🙈"
 
-    @discord.ui.button(label="Активность", style=discord.ButtonStyle.secondary, row=3)
-    async def activity(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await _save_profile_preferences(
-            interaction,
-            self.requester_id,
-            self.member,
-            show_activity=not self.show_activity,
-        )
+    @discord.ui.button(label="Приватность", emoji="🔐", style=discord.ButtonStyle.secondary, row=2)
+    async def privacy(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_privacy(interaction, self.requester_id, self.member)
 
-    @discord.ui.button(label="По умолчанию", emoji="♻️", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Уведомления", emoji="🔔", style=discord.ButtonStyle.secondary, row=2)
+    async def notifications(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_notifications(interaction, self.requester_id, self.member)
+
+    @discord.ui.button(label="Тихие часы", emoji="🌙", style=discord.ButtonStyle.secondary, row=2)
+    async def quiet_hours(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_quiet_hours(interaction, self.requester_id, self.member)
+
+    @discord.ui.button(label="По умолчанию", emoji="♻️", style=discord.ButtonStyle.secondary, row=3)
     async def reset(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _save_profile_preferences(
             interaction,
@@ -710,11 +1123,24 @@ class ProfileSettingsView(ProfileBaseView):
             self.member,
             visibility="members",
             show_activity=True,
+            show_availability=True,
+            show_position=True,
+            show_characters=True,
+            show_join_date=True,
             theme="indigo",
             primary_character_id=(self.characters[0].id if self.characters else None),
+            dm_notifications=True,
+            dm_market=True,
+            dm_craft=True,
+            dm_consensus=True,
+            dm_finance=True,
+            dm_system=True,
+            quiet_hours_enabled=False,
+            quiet_start_minute=0,
+            quiet_end_minute=480,
         )
 
-    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _edit_profile_home(interaction, self.requester_id, self.member)
 

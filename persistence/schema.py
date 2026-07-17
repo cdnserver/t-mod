@@ -152,9 +152,22 @@ def init_db() -> None:
                 visibility TEXT NOT NULL DEFAULT 'members'
                     CHECK(visibility IN ('members', 'private')),
                 show_activity INTEGER NOT NULL DEFAULT 1,
+                show_availability INTEGER NOT NULL DEFAULT 1,
+                show_position INTEGER NOT NULL DEFAULT 1,
+                show_characters INTEGER NOT NULL DEFAULT 1,
+                show_join_date INTEGER NOT NULL DEFAULT 1,
                 theme TEXT NOT NULL DEFAULT 'indigo'
                     CHECK(theme IN ('indigo', 'emerald', 'gold', 'rose')),
                 primary_character_id INTEGER,
+                dm_notifications INTEGER NOT NULL DEFAULT 1,
+                dm_market INTEGER NOT NULL DEFAULT 1,
+                dm_craft INTEGER NOT NULL DEFAULT 1,
+                dm_consensus INTEGER NOT NULL DEFAULT 1,
+                dm_finance INTEGER NOT NULL DEFAULT 1,
+                dm_system INTEGER NOT NULL DEFAULT 1,
+                quiet_hours_enabled INTEGER NOT NULL DEFAULT 0,
+                quiet_start_minute INTEGER NOT NULL DEFAULT 0,
+                quiet_end_minute INTEGER NOT NULL DEFAULT 480,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
@@ -895,8 +908,21 @@ def init_db() -> None:
         for column, definition in {
             "visibility": "TEXT NOT NULL DEFAULT 'members'",
             "show_activity": "INTEGER NOT NULL DEFAULT 1",
+            "show_availability": "INTEGER NOT NULL DEFAULT 1",
+            "show_position": "INTEGER NOT NULL DEFAULT 1",
+            "show_characters": "INTEGER NOT NULL DEFAULT 1",
+            "show_join_date": "INTEGER NOT NULL DEFAULT 1",
             "theme": "TEXT NOT NULL DEFAULT 'indigo'",
             "primary_character_id": "INTEGER",
+            "dm_notifications": "INTEGER NOT NULL DEFAULT 1",
+            "dm_market": "INTEGER NOT NULL DEFAULT 1",
+            "dm_craft": "INTEGER NOT NULL DEFAULT 1",
+            "dm_consensus": "INTEGER NOT NULL DEFAULT 1",
+            "dm_finance": "INTEGER NOT NULL DEFAULT 1",
+            "dm_system": "INTEGER NOT NULL DEFAULT 1",
+            "quiet_hours_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "quiet_start_minute": "INTEGER NOT NULL DEFAULT 0",
+            "quiet_end_minute": "INTEGER NOT NULL DEFAULT 480",
         }.items():
             _add_column_if_missing(con, "member_profiles", column, definition)
         _add_column_if_missing(con, "activity_events", "category_id", "INTEGER")
@@ -1339,7 +1365,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-18-profile-preferences-v1")
+        set_meta(con, "schema_version", "2026-07-18-profile-notifications-v1")
         con.commit()
 
 

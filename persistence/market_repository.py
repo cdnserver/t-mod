@@ -627,7 +627,7 @@ def market_pending_alert_notifications(limit: int = 25) -> list[dict[str, Any]]:
     with _db_lock, connect() as con:
         rows = con.execute(
             """
-            SELECT n.*, a.discord_user_id, a.server_id, a.category, a.item_id,
+            SELECT n.*, a.discord_user_id, a.guild_id, a.server_id, a.category, a.item_id,
                    a.target_price, a.min_quantity, i.external_id, i.metadata_json
             FROM market_alert_notifications n
             JOIN market_alerts a ON a.id = n.alert_id
@@ -641,6 +641,21 @@ def market_pending_alert_notifications(limit: int = 25) -> list[dict[str, Any]]:
             (now, max(1, min(int(limit), 100))),
         ).fetchall()
     return [parsed for row in rows if (parsed := _market_row_dict(row)) is not None]
+
+
+def market_defer_alert_notification(notification_id: int, available_at: str) -> bool:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            UPDATE market_alert_notifications
+            SET status = 'retry', next_attempt_at = ?, last_error = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('pending', 'retry')
+            """,
+            (str(available_at), now, int(notification_id)),
+        )
+        con.commit()
+        return cursor.rowcount == 1
 
 
 def market_mark_alert_delivery(
@@ -716,4 +731,4 @@ def market_mark_alert_delivery(
         ).fetchone()
     return dict(result) if result is not None else None
 
-__all__ = ['_market_optional_non_negative_int', '_market_row_dict', 'market_replace_snapshot', 'market_record_sync_error', 'market_catalog_status', 'market_list_items', 'market_get_item', 'market_popular_items', 'market_item_history', 'market_upsert_alert', 'market_get_alert', 'market_list_user_alerts', 'market_alert_stats', 'market_set_alert_status', 'market_delete_alert', 'market_evaluate_alerts', 'market_pending_alert_notifications', 'market_mark_alert_delivery']
+__all__ = ['_market_optional_non_negative_int', '_market_row_dict', 'market_replace_snapshot', 'market_record_sync_error', 'market_catalog_status', 'market_list_items', 'market_get_item', 'market_popular_items', 'market_item_history', 'market_upsert_alert', 'market_get_alert', 'market_list_user_alerts', 'market_alert_stats', 'market_set_alert_status', 'market_delete_alert', 'market_evaluate_alerts', 'market_pending_alert_notifications', 'market_defer_alert_notification', 'market_mark_alert_delivery']

@@ -63,6 +63,13 @@ class DeliveryReceipt:
     message_id: int | None = None
 
 
+class DeliveryDeferred(Exception):
+    def __init__(self, available_at: datetime, reason: str = "policy") -> None:
+        super().__init__(reason)
+        self.available_at = _as_utc(available_at)
+        self.reason = str(reason or "policy")
+
+
 class OutboxRepository(Protocol):
     def claim(self, *, worker_id: str, limit: int, lease_seconds: int, now: datetime) -> list[OutboxMessage]: ...
 
@@ -78,6 +85,15 @@ class OutboxRepository(Protocol):
         retry_at: datetime,
         now: datetime,
         permanent: bool = False,
+    ) -> bool: ...
+
+    def defer(
+        self,
+        message: OutboxMessage,
+        *,
+        available_at: datetime,
+        reason: str,
+        now: datetime,
     ) -> bool: ...
 
 
@@ -137,6 +153,22 @@ class StorageOutboxRepository:
             error=f"{type(error).__name__}: {error}",
             retry_at=_as_utc(retry_at).isoformat(),
             permanent=permanent,
+            now=_as_utc(now).isoformat(),
+        )
+
+    def defer(
+        self,
+        message: OutboxMessage,
+        *,
+        available_at: datetime,
+        reason: str,
+        now: datetime,
+    ) -> bool:
+        return storage.delivery_outbox_defer(
+            message.id,
+            lease_token=message.lease_token,
+            available_at=_as_utc(available_at).isoformat(),
+            reason=reason,
             now=_as_utc(now).isoformat(),
         )
 
@@ -232,6 +264,15 @@ class OutboxDispatcher:
                     if isinstance(raw_receipt, DeliveryReceipt)
                     else DeliveryReceipt(message_id=int(raw_receipt) if raw_receipt else None)
                 )
+            except DeliveryDeferred as deferred:
+                await asyncio.to_thread(
+                    self.repository.defer,
+                    message,
+                    available_at=deferred.available_at,
+                    reason=deferred.reason,
+                    now=_as_utc(self.clock()),
+                )
+                continue
             except Exception as exc:
                 failed_at = _as_utc(self.clock())
                 retry_at = failed_at + timedelta(seconds=self.retry_delay(message.attempts))
