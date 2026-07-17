@@ -9,6 +9,7 @@ from persistence import core as _core
 from persistence import activity_repository as _activity_repository
 from persistence import outbox_repository as _outbox_repository
 from persistence import sgl_repository as _sgl_repository
+from persistence import sgl_archive_repository as _sgl_archive_repository
 from persistence import admin_repository as _admin_repository
 from persistence import tvrs_repository as _tvrs_repository
 from persistence import finance_repository as _finance_repository
@@ -22,6 +23,7 @@ _PERSISTENCE_MODULES = (
     _activity_repository,
     _outbox_repository,
     _sgl_repository,
+    _sgl_archive_repository,
     _admin_repository,
     _tvrs_repository,
     _finance_repository,

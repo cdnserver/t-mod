@@ -120,6 +120,71 @@ class SGLCase:
 
 
 @dataclass(slots=True)
+class SGLCaseArchive:
+    id: int
+    guild_id: int
+    case_id: int | None
+    case_number: int
+    original_channel_id: int
+    original_channel_name: str
+    original_topic: str | None
+    original_category_id: int | None
+    status: str
+    message_count: int
+    attachment_count: int
+    total_bytes: int
+    snapshot_started_at: str
+    snapshot_completed_at: str | None
+    source_deleted_at: str | None
+    metadata_json: str
+    last_error: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class SGLArchiveMessage:
+    id: int
+    archive_id: int
+    original_message_id: int
+    container_id: int
+    container_type: str
+    container_name: str
+    author_id: int | None
+    author_name: str
+    author_display: str
+    author_avatar_url: str | None
+    author_is_bot: bool
+    content: str
+    embeds_json: str
+    attachments_json: str
+    stickers_json: str
+    reactions_json: str
+    components_json: str
+    reference_message_id: int | None
+    created_at: str
+    edited_at: str | None
+    pinned: bool
+    position: int
+
+
+@dataclass(slots=True)
+class SGLArchiveRestoration:
+    id: int
+    archive_id: int
+    guild_id: int
+    restored_channel_id: int
+    restored_by_id: int
+    restored_by_display: str
+    status: str
+    restored_at: str
+    completed_at: str | None
+    expires_at: str
+    deleted_at: str | None
+    last_error: str | None
+
+
+@dataclass(slots=True)
 class ClientProfile:
     id: int
     guild_id: int
@@ -240,4 +305,4 @@ def _tvrs_bill_from_row(row: sqlite3.Row | None) -> TVRSBill | None:
         updated_at=str(row["updated_at"]),
     )
 
-__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'SGLReceipt', 'SGLCase', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']
+__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']

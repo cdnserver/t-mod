@@ -95,5 +95,18 @@ class TvrsBoundaryTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class SglArchiveBoundaryTests(unittest.TestCase):
+    def test_archive_capture_and_restore_are_separate_bounded_modules(self) -> None:
+        names = ("sgl_archive.py", "sgl_archive_restore.py")
+        sizes = {
+            name: len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            for name in names
+        }
+        self.assertEqual(
+            {name: size for name, size in sizes.items() if size > 1000},
+            {},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

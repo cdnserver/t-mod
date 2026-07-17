@@ -3,6 +3,9 @@
 from persistence.core import ClientProfile as ClientProfile
 from persistence.core import LawyerProfile as LawyerProfile
 from persistence.core import SGLCase as SGLCase
+from persistence.core import SGLCaseArchive as SGLCaseArchive
+from persistence.core import SGLArchiveMessage as SGLArchiveMessage
+from persistence.core import SGLArchiveRestoration as SGLArchiveRestoration
 from persistence.core import SGLReceipt as SGLReceipt
 from persistence.activity_repository import record_bureau_announcement as record_bureau_announcement
 from persistence.admin_repository import (
@@ -14,3 +17,4 @@ from persistence.admin_repository import (
     normalize_admin_target as normalize_admin_target,
 )
 from persistence.sgl_repository import *  # noqa: F403
+from persistence.sgl_archive_repository import *  # noqa: F403
