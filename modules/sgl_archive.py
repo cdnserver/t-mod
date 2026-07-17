@@ -190,21 +190,31 @@ async def _archive_attachment(
     filename = f"{int(message_id)}-{int(attachment.id)}-{clean_name}"
     target = directory / filename
     expected_size = int(attachment.size or 0)
+    download_variant = "existing"
 
-    if not target.exists() or (expected_size and target.stat().st_size != expected_size):
+    # Discord's media proxy may transcode images, so its byte count can differ
+    # from Attachment.size and some assets return 415 through the proxy. The
+    # original CDN URL is the canonical source; the proxy is only a fallback
+    # for older assets whose original URL is no longer available.
+    if not target.is_file() or target.stat().st_size <= 0:
         temporary = target.with_suffix(target.suffix + ".part")
-        temporary.unlink(missing_ok=True)
-        try:
-            await attachment.save(temporary, use_cached=True)
-            if expected_size and temporary.stat().st_size != expected_size:
-                raise IOError(
-                    f"attachment_size_mismatch:{attachment.id}:"
-                    f"{temporary.stat().st_size}!={expected_size}"
-                )
-            temporary.replace(target)
-        except Exception:
+        failures: list[str] = []
+        for use_cached, variant in ((False, "original_cdn"), (True, "media_proxy")):
             temporary.unlink(missing_ok=True)
-            raise
+            try:
+                await attachment.save(temporary, use_cached=use_cached)
+                if not temporary.is_file() or temporary.stat().st_size <= 0:
+                    raise IOError("empty_attachment_response")
+                temporary.replace(target)
+                download_variant = variant
+                break
+            except Exception as exc:
+                temporary.unlink(missing_ok=True)
+                failures.append(f"{variant}:{type(exc).__name__}:{str(exc)[:300]}")
+        else:
+            raise IOError(
+                f"attachment_download_failed:{attachment.id}:" + " | ".join(failures)
+            )
 
     root = storage.sgl_archive_root().resolve()
     resolved = target.resolve()
@@ -217,6 +227,8 @@ async def _archive_attachment(
         "content_type": attachment.content_type,
         "description": getattr(attachment, "description", None),
         "size": int(target.stat().st_size),
+        "discord_reported_size": expected_size,
+        "download_variant": download_variant,
         "spoiler": bool(attachment.is_spoiler()),
         "local_path": resolved.relative_to(root).as_posix(),
         "sha256": sha256,

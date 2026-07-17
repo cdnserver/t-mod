@@ -202,6 +202,79 @@ class SGLArchivePolicyTests(unittest.TestCase):
         )
 
 
+class SGLArchiveAttachmentDownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.previous_data_dir = core.DATA_DIR
+        core.DATA_DIR = Path(self.temp_dir.name)
+        self.directory = archive_repository.sgl_archive_case_directory(10, 90)
+
+    async def asyncTearDown(self) -> None:
+        core.DATA_DIR = self.previous_data_dir
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _attachment(save: AsyncMock) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=9000,
+            filename="evidence.png",
+            size=9700,
+            content_type="image/png",
+            description=None,
+            is_spoiler=lambda: False,
+            save=save,
+        )
+
+    async def test_original_cdn_is_used_before_media_proxy(self) -> None:
+        calls: list[bool] = []
+
+        async def save(path: Path, *, use_cached: bool) -> None:
+            calls.append(use_cached)
+            Path(path).write_bytes(b"a-valid-file-with-a-different-reported-size")
+
+        result = await sgl_archive._archive_attachment(
+            self._attachment(AsyncMock(side_effect=save)),
+            message_id=8000,
+            directory=self.directory,
+        )
+        self.assertEqual(calls, [False])
+        self.assertEqual(result["download_variant"], "original_cdn")
+        self.assertEqual(result["discord_reported_size"], 9700)
+        self.assertNotEqual(result["size"], result["discord_reported_size"])
+
+    async def test_proxy_is_only_used_when_original_download_fails(self) -> None:
+        calls: list[bool] = []
+
+        async def save(path: Path, *, use_cached: bool) -> None:
+            calls.append(use_cached)
+            if not use_cached:
+                raise RuntimeError("original unavailable")
+            Path(path).write_bytes(b"proxy-copy")
+
+        result = await sgl_archive._archive_attachment(
+            self._attachment(AsyncMock(side_effect=save)),
+            message_id=8001,
+            directory=self.directory,
+        )
+        self.assertEqual(calls, [False, True])
+        self.assertEqual(result["download_variant"], "media_proxy")
+        self.assertEqual(result["size"], len(b"proxy-copy"))
+
+    async def test_failed_variants_leave_no_partial_file(self) -> None:
+        async def save(path: Path, *, use_cached: bool) -> None:
+            Path(path).write_bytes(b"partial")
+            raise RuntimeError(f"failed:{use_cached}")
+
+        with self.assertRaisesRegex(OSError, "attachment_download_failed"):
+            await sgl_archive._archive_attachment(
+                self._attachment(AsyncMock(side_effect=save)),
+                message_id=8002,
+                directory=self.directory,
+            )
+        self.assertEqual(list(self.directory.glob("*.part")), [])
+        self.assertEqual(list(self.directory.glob("8002-*")), [])
+
+
 class SGLArchiveDeletionSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_maintenance_sweeps_existing_archive_and_sets_marker(self) -> None:
         guild = SimpleNamespace(id=10)
