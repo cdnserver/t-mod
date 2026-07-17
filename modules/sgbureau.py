@@ -1,7 +1,7 @@
 import asyncio
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -780,7 +780,7 @@ async def archive_case_channel(bot: commands.Bot, guild: discord.Guild, case: st
         if staff_role is not None:
             await channel.set_permissions(staff_role, view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True)
         if guild.me is not None:
-            await channel.set_permissions(guild.me, view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True, manage_channels=True)
+            await channel.set_permissions(guild.me, view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True, manage_channels=True, manage_threads=True)
     except discord.HTTPException:
         pass
 
@@ -2365,7 +2365,7 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if staff_role is not None:
             overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True)
         if interaction.guild.me is not None:
-            overwrites[interaction.guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True, manage_channels=True)
+            overwrites[interaction.guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True, manage_messages=True, manage_channels=True, manage_threads=True)
 
         try:
             channel = await interaction.guild.create_text_channel(
@@ -2464,7 +2464,6 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         await schedule_pending_case_archives(bot)
         for guild in bot.guilds:
             schedule_case_reorder(bot, guild.id, SGBUREAU_CATEGORY_ID)
-            schedule_case_reorder(bot, guild.id, SGBUREAU_ARCHIVE_CATEGORY_ID)
 
     bot.add_listener(handle_sgbureau_ready, "on_ready")
     bot.add_listener(handle_case_message, "on_message")

@@ -13,6 +13,7 @@ from discord.ext import commands
 import storage
 from localization import LOCALIZATION_FILE, safe_command_description, safe_command_name, t
 from modules.sgbureau import SGBUREAU_CATEGORY_ID, SGBUREAU_COMMAND_CHANNEL_ID, SGBUREAU_NEWS_CHANNEL_ID, register_sgbureau_persistent_views, setup_sgbureau
+from modules.sgl_archive import setup_sgl_archive
 from modules.sglaudio import setup_sglaudio
 from modules.zigmund import setup_zigmund
 from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure_sticky_all
@@ -90,6 +91,7 @@ TVRS_EVENT_TYPES = {
     "command_sg_registry",
     "command_sg_lawyeradd",
     "command_sg_admin",
+    "command_sg_restore",
     "command_tvrs_setbill",
     "command_tvrs_sticky",
     "command_tvrs",
@@ -968,6 +970,8 @@ boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
 boot_module("SGL Bureau")
 setup_sgbureau(bot, remember_command_activity)
+boot_module("SGL Case Archive")
+setup_sgl_archive(bot, remember_command_activity)
 boot_module("SGL Contracts")
 boot_module("SGL Audio")
 setup_sglaudio(bot, remember_command_activity)

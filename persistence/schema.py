@@ -254,6 +254,73 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS sgl_case_archives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER,
+                case_number INTEGER NOT NULL,
+                original_channel_id INTEGER NOT NULL,
+                original_channel_name TEXT NOT NULL,
+                original_topic TEXT,
+                original_category_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'capturing',
+                message_count INTEGER NOT NULL DEFAULT 0,
+                attachment_count INTEGER NOT NULL DEFAULT 0,
+                total_bytes INTEGER NOT NULL DEFAULT 0,
+                snapshot_started_at TEXT NOT NULL,
+                snapshot_completed_at TEXT,
+                source_deleted_at TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, case_number),
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sgl_case_archive_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_id INTEGER NOT NULL,
+                original_message_id INTEGER NOT NULL,
+                container_id INTEGER NOT NULL,
+                container_type TEXT NOT NULL DEFAULT 'channel',
+                container_name TEXT NOT NULL DEFAULT '',
+                author_id INTEGER,
+                author_name TEXT NOT NULL DEFAULT '',
+                author_display TEXT NOT NULL DEFAULT '',
+                author_avatar_url TEXT,
+                author_is_bot INTEGER NOT NULL DEFAULT 0,
+                content TEXT NOT NULL DEFAULT '',
+                embeds_json TEXT NOT NULL DEFAULT '[]',
+                attachments_json TEXT NOT NULL DEFAULT '[]',
+                stickers_json TEXT NOT NULL DEFAULT '[]',
+                reactions_json TEXT NOT NULL DEFAULT '[]',
+                components_json TEXT NOT NULL DEFAULT '[]',
+                reference_message_id INTEGER,
+                created_at TEXT NOT NULL,
+                edited_at TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL,
+                UNIQUE(archive_id, original_message_id),
+                FOREIGN KEY (archive_id) REFERENCES sgl_case_archives(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sgl_case_archive_restorations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                restored_channel_id INTEGER NOT NULL,
+                restored_by_id INTEGER NOT NULL,
+                restored_by_display TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'restoring',
+                restored_at TEXT NOT NULL,
+                completed_at TEXT,
+                expires_at TEXT NOT NULL,
+                deleted_at TEXT,
+                last_error TEXT,
+                FOREIGN KEY (archive_id) REFERENCES sgl_case_archives(id) ON DELETE CASCADE
+            );
+
 
             CREATE TABLE IF NOT EXISTS sgl_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1009,6 +1076,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_sgl_case_events_case
             ON sgl_case_events(case_id, created_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_archives_source
+            ON sgl_case_archives(guild_id, original_channel_id);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_archives_status
+            ON sgl_case_archives(guild_id, status, source_deleted_at);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_archive_messages_order
+            ON sgl_case_archive_messages(archive_id, position ASC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_archive_restorations_active
+            ON sgl_case_archive_restorations(guild_id, status, expires_at);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sgl_archive_one_active_restoration
+            ON sgl_case_archive_restorations(archive_id)
+            WHERE deleted_at IS NULL AND status IN ('restoring', 'complete');
+
             CREATE INDEX IF NOT EXISTS idx_sgl_receipts_case
             ON sgl_receipts(case_id, created_at DESC);
 
@@ -1214,7 +1297,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-17-production-outbox-v1")
+        set_meta(con, "schema_version", "2026-07-17-sgl-case-archive-v1")
         con.commit()
 
 
