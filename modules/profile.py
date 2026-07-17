@@ -23,14 +23,25 @@ PROFILE_STATUS_INFO = {
     "away": ("🌙", "Отошёл", "Временно не у компьютера"),
     "vacation": ("🏖️", "В отпуске", "Долгое отсутствие"),
 }
+PROFILE_ROLE_HIERARCHY = (
+    (1488207163879985233, "🛡️", "Администратор", "Администрирование сообщества"),
+    (1499717656276635778, "🏛️", "Сопредседатель", "Руководство Товариществом"),
+    (1500563715622174881, "📜", "Сенатор Товарищества", "Участие в управлении"),
+    (1500567343703527607, "🚔", "Сотрудник силовой фракции", "Служба в силовой структуре"),
+    (1500567401580990484, "⚖️", "Судья / прокурор", "Судебная или прокурорская должность"),
+    (1500488424191295518, "💼", "Представитель Бюро SGL", "Работа от имени Бюро"),
+    (1500488373666840587, "🤝", "Клиент Бюро SGL", "Клиентский статус Бюро"),
+    (1526194626531299378, "🛠️", "Старший мастер крафта", "Старшая работа с производством"),
+    (1526605619153473546, "📦", "Сотрудник склада", "Младшая работа со складом"),
+)
 PROFILE_ERROR_MESSAGES = {
     "profile_nickname_invalid": "Ник должен содержать от 2 до 48 символов.",
     "profile_static_invalid": "Статик должен состоять из 1–12 цифр.",
     "profile_static_taken": "Этот статик уже привязан к другому персонажу на сервере.",
     "profile_character_limit": "В профиле уже сохранены три персонажа.",
     "profile_character_not_found": "Персонаж уже удалён или недоступен.",
-    "profile_status_invalid": "Не удалось распознать выбранный статус.",
-    "profile_status_note_too_long": "Подпись статуса должна быть не длиннее 120 символов.",
+    "profile_status_invalid": "Не удалось распознать выбранную доступность.",
+    "profile_status_note_too_long": "Подпись доступности должна быть не длиннее 120 символов.",
     "profile_character_conflict": "Не удалось сохранить персонажа из-за конфликта данных.",
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
@@ -55,15 +66,22 @@ def _discord_time(value: datetime | str | None, style: str = "R") -> str:
     return f"<t:{int(parsed.timestamp())}:{style}>"
 
 
-def _member_roles(member: discord.Member) -> str:
-    roles = [
-        role.name
-        for role in reversed(getattr(member, "roles", []))
-        if not getattr(role, "is_default", lambda: False)() and not getattr(role, "managed", False)
-    ][:5]
-    if not roles:
-        return "Роли товарищества пока не назначены"
-    return " · ".join(_clean_display(role) for role in roles)
+def member_position_text(member: discord.Member) -> str:
+    role_ids = {
+        int(role.id)
+        for role in getattr(member, "roles", [])
+        if getattr(role, "id", None) is not None
+    }
+    positions = [entry for entry in PROFILE_ROLE_HIERARCHY if entry[0] in role_ids]
+    if not positions:
+        return "🕯️ **Прихожанин**\nБазовое положение участника Товарищества."
+
+    _, emoji, label, description = positions[0]
+    lines = [f"Основное: {emoji} **{label}**", description]
+    if len(positions) > 1:
+        additional = " · ".join(f"{item[1]} {item[2]}" for item in positions[1:])
+        lines.append(f"Дополнительно: {additional}")
+    return "\n".join(lines)
 
 
 def _profile_status(profile: Any | None) -> tuple[str, str, str, str | None]:
@@ -96,7 +114,7 @@ def profile_embed(
     status_value = f"{emoji} **{status_label}** — {status_description}"
     if status_note:
         status_value += f"\n> {_clean_display(status_note)}"
-    embed.add_field(name="Статус", value=status_value[:1024], inline=False)
+    embed.add_field(name="Доступность", value=status_value[:1024], inline=False)
 
     joined_at = getattr(member, "joined_at", None)
     last_activity = getattr(activity, "last_activity_at", None)
@@ -108,7 +126,11 @@ def profile_embed(
     if total_events:
         participation += f" · событий: **{total_events:,}**".replace(",", " ")
     embed.add_field(name="Участие", value=participation, inline=False)
-    embed.add_field(name="Роли", value=_member_roles(member)[:1024], inline=False)
+    embed.add_field(
+        name="Положение в Товариществе",
+        value=member_position_text(member)[:1024],
+        inline=False,
+    )
 
     if not characters:
         embed.add_field(
@@ -318,7 +340,7 @@ class CharacterModal(ProfileModal):
         await _edit_profile_home(interaction, self.requester_id, self.member)
 
 
-class StatusNoteModal(ProfileModal, title="Подпись статуса"):
+class StatusNoteModal(ProfileModal, title="Подпись доступности"):
     note = discord.ui.TextInput(
         label="Короткая подпись",
         placeholder="Например: вернусь вечером",
@@ -380,7 +402,7 @@ class ProfileStatusSelect(discord.ui.Select):
             )
             for key, (emoji, label, description) in PROFILE_STATUS_INFO.items()
         ]
-        super().__init__(placeholder="Выберите ваш текущий статус", options=options, row=0)
+        super().__init__(placeholder="Выберите вашу текущую доступность", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -571,7 +593,7 @@ class ProfileHomeView(ProfileBaseView):
             view=CharacterManagerView(self.requester_id, self.member, self.characters),
         )
 
-    @discord.ui.button(label="Статус", emoji="🟢", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Доступность", emoji="🟢", style=discord.ButtonStyle.secondary, row=0)
     async def status(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer()
         profile = await asyncio.to_thread(
@@ -581,10 +603,10 @@ class ProfileHomeView(ProfileBaseView):
         )
         emoji, label, description, note = _profile_status(profile)
         embed = discord.Embed(
-            title="Статус участника",
+            title="Доступность участника",
             description=(
                 f"Сейчас: {emoji} **{label}** — {description}\n"
-                "Статус задаётся вручную и не зависит от индикатора Discord."
+                "Доступность задаётся вручную и не зависит от индикатора Discord."
             ),
             color=PROFILE_COLOR,
         )
@@ -636,6 +658,7 @@ __all__ = [
     "StatusNoteModal",
     "character_embed",
     "character_manager_embed",
+    "member_position_text",
     "profile_embed",
     "setup_profile",
 ]

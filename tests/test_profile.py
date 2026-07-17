@@ -94,15 +94,18 @@ class ProfileStorageTests(unittest.TestCase):
 
 class ProfileUiTests(unittest.TestCase):
     @staticmethod
-    def member(user_id: int = 100) -> SimpleNamespace:
-        everyone = SimpleNamespace(name="@everyone", managed=False, is_default=lambda: True)
-        member_role = SimpleNamespace(name="Участник ТВРС", managed=False, is_default=lambda: False)
+    def member(
+        user_id: int = 100,
+        role_ids: tuple[int, ...] = (1526194626531299378, 1500563715622174881),
+    ) -> SimpleNamespace:
+        everyone = SimpleNamespace(id=10, name="@everyone")
+        member_roles = [SimpleNamespace(id=role_id, name=f"Role {role_id}") for role_id in role_ids]
         return SimpleNamespace(
             id=user_id,
             display_name="Robert Williams",
             guild=SimpleNamespace(id=10),
             joined_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
-            roles=[everyone, member_role],
+            roles=[everyone, *member_roles],
             display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
         )
 
@@ -123,7 +126,8 @@ class ProfileUiTests(unittest.TestCase):
         self.assertIn("Занят", rendered)
         self.assertIn("Вернусь после крафта", rendered)
         self.assertIn("`00123`", rendered)
-        self.assertIn("Участник ТВРС", rendered)
+        self.assertIn("Основное: 📜 **Сенатор Товарищества**", rendered)
+        self.assertIn("🛠️ Старший мастер крафта", rendered)
         self.assertLessEqual(len(embed), 6000)
         self.assertLessEqual(len(embed.fields), 25)
         self.assertTrue(all(len(field.value) <= 1024 for field in embed.fields))
@@ -135,7 +139,7 @@ class ProfileUiTests(unittest.TestCase):
             own_labels = {item.label for item in own.children if isinstance(item, discord.ui.Button)}
             self.assertEqual(own.timeout, 900)
             self.assertIn("Добавить", own_labels)
-            self.assertIn("Статус", own_labels)
+            self.assertIn("Доступность", own_labels)
 
             foreign = ProfileHomeView(200, member, [], editable=False)
             foreign_labels = {
@@ -151,6 +155,13 @@ class ProfileUiTests(unittest.TestCase):
             self.assertEqual({option.value for option in select.options}, {"active", "busy", "away", "vacation"})
 
         asyncio.run(inspect())
+
+    def test_member_without_recognized_roles_is_a_parishioner(self) -> None:
+        embed = profile_embed(self.member(role_ids=()), None, [], None, editable=False)
+        position = next(
+            field for field in embed.fields if field.name == "Положение в Товариществе"
+        )
+        self.assertIn("🕯️ **Прихожанин**", position.value)
 
     def test_profile_command_has_optional_member_argument(self) -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
