@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
-import storage
+from persistence import outbox_repository as storage
 
 
 def utc_now() -> datetime:

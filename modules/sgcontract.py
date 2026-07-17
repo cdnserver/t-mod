@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import discord
 from lxml import etree
 
-import storage
+from persistence import sgl_repository as storage
 from localization import t
 
 

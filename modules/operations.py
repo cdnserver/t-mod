@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
 
-import storage
+from persistence import operations_context as storage
 from modules.consensus_runtime import active_consensus_snapshot as _active_consensus_snapshot
 from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, OPERATIONS_CATEGORY_ID
 from modules.control_center import (

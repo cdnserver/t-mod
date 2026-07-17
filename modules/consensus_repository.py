@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-import storage
+from persistence import tvrs_repository as storage
 from modules.consensus_core import LiveConsensusSession, LiveResult, session_to_snapshot
 from modules.consensus_service import ConsensusActor
 

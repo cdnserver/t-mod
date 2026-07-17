@@ -316,7 +316,7 @@ class ConsensusStorageIdempotencyTests(unittest.TestCase):
 
     def test_bill_creation_rolls_back_if_publication_intent_cannot_be_saved(self) -> None:
         with patch(
-            "storage.delivery_outbox_enqueue_in_connection",
+            "persistence.tvrs_repository.delivery_outbox_enqueue_in_connection",
             side_effect=RuntimeError("outbox unavailable"),
         ):
             with self.assertRaisesRegex(RuntimeError, "outbox unavailable"):
@@ -950,8 +950,8 @@ class ConsensusInteractionAckTests(unittest.IsolatedAsyncioTestCase):
             return False
 
         with (
-            patch("modules.tvrs._consensus.cast_vote", side_effect=cast_vote) as mutation,
-            patch("modules.tvrs.queue_short_lines", return_value="Очередь пуста."),
+            patch("modules.tvrs_consensus_views._consensus.cast_vote", side_effect=cast_vote) as mutation,
+            patch("modules.tvrs_presentation.queue_short_lines", return_value="Очередь пуста."),
         ):
             await TVRSVoteView(self.current.session_key, 2)._cast(interaction, "yes")  # type: ignore[arg-type]
 
@@ -969,7 +969,7 @@ class ConsensusInteractionAckTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(acknowledged.is_set())
             return True
 
-        with patch("modules.tvrs._consensus.confirm_participant", side_effect=confirm) as mutation:
+        with patch("modules.tvrs_consensus_views._consensus.confirm_participant", side_effect=confirm) as mutation:
             await TVRSConfirmView(self.current.session_key, 2).confirm(interaction)  # type: ignore[arg-type]
 
         self.assertEqual(interaction.response.defer.await_count, 1)
@@ -982,7 +982,7 @@ class ConsensusInteractionAckTests(unittest.IsolatedAsyncioTestCase):
         interaction.response.defer = AsyncMock(side_effect=RuntimeError("interaction expired"))
         mutation = MagicMock(return_value=False)
 
-        with patch("modules.tvrs._consensus.cast_vote", mutation):
+        with patch("modules.tvrs_consensus_views._consensus.cast_vote", mutation):
             with self.assertRaises(RuntimeError):
                 await TVRSVoteView(self.current.session_key, 2)._cast(interaction, "yes")  # type: ignore[arg-type]
 
@@ -993,7 +993,7 @@ class ConsensusInteractionAckTests(unittest.IsolatedAsyncioTestCase):
         self.current.current_bill = {"id": 11, "bill_number": 10, "title": "Следующий проект"}
         interaction = self.interaction(2, threading.Event())
 
-        with patch("modules.tvrs._consensus.cast_vote") as mutation:
+        with patch("modules.tvrs_consensus_views._consensus.cast_vote") as mutation:
             await old_view._cast(interaction, "yes")  # type: ignore[arg-type]
 
         mutation.assert_not_called()
@@ -1033,8 +1033,8 @@ class ConsensusInteractionAckTests(unittest.IsolatedAsyncioTestCase):
         interaction.response.edit_message = AsyncMock()
 
         with (
-            patch("modules.tvrs._consensus.cast_vote") as mutation,
-            patch("modules.tvrs.queue_short_lines", return_value="Очередь пуста."),
+            patch("modules.tvrs_consensus_views._consensus.cast_vote") as mutation,
+            patch("modules.tvrs_presentation.queue_short_lines", return_value="Очередь пуста."),
         ):
             await legacy_yes.callback(interaction)  # type: ignore[arg-type]
 
@@ -1152,9 +1152,9 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             is_closed=lambda: False,
         )
         with (
-            patch("modules.tvrs.log_technical_event", new=AsyncMock(return_value=True)),
-            patch("modules.tvrs.asyncio.sleep", new=AsyncMock(return_value=None)),
-            patch("modules.tvrs.traceback.print_exc"),
+            patch("modules.tvrs_recovery.log_technical_event", new=AsyncMock(return_value=True)),
+            patch("modules.tvrs_recovery.asyncio.sleep", new=AsyncMock(return_value=None)),
+            patch("modules.tvrs_recovery.traceback.print_exc"),
         ):
             restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
             self.assertEqual(restored, 0)
@@ -1170,11 +1170,11 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "modules.tvrs._consensus_repository.active_snapshots",
+                "modules.tvrs_recovery._consensus_repository.active_snapshots",
                 side_effect=[RuntimeError("temporary sqlite read failure"), []],
             ) as read_snapshots,
-            patch("modules.tvrs.asyncio.sleep", new=AsyncMock(return_value=None)),
-            patch("modules.tvrs.traceback.print_exc"),
+            patch("modules.tvrs_recovery.asyncio.sleep", new=AsyncMock(return_value=None)),
+            patch("modules.tvrs_recovery.traceback.print_exc"),
         ):
             restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
             self.assertEqual(restored, 0)
@@ -1236,7 +1236,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         guild = SimpleNamespace(id=77, get_channel=get_channel)
         bot = SimpleNamespace()
 
-        with patch("modules.tvrs.edit_vote_dm_to_result", new=AsyncMock()):
+        with patch("modules.tvrs_discussion.edit_vote_dm_to_result", new=AsyncMock()):
             await asyncio.gather(
                 finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
                 finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
@@ -1276,9 +1276,9 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             return original_cast_vote(*args, **kwargs)
 
         with (
-            patch("modules.tvrs._consensus.cast_vote", side_effect=slow_cast_vote),
-            patch("modules.tvrs.update_all_vote_dms", new=AsyncMock()),
-            patch("modules.tvrs.update_host_vote_message", new=AsyncMock()),
+            patch("modules.tvrs_consensus_views._consensus.cast_vote", side_effect=slow_cast_vote),
+            patch("modules.tvrs_discussion.update_all_vote_dms", new=AsyncMock()),
+            patch("modules.tvrs_discussion.update_host_vote_message", new=AsyncMock()),
         ):
             vote_task = asyncio.create_task(
                 TVRSVoteView(current.session_key, 2)._cast(interaction, "yes")  # type: ignore[arg-type]
@@ -1319,7 +1319,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await lock.acquire()
         try:
             with patch(
-                "modules.tvrs.session_voice_quorum_ready",
+                "modules.tvrs_control.session_voice_quorum_ready",
                 side_effect=lambda guild, session: (
                     quorum["ready"],
                     "Кворум есть" if quorum["ready"] else "Кворум утрачен",
@@ -1370,9 +1370,9 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await original_finish_session(*args, **kwargs)
 
         with (
-            patch("modules.tvrs.session_voice_quorum_ready", return_value=(True, "Кворум есть")),
-            patch("modules.tvrs.finish_session", new=AsyncMock(side_effect=start_bill_before_stale_finish)),
-            patch("modules.tvrs.ensure_sticky_message", new=AsyncMock()),
+            patch("modules.tvrs_control.session_voice_quorum_ready", return_value=(True, "Кворум есть")),
+            patch("modules.tvrs_control.finish_session", new=AsyncMock(side_effect=start_bill_before_stale_finish)),
+            patch("modules.tvrs_decision.ensure_sticky_message", new=AsyncMock()),
         ):
             await tvrs.begin_next_bill_vote(bot, guild, current, SimpleNamespace())  # type: ignore[arg-type]
 
@@ -1397,13 +1397,13 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "modules.tvrs.session_voice_quorum_ready",
+                    "modules.tvrs_discussion.session_voice_quorum_ready",
                     side_effect=lambda guild, session: (
                         quorum["ready"],
                         "Кворум есть" if quorum["ready"] else "Кворум утрачен",
                     ),
                 ),
-                patch("modules.tvrs.update_host_vote_message", new=AsyncMock()),
+                patch("modules.tvrs_discussion.update_host_vote_message", new=AsyncMock()),
             ):
                 task = asyncio.create_task(
                     tvrs.resume_session(bot, guild, current)  # type: ignore[arg-type]
@@ -1453,8 +1453,8 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await retry_gate.wait()
 
         with (
-            patch("modules.tvrs._consensus.complete_result_atomically", side_effect=fail_once),
-            patch("modules.tvrs.asyncio.sleep", side_effect=gated_sleep),
+            patch("modules.tvrs_decision._consensus.complete_result_atomically", side_effect=fail_once),
+            patch("modules.tvrs_control.asyncio.sleep", side_effect=gated_sleep),
         ):
             with self.assertRaises(RuntimeError):
                 await finalize_current_vote(bot, guild, current, forced=False)  # type: ignore[arg-type]

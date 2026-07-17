@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import storage
+from persistence import bureau_context as storage
 from localization import safe_command_description, safe_command_name, t
 from modules.sgcontract import SGLContractModal
 
