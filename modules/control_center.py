@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-import storage
+from persistence import operations_context as storage
 from modules.control_center_config import (
     ACTIVE_TASKS_CHANNEL_ID,
     BOT_SETTINGS_CHANNEL_ID,

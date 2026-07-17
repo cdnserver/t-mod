@@ -7,7 +7,7 @@ import json
 import traceback
 from typing import Any
 
-import storage
+from persistence import outbox_repository as storage
 from modules.delivery_outbox import DeliveryHandler, OutboxDispatcher, StorageOutboxRepository
 from modules.technical_log import log_technical_event
 

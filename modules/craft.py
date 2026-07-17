@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands
 
-import storage
+from persistence import craft_repository as storage
 from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID, WORKSHOP_CHANNEL_ID
 from modules.craft_runtime import register_craft_runtime
 from modules.finance_config import FINANCE_ADMIN_USER_ID, FINANCE_EVENT_LOG_CHANNEL_ID

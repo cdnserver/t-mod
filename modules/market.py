@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import storage
+from persistence import market_repository as storage
 from modules.market_config import (
     MARKET_ALERT_MAX_DELIVERY_ATTEMPTS,
     MARKET_ALERT_RETRY_SECONDS,

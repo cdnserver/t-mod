@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import discord
-import storage
+from persistence import tvrs_repository as storage
 
 from modules.consensus_core import ConsensusRules, LiveConsensusSession, LiveParticipant, LiveResult
 from modules.consensus_runtime import active_consensus_snapshot

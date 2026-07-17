@@ -15,7 +15,7 @@ import discord
 from discord.ext import commands
 import requests
 
-import storage
+from persistence import sgl_repository as storage
 from localization import safe_command_description, safe_command_name, t
 
 

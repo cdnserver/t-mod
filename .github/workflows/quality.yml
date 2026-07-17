@@ -38,7 +38,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Compile production and tests
-        run: python -m compileall -q main.py storage.py localization.py modules tests
+        run: python -m compileall -q main.py storage.py localization.py modules persistence tests
 
       - name: Import composition root
         run: python -c "import main; assert main.bot.tree.get_commands()"
