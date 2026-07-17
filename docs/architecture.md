@@ -92,6 +92,8 @@ modules/<feature>_worker.py
 * `tvrs_repository.py` — проекты, сессии, результаты и атомарные операции консенсуса;
 * `finance_repository.py`, `craft_repository.py`, `market_repository.py` — собственные доменные
   транзакции;
+* `profile_repository.py` — профили участников и уникальные игровые персонажи, не связанные с
+  интерфейсом Discord;
 * `sgl_repository.py` и `admin_repository.py` — дела, профили, чеки и административные операции;
 * `sgl_archive_repository.py` — неизменяемые снимки каналов SGL, сообщения и временные восстановления;
 * `audit_repository.py` — безопасная отмена действий между доменами.

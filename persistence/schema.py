@@ -143,6 +143,35 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS member_profiles (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'busy', 'away', 'vacation')),
+                status_note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS profile_characters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                nickname TEXT NOT NULL,
+                static_id TEXT NOT NULL,
+                position INTEGER NOT NULL CHECK(position BETWEEN 1 AND 3),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (guild_id, static_id),
+                UNIQUE (guild_id, user_id, position),
+                FOREIGN KEY (guild_id, user_id)
+                    REFERENCES member_profiles(guild_id, user_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_profile_characters_owner
+            ON profile_characters(guild_id, user_id, position);
+
             CREATE TABLE IF NOT EXISTS activity_summary (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -1297,7 +1326,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-17-sgl-case-archive-v1")
+        set_meta(con, "schema_version", "2026-07-17-member-profiles-v1")
         con.commit()
 
 

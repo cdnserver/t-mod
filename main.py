@@ -22,6 +22,7 @@ from modules.finance import setup_finance
 from modules.craft import setup_craft
 from modules.control_center import setup_control_center
 from modules.market import setup_market
+from modules.profile import setup_profile
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.delivery_runtime import setup_delivery
@@ -99,6 +100,7 @@ TVRS_EVENT_TYPES = {
     "command_finance_undo",
     "command_craft",
     "command_market",
+    "command_profile",
 }
 
 
@@ -968,6 +970,8 @@ boot_module("Craft Production")
 setup_craft(bot, remember_command_activity)
 boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
+boot_module("Member Profiles")
+setup_profile(bot, remember_command_activity)
 boot_module("SGL Bureau")
 setup_sgbureau(bot, remember_command_activity)
 boot_module("SGL Case Archive")

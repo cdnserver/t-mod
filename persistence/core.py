@@ -49,6 +49,28 @@ class ActivityEvent:
     message_id: int | None
 
 
+@dataclass(slots=True)
+class MemberProfile:
+    guild_id: int
+    user_id: int
+    status: str
+    status_note: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class ProfileCharacter:
+    id: int
+    guild_id: int
+    user_id: int
+    nickname: str
+    static_id: str
+    position: int
+    created_at: str
+    updated_at: str
+
+
 
 
 @dataclass(slots=True)
@@ -305,4 +327,4 @@ def _tvrs_bill_from_row(row: sqlite3.Row | None) -> TVRSBill | None:
         updated_at=str(row["updated_at"]),
     )
 
-__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']
+__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'MemberProfile', 'ProfileCharacter', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']
