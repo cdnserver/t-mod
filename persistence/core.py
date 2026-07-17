@@ -55,6 +55,10 @@ class MemberProfile:
     user_id: int
     status: str
     status_note: str | None
+    visibility: str
+    show_activity: bool
+    theme: str
+    primary_character_id: int | None
     created_at: str
     updated_at: str
 

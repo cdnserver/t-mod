@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -13,8 +14,10 @@ import storage
 from modules.profile import (
     CharacterModal,
     ProfileHomeView,
+    ProfileSettingsView,
     ProfileStatusView,
     profile_embed,
+    profile_settings_embed,
     setup_profile,
 )
 
@@ -76,6 +79,38 @@ class ProfileStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "profile_static_invalid"):
             storage.add_profile_character(10, 100, "Test Hero", "RU-15")
 
+    def test_personal_preferences_and_primary_character_lifecycle(self) -> None:
+        first = storage.add_profile_character(10, 100, "First Hero", "100")
+        second = storage.add_profile_character(10, 100, "Second Hero", "200")
+        initial = storage.get_member_profile(10, 100)
+        self.assertEqual(initial.primary_character_id, first.id)
+        self.assertEqual(initial.visibility, "members")
+        self.assertTrue(initial.show_activity)
+        self.assertEqual(initial.theme, "indigo")
+
+        configured = storage.update_member_profile_preferences(
+            10,
+            100,
+            visibility="private",
+            show_activity=False,
+            theme="rose",
+            primary_character_id=second.id,
+        )
+        self.assertEqual(configured.visibility, "private")
+        self.assertFalse(configured.show_activity)
+        self.assertEqual(configured.theme, "rose")
+        self.assertEqual(configured.primary_character_id, second.id)
+
+        foreign = storage.add_profile_character(10, 200, "Foreign Hero", "300")
+        with self.assertRaisesRegex(ValueError, "profile_primary_character_invalid"):
+            storage.update_member_profile_preferences(
+                10,
+                100,
+                primary_character_id=foreign.id,
+            )
+        storage.delete_profile_character(10, 100, second.id)
+        self.assertEqual(storage.get_member_profile(10, 100).primary_character_id, first.id)
+
     def test_concurrent_additions_never_exceed_three_characters(self) -> None:
         def add(index: int) -> str:
             try:
@@ -90,6 +125,45 @@ class ProfileStorageTests(unittest.TestCase):
         self.assertEqual(results.count("saved"), 3)
         self.assertEqual(results.count("profile_character_limit"), 3)
         self.assertEqual(len(storage.list_profile_characters(10, 100)), 3)
+
+    def test_existing_profile_table_receives_preference_columns_without_data_loss(self) -> None:
+        current_database = storage.DATABASE_FILE
+        legacy_database = storage.DATA_DIR / "legacy-profile.db"
+        try:
+            storage.DATABASE_FILE = legacy_database
+            with sqlite3.connect(legacy_database) as con:
+                con.execute(
+                    """
+                    CREATE TABLE member_profiles (
+                        guild_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        status_note TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (guild_id, user_id)
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO member_profiles(
+                        guild_id, user_id, status, status_note, created_at, updated_at
+                    ) VALUES(10, 100, 'busy', 'Вернусь вечером', 'old', 'old')
+                    """
+                )
+                con.commit()
+
+            storage.init_db()
+            migrated = storage.get_member_profile(10, 100)
+            self.assertEqual(migrated.status, "busy")
+            self.assertEqual(migrated.status_note, "Вернусь вечером")
+            self.assertEqual(migrated.visibility, "members")
+            self.assertTrue(migrated.show_activity)
+            self.assertEqual(migrated.theme, "indigo")
+            self.assertIsNone(migrated.primary_character_id)
+        finally:
+            storage.DATABASE_FILE = current_database
 
 
 class ProfileUiTests(unittest.TestCase):
@@ -140,6 +214,7 @@ class ProfileUiTests(unittest.TestCase):
             self.assertEqual(own.timeout, 900)
             self.assertIn("Добавить", own_labels)
             self.assertIn("Доступность", own_labels)
+            self.assertIn("Настройки", own_labels)
 
             foreign = ProfileHomeView(200, member, [], editable=False)
             foreign_labels = {
@@ -154,6 +229,40 @@ class ProfileUiTests(unittest.TestCase):
             select = next(item for item in status_view.children if isinstance(item, discord.ui.Select))
             self.assertEqual({option.value for option in select.options}, {"active", "busy", "away", "vacation"})
 
+            settings = ProfileSettingsView(100, member, None, [])
+            settings_labels = {
+                item.label for item in settings.children if isinstance(item, discord.ui.Button)
+            }
+            self.assertIn("Активность: видна", settings_labels)
+            self.assertIn("По умолчанию", settings_labels)
+            self.assertEqual(
+                len([item for item in settings.children if isinstance(item, discord.ui.Select)]),
+                2,
+            )
+
+            characters = [
+                SimpleNamespace(
+                    id=index,
+                    nickname=f"Hero {index}",
+                    static_id=str(100 + index),
+                    position=index,
+                )
+                for index in range(1, 4)
+            ]
+            configured = SimpleNamespace(
+                visibility="members",
+                show_activity=False,
+                theme="gold",
+                primary_character_id=2,
+            )
+            full_settings = ProfileSettingsView(100, member, configured, characters)
+            self.assertEqual(len(full_settings.children), 6)
+            self.assertEqual(
+                len([item for item in full_settings.children if isinstance(item, discord.ui.Select)]),
+                3,
+            )
+            self.assertTrue(all(0 <= int(item.row) <= 4 for item in full_settings.children))
+
         asyncio.run(inspect())
 
     def test_member_without_recognized_roles_is_a_parishioner(self) -> None:
@@ -162,6 +271,40 @@ class ProfileUiTests(unittest.TestCase):
             field for field in embed.fields if field.name == "Положение в Товариществе"
         )
         self.assertIn("🕯️ **Прихожанин**", position.value)
+
+    def test_privacy_activity_theme_and_primary_character_affect_card(self) -> None:
+        member = self.member()
+        characters = [
+            SimpleNamespace(id=1, nickname="First Hero", static_id="100", position=1),
+            SimpleNamespace(id=2, nickname="Main Hero", static_id="200", position=2),
+        ]
+        profile = SimpleNamespace(
+            status="active",
+            status_note=None,
+            visibility="members",
+            show_activity=False,
+            theme="rose",
+            primary_character_id=2,
+        )
+        activity = SimpleNamespace(
+            last_activity_at="2026-07-18T10:00:00+00:00",
+            total_events=500,
+        )
+        own = profile_embed(member, profile, characters, activity, editable=True)
+        rendered = "\n".join(str(field.value) for field in own.fields)
+        self.assertEqual(own.color.value, 0xEB459E)
+        self.assertIn("скрыта владельцем", rendered)
+        self.assertNotIn("500", rendered)
+        self.assertTrue(any(field.name.startswith("⭐ ②") for field in own.fields))
+
+        profile.visibility = "private"
+        foreign = profile_embed(member, profile, characters, activity, editable=False)
+        self.assertIn("Владелец сделал профиль личным", foreign.description)
+        self.assertEqual(len(foreign.fields), 0)
+
+        settings = profile_settings_embed(member, profile, characters)
+        self.assertEqual(settings.color.value, 0xEB459E)
+        self.assertIn("Main Hero", "\n".join(str(field.value) for field in settings.fields))
 
     def test_profile_command_has_optional_member_argument(self) -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())

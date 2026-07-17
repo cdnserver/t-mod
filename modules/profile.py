@@ -34,6 +34,16 @@ PROFILE_ROLE_HIERARCHY = (
     (1526194626531299378, "🛠️", "Старший мастер крафта", "Старшая работа с производством"),
     (1526605619153473546, "📦", "Сотрудник склада", "Младшая работа со складом"),
 )
+PROFILE_THEME_INFO = {
+    "indigo": ("🔵", "Индиго", PROFILE_COLOR),
+    "emerald": ("🟢", "Изумруд", 0x3BA55D),
+    "gold": ("🟡", "Золото", 0xF1C40F),
+    "rose": ("🌸", "Роза", 0xEB459E),
+}
+PROFILE_VISIBILITY_INFO = {
+    "members": ("🌐", "Участникам", "Профиль доступен участникам сервера"),
+    "private": ("🔒", "Только мне", "Другие увидят закрытую карточку"),
+}
 PROFILE_ERROR_MESSAGES = {
     "profile_nickname_invalid": "Ник должен содержать от 2 до 48 символов.",
     "profile_static_invalid": "Статик должен состоять из 1–12 цифр.",
@@ -43,6 +53,10 @@ PROFILE_ERROR_MESSAGES = {
     "profile_status_invalid": "Не удалось распознать выбранную доступность.",
     "profile_status_note_too_long": "Подпись доступности должна быть не длиннее 120 символов.",
     "profile_character_conflict": "Не удалось сохранить персонажа из-за конфликта данных.",
+    "profile_visibility_invalid": "Не удалось распознать режим видимости профиля.",
+    "profile_show_activity_invalid": "Не удалось изменить видимость активности.",
+    "profile_theme_invalid": "Не удалось распознать оформление профиля.",
+    "profile_primary_character_invalid": "Выбранный персонаж больше не находится в вашем профиле.",
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
 
@@ -90,6 +104,11 @@ def _profile_status(profile: Any | None) -> tuple[str, str, str, str | None]:
     return emoji, label, description, getattr(profile, "status_note", None)
 
 
+def _profile_theme(profile: Any | None) -> tuple[str, str, int]:
+    key = str(getattr(profile, "theme", None) or "indigo")
+    return PROFILE_THEME_INFO.get(key, PROFILE_THEME_INFO["indigo"])
+
+
 def profile_embed(
     member: discord.Member,
     profile: Any | None,
@@ -99,6 +118,8 @@ def profile_embed(
     editable: bool,
 ) -> discord.Embed:
     emoji, status_label, status_description, status_note = _profile_status(profile)
+    _, _, theme_color = _profile_theme(profile)
+    visibility = str(getattr(profile, "visibility", None) or "members")
     description = (
         "Личная карточка участника Товарищества. "
         + ("Данные видны только в открывшем её меню." if editable else "Профиль открыт в режиме просмотра.")
@@ -106,24 +127,32 @@ def profile_embed(
     embed = discord.Embed(
         title=f"Профиль · {str(getattr(member, 'display_name', 'Участник'))[:220]}",
         description=description,
-        color=PROFILE_COLOR,
+        color=theme_color,
     )
     avatar = getattr(getattr(member, "display_avatar", None), "url", None)
     if avatar:
         embed.set_thumbnail(url=str(avatar))
+    if not editable and visibility == "private":
+        embed.description = (
+            "🔒 Владелец сделал профиль личным. Персонажи, доступность и активность скрыты."
+        )
+        embed.set_footer(text="Личная настройка участника • T-Mod Profile")
+        return embed
     status_value = f"{emoji} **{status_label}** — {status_description}"
     if status_note:
         status_value += f"\n> {_clean_display(status_note)}"
     embed.add_field(name="Доступность", value=status_value[:1024], inline=False)
 
     joined_at = getattr(member, "joined_at", None)
+    show_activity = bool(getattr(profile, "show_activity", True))
     last_activity = getattr(activity, "last_activity_at", None)
     total_events = max(0, int(getattr(activity, "total_events", 0) or 0))
     participation = (
         f"На сервере: {_discord_time(joined_at, 'D')}\n"
-        f"Последняя активность: {_discord_time(last_activity)}"
+        f"Последняя активность: "
+        f"{_discord_time(last_activity) if show_activity else 'скрыта владельцем'}"
     )
-    if total_events:
+    if total_events and show_activity:
         participation += f" · событий: **{total_events:,}**".replace(",", " ")
     embed.add_field(name="Участие", value=participation, inline=False)
     embed.add_field(
@@ -142,13 +171,20 @@ def profile_embed(
             inline=False,
         )
     else:
+        primary_character_id = getattr(profile, "primary_character_id", None)
         for character in characters[: storage.PROFILE_MAX_CHARACTERS]:
             position = int(getattr(character, "position", 0) or 0)
             nickname = _clean_display(getattr(character, "nickname", "Персонаж"))
             static_id = _clean_display(getattr(character, "static_id", "—"))
             embed.add_field(
-                name=f"{CHARACTER_NUMBERS.get(position, '◆')} {nickname}"[:256],
-                value=f"Статик: `{static_id}`",
+                name=(
+                    f"{'⭐ ' if primary_character_id == character.id else ''}"
+                    f"{CHARACTER_NUMBERS.get(position, '◆')} {nickname}"
+                )[:256],
+                value=(
+                    f"Статик: `{static_id}`"
+                    + ("\nОсновной персонаж" if primary_character_id == character.id else "")
+                ),
                 inline=True,
             )
     embed.set_footer(
@@ -192,6 +228,60 @@ def character_manager_embed(member: discord.Member, characters: list[Any]) -> di
     return embed
 
 
+def profile_settings_embed(
+    member: discord.Member,
+    profile: Any | None,
+    characters: list[Any],
+) -> discord.Embed:
+    visibility = str(getattr(profile, "visibility", None) or "members")
+    visibility_emoji, visibility_label, visibility_description = PROFILE_VISIBILITY_INFO.get(
+        visibility,
+        PROFILE_VISIBILITY_INFO["members"],
+    )
+    theme_emoji, theme_label, theme_color = _profile_theme(profile)
+    show_activity = bool(getattr(profile, "show_activity", True))
+    primary_character_id = getattr(profile, "primary_character_id", None)
+    primary = next(
+        (character for character in characters if character.id == primary_character_id),
+        None,
+    )
+    primary_text = (
+        f"⭐ **{_clean_display(primary.nickname)}** · `{_clean_display(primary.static_id)}`"
+        if primary is not None
+        else "Не выбран"
+    )
+    embed = discord.Embed(
+        title="Настройки профиля",
+        description=(
+            f"Персональные параметры **{_clean_display(member.display_name)}**. "
+            "Они действуют только для вашего профиля."
+        ),
+        color=theme_color,
+    )
+    embed.add_field(
+        name="Видимость",
+        value=f"{visibility_emoji} **{visibility_label}**\n{visibility_description}",
+        inline=True,
+    )
+    embed.add_field(
+        name="Активность",
+        value=(
+            "👁️ **Показывается**\nПоследняя активность видна в карточке"
+            if show_activity
+            else "🙈 **Скрыта**\nВ карточке остаётся только дата вступления"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Оформление",
+        value=f"{theme_emoji} **{theme_label}**",
+        inline=True,
+    )
+    embed.add_field(name="Основной персонаж", value=primary_text, inline=False)
+    embed.set_footer(text="Настройки можно вернуть к стандартным одной кнопкой • T-Mod Profile")
+    return embed
+
+
 async def _load_profile(member: discord.Member) -> tuple[Any | None, list[Any], Any | None]:
     profile, characters = await asyncio.to_thread(
         storage.get_profile_snapshot,
@@ -218,9 +308,49 @@ async def _edit_profile_home(
     )
 
 
+async def _edit_profile_settings(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    profile, characters = await asyncio.to_thread(
+        storage.get_profile_snapshot,
+        member.guild.id,
+        member.id,
+    )
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_settings_embed(member, profile, characters),
+        view=ProfileSettingsView(requester_id, member, profile, characters),
+    )
+
+
 async def _send_profile_error(interaction: discord.Interaction, exc: ValueError) -> None:
     message = PROFILE_ERROR_MESSAGES.get(str(exc), "Не удалось сохранить изменения профиля.")
     await interaction.followup.send(message, ephemeral=True)
+
+
+async def _save_profile_preferences(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+    **changes: Any,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    try:
+        await asyncio.to_thread(
+            storage.update_member_profile_preferences,
+            member.guild.id,
+            member.id,
+            **changes,
+        )
+    except ValueError as exc:
+        await _send_profile_error(interaction, exc)
+        return
+    await _edit_profile_settings(interaction, requester_id, member)
 
 
 async def _report_unexpected_profile_error(
@@ -441,6 +571,154 @@ class ProfileStatusView(ProfileBaseView):
         await _edit_profile_home(interaction, self.requester_id, self.member)
 
 
+class ProfileVisibilitySelect(discord.ui.Select):
+    def __init__(self, requester_id: int, member: discord.Member, current: str) -> None:
+        self.requester_id = int(requester_id)
+        self.member = member
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=key,
+                emoji=emoji,
+                description=description,
+                default=key == current,
+            )
+            for key, (emoji, label, description) in PROFILE_VISIBILITY_INFO.items()
+        ]
+        super().__init__(placeholder="Кому доступен профиль", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            visibility=self.values[0],
+        )
+
+
+class ProfileThemeSelect(discord.ui.Select):
+    def __init__(self, requester_id: int, member: discord.Member, current: str) -> None:
+        self.requester_id = int(requester_id)
+        self.member = member
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=key,
+                emoji=emoji,
+                description=f"Цвет карточки: {label.lower()}",
+                default=key == current,
+            )
+            for key, (emoji, label, _) in PROFILE_THEME_INFO.items()
+        ]
+        super().__init__(placeholder="Оформление карточки", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            theme=self.values[0],
+        )
+
+
+class ProfilePrimaryCharacterSelect(discord.ui.Select):
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        characters: list[Any],
+        current_id: int | None,
+    ) -> None:
+        self.requester_id = int(requester_id)
+        self.member = member
+        options = [
+            discord.SelectOption(
+                label="Не выделять",
+                value="none",
+                emoji="➖",
+                description="Не назначать основного персонажа",
+                default=current_id is None,
+            )
+        ]
+        options.extend(
+            discord.SelectOption(
+                label=str(character.nickname)[:100],
+                value=str(character.id),
+                emoji="⭐",
+                description=f"Статик {character.static_id} · слот {character.position}"[:100],
+                default=character.id == current_id,
+            )
+            for character in characters
+        )
+        super().__init__(placeholder="Основной персонаж", options=options, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_id = None if self.values[0] == "none" else int(self.values[0])
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            primary_character_id=selected_id,
+        )
+
+
+class ProfileSettingsView(ProfileBaseView):
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        profile: Any | None,
+        characters: list[Any],
+    ) -> None:
+        super().__init__(requester_id)
+        self.member = member
+        self.characters = characters
+        self.show_activity = bool(getattr(profile, "show_activity", True))
+        visibility = str(getattr(profile, "visibility", None) or "members")
+        theme = str(getattr(profile, "theme", None) or "indigo")
+        primary_character_id = getattr(profile, "primary_character_id", None)
+        self.add_item(ProfileVisibilitySelect(requester_id, member, visibility))
+        self.add_item(ProfileThemeSelect(requester_id, member, theme))
+        if characters:
+            self.add_item(
+                ProfilePrimaryCharacterSelect(
+                    requester_id,
+                    member,
+                    characters,
+                    primary_character_id,
+                )
+            )
+        self.activity.label = (
+            "Активность: видна" if self.show_activity else "Активность: скрыта"
+        )
+        self.activity.emoji = "👁️" if self.show_activity else "🙈"
+
+    @discord.ui.button(label="Активность", style=discord.ButtonStyle.secondary, row=3)
+    async def activity(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            show_activity=not self.show_activity,
+        )
+
+    @discord.ui.button(label="По умолчанию", emoji="♻️", style=discord.ButtonStyle.secondary, row=4)
+    async def reset(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _save_profile_preferences(
+            interaction,
+            self.requester_id,
+            self.member,
+            visibility="members",
+            show_activity=True,
+            theme="indigo",
+            primary_character_id=(self.characters[0].id if self.characters else None),
+        )
+
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_home(interaction, self.requester_id, self.member)
+
+
 class CharacterSelect(discord.ui.Select):
     def __init__(self, requester_id: int, member: discord.Member, characters: list[Any]) -> None:
         self.requester_id = int(requester_id)
@@ -581,6 +859,7 @@ class ProfileHomeView(ProfileBaseView):
             self.remove_item(self.add)
             self.remove_item(self.manage)
             self.remove_item(self.status)
+            self.remove_item(self.settings)
 
     @discord.ui.button(label="Добавить", emoji="➕", style=discord.ButtonStyle.primary, row=0)
     async def add(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -616,6 +895,10 @@ class ProfileHomeView(ProfileBaseView):
             embed=embed,
             view=ProfileStatusView(self.requester_id, self.member, profile),
         )
+
+    @discord.ui.button(label="Настройки", emoji="⚙️", style=discord.ButtonStyle.secondary, row=0)
+    async def settings(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_settings(interaction, self.requester_id, self.member)
 
     @discord.ui.button(label="Обновить", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -654,11 +937,13 @@ __all__ = [
     "CharacterModal",
     "ProfileBaseView",
     "ProfileHomeView",
+    "ProfileSettingsView",
     "ProfileStatusView",
     "StatusNoteModal",
     "character_embed",
     "character_manager_embed",
     "member_position_text",
     "profile_embed",
+    "profile_settings_embed",
     "setup_profile",
 ]

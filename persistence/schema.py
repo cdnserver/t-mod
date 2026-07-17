@@ -149,6 +149,12 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'active'
                     CHECK(status IN ('active', 'busy', 'away', 'vacation')),
                 status_note TEXT,
+                visibility TEXT NOT NULL DEFAULT 'members'
+                    CHECK(visibility IN ('members', 'private')),
+                show_activity INTEGER NOT NULL DEFAULT 1,
+                theme TEXT NOT NULL DEFAULT 'indigo'
+                    CHECK(theme IN ('indigo', 'emerald', 'gold', 'rose')),
+                primary_character_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
@@ -886,6 +892,13 @@ def init_db() -> None:
         )
 
         # One-click migrations for old tmod.db files.
+        for column, definition in {
+            "visibility": "TEXT NOT NULL DEFAULT 'members'",
+            "show_activity": "INTEGER NOT NULL DEFAULT 1",
+            "theme": "TEXT NOT NULL DEFAULT 'indigo'",
+            "primary_character_id": "INTEGER",
+        }.items():
+            _add_column_if_missing(con, "member_profiles", column, definition)
         _add_column_if_missing(con, "activity_events", "category_id", "INTEGER")
         _add_column_if_missing(con, "activity_events", "category_name", "TEXT")
         _add_column_if_missing(con, "activity_summary", "last_category_id", "INTEGER")
@@ -1326,7 +1339,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-17-member-profiles-v1")
+        set_meta(con, "schema_version", "2026-07-18-profile-preferences-v1")
         con.commit()
 
 
