@@ -122,7 +122,9 @@ class MusicManager:
     ) -> None:
         channel = self.member_voice_channel(member)
         if channel is None or int(channel.id) != int(session.voice_channel_id):
-            raise MusicRuntimeError("Сначала зайдите в тот же голосовой канал, где находится T-Mod.")
+            raise MusicRuntimeError(
+                "Сначала зайдите в тот же голосовой канал, где находится T-Mod."
+            )
 
     async def connect(
         self,
@@ -303,7 +305,9 @@ class MusicManager:
                 if session.generation == generation:
                     session.current = None
                     session.source = None
-                    session.last_error = f"Не удалось запустить «{track.title}»: {str(exc)[:500]}"
+                    session.last_error = (
+                        f"Не удалось запустить «{track.title}»: {str(exc)[:500]}"
+                    )
             await self.publish_status(session)
             await self.start_next(session)
             return
@@ -438,7 +442,9 @@ class MusicManager:
                 "Приём голосовых команд недоступен: проверьте voice-receive в контейнере."
             )
         if not self.transcriber.configured:
-            raise MusicRuntimeError("Для голосового управления не настроен OPENROUTER_API_KEY.")
+            raise MusicRuntimeError(
+                "Для голосового управления не настроен OPENROUTER_API_KEY."
+            )
         was_listening = member.id in session.voice_users
         was_one_shot = member.id in session.one_shot_voice_users
         enabled = not was_listening or was_one_shot
@@ -447,7 +453,7 @@ class MusicManager:
             session.one_shot_voice_users.discard(member.id)
             session.last_notice = (
                 f"{member.display_name} включил голосовое управление для себя. "
-                "Скажите «Т-Мод» или нажмите «Голосовая команда»."
+                "Скажите «Сборщик риса» или «Т-Мод» либо нажмите «Голосовая команда»."
             )
             try:
                 await self._ensure_voice_runtime(session)
@@ -462,7 +468,9 @@ class MusicManager:
             session.one_shot_voice_users.discard(member.id)
             session.armed_until.pop(member.id, None)
             session.segmenter.discard(member.id)
-            session.last_notice = f"{member.display_name} отключил голосовое управление для себя."
+            session.last_notice = (
+                f"{member.display_name} отключил голосовое управление для себя."
+            )
             if not session.voice_users:
                 await self._disable_voice_runtime(session)
         await self.publish_status(session)
@@ -477,7 +485,9 @@ class MusicManager:
                 "Приём голосовых команд недоступен: проверьте voice-receive в контейнере."
             )
         if not self.transcriber.configured:
-            raise MusicRuntimeError("Для голосового управления не настроен OPENROUTER_API_KEY.")
+            raise MusicRuntimeError(
+                "Для голосового управления не настроен OPENROUTER_API_KEY."
+            )
         temporary = member.id not in session.voice_users
         session.voice_users.add(member.id)
         if temporary:
@@ -493,16 +503,20 @@ class MusicManager:
             raise
         session.last_error = None
         session.last_notice = (
-            f"{member.display_name}: слушаю одну команду без обращения «Т-Мод»."
+            f"{member.display_name}: слушаю одну команду без ключевой фразы."
         )
         await self.play_listening_signal(session)
         await self.publish_status(session)
 
     async def _ensure_voice_runtime(self, session: MusicGuildSession) -> None:
         voice_client = self._voice_client(session.guild_id)
-        if voice_client is None or voice_recv is None or not isinstance(
-            voice_client,
-            voice_recv.VoiceRecvClient,
+        if (
+            voice_client is None
+            or voice_recv is None
+            or not isinstance(
+                voice_client,
+                voice_recv.VoiceRecvClient,
+            )
         ):
             raise MusicRuntimeError(
                 "Голосовой клиент подключён без поддержки приёма. Переподключите T-Mod."
@@ -562,8 +576,7 @@ class MusicManager:
             await self._ensure_voice_runtime(session)
         except Exception as recovery_error:
             session.last_error = (
-                "Не удалось восстановить голосовой приём: "
-                f"{str(recovery_error)[:500]}"
+                f"Не удалось восстановить голосовой приём: {str(recovery_error)[:500]}"
             )
         else:
             session.last_notice = (
@@ -640,21 +653,32 @@ class MusicManager:
                 await asyncio.sleep(0.25)
                 for segment in session.segmenter.drain_ready():
                     self._enqueue_speech_segment(session.guild_id, segment)
-                now = time.monotonic()
-                expired = [
-                    user_id
-                    for user_id in session.one_shot_voice_users
-                    if session.armed_until.get(user_id, 0) < now
-                ]
-                if expired:
-                    for user_id in expired:
-                        await self._release_one_shot_user(session, user_id)
-                    session.last_notice = "Ожидание разовой голосовой команды завершено."
-                    await self.publish_status(session)
-                    if not session.voice_users:
-                        return
+                if await self._expire_armed_commands(session, time.monotonic()):
+                    return
         except asyncio.CancelledError:
             return
+
+    async def _expire_armed_commands(
+        self,
+        session: MusicGuildSession,
+        now: float,
+    ) -> bool:
+        """Expire both one-shot and persistent users' command windows."""
+
+        expired = [
+            user_id
+            for user_id, deadline in session.armed_until.items()
+            if deadline < now
+        ]
+        if not expired:
+            return False
+        for user_id in expired:
+            session.armed_until.pop(user_id, None)
+            session.segmenter.discard(user_id)
+            await self._release_one_shot_user(session, user_id)
+        session.last_notice = "Ожидание голосовой команды завершено."
+        await self.publish_status(session)
+        return not session.voice_users
 
     async def _speech_worker(self, session: MusicGuildSession) -> None:
         try:
@@ -820,9 +844,7 @@ class MusicManager:
             session.segmenter.discard(member.id)
             if not session.voice_users:
                 await self._disable_voice_runtime(session)
-            session.last_notice = (
-                f"Голосовое управление {member.display_name} отключено после выхода из канала."
-            )
+            session.last_notice = f"Голосовое управление {member.display_name} отключено после выхода из канала."
             await self.publish_status(session)
         channel = member.guild.get_channel(session.voice_channel_id)
         humans = [item for item in getattr(channel, "members", ()) if not item.bot]
@@ -840,7 +862,9 @@ class MusicManager:
                 current = self.get(member.guild.id)
                 voice_channel = member.guild.get_channel(session.voice_channel_id)
                 remaining = [
-                    item for item in getattr(voice_channel, "members", ()) if not item.bot
+                    item
+                    for item in getattr(voice_channel, "members", ())
+                    if not item.bot
                 ]
                 if current is session and not remaining:
                     await self.disconnect(member, automatic=True)

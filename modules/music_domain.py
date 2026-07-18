@@ -33,7 +33,10 @@ _YOUTUBE_HOSTS = frozenset(
     }
 )
 _WAKE_RE = re.compile(
-    r"(?:^|\s)(?:т[иы]?\s*[-–—]?\s*мод|ти\s+мод|t\s*[-–—]?\s*mod|teamod)(?=\s|$)",
+    r"(?:^|\s)(?:"
+    r"т[иы]?\s*[-–—]?\s*мод|ти\s+мод|t\s*[-–—]?\s*mod|teamod|"
+    r"сборщик\s+риса"
+    r")(?=\s|$)",
     re.IGNORECASE,
 )
 _SPACE_RE = re.compile(r"\s+")
@@ -73,7 +76,7 @@ def split_wake_word(value: str) -> tuple[bool, str]:
     match = _WAKE_RE.search(normalized)
     if match is None:
         return False, normalized
-    remainder = f"{normalized[:match.start()]} {normalized[match.end():]}"
+    remainder = f"{normalized[: match.start()]} {normalized[match.end() :]}"
     return True, _SPACE_RE.sub(" ", remainder).strip(" -")
 
 
@@ -87,7 +90,9 @@ def prepare_youtube_input(value: str) -> str:
     if parsed.scheme or parsed.netloc:
         host = (parsed.hostname or "").lower().rstrip(".")
         if parsed.scheme not in {"http", "https"} or host not in _YOUTUBE_HOSTS:
-            raise MusicInputError("Поддерживаются только ссылки youtube.com и youtu.be.")
+            raise MusicInputError(
+                "Поддерживаются только ссылки youtube.com и youtu.be."
+            )
         return query
     return f"ytsearch1:{query}"
 
@@ -98,7 +103,7 @@ def _after_prefix(text: str, prefixes: tuple[str, ...]) -> str | None:
             return ""
         marker = f"{prefix} "
         if text.startswith(marker):
-            return text[len(marker):].strip()
+            return text[len(marker) :].strip()
     return None
 
 

@@ -41,6 +41,7 @@ PCM_SAMPLE_RATE = 48_000
 PCM_CHANNELS = 2
 PCM_SAMPLE_WIDTH = 2
 PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_SAMPLE_WIDTH
+DAVE_PLAINTEXT_RECHECK_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +239,8 @@ if voice_recv is not None:
             self.guild_id = int(guild_id)
             self._decoders: dict[int, discord.opus.Decoder] = {}
             self._decode_drops: dict[tuple[int, str], int] = {}
+            self._dave_plaintext_until: dict[int, float] = {}
+            self._dave_recoveries: dict[int, int] = {}
 
         def wants_opus(self) -> bool:
             # The extension's shared PCM router stops completely on one bad
@@ -269,18 +272,31 @@ if voice_recv is not None:
                     error,
                 )
 
-        def _decrypt_dave(self, user_id: int, opus: bytes) -> bytes | None:
+        @staticmethod
+        def _safe_error(error: object) -> str:
+            text = str(error).replace("\n", " ").replace("\r", " ").strip()
+            return (text or type(error).__name__)[:300]
+
+        def _dave_context(self, user_id: int) -> tuple[int, Any | None, bool]:
             voice_client = getattr(self, "voice_client", None)
             connection = getattr(voice_client, "_connection", None)
-            protocol_version = int(
-                getattr(connection, "dave_protocol_version", 0) or 0
-            )
-            if protocol_version <= 0:
-                return opus
+            protocol_version = int(getattr(connection, "dave_protocol_version", 0) or 0)
             session = getattr(connection, "dave_session", None)
-            if davey is None or session is None or not getattr(session, "ready", False):
-                self._drop_packet(user_id, "dave", "session is not ready")
-                return None
+            ready = bool(session is not None and getattr(session, "ready", False))
+            can_passthrough = False
+            if ready:
+                checker = getattr(session, "can_passthrough", None)
+                if callable(checker):
+                    try:
+                        can_passthrough = bool(checker(int(user_id)))
+                    except Exception:
+                        can_passthrough = False
+            should_decrypt = ready and (protocol_version > 0 or can_passthrough)
+            return protocol_version, session, should_decrypt
+
+        def _decrypt_dave(self, user_id: int, opus: bytes, session: Any) -> bytes:
+            if davey is None:
+                raise RuntimeError("davey is unavailable")
             try:
                 decrypted = session.decrypt(
                     int(user_id),
@@ -288,12 +304,44 @@ if voice_recv is not None:
                     opus,
                 )
             except Exception as exc:
-                self._drop_packet(user_id, "dave", type(exc).__name__)
-                return None
+                raise ValueError(self._safe_error(exc)) from exc
             if not decrypted:
-                self._drop_packet(user_id, "dave", "empty payload")
-                return None
+                raise ValueError("DAVE returned an empty payload")
             return bytes(decrypted)
+
+        def _decode_opus(self, user_id: int, opus: bytes) -> bytes:
+            decoder = self._decoders.get(user_id)
+            if decoder is None:
+                decoder = discord.opus.Decoder()
+                self._decoders[user_id] = decoder
+            return bytes(decoder.decode(opus, fec=False))
+
+        def _probe_plaintext_opus(self, user_id: int, opus: bytes) -> bytes | None:
+            """Accept a DAVE transition packet only if libopus validates it."""
+
+            decoder = discord.opus.Decoder()
+            try:
+                pcm = decoder.decode(opus, fec=False)
+            except discord.opus.OpusError:
+                return None
+            self._decoders[user_id] = decoder
+            self._dave_plaintext_until[user_id] = (
+                time.monotonic() + DAVE_PLAINTEXT_RECHECK_SECONDS
+            )
+            return bytes(pcm)
+
+        def _note_dave_recovery(self, user_id: int, error: object) -> None:
+            count = self._dave_recoveries.get(user_id, 0) + 1
+            self._dave_recoveries[user_id] = count
+            if count == 1 or count % 250 == 0:
+                log.warning(
+                    "Recovered a valid plaintext Opus packet during a DAVE "
+                    "transition: guild=%s user=%s count=%s dave_error=%s",
+                    self.guild_id,
+                    user_id,
+                    count,
+                    self._safe_error(error),
+                )
 
         def write(self, user, data) -> None:
             if user is None or getattr(user, "bot", False):
@@ -302,15 +350,69 @@ if voice_recv is not None:
             if not opus:
                 return
             user_id = int(user.id)
-            opus = self._decrypt_dave(user_id, bytes(opus))
-            if not opus:
+            opus = bytes(opus)
+
+            # During a DAVE transition Discord can temporarily send valid
+            # plaintext Opus even while the negotiated protocol is still
+            # reported as active. Keep a tiny validated passthrough window,
+            # but immediately retry DAVE if the stream becomes encrypted.
+            if self._dave_plaintext_until.get(user_id, 0) > time.monotonic():
+                try:
+                    pcm = self._decode_opus(user_id, opus)
+                except discord.opus.OpusError:
+                    self._dave_plaintext_until.pop(user_id, None)
+                    self._decoders.pop(user_id, None)
+                else:
+                    self.manager.accept_voice_packet(
+                        self.guild_id,
+                        user_id,
+                        pcm,
+                    )
+                    return
+
+            protocol_version, session, should_decrypt = self._dave_context(user_id)
+            if should_decrypt:
+                try:
+                    opus = self._decrypt_dave(user_id, opus, session)
+                except Exception as exc:
+                    # Never pass arbitrary encrypted bytes to STT. A fresh
+                    # libopus decoder must first prove this is a valid
+                    # plaintext transition packet.
+                    pcm = self._probe_plaintext_opus(user_id, opus)
+                    if pcm is None:
+                        self._decoders.pop(user_id, None)
+                        self._drop_packet(
+                            user_id,
+                            "dave",
+                            self._safe_error(exc),
+                        )
+                        return
+                    self._note_dave_recovery(user_id, exc)
+                    self.manager.accept_voice_packet(
+                        self.guild_id,
+                        user_id,
+                        pcm,
+                    )
+                    return
+            elif protocol_version > 0:
+                pcm = self._probe_plaintext_opus(user_id, opus)
+                if pcm is None:
+                    self._drop_packet(
+                        user_id,
+                        "dave",
+                        "DAVE session is not ready and packet is not plaintext Opus",
+                    )
+                    return
+                self._note_dave_recovery(user_id, "DAVE session is not ready")
+                self.manager.accept_voice_packet(
+                    self.guild_id,
+                    user_id,
+                    pcm,
+                )
                 return
-            decoder = self._decoders.get(user_id)
-            if decoder is None:
-                decoder = discord.opus.Decoder()
-                self._decoders[user_id] = decoder
+
             try:
-                pcm = decoder.decode(opus, fec=False)
+                pcm = self._decode_opus(user_id, opus)
             except discord.opus.OpusError as exc:
                 self._drop_packet(
                     user_id,
@@ -322,12 +424,14 @@ if voice_recv is not None:
             self.manager.accept_voice_packet(
                 self.guild_id,
                 user_id,
-                bytes(pcm),
+                pcm,
             )
 
         def cleanup(self) -> None:
             self._decoders.clear()
             self._decode_drops.clear()
+            self._dave_plaintext_until.clear()
+            self._dave_recoveries.clear()
 
 else:
 

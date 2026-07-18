@@ -46,7 +46,15 @@ class MusicDomainTests(unittest.TestCase):
                 prepare_youtube_input(unsafe)
 
     def test_wake_word_and_russian_commands_are_deterministic(self) -> None:
-        for transcript in ("Т-Мод", "т мод", "тимод", "ти мод", "T Mod"):
+        for transcript in (
+            "Т-Мод",
+            "т мод",
+            "тимод",
+            "ти мод",
+            "T Mod",
+            "Сборщик риса",
+            "сборщик риса",
+        ):
             with self.subTest(transcript=transcript):
                 woke, remainder = split_wake_word(transcript)
                 self.assertTrue(woke)
@@ -57,6 +65,12 @@ class MusicDomainTests(unittest.TestCase):
         command = parse_voice_command(remainder)
         self.assertEqual(command.action, "play")
         self.assertEqual(command.query, "кино группа крови")
+
+        woke, remainder = split_wake_word("Сборщик риса, включи Цой")
+        self.assertTrue(woke)
+        command = parse_voice_command(remainder)
+        self.assertEqual(command.action, "play")
+        self.assertEqual(command.query, "цой")
         self.assertEqual(parse_voice_command("поставь на паузу").action, "pause")
         self.assertEqual(parse_voice_command("играй дальше").action, "resume")
         self.assertEqual(parse_voice_command("играй").action, "resume")
@@ -155,7 +169,9 @@ class MusicProviderTests(unittest.TestCase):
             text='{"text":"Т-Мод"}',
         )
         pcm = b"\x00\x00\x00\x00" * 480
-        with patch("modules.music_providers.requests.post", return_value=response) as request:
+        with patch(
+            "modules.music_providers.requests.post", return_value=response
+        ) as request:
             result = transcriber.transcribe_pcm(pcm)
         self.assertEqual(result, "Т-Мод")
         payload = request.call_args.kwargs["json"]
@@ -257,6 +273,108 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         decoder.decode.assert_called_once_with(b"plain-opus", fec=False)
         manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
 
+    def test_valid_plaintext_is_recovered_during_dave_transition(self) -> None:
+        manager = SimpleNamespace(accept_voice_packet=MagicMock())
+        decoder = MagicMock()
+        decoder.decode.return_value = b"\x00" * 3840
+        dave_session = SimpleNamespace(
+            ready=True,
+            can_passthrough=MagicMock(return_value=False),
+            decrypt=MagicMock(
+                side_effect=ValueError(
+                    "Failed to decrypt: "
+                    "DecryptionFailed(UnencryptedWhenPassthroughDisabled)"
+                )
+            ),
+        )
+        connection = SimpleNamespace(
+            dave_protocol_version=1,
+            dave_session=dave_session,
+        )
+        user = SimpleNamespace(id=7, bot=False)
+
+        with (
+            patch("modules.music_audio.discord.opus.Decoder", return_value=decoder),
+            self.assertLogs("modules.music_audio", level="WARNING") as captured,
+        ):
+            sink = TModVoiceSink(manager, 77)
+            sink._voice_client = SimpleNamespace(_connection=connection)
+            sink.write(user, SimpleNamespace(opus=b"plain-opus"))
+
+        decoder.decode.assert_called_once_with(b"plain-opus", fec=False)
+        manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
+        self.assertIn("Recovered a valid plaintext Opus packet", captured.output[0])
+
+    def test_dave_failure_does_not_pass_invalid_audio_to_stt(self) -> None:
+        manager = SimpleNamespace(accept_voice_packet=MagicMock())
+        decoder = MagicMock()
+        opus_error = discord.opus.OpusError.__new__(discord.opus.OpusError)
+        Exception.__init__(opus_error, "corrupted stream")
+        opus_error.code = -4
+        decoder.decode.side_effect = opus_error
+        dave_session = SimpleNamespace(
+            ready=True,
+            can_passthrough=MagicMock(return_value=False),
+            decrypt=MagicMock(side_effect=ValueError("user has no decryptor")),
+        )
+        connection = SimpleNamespace(
+            dave_protocol_version=1,
+            dave_session=dave_session,
+        )
+        user = SimpleNamespace(id=7, bot=False)
+
+        with (
+            patch("modules.music_audio.discord.opus.Decoder", return_value=decoder),
+            self.assertLogs("modules.music_audio", level="WARNING") as captured,
+        ):
+            sink = TModVoiceSink(manager, 77)
+            sink._voice_client = SimpleNamespace(_connection=connection)
+            sink.write(user, SimpleNamespace(opus=b"not-opus"))
+
+        manager.accept_voice_packet.assert_not_called()
+        self.assertIn("stage=dave", captured.output[0])
+        self.assertIn("user has no decryptor", captured.output[0])
+
+    def test_plaintext_transition_cache_switches_back_to_dave_immediately(self) -> None:
+        manager = SimpleNamespace(accept_voice_packet=MagicMock())
+        opus_error = discord.opus.OpusError.__new__(discord.opus.OpusError)
+        Exception.__init__(opus_error, "corrupted stream")
+        opus_error.code = -4
+        plaintext_decoder = MagicMock()
+        plaintext_decoder.decode.side_effect = [b"first-pcm", opus_error]
+        encrypted_decoder = MagicMock()
+        encrypted_decoder.decode.return_value = b"second-pcm"
+        dave_session = SimpleNamespace(
+            ready=True,
+            can_passthrough=MagicMock(return_value=False),
+            decrypt=MagicMock(
+                side_effect=[
+                    ValueError("unencrypted when passthrough mode was disabled"),
+                    b"decrypted-opus",
+                ]
+            ),
+        )
+        connection = SimpleNamespace(
+            dave_protocol_version=1,
+            dave_session=dave_session,
+        )
+        user = SimpleNamespace(id=7, bot=False)
+
+        with (
+            patch(
+                "modules.music_audio.discord.opus.Decoder",
+                side_effect=[plaintext_decoder, encrypted_decoder],
+            ),
+            self.assertLogs("modules.music_audio", level="WARNING"),
+        ):
+            sink = TModVoiceSink(manager, 77)
+            sink._voice_client = SimpleNamespace(_connection=connection)
+            sink.write(user, SimpleNamespace(opus=b"plain-opus"))
+            sink.write(user, SimpleNamespace(opus=b"encrypted-opus"))
+
+        self.assertEqual(manager.accept_voice_packet.call_count, 2)
+        encrypted_decoder.decode.assert_called_once_with(b"decrypted-opus", fec=False)
+
 
 class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -324,7 +442,9 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.manager.pause.assert_awaited_once_with(self.member)
 
-    async def test_personal_panel_has_complete_controls_without_connection(self) -> None:
+    async def test_personal_panel_has_complete_controls_without_connection(
+        self,
+    ) -> None:
         self.manager.sessions.clear()
         view = MusicPanelView(self.manager, 7, 77)
         labels = {str(item.label) for item in view.children}
@@ -345,7 +465,27 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
         embed = build_music_embed(self.manager, None)
         self.assertIn("персональная панель", embed.footer.text)
 
-    async def test_one_shot_button_runs_command_without_wake_word_then_opts_out(self) -> None:
+    async def test_voice_command_button_never_keeps_a_stale_listening_label(
+        self,
+    ) -> None:
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True,
+            is_paused=lambda: False,
+            is_playing=lambda: False,
+        )
+        self.manager._voice_client = lambda _guild_id: voice_client  # type: ignore[method-assign]
+        self.session.armed_until[7] = float("inf")
+
+        view = MusicPanelView(self.manager, 7, 77)
+
+        button = next(
+            item for item in view.children if item.label == "Голосовая команда"
+        )
+        self.assertFalse(button.disabled)
+
+    async def test_one_shot_button_runs_command_without_wake_word_then_opts_out(
+        self,
+    ) -> None:
         self.manager.transcriber.api_key = "test-key"
         self.manager._ensure_voice_runtime = AsyncMock()  # type: ignore[method-assign]
         self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
@@ -377,6 +517,23 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(7, self.session.voice_users)
         self.assertNotIn(7, self.session.one_shot_voice_users)
+        self.manager.publish_status.assert_awaited_once_with(self.session)
+
+    async def test_persistent_voice_user_stays_enabled_after_command_window_expires(
+        self,
+    ) -> None:
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = 0
+        self.manager.publish_status = AsyncMock()  # type: ignore[method-assign]
+
+        stopped = await self.manager._expire_armed_commands(self.session, 1)
+
+        self.assertFalse(stopped)
+        self.assertIn(7, self.session.voice_users)
+        self.assertNotIn(7, self.session.armed_until)
+        self.assertEqual(
+            self.session.last_notice, "Ожидание голосовой команды завершено."
+        )
         self.manager.publish_status.assert_awaited_once_with(self.session)
 
     async def test_youtube_search_has_per_user_cooldown(self) -> None:
@@ -427,7 +584,9 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
         self.manager.publish_status = AsyncMock()  # type: ignore[method-assign]
 
         with patch("modules.music_runtime.asyncio.sleep", new=AsyncMock()):
-            await self.manager._recover_voice_receiver(77, RuntimeError("router failed"))
+            await self.manager._recover_voice_receiver(
+                77, RuntimeError("router failed")
+            )
 
         self.manager._ensure_voice_runtime.assert_awaited_once_with(self.session)
         self.manager.publish_status.assert_awaited_once_with(self.session)
@@ -441,7 +600,9 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
             fetch_message=AsyncMock(return_value=message),
             send=AsyncMock(),
         )
-        self.bot.get_channel = lambda channel_id: channel if channel_id in {200, 201} else None
+        self.bot.get_channel = lambda channel_id: (
+            channel if channel_id in {200, 201} else None
+        )
 
         def stored_value(key: str) -> str | None:
             if key.endswith(":channel_id"):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Callable, Coroutine
 
 import discord
@@ -37,8 +36,8 @@ def build_music_embed(
             name="Голосовое управление",
             value=(
                 "Доступно после подключения: включается отдельно для каждого пользователя. "
-                "Скажите **«т мод»** или нажмите **«Голосовая команда»**, дождитесь сигнала "
-                "и произнесите команду."
+                "Скажите **«сборщик риса»** или **«т мод»**, либо нажмите "
+                "**«Голосовая команда»**, дождитесь сигнала и произнесите команду."
                 if manager.voice_receive_available
                 else "Сейчас недоступно; кнопки и команда `/music` продолжают работать."
             ),
@@ -92,7 +91,9 @@ def build_music_embed(
         queue_text = "\n".join(lines)
     else:
         queue_text = "Очередь пуста."
-    embed.add_field(name=f"Очередь · {len(session.queue)}", value=queue_text[:1024], inline=False)
+    embed.add_field(
+        name=f"Очередь · {len(session.queue)}", value=queue_text[:1024], inline=False
+    )
     voice_text = (
         f"✅ включено для **{len(session.voice_users)}** участн.\n"
         "Обрабатывается только речь пользователей, включивших функцию для себя."
@@ -103,11 +104,15 @@ def build_music_embed(
             else "Недоступно в текущей сборке; обычное управление работает."
         )
     )
-    embed.add_field(name="🎙️ «Т-Мод»", value=voice_text, inline=False)
+    embed.add_field(name="🎙️ Голосовой вызов", value=voice_text, inline=False)
     if session.last_error:
-        embed.add_field(name="⚠️ Последняя ошибка", value=session.last_error[:1024], inline=False)
+        embed.add_field(
+            name="⚠️ Последняя ошибка", value=session.last_error[:1024], inline=False
+        )
     elif session.last_notice:
-        embed.add_field(name="Последнее действие", value=session.last_notice[:1024], inline=False)
+        embed.add_field(
+            name="Последнее действие", value=session.last_notice[:1024], inline=False
+        )
     embed.set_footer(
         text="T-Mod Music • откройте /music для личных кнопок • голосовые фрагменты не хранятся"
     )
@@ -127,7 +132,11 @@ def build_queue_embed(session: MusicGuildSession) -> discord.Embed:
         blocks.append(
             f"`{index:02d}` [{_safe_title(track.title, 90)}]({track.webpage_url})\n"
             f"      `{format_duration(track.duration_seconds)}`"
-            + (f" · добавил <@{track.requested_by_id}>" if track.requested_by_id else "")
+            + (
+                f" · добавил <@{track.requested_by_id}>"
+                if track.requested_by_id
+                else ""
+            )
         )
     if len(session.queue) > 20:
         blocks.append(f"…и ещё **{len(session.queue) - 20}**")
@@ -165,9 +174,11 @@ class MusicPanelView(discord.ui.View):
             and requester_id not in session.one_shot_voice_users
         )
         self._add(
-            "Голос: выкл." if voice_enabled else "Голос: вкл.",
+            "Голос: выключить" if voice_enabled else "Голос: включить",
             "🎙️",
-            discord.ButtonStyle.primary if voice_enabled else discord.ButtonStyle.secondary,
+            discord.ButtonStyle.primary
+            if voice_enabled
+            else discord.ButtonStyle.secondary,
             self.voice_toggle,
             row=0,
             disabled=not connected,
@@ -229,16 +240,13 @@ class MusicPanelView(discord.ui.View):
             disabled=not connected,
         )
         self._add("Обновить", "🔄", discord.ButtonStyle.secondary, self.refresh, row=2)
-        command_armed = bool(
-            session and session.armed_until.get(requester_id, 0) >= time.monotonic()
-        )
         self._add(
-            "Слушаю команду…" if command_armed else "Голосовая команда",
+            "Голосовая команда",
             "🎤",
             discord.ButtonStyle.primary,
             self.voice_command,
             row=3,
-            disabled=not connected or command_armed,
+            disabled=not connected,
         )
 
     def _add(
@@ -268,7 +276,9 @@ class MusicPanelView(discord.ui.View):
                 ephemeral=True,
             )
             return False
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        if interaction.guild is None or not isinstance(
+            interaction.user, discord.Member
+        ):
             await interaction.response.send_message(
                 "Музыкальная панель работает только на сервере.",
                 ephemeral=True,
@@ -330,7 +340,11 @@ class MusicPanelView(discord.ui.View):
 
     async def pause_or_resume(self, interaction: discord.Interaction) -> None:
         voice_client = self.manager._voice_client(self.guild_id)
-        action = self.manager.resume if voice_client and voice_client.is_paused() else self.manager.pause
+        action = (
+            self.manager.resume
+            if voice_client and voice_client.is_paused()
+            else self.manager.pause
+        )
         await self._run(interaction, action)
 
     async def skip(self, interaction: discord.Interaction) -> None:
@@ -360,9 +374,13 @@ class MusicPanelView(discord.ui.View):
     async def queue(self, interaction: discord.Interaction) -> None:
         session = self.manager.get(self.guild_id)
         if session is None:
-            await interaction.response.send_message("Очередь пока не создана.", ephemeral=True)
+            await interaction.response.send_message(
+                "Очередь пока не создана.", ephemeral=True
+            )
             return
-        await interaction.response.send_message(embed=build_queue_embed(session), ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_queue_embed(session), ephemeral=True
+        )
 
     async def refresh(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -390,7 +408,9 @@ class MusicSearchModal(discord.ui.Modal):
             or not isinstance(interaction.user, discord.Member)
             or interaction.user.id != self.requester_id
         ):
-            await interaction.response.send_message("Эта форма открыта не для вас.", ephemeral=True)
+            await interaction.response.send_message(
+                "Эта форма открыта не для вас.", ephemeral=True
+            )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
