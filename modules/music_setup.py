@@ -19,6 +19,12 @@ def setup_music(
     # SenderReport RTCP packets are routine Discord control traffic. The
     # experimental receiver currently logs them at INFO as "unexpected".
     logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+    # discord.py handles the new websocket sequence field before invoking the
+    # extension hook; the extension only reports it as an unknown extra key.
+    logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
+    # Small UDP gaps are expected and are tolerated by STT; the extension logs
+    # jitter-buffer flushes as warnings even when the receiver stays healthy.
+    logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
     manager = MusicManager(bot)
 
     @bot.tree.command(

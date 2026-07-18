@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+import davey
 
 from modules.music_domain import (
     MusicInputError,
@@ -224,7 +225,37 @@ class MusicAudioRuntimeTests(unittest.TestCase):
             sink.write(user, packet)
 
         manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
-        self.assertIn("Dropped corrupt Discord voice packet", captured.output[0])
+        self.assertIn("stage=opus", captured.output[0])
+
+    def test_dave_is_decrypted_before_opus(self) -> None:
+        manager = SimpleNamespace(accept_voice_packet=MagicMock())
+        decoder = MagicMock()
+        decoder.decode.return_value = b"\x00" * 3840
+        dave_session = SimpleNamespace(
+            ready=True,
+            decrypt=MagicMock(return_value=b"plain-opus"),
+        )
+        connection = SimpleNamespace(
+            dave_protocol_version=1,
+            dave_session=dave_session,
+        )
+        user = SimpleNamespace(id=7, bot=False)
+
+        with patch(
+            "modules.music_audio.discord.opus.Decoder",
+            return_value=decoder,
+        ):
+            sink = TModVoiceSink(manager, 77)
+            sink._voice_client = SimpleNamespace(_connection=connection)
+            sink.write(user, SimpleNamespace(opus=b"encrypted-opus"))
+
+        dave_session.decrypt.assert_called_once_with(
+            7,
+            davey.MediaType.audio,
+            b"encrypted-opus",
+        )
+        decoder.decode.assert_called_once_with(b"plain-opus", fec=False)
+        manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
 
 
 class MusicManagerTests(unittest.IsolatedAsyncioTestCase):

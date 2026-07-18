@@ -16,6 +16,11 @@ from typing import Any
 
 import discord
 
+try:
+    import davey
+except ImportError:  # pragma: no cover - discord.py voice requires this in production.
+    davey = None  # type: ignore[assignment]
+
 from modules.music_config import (
     MUSIC_SIGNAL_VOLUME,
     MUSIC_SPEECH_MAX_SECONDS,
@@ -232,13 +237,63 @@ if voice_recv is not None:
             self.manager = manager
             self.guild_id = int(guild_id)
             self._decoders: dict[int, discord.opus.Decoder] = {}
-            self._decode_drops: dict[int, int] = {}
+            self._decode_drops: dict[tuple[int, str], int] = {}
 
         def wants_opus(self) -> bool:
             # The extension's shared PCM router stops completely on one bad
             # Opus packet. Decode per speaker here so a corrupt packet can be
             # isolated without losing the whole voice receiver.
             return True
+
+        def _drop_packet(
+            self,
+            user_id: int,
+            stage: str,
+            error: object,
+            *,
+            reset_opus: bool = False,
+        ) -> None:
+            key = (int(user_id), str(stage))
+            count = self._decode_drops.get(key, 0) + 1
+            self._decode_drops[key] = count
+            if reset_opus:
+                self._decoders[user_id] = discord.opus.Decoder()
+            if count == 1 or count % 25 == 0:
+                log.warning(
+                    "Dropped unreadable Discord voice packet: "
+                    "guild=%s user=%s stage=%s count=%s error=%s",
+                    self.guild_id,
+                    user_id,
+                    stage,
+                    count,
+                    error,
+                )
+
+        def _decrypt_dave(self, user_id: int, opus: bytes) -> bytes | None:
+            voice_client = getattr(self, "voice_client", None)
+            connection = getattr(voice_client, "_connection", None)
+            protocol_version = int(
+                getattr(connection, "dave_protocol_version", 0) or 0
+            )
+            if protocol_version <= 0:
+                return opus
+            session = getattr(connection, "dave_session", None)
+            if davey is None or session is None or not getattr(session, "ready", False):
+                self._drop_packet(user_id, "dave", "session is not ready")
+                return None
+            try:
+                decrypted = session.decrypt(
+                    int(user_id),
+                    davey.MediaType.audio,
+                    opus,
+                )
+            except Exception as exc:
+                self._drop_packet(user_id, "dave", type(exc).__name__)
+                return None
+            if not decrypted:
+                self._drop_packet(user_id, "dave", "empty payload")
+                return None
+            return bytes(decrypted)
 
         def write(self, user, data) -> None:
             if user is None or getattr(user, "bot", False):
@@ -247,24 +302,22 @@ if voice_recv is not None:
             if not opus:
                 return
             user_id = int(user.id)
+            opus = self._decrypt_dave(user_id, bytes(opus))
+            if not opus:
+                return
             decoder = self._decoders.get(user_id)
             if decoder is None:
                 decoder = discord.opus.Decoder()
                 self._decoders[user_id] = decoder
             try:
-                pcm = decoder.decode(bytes(opus), fec=False)
+                pcm = decoder.decode(opus, fec=False)
             except discord.opus.OpusError as exc:
-                count = self._decode_drops.get(user_id, 0) + 1
-                self._decode_drops[user_id] = count
-                self._decoders[user_id] = discord.opus.Decoder()
-                if count == 1 or count % 25 == 0:
-                    log.warning(
-                        "Dropped corrupt Discord voice packet: guild=%s user=%s count=%s error=%s",
-                        self.guild_id,
-                        user_id,
-                        count,
-                        exc,
-                    )
+                self._drop_packet(
+                    user_id,
+                    "opus",
+                    exc,
+                    reset_opus=True,
+                )
                 return
             self.manager.accept_voice_packet(
                 self.guild_id,
