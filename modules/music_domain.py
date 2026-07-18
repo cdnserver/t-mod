@@ -35,7 +35,7 @@ _YOUTUBE_HOSTS = frozenset(
 _WAKE_RE = re.compile(
     r"(?:^|\s)(?:"
     r"т[иы]?\s*[-–—]?\s*мод|ти\s+мод|t\s*[-–—]?\s*mod|teamod|"
-    r"сборщик\s+риса"
+    r"сборщик\s+риса|банан"
     r")(?=\s|$)",
     re.IGNORECASE,
 )

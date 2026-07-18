@@ -41,7 +41,6 @@ PCM_SAMPLE_RATE = 48_000
 PCM_CHANNELS = 2
 PCM_SAMPLE_WIDTH = 2
 PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_SAMPLE_WIDTH
-DAVE_PLAINTEXT_RECHECK_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +238,7 @@ if voice_recv is not None:
             self.guild_id = int(guild_id)
             self._decoders: dict[int, discord.opus.Decoder] = {}
             self._decode_drops: dict[tuple[int, str], int] = {}
-            self._dave_plaintext_until: dict[int, float] = {}
+            self._dave_plaintext_users: set[int] = set()
             self._dave_recoveries: dict[int, int] = {}
 
         def wants_opus(self) -> bool:
@@ -325,18 +324,16 @@ if voice_recv is not None:
             except discord.opus.OpusError:
                 return None
             self._decoders[user_id] = decoder
-            self._dave_plaintext_until[user_id] = (
-                time.monotonic() + DAVE_PLAINTEXT_RECHECK_SECONDS
-            )
+            self._dave_plaintext_users.add(user_id)
             return bytes(pcm)
 
         def _note_dave_recovery(self, user_id: int, error: object) -> None:
             count = self._dave_recoveries.get(user_id, 0) + 1
             self._dave_recoveries[user_id] = count
             if count == 1 or count % 250 == 0:
-                log.warning(
-                    "Recovered a valid plaintext Opus packet during a DAVE "
-                    "transition: guild=%s user=%s count=%s dave_error=%s",
+                log.info(
+                    "DAVE plaintext compatibility mode enabled: "
+                    "guild=%s user=%s count=%s reason=%s",
                     self.guild_id,
                     user_id,
                     count,
@@ -352,15 +349,15 @@ if voice_recv is not None:
             user_id = int(user.id)
             opus = bytes(opus)
 
-            # During a DAVE transition Discord can temporarily send valid
-            # plaintext Opus even while the negotiated protocol is still
-            # reported as active. Keep a tiny validated passthrough window,
-            # but immediately retry DAVE if the stream becomes encrypted.
-            if self._dave_plaintext_until.get(user_id, 0) > time.monotonic():
+            # Once libopus validates plaintext for this speaker, keep using it
+            # without periodic DAVE probes. The first encrypted packet will
+            # fail Opus validation and immediately switch the user back to
+            # DAVE, so no speech is lost to timer-based rechecks.
+            if user_id in self._dave_plaintext_users:
                 try:
                     pcm = self._decode_opus(user_id, opus)
                 except discord.opus.OpusError:
-                    self._dave_plaintext_until.pop(user_id, None)
+                    self._dave_plaintext_users.discard(user_id)
                     self._decoders.pop(user_id, None)
                 else:
                     self.manager.accept_voice_packet(
@@ -430,7 +427,7 @@ if voice_recv is not None:
         def cleanup(self) -> None:
             self._decoders.clear()
             self._decode_drops.clear()
-            self._dave_plaintext_until.clear()
+            self._dave_plaintext_users.clear()
             self._dave_recoveries.clear()
 
 else:

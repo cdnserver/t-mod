@@ -453,7 +453,7 @@ class MusicManager:
             session.one_shot_voice_users.discard(member.id)
             session.last_notice = (
                 f"{member.display_name} включил голосовое управление для себя. "
-                "Скажите «Сборщик риса» или «Т-Мод» либо нажмите «Голосовая команда»."
+                "Скажите «Банан», «Сборщик риса» или «Т-Мод» либо нажмите «Голосовая команда»."
             )
             try:
                 await self._ensure_voice_runtime(session)

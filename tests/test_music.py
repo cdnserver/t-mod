@@ -54,6 +54,8 @@ class MusicDomainTests(unittest.TestCase):
             "T Mod",
             "Сборщик риса",
             "сборщик риса",
+            "Банан",
+            "банан",
         ):
             with self.subTest(transcript=transcript):
                 woke, remainder = split_wake_word(transcript)
@@ -71,6 +73,12 @@ class MusicDomainTests(unittest.TestCase):
         command = parse_voice_command(remainder)
         self.assertEqual(command.action, "play")
         self.assertEqual(command.query, "цой")
+
+        woke, remainder = split_wake_word("Банан, поставь Кино")
+        self.assertTrue(woke)
+        command = parse_voice_command(remainder)
+        self.assertEqual(command.action, "play")
+        self.assertEqual(command.query, "кино")
         self.assertEqual(parse_voice_command("поставь на паузу").action, "pause")
         self.assertEqual(parse_voice_command("играй дальше").action, "resume")
         self.assertEqual(parse_voice_command("играй").action, "resume")
@@ -273,7 +281,9 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         decoder.decode.assert_called_once_with(b"plain-opus", fec=False)
         manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
 
-    def test_valid_plaintext_is_recovered_during_dave_transition(self) -> None:
+    def test_valid_plaintext_stays_in_compatibility_mode_without_dave_rechecks(
+        self,
+    ) -> None:
         manager = SimpleNamespace(accept_voice_packet=MagicMock())
         decoder = MagicMock()
         decoder.decode.return_value = b"\x00" * 3840
@@ -295,15 +305,17 @@ class MusicAudioRuntimeTests(unittest.TestCase):
 
         with (
             patch("modules.music_audio.discord.opus.Decoder", return_value=decoder),
-            self.assertLogs("modules.music_audio", level="WARNING") as captured,
+            self.assertLogs("modules.music_audio", level="INFO") as captured,
         ):
             sink = TModVoiceSink(manager, 77)
             sink._voice_client = SimpleNamespace(_connection=connection)
             sink.write(user, SimpleNamespace(opus=b"plain-opus"))
+            sink.write(user, SimpleNamespace(opus=b"next-plain-opus"))
 
-        decoder.decode.assert_called_once_with(b"plain-opus", fec=False)
-        manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
-        self.assertIn("Recovered a valid plaintext Opus packet", captured.output[0])
+        self.assertEqual(decoder.decode.call_count, 2)
+        dave_session.decrypt.assert_called_once()
+        self.assertEqual(manager.accept_voice_packet.call_count, 2)
+        self.assertIn("DAVE plaintext compatibility mode enabled", captured.output[0])
 
     def test_dave_failure_does_not_pass_invalid_audio_to_stt(self) -> None:
         manager = SimpleNamespace(accept_voice_packet=MagicMock())
@@ -365,7 +377,7 @@ class MusicAudioRuntimeTests(unittest.TestCase):
                 "modules.music_audio.discord.opus.Decoder",
                 side_effect=[plaintext_decoder, encrypted_decoder],
             ),
-            self.assertLogs("modules.music_audio", level="WARNING"),
+            self.assertLogs("modules.music_audio", level="INFO"),
         ):
             sink = TModVoiceSink(manager, 77)
             sink._voice_client = SimpleNamespace(_connection=connection)
