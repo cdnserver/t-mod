@@ -116,6 +116,7 @@ class MusicBoundaryTests(unittest.TestCase):
         "music_providers.py",
         "music_runtime.py",
         "music_setup.py",
+        "music_status.py",
         "music_views.py",
     }
 
@@ -129,6 +130,7 @@ class MusicBoundaryTests(unittest.TestCase):
             "music_providers.py": 350,
             "music_runtime.py": 900,
             "music_setup.py": 150,
+            "music_status.py": 200,
             "music_views.py": 500,
         }
         oversized = {

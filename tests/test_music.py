@@ -21,6 +21,7 @@ from modules.music_runtime import (
     PCMBytesSource,
     SignalMixerSource,
     SpeechSegmenter,
+    TModVoiceSink,
 )
 from modules.music_views import MusicPanelView, build_music_embed
 
@@ -197,6 +198,34 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         self.assertEqual(len(memory.read()), 3840)
         self.assertEqual(memory.read(), b"")
 
+    def test_corrupt_opus_packet_is_isolated_without_stopping_sink(self) -> None:
+        manager = SimpleNamespace(accept_voice_packet=MagicMock())
+        bad_decoder = MagicMock()
+        opus_error = discord.opus.OpusError.__new__(discord.opus.OpusError)
+        Exception.__init__(opus_error, "corrupted stream")
+        opus_error.code = -4
+        bad_decoder.decode.side_effect = opus_error
+        good_decoder = MagicMock()
+        good_decoder.decode.return_value = b"\x00" * 3840
+        user = SimpleNamespace(id=7, bot=False)
+        packet = SimpleNamespace(opus=b"opus-packet")
+
+        with (
+            patch(
+                "modules.music_audio.discord.opus.Decoder",
+                side_effect=[bad_decoder, good_decoder],
+            ),
+            self.assertLogs("modules.music_audio", level="WARNING") as captured,
+        ):
+            sink = TModVoiceSink(manager, 77)
+            self.assertTrue(sink.wants_opus())
+            sink.write(user, packet)
+            manager.accept_voice_packet.assert_not_called()
+            sink.write(user, packet)
+
+        manager.accept_voice_packet.assert_called_once_with(77, 7, b"\x00" * 3840)
+        self.assertIn("Dropped corrupt Discord voice packet", captured.output[0])
+
 
 class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -360,6 +389,20 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.voice_channel_id, 101)
         self.manager.publish_status.assert_awaited_once_with(self.session)
 
+    async def test_failed_receiver_is_restarted_without_touching_music(self) -> None:
+        self.session.voice_users.add(7)
+        self.session.current = MusicTrack("Играет", "https://youtu.be/current", 100)
+        self.manager._ensure_voice_runtime = AsyncMock()  # type: ignore[method-assign]
+        self.manager.publish_status = AsyncMock()  # type: ignore[method-assign]
+
+        with patch("modules.music_runtime.asyncio.sleep", new=AsyncMock()):
+            await self.manager._recover_voice_receiver(77, RuntimeError("router failed"))
+
+        self.manager._ensure_voice_runtime.assert_awaited_once_with(self.session)
+        self.manager.publish_status.assert_awaited_once_with(self.session)
+        self.assertEqual(self.session.current.title, "Играет")
+        self.assertIn("автоматически восстановлен", self.session.last_notice)
+
     async def test_public_status_card_is_reused_from_persistent_receipt(self) -> None:
         message = SimpleNamespace(id=902, edit=AsyncMock())
         channel = SimpleNamespace(
@@ -377,8 +420,8 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         with (
-            patch("modules.music_runtime.get_meta", side_effect=stored_value),
-            patch("modules.music_runtime.set_meta_value") as save_receipt,
+            patch("modules.music_status.get_meta", side_effect=stored_value),
+            patch("modules.music_status.set_meta_value") as save_receipt,
         ):
             await self.manager.publish_status(self.session)
 

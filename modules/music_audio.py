@@ -7,6 +7,7 @@ packets into bounded per-user speech segments and provides small PCM sources.
 from __future__ import annotations
 
 import math
+import logging
 import threading
 import time
 from array import array
@@ -26,6 +27,9 @@ try:
     from discord.ext import voice_recv
 except ImportError:  # pragma: no cover - deployment diagnostics cover this path.
     voice_recv = None  # type: ignore[assignment]
+
+
+log = logging.getLogger(__name__)
 
 
 PCM_SAMPLE_RATE = 48_000
@@ -227,23 +231,50 @@ if voice_recv is not None:
             super().__init__()
             self.manager = manager
             self.guild_id = int(guild_id)
+            self._decoders: dict[int, discord.opus.Decoder] = {}
+            self._decode_drops: dict[int, int] = {}
 
         def wants_opus(self) -> bool:
-            return False
+            # The extension's shared PCM router stops completely on one bad
+            # Opus packet. Decode per speaker here so a corrupt packet can be
+            # isolated without losing the whole voice receiver.
+            return True
 
         def write(self, user, data) -> None:
             if user is None or getattr(user, "bot", False):
                 return
-            pcm = getattr(data, "pcm", None)
-            if pcm:
-                self.manager.accept_voice_packet(
-                    self.guild_id,
-                    int(user.id),
-                    bytes(pcm),
-                )
+            opus = getattr(data, "opus", None)
+            if not opus:
+                return
+            user_id = int(user.id)
+            decoder = self._decoders.get(user_id)
+            if decoder is None:
+                decoder = discord.opus.Decoder()
+                self._decoders[user_id] = decoder
+            try:
+                pcm = decoder.decode(bytes(opus), fec=False)
+            except discord.opus.OpusError as exc:
+                count = self._decode_drops.get(user_id, 0) + 1
+                self._decode_drops[user_id] = count
+                self._decoders[user_id] = discord.opus.Decoder()
+                if count == 1 or count % 25 == 0:
+                    log.warning(
+                        "Dropped corrupt Discord voice packet: guild=%s user=%s count=%s error=%s",
+                        self.guild_id,
+                        user_id,
+                        count,
+                        exc,
+                    )
+                return
+            self.manager.accept_voice_packet(
+                self.guild_id,
+                user_id,
+                bytes(pcm),
+            )
 
         def cleanup(self) -> None:
-            return None
+            self._decoders.clear()
+            self._decode_drops.clear()
 
 else:
 

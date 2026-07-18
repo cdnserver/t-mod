@@ -89,6 +89,7 @@ modules/<feature>_worker.py
 * `music_providers.py` — адаптеры `yt-dlp` и OpenRouter Speech-to-Text;
 * `music_audio.py` — изолированные PCM-источники, сегментация речи и voice-receive;
 * `music_runtime.py` — очередь, Discord voice, PCM-сигнал и opt-in обработка речи;
+* `music_status.py` — восстановление и обновление единственной общей карточки;
 * `music_views.py` — персональная панель и публичная карточка;
 * `music_setup.py` — команда `/music` и слушатель жизненного цикла войса.
 

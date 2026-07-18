@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import discord
@@ -15,6 +16,9 @@ def setup_music(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None],
 ) -> MusicManager:
+    # SenderReport RTCP packets are routine Discord control traffic. The
+    # experimental receiver currently logs them at INFO as "unexpected".
+    logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
     manager = MusicManager(bot)
 
     @bot.tree.command(

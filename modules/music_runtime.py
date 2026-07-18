@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -45,12 +44,7 @@ from modules.music_domain import (
     split_wake_word,
 )
 from modules.music_providers import OpenRouterTranscriber, YoutubeResolver
-from persistence.activity_repository import get_meta, set_meta_value
-
-
-def _status_meta_keys(guild_id: int) -> tuple[str, str]:
-    prefix = f"music_status:{int(guild_id)}"
-    return f"{prefix}:channel_id", f"{prefix}:message_id"
+from modules.music_status import publish_music_status
 
 
 class MusicRuntimeError(RuntimeError):
@@ -81,6 +75,8 @@ class MusicGuildSession:
     speech_sweeper_task: asyncio.Task | None = None
     speech_worker_task: asyncio.Task | None = None
     idle_disconnect_task: asyncio.Task | None = None
+    receiver_restart_count: int = 0
+    receiver_last_restart_at: float = 0.0
     sink: Any | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     status_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -525,7 +521,57 @@ class MusicManager:
             )
         if not voice_client.is_listening():
             session.sink = TModVoiceSink(self, session.guild_id)
-            voice_client.listen(session.sink)
+            loop = asyncio.get_running_loop()
+
+            def after_receiver(error: Exception | None) -> None:
+                if error is None:
+                    return
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        self._recover_voice_receiver(session.guild_id, error)
+                    )
+                )
+
+            voice_client.listen(session.sink, after=after_receiver)
+
+    async def _recover_voice_receiver(
+        self,
+        guild_id: int,
+        error: Exception,
+    ) -> None:
+        session = self.get(guild_id)
+        if session is None or not session.voice_users:
+            return
+        now = time.monotonic()
+        if now - session.receiver_last_restart_at > 60:
+            session.receiver_restart_count = 0
+        session.receiver_restart_count += 1
+        session.receiver_last_restart_at = now
+        if session.receiver_restart_count > 3:
+            session.last_error = (
+                "Голосовой приём остановлен после трёх сбоев. "
+                "Переподключите T-Mod; кнопки музыки продолжают работать."
+            )
+            await self.publish_status(session)
+            return
+        await asyncio.sleep(min(4.0, 2 ** (session.receiver_restart_count - 1)))
+        current = self.get(guild_id)
+        if current is not session or not session.voice_users:
+            return
+        try:
+            await self._ensure_voice_runtime(session)
+        except Exception as recovery_error:
+            session.last_error = (
+                "Не удалось восстановить голосовой приём: "
+                f"{str(recovery_error)[:500]}"
+            )
+        else:
+            session.last_notice = (
+                "Голосовой приём автоматически восстановлен после сбоя "
+                f"{type(error).__name__}."
+            )
+            session.last_error = None
+        await self.publish_status(session)
 
     async def _disable_voice_runtime(self, session: MusicGuildSession) -> None:
         voice_client = self._voice_client(session.guild_id)
@@ -542,6 +588,8 @@ class MusicManager:
         session.speech_worker_task = None
         session.speech_queue = None
         session.sink = None
+        session.receiver_restart_count = 0
+        session.receiver_last_restart_at = 0.0
         session.voice_users.clear()
         session.one_shot_voice_users.clear()
         session.armed_until.clear()
@@ -729,87 +777,7 @@ class MusicManager:
         *,
         disconnected: bool = False,
     ) -> None:
-        from modules.music_views import build_music_embed
-
-        async with session.status_lock:
-            channel = self.bot.get_channel(session.text_channel_id)
-            if channel is None or not hasattr(channel, "send"):
-                return
-
-            if session.status_message_obj is None and session.status_message_id is None:
-                channel_key, message_key = _status_meta_keys(session.guild_id)
-                try:
-                    stored_channel_raw, stored_message_raw = await asyncio.gather(
-                        asyncio.to_thread(get_meta, channel_key),
-                        asyncio.to_thread(get_meta, message_key),
-                    )
-                    stored_channel_id = int(stored_channel_raw or 0)
-                    stored_message_id = int(stored_message_raw or 0)
-                except (OSError, sqlite3.Error, TypeError, ValueError):
-                    stored_channel_id = 0
-                    stored_message_id = 0
-                if stored_channel_id > 0 and stored_message_id > 0:
-                    stored_channel = self.bot.get_channel(stored_channel_id)
-                    if stored_channel is not None and hasattr(stored_channel, "send"):
-                        channel = stored_channel
-                        session.text_channel_id = stored_channel_id
-                        session.status_message_id = stored_message_id
-
-            embed = build_music_embed(self, session, disconnected=disconnected)
-            message = session.status_message_obj
-            if (
-                message is None
-                and session.status_message_id
-                and hasattr(channel, "fetch_message")
-            ):
-                try:
-                    message = await channel.fetch_message(session.status_message_id)
-                except discord.NotFound:
-                    message = None
-                    session.status_message_id = None
-                except discord.DiscordException:
-                    # A transient Discord/API failure must not create a duplicate card.
-                    return
-            try:
-                if message is not None:
-                    await message.edit(
-                        content=None,
-                        embed=embed,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                    session.status_message_obj = message
-                    return
-            except discord.NotFound:
-                message = None
-            except discord.DiscordException:
-                return
-
-            try:
-                message = await channel.send(
-                    embed=embed,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.DiscordException:
-                return
-            session.status_message_id = int(message.id)
-            session.status_message_obj = message
-            channel_key, message_key = _status_meta_keys(session.guild_id)
-            try:
-                await asyncio.gather(
-                    asyncio.to_thread(
-                        set_meta_value,
-                        channel_key,
-                        str(session.text_channel_id),
-                    ),
-                    asyncio.to_thread(
-                        set_meta_value,
-                        message_key,
-                        str(session.status_message_id),
-                    ),
-                )
-            except (OSError, sqlite3.Error):
-                # The card remains useful even when the optional receipt cannot be saved.
-                return
+        await publish_music_status(self, session, disconnected=disconnected)
 
     async def handle_voice_state_update(
         self,
