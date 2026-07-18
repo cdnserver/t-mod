@@ -20,6 +20,7 @@ from modules.tvrs_formatting import (
 from modules import tvrs_presentation as _tvrs_presentation
 from modules import tvrs_hub_views as _tvrs_hub_views
 from modules import tvrs_consensus_views as _tvrs_consensus_views
+from modules import tvrs_consensus_portal as _tvrs_consensus_portal
 from modules import tvrs_discussion as _tvrs_discussion
 from modules import tvrs_control as _tvrs_control
 from modules import tvrs_decision as _tvrs_decision
@@ -30,6 +31,7 @@ _TVRS_MODULES = (
     _tvrs_presentation,
     _tvrs_hub_views,
     _tvrs_consensus_views,
+    _tvrs_consensus_portal,
     _tvrs_discussion,
     _tvrs_control,
     _tvrs_decision,

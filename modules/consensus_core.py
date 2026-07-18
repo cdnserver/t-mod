@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 
 CONSENSUS_SNAPSHOT_VERSION = 2
+CURRENT_CONSENSUS_ENGINE_VERSION = 3
+LEGACY_CONSENSUS_ENGINE_VERSION = 2
 CONSENSUS_ACTIVE_STAGES = frozenset(
     {
         "registration",
@@ -109,6 +111,7 @@ class LiveConsensusSession:
     leader_display: str
     plenary_number: int
     participants: dict[int, LiveParticipant]
+    engine_version: int = CURRENT_CONSENSUS_ENGINE_VERSION
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     host_message_id: int | None = None
     host_message_obj: object | None = None
@@ -252,6 +255,7 @@ def _result_payload(result: LiveResult) -> dict[str, Any]:
 def session_to_snapshot(session: LiveConsensusSession) -> dict[str, Any]:
     return {
         "snapshot_version": CONSENSUS_SNAPSHOT_VERSION,
+        "engine_version": int(session.engine_version),
         "session_key": str(session.session_key),
         "guild_id": int(session.guild_id),
         "channel_id": int(session.channel_id),
@@ -362,6 +366,11 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
         ),
         acceptance_percent=float(raw_rules.get("acceptance_percent", DEFAULT_CONSENSUS_RULES.acceptance_percent)),
     )
+    engine_version = int(
+        snapshot.get("engine_version") or LEGACY_CONSENSUS_ENGINE_VERSION
+    )
+    if engine_version < 1:
+        raise ConsensusStateError("Некорректная версия движка консенсуса.")
     return LiveConsensusSession(
         session_key=str(snapshot["session_key"]),
         guild_id=int(snapshot["guild_id"]),
@@ -370,6 +379,7 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
         leader_display=str(snapshot.get("leader_display") or snapshot["leader_id"]),
         plenary_number=int(snapshot["plenary_number"]),
         participants=participants,
+        engine_version=engine_version,
         created_at=created_at,
         host_message_id=int(snapshot["host_message_id"]) if snapshot.get("host_message_id") else None,
         stage=stage,

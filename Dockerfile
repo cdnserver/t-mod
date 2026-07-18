@@ -9,6 +9,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libreoffice-writer \
         libreoffice-core \
+        ffmpeg \
+        libffi-dev \
         poppler-utils \
         fontconfig \
         fonts-dejavu-core \

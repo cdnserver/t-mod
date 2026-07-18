@@ -5,6 +5,7 @@
 ## Что нового
 
 * [Журнал изменений](changelog/README.md)
+  * [19 июля 2026 — Consensus V3 и T-Mod Music](changelog/2026-07-19.md)
   * [18 июля 2026 — персональные настройки профиля](changelog/2026-07-18.md)
   * [17 июля 2026 — профили и production-защита](changelog/2026-07-17.md)
   * [16 июля 2026 — надёжный консенсус и закупка с запасом](changelog/2026-07-16.md)
@@ -28,6 +29,7 @@
 
 ## Пленарный консенсус
 
+* [Consensus V3: единый центр заседания](consensus/v3.md)
 * [Участнику: подтверждение и голосование](consensus/participant.md)
 * [Председателю: проведение консенсуса](consensus/chair.md)
 * [Как принимаются решения](consensus/decision-rules.md)
@@ -43,6 +45,7 @@
 ## Общие инструменты
 
 * [Профиль участника и персонажи](tools/member-profile.md)
+* [T-Mod Music и голосовое управление](tools/music.md)
 * [Ссылки и активность](tools/links-and-activity.md)
 * [AI-аудио и изображения](tools/ai.md)
 

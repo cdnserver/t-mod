@@ -217,6 +217,17 @@ async def reconcile_restored_consensus_session(
         else:
             schedule_vote_timer_task(bot, guild, session, remaining)
 
+    # The card is only a projection of durable state. Rebuild it last, after
+    # interrupted finalization and timer recovery have settled the session.
+    from modules.tvrs_control import update_public_consensus_card
+
+    await update_public_consensus_card(
+        bot,
+        guild,
+        session,
+        terminal=session.finished,
+    )
+
 
 def schedule_consensus_recovery_retry(bot: commands.Bot, guild_id: int) -> asyncio.Task:
     """Retry transient restore failures without waiting for another on_ready."""

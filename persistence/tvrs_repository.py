@@ -380,13 +380,14 @@ def tvrs_consensus_save_session(
             con.execute(
                 """
                 INSERT INTO tvrs_consensus_sessions(
-                    session_key, guild_id, plenary_number, stage, leader_id,
+                    session_key, guild_id, engine_version, plenary_number, stage, leader_id,
                     current_bill_id, snapshot_json, revision, created_at, updated_at, finished_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_key,
                     guild_id,
+                    int(snapshot.get("engine_version") or 2),
                     int(snapshot.get("plenary_number") or 0),
                     stage,
                     int(snapshot.get("leader_id") or 0),
@@ -402,11 +403,12 @@ def tvrs_consensus_save_session(
             updated = con.execute(
                 """
                 UPDATE tvrs_consensus_sessions
-                SET plenary_number = ?, stage = ?, leader_id = ?, current_bill_id = ?,
+                SET engine_version = ?, plenary_number = ?, stage = ?, leader_id = ?, current_bill_id = ?,
                     snapshot_json = ?, revision = ?, updated_at = ?, finished_at = ?
                 WHERE session_key = ? AND revision = ? AND finished_at IS NULL
                 """,
                 (
+                    int(snapshot.get("engine_version") or 2),
                     int(snapshot.get("plenary_number") or 0),
                     stage,
                     int(snapshot.get("leader_id") or 0),
@@ -1026,6 +1028,7 @@ def tvrs_consensus_active_sessions(guild_id: int | None = None) -> list[dict[str
                 "corrupt_snapshot_json": True,
             }
         if isinstance(snapshot, dict):
+            snapshot.setdefault("engine_version", int(row["engine_version"] or 2))
             snapshot["revision"] = int(row["revision"] or 0)
             snapshot["persisted_updated_at"] = str(row["updated_at"] or "")
             result.append(snapshot)

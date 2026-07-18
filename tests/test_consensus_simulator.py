@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from modules.consensus_core import calculate_consensus
+from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION
 from modules.consensus_simulator import (
     ConsensusSimulation,
     ConsensusSimulationView,
@@ -24,6 +25,7 @@ class ConsensusSimulationTests(unittest.TestCase):
 
     def test_full_training_lifecycle_uses_production_rules_without_voice(self) -> None:
         simulation = self.simulation()
+        self.assertEqual(simulation.session.engine_version, CONSENSUS_ENGINE_VERSION)
         simulation.confirm_all()
         self.assertTrue(simulation.session.quorum_ready())
         simulation.begin_voting()

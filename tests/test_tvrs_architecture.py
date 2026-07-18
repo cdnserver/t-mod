@@ -77,6 +77,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         for relative_path in (
             "modules/consensus_core.py",
             "modules/consensus_service.py",
+            "modules/consensus_v3.py",
             "modules/control_center_runtime.py",
             "modules/craft_runtime.py",
             "modules/finance_formatting.py",

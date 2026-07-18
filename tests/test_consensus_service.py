@@ -1246,7 +1246,8 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(current.results), 1)
         self.assertIsNotNone(storage.tvrs_live_result_for_bill(current.session_key, bill.id))
         self.assertEqual(storage.delivery_outbox_counts(), {"pending": 3})
-        get_channel.assert_not_called()
+        # Only the winning finalizer projects the canonical public card.
+        get_channel.assert_called_once_with(100)
         events = storage.tvrs_consensus_events(current.session_key)
         self.assertEqual(sum(item["event_type"] == "vote_finalized" for item in events), 1)
 

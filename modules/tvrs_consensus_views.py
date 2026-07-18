@@ -222,38 +222,77 @@ class TVRSConfirmView(TVRSBaseView):
         self.add_item(button)
 
     async def confirm(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Это подтверждение не для вас.", ephemeral=True)
-            return
-        session = next((s for s in _active_sessions.values() if s.session_key == self.session_key), None)
-        if session is None:
-            await interaction.response.send_message("Сессия консенсуса уже закрыта.", ephemeral=True)
-            return
-        p = session.participants.get(self.user_id)
-        if p is None:
-            await interaction.response.send_message("Вы не указаны как участник консенсуса.", ephemeral=True)
-            return
+        await confirm_consensus_participant(
+            interaction,
+            self.session_key,
+            self.user_id,
+        )
+
+
+async def confirm_consensus_participant(
+    interaction: discord.Interaction,
+    session_key: str,
+    user_id: int,
+    *,
+    refreshed_portal: bool = False,
+) -> LiveConsensusSession | None:
+    """Confirm from either a DM or the V3 in-server personal portal."""
+
+    if interaction.user.id != int(user_id):
+        await interaction.response.send_message("Это подтверждение не для вас.", ephemeral=True)
+        return None
+    session = next(
+        (item for item in _active_sessions.values() if item.session_key == session_key),
+        None,
+    )
+    if session is None:
+        await interaction.response.send_message("Сессия консенсуса уже закрыта.", ephemeral=True)
+        return None
+    participant = session.participants.get(int(user_id))
+    if participant is None:
+        await interaction.response.send_message("Вы не указаны как участник консенсуса.", ephemeral=True)
+        return None
+    if session.stage != "registration":
+        await interaction.response.send_message(
+            "Регистрация на это заседание уже завершена.",
+            ephemeral=True,
+        )
+        return None
+    await interaction.response.defer()
+    async with consensus_session_lock(session.guild_id):
         if session.stage != "registration":
-            await interaction.response.send_message("Регистрация на это заседание уже завершена.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        async with consensus_session_lock(session.guild_id):
-            if session.stage != "registration":
-                await interaction.followup.send("Регистрация уже завершена.", ephemeral=True)
-                return
-            await asyncio.to_thread(
-                _consensus.confirm_participant,
-                session,
-                self.user_id,
-                actor=ConsensusActor(
-                    interaction.user.id,
-                    getattr(interaction.user, "display_name", str(interaction.user)),
-                ),
-            )
-        await interaction.edit_original_response(content="Участие подтверждено.", embed=None, view=None)
-        guild = interaction.client.get_guild(session.guild_id)
-        if guild:
-            await update_host_registration_message(interaction.client, guild, session)
+            await interaction.followup.send("Регистрация уже завершена.", ephemeral=True)
+            return None
+        await asyncio.to_thread(
+            _consensus.confirm_participant,
+            session,
+            int(user_id),
+            actor=ConsensusActor(
+                interaction.user.id,
+                getattr(interaction.user, "display_name", str(interaction.user)),
+            ),
+        )
+    guild = interaction.client.get_guild(session.guild_id)
+    if guild:
+        await update_host_registration_message(interaction.client, guild, session)
+    if refreshed_portal:
+        from modules.tvrs_consensus_portal import (
+            TVRSParticipantPortalView,
+            build_participant_portal_embed,
+        )
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=build_participant_portal_embed(session, int(user_id)),
+            view=TVRSParticipantPortalView(session.session_key, int(user_id)),
+        )
+    else:
+        await interaction.edit_original_response(
+            content="Участие подтверждено.",
+            embed=None,
+            view=None,
+        )
+    return session
 
 
 class TVRSVoteView(TVRSBaseView):
@@ -397,7 +436,13 @@ class TVRSVoteView(TVRSBaseView):
             return
         await interaction.response.send_message("Подтвердите применение права вето.", ephemeral=True, view=TVRSVetoConfirmView(self.session_key, interaction.user.id, bill_id=self.bill_id))
 
-    async def _cast(self, interaction: discord.Interaction, vote: str) -> None:
+    async def _cast(
+        self,
+        interaction: discord.Interaction,
+        vote: str,
+        *,
+        replacement_view: discord.ui.View | None = None,
+    ) -> None:
         session = self.session()
         if session is None or not consensus_generation_matches(
             session,
@@ -431,7 +476,17 @@ class TVRSVoteView(TVRSBaseView):
                 ),
             )
         try:
-            await interaction.message.edit(embed=build_dm_vote_embed(session, session.participants[self.user_id]), view=TVRSVoteView(session.session_key, self.user_id, bill_id=self.bill_id))  # type: ignore[union-attr]
+            await interaction.message.edit(
+                embed=build_dm_vote_embed(session, session.participants[self.user_id]),
+                view=(
+                    replacement_view
+                    or TVRSVoteView(
+                        session.session_key,
+                        self.user_id,
+                        bill_id=self.bill_id,
+                    )
+                ),
+            )  # type: ignore[union-attr]
         except discord.DiscordException:
             pass
         guild = interaction.client.get_guild(session.guild_id)
@@ -866,4 +921,4 @@ class TVRSAfterResultView(TVRSBaseView):
                 expected_result_bill_id=self.result_bill_id,
             )
 
-__all__ = ['TVRSRegistrationView', 'TVRSConfirmView', 'TVRSVoteView', 'TVRSPermanentVoteView', 'TVRSRestoredVoteView', 'TVRSDiscussionTypeView', 'TVRSHostVoteView', 'TVRSVetoConfirmView', 'TVRSAfterResultView']
+__all__ = ['TVRSRegistrationView', 'TVRSConfirmView', 'confirm_consensus_participant', 'TVRSVoteView', 'TVRSPermanentVoteView', 'TVRSRestoredVoteView', 'TVRSDiscussionTypeView', 'TVRSHostVoteView', 'TVRSVetoConfirmView', 'TVRSAfterResultView']

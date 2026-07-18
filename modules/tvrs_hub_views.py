@@ -2,31 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import traceback
-import uuid
 from typing import Any
 
 import discord
 
 from persistence import tvrs_repository as storage
-from modules.consensus_core import (
-    ConsensusStateError,
-    LiveConsensusSession,
-)
+from modules.consensus_core import ConsensusStateError
 from modules.consensus_runtime import (
     active_sessions as _active_sessions,
     coordinator as _consensus,
     registry as _consensus_registry,
     session_lock as consensus_session_lock,
 )
-from modules.consensus_service import ConsensusActor
+from modules.consensus_v3 import resolve_consensus_access
 from modules.delivery_runtime import wake_delivery_worker
 from modules.hub_runtime import open_hub_section
-from modules.operations_runtime import wake_operations_worker
 from modules.tvrs_config import (
-    TVRS_BILLS_CHANNEL_ID,
-    TVRS_CONSENSUS_VOICE_CHANNEL_ID,
     TVRS_DEFAULT_NEXT_BILL_NUMBER,
-    TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
     TVRS_EMBED_COLOR,
     TVRS_MATERIALS_CHANNEL_ID,
 )
@@ -39,7 +31,6 @@ from modules.tvrs_formatting import (
 from modules.tvrs_navigation_runtime import open_tvrs_hub
 from modules.tvrs_delivery import (
     TVRS_BILL_PUBLICATION_TOPIC,
-    build_control_dm_deliveries,
 )
 from modules.technical_log import log_technical_event
 
@@ -50,11 +41,8 @@ from modules.tvrs_presentation import (
     build_registration_embed,
     build_universality_embed,
     build_universality_help_embed,
-    delete_sticky_message,
-    edit_session_host_message,
     is_chair,
     is_senator,
-    voice_participants,
 )
 
 async def ensure_sticky_message(*args, **kwargs):
@@ -131,16 +119,15 @@ class TVRSUniversalityView(TVRSRequesterView):
     @discord.ui.button(label="Консенсус", emoji="⚖️", style=discord.ButtonStyle.secondary, row=1)
     async def consensus(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        if not is_chair(interaction.user):
-            await interaction.response.send_message(
-                "Пленарной панелью могут управлять председатели. Остальные разделы `/tvrs` доступны вам без ограничений.",
-                ephemeral=True,
-            )
-            return
         await interaction.response.edit_message(
             content=None,
             embed=build_main_panel_embed(interaction.guild),
-            view=TVRSMainPanelView(self.requester_id, back_to_hub=True),
+            view=TVRSMainPanelView(
+                self.requester_id,
+                guild_id=interaction.guild.id,
+                has_chair_access=is_chair(interaction.user),
+                back_to_hub=True,
+            ),
         )
 
     @discord.ui.button(label="Законопроекты", emoji="📜", style=discord.ButtonStyle.secondary, row=1)
@@ -237,15 +224,14 @@ class TVRSPublicPanelView(TVRSBaseView):
     )
     async def consensus(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        if not is_chair(interaction.user):
-            await interaction.response.send_message(
-                "Пленарной панелью могут управлять председатели. Остальные разделы доступны вам без ограничений.",
-                ephemeral=True,
-            )
-            return
         await interaction.response.send_message(
             embed=build_main_panel_embed(interaction.guild),
-            view=TVRSMainPanelView(interaction.user.id, back_to_hub=True),
+            view=TVRSMainPanelView(
+                interaction.user.id,
+                guild_id=interaction.guild.id,
+                has_chair_access=is_chair(interaction.user),
+                back_to_hub=True,
+            ),
             ephemeral=True,
         )
 
@@ -488,17 +474,80 @@ class TVRSBillModal(discord.ui.Modal):
 
 
 class TVRSMainPanelView(TVRSBaseView):
-    def __init__(self, requester_id: int, *, back_to_hub: bool = False) -> None:
+    def __init__(
+        self,
+        requester_id: int,
+        *,
+        guild_id: int = 0,
+        has_chair_access: bool = False,
+        back_to_hub: bool = False,
+    ) -> None:
         super().__init__(timeout=600)
-        self.requester_id = requester_id
+        self.requester_id = int(requester_id)
+        self.guild_id = int(guild_id)
+        self.has_chair_access = bool(has_chair_access)
         self.back_to_hub = back_to_hub
+        session = _active_sessions.get(self.guild_id)
+        access = resolve_consensus_access(
+            session,
+            user_id=self.requester_id,
+            has_chair_access=self.has_chair_access,
+        )
+        primary_styles = {
+            "prepare": discord.ButtonStyle.success,
+            "manage": discord.ButtonStyle.primary,
+            "participate": discord.ButtonStyle.primary,
+            "observe": discord.ButtonStyle.secondary,
+            "unavailable": discord.ButtonStyle.secondary,
+        }
+        primary = discord.ui.Button(
+            label=access.primary_label,
+            emoji={
+                "prepare": "🧭",
+                "manage": "🎛️",
+                "participate": "🗳️",
+                "observe": "👁️",
+                "unavailable": "⏸️",
+            }[access.primary_action],
+            style=primary_styles[access.primary_action],
+            disabled=access.primary_action == "unavailable",
+            row=0,
+        )
+        primary.callback = self.primary_action
+        self.add_item(primary)
+        if session is not None and not session.finished and access.primary_action != "observe":
+            observer = discord.ui.Button(
+                label="Режим наблюдения",
+                emoji="👁️",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+            )
+            observer.callback = self.observe
+            self.add_item(observer)
+        queue = discord.ui.Button(
+            label="Очередь",
+            emoji="📚",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        queue.callback = self.queue
+        self.add_item(queue)
+        refresh = discord.ui.Button(
+            label="Обновить",
+            emoji="🔄",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        refresh.callback = self.refresh
+        self.add_item(refresh)
         if back_to_hub:
-            back = discord.ui.Button(label="Назад", emoji="⬅️", style=discord.ButtonStyle.secondary)
-
-            async def back_callback(interaction: discord.Interaction) -> None:
-                await open_tvrs_hub(interaction)
-
-            back.callback = back_callback
+            back = discord.ui.Button(
+                label="Назад",
+                emoji="⬅️",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            back.callback = self.back
             self.add_item(back)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -508,13 +557,40 @@ class TVRSMainPanelView(TVRSBaseView):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Команда работает только на сервере Discord.", ephemeral=True)
             return False
-        if not is_chair(interaction.user):
-            await interaction.response.send_message("Панель доступна только председателю.", ephemeral=True)
-            return False
         return True
 
-    @discord.ui.button(label="Открыть заседание", emoji="⚖️", style=discord.ButtonStyle.primary)
-    async def open_active_consensus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def primary_action(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
+        session = _active_sessions.get(interaction.guild.id)
+        access = resolve_consensus_access(
+            session,
+            user_id=interaction.user.id,
+            has_chair_access=is_chair(interaction.user),
+        )
+        if access.primary_action == "prepare":
+            from modules.tvrs_consensus_portal import open_preparation_portal
+
+            await open_preparation_portal(interaction)
+            return
+        if access.primary_action == "manage":
+            await self.open_active_consensus(interaction)
+            return
+        if access.primary_action == "participate" and session is not None:
+            from modules.tvrs_consensus_portal import open_participant_portal
+
+            await open_participant_portal(interaction, session)
+            return
+        if access.primary_action == "observe" and session is not None:
+            from modules.tvrs_consensus_portal import open_observer_portal
+
+            await open_observer_portal(interaction, session)
+            return
+        await interaction.response.send_message(
+            "Активного заседания сейчас нет.",
+            ephemeral=True,
+        )
+
+    async def open_active_consensus(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
         session = _active_sessions.get(interaction.guild.id)
         if session is None or session.finished:
@@ -570,89 +646,40 @@ class TVRSMainPanelView(TVRSBaseView):
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
 
-    @discord.ui.button(label="Начать консенсус", style=discord.ButtonStyle.secondary)
-    async def start_consensus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        if interaction.guild.id in _active_sessions and not _active_sessions[interaction.guild.id].finished:
-            await interaction.response.send_message("На сервере уже идет пленарный консенсус.", ephemeral=True)
-            return
-        participants, error = voice_participants(interaction.guild)
-        if error:
-            await interaction.response.send_message(error, ephemeral=True)
-            return
-        if interaction.user.id not in {participant.user_id for participant in participants}:
+    async def observe(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        session = _active_sessions.get(interaction.guild.id)
+        if session is None or session.finished:
             await interaction.response.send_message(
-                f"Ведущий должен находиться в голосовом канале <#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>.",
+                "Активного заседания сейчас нет.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        async with consensus_session_lock(interaction.guild.id):
-            if interaction.guild.id in _active_sessions and not _active_sessions[interaction.guild.id].finished:
-                await interaction.followup.send("На сервере уже идет пленарный консенсус.", ephemeral=True)
-                return
-            plenary = await asyncio.to_thread(
-                storage.tvrs_get_next_plenary_number,
-                interaction.guild.id,
-                TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
-            )
-            session = LiveConsensusSession(
-                session_key=f"{interaction.guild.id}:{uuid.uuid4().hex[:12]}",
+        from modules.tvrs_consensus_portal import open_observer_portal
+
+        await open_observer_portal(interaction, session)
+
+    async def queue(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        await interaction.response.send_message(
+            embed=build_queue_embed(interaction.guild),
+            ephemeral=True,
+        )
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
+        await interaction.response.edit_message(
+            content=None,
+            embed=build_main_panel_embed(interaction.guild),
+            view=TVRSMainPanelView(
+                self.requester_id,
                 guild_id=interaction.guild.id,
-                channel_id=TVRS_BILLS_CHANNEL_ID,
-                leader_id=interaction.user.id,
-                leader_display=interaction.user.display_name,
-                plenary_number=plenary,
-                participants={participant.user_id: participant for participant in participants},
-            )
-            if interaction.user.id in session.participants:
-                session.participants[interaction.user.id].confirmed = True
-            _consensus_registry.add(session)
-            try:
-                deliveries = build_control_dm_deliveries(session, phase="registration")
-                await asyncio.to_thread(
-                    _consensus.save_with_deliveries,
-                    session,
-                    "session_created",
-                    actor=ConsensusActor(interaction.user.id, interaction.user.display_name),
-                    details={"participant_count": len(session.participants)},
-                    deliveries=deliveries,
-                )
-            except Exception:
-                _consensus_registry.remove(interaction.guild.id, session_key=session.session_key)
-                raise
-        wake_operations_worker()
-        await delete_sticky_message(interaction.client, interaction.guild)
-        msg = await interaction.followup.send(embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key), ephemeral=True, wait=True, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-        host_bound = False
-        async with consensus_session_lock(interaction.guild.id):
-            current = _consensus_registry.find(session.session_key)
-            if current is session and not session.finished and session.stage == "registration":
-                session.host_message_obj = msg
-                await asyncio.to_thread(
-                    _consensus.bind_host_message,
-                    session,
-                    getattr(msg, "id", None),
-                    "host_panel_bound",
-                )
-                host_bound = True
-        if not host_bound:
-            try:
-                await msg.edit(view=None)
-            except discord.DiscordException:
-                pass
-            return
-        wake_delivery_worker()
-        await edit_session_host_message(session, embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key))
+                has_chair_access=is_chair(interaction.user),
+                back_to_hub=self.back_to_hub,
+            ),
+        )
 
-    @discord.ui.button(label="Очередь", style=discord.ButtonStyle.secondary)
-    async def queue(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None
-        await interaction.response.send_message(embed=build_queue_embed(interaction.guild), ephemeral=True)
-
-    @discord.ui.button(label="Обновить", style=discord.ButtonStyle.secondary)
-    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None
-        await interaction.response.edit_message(embed=build_main_panel_embed(interaction.guild), view=self)
+    async def back(self, interaction: discord.Interaction) -> None:
+        await open_tvrs_hub(interaction)
 
 __all__ = ['TVRSBaseView', 'TVRSRequesterView', 'TVRSUniversalityView', 'TVRSPublicPanelView', 'TVRSQueueHubView', 'TVRSHelpView', 'TVRSLinksView', 'TVRSStickyView', 'TVRSBillModal', 'TVRSMainPanelView']

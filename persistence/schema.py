@@ -487,6 +487,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS tvrs_consensus_sessions (
                 session_key TEXT PRIMARY KEY,
                 guild_id INTEGER NOT NULL,
+                engine_version INTEGER NOT NULL DEFAULT 2,
                 plenary_number INTEGER NOT NULL,
                 stage TEXT NOT NULL,
                 leader_id INTEGER NOT NULL,
@@ -932,6 +933,12 @@ def init_db() -> None:
             "is_public",
             "INTEGER NOT NULL DEFAULT 1",
         )
+        _add_column_if_missing(
+            con,
+            "tvrs_consensus_sessions",
+            "engine_version",
+            "INTEGER NOT NULL DEFAULT 2",
+        )
         _add_column_if_missing(con, "activity_events", "category_id", "INTEGER")
         _add_column_if_missing(con, "activity_events", "category_name", "TEXT")
         _add_column_if_missing(con, "activity_summary", "last_category_id", "INTEGER")
@@ -1372,7 +1379,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-18-profile-character-privacy-v1")
+        set_meta(con, "schema_version", "2026-07-19-consensus-v3-v1")
         con.commit()
 
 

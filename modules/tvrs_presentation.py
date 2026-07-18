@@ -18,6 +18,7 @@ from modules.consensus_core import (
 from modules.consensus_runtime import (
     active_sessions as _active_sessions,
 )
+from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_text
 from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID
 from modules.tvrs_config import (
     TVRS_CHAIR_ROLE_ID,
@@ -182,23 +183,42 @@ def build_main_panel_embed(guild: discord.Guild) -> discord.Embed:
     queue_count = len(_tvrs_storage.tvrs_queue_bills(guild.id, limit=100))
     plenary = _tvrs_storage.tvrs_get_next_plenary_number(guild.id, TVRS_DEFAULT_NEXT_PLENARY_NUMBER)
     active = _active_sessions.get(guild.id)
-    active_text = "🟢 свободно"
+    active_text = "🟢 активного заседания нет"
     if active and not active.finished:
-        active_text = f"🟡 идет {ru_ordinal(active.plenary_number)} консенсус • этап **{clean_stage_name(active.stage)}** • ведущий <@{active.leader_id}>"
+        active_text = (
+            f"🟡 идёт {ru_ordinal(active.plenary_number)} заседание · "
+            f"этап **{clean_stage_name(active.stage)}** · ведущий <@{active.leader_id}>"
+        )
     embed = discord.Embed(
-        title="🏛️ Центральное управление Товариществом",
+        title="⚖️ Центр пленарного консенсуса",
         description=(
-            f"**Следующий консенсус:** {ru_ordinal(plenary)}\n"
+            f"**Следующее заседание:** {ru_ordinal(plenary)}\n"
             f"**Законопроектов в очереди:** {queue_count}\n"
             f"**Состояние:** {active_text}"
         ),
         color=TVRS_EMBED_COLOR,
         timestamp=now_local(),
     )
+    if active and not active.finished:
+        embed.add_field(
+            name="Маршрут заседания",
+            value=consensus_progress_text(active.stage),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Следующее действие",
+            value=(
+                "Председатель проверяет повестку и войс через **«Подготовить заседание»**. "
+                "Рабочая сессия создаётся только после успешной проверки."
+            ),
+            inline=False,
+        )
     embed.add_field(name="📚 Очередь", value=queue_short_lines(guild.id, limit=8), inline=False)
     embed.add_field(name="🎙️ Голосовой канал", value=f"<#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>", inline=True)
     embed.add_field(name="⚖️ Правило принятия", value="председатель `49%` + активный сенат `2%` = `51%`", inline=True)
-    embed.set_footer(text="TVRS • пленарный консенсус")
+    engine_version = active.engine_version if active and not active.finished else CONSENSUS_ENGINE_VERSION
+    embed.set_footer(text=f"TVRS • Consensus V{engine_version} • один контекстный вход")
     return embed
 
 
@@ -297,7 +317,7 @@ def build_universality_help_embed() -> discord.Embed:
             "**Крафты** — планы, рецепты и производство.\n"
             "**Рынок** — русский поиск предметов и подробная статистика цен RU15.\n"
             "**Аудит** — действия, поиск по кодам, статистика и отмена.\n"
-            "**Консенсус** — пленарная панель председателя.\n"
+            "**Консенсус** — подготовка, личное голосование и наблюдение за заседанием.\n"
             "**Законопроекты** — очередь и переход к подаче проекта.\n"
             "**Ссылки** — доступ к Бюро и заявка в Товарищество."
         ),
@@ -355,8 +375,8 @@ def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
     embed = discord.Embed(
         title=f"🟦 Регистрация консенсуса • {ru_ordinal(session.plenary_number)}",
         description=(
-            "Это приватная панель ведущего. Участники подтверждают участие в личных сообщениях.\n"
-            "Ведущий уже зарегистрирован автоматически."
+            "Это приватный пульт ведущего. Участники подтверждают участие в ЛС или через "
+            "`/tvrs` → **«Консенсус»**. Ведущий зарегистрирован автоматически."
         ),
         color=TVRS_EMBED_COLOR,
         timestamp=now_local(),
@@ -371,7 +391,8 @@ def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
     parity = "нечётное количество" if session.rules.senators_must_be_odd else "любое количество"
     embed.set_footer(
         text=(
-            f"Правила v{session.rules.version} • минимум {session.rules.minimum_chairs} председателя "
+            f"Consensus V{session.engine_version} • правила v{session.rules.version} • "
+            f"минимум {session.rules.minimum_chairs} председателя "
             f"и {parity} сенаторов"
         )
     )

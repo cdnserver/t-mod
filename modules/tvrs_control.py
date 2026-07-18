@@ -66,6 +66,28 @@ async def finish_session(*args, **kwargs):
     from modules.tvrs_decision import finish_session as _implementation
     return await _implementation(*args, **kwargs)
 
+
+async def update_public_consensus_card(
+    bot: commands.Bot | discord.Client,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+    *,
+    terminal: bool = False,
+) -> None:
+    """Best-effort projection; business state is already durable in SQLite."""
+
+    from modules.tvrs_consensus_portal import ensure_public_consensus_card
+
+    try:
+        await ensure_public_consensus_card(
+            bot,
+            guild,
+            session,
+            terminal=terminal,
+        )
+    except Exception:
+        traceback.print_exc()
+
 def _control_delivery_matches(
     session: LiveConsensusSession,
     *,
@@ -189,33 +211,37 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
 
 
 async def update_host_registration_message(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession) -> None:
-    if await edit_session_host_message(session, embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key)):
-        return
-    if not session.host_message_id:
-        return
-    channel = guild.get_channel(session.channel_id)
-    if not isinstance(channel, discord.abc.Messageable):
-        return
-    try:
-        msg = await channel.fetch_message(session.host_message_id)  # type: ignore[attr-defined]
-        await msg.edit(embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-    except discord.DiscordException:
-        pass
+    edited = await edit_session_host_message(
+        session,
+        embed=build_registration_embed(session),
+        view=TVRSRegistrationView(session.session_key),
+    )
+    if not edited and session.host_message_id:
+        channel = guild.get_channel(session.channel_id)
+        if isinstance(channel, discord.abc.Messageable):
+            try:
+                msg = await channel.fetch_message(session.host_message_id)  # type: ignore[attr-defined]
+                await msg.edit(embed=build_registration_embed(session), view=TVRSRegistrationView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            except discord.DiscordException:
+                pass
+    await update_public_consensus_card(bot, guild, session)
 
 
 async def update_host_vote_message(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession) -> None:
-    if await edit_session_host_message(session, embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key)):
-        return
-    if not session.host_message_id:
-        return
-    channel = guild.get_channel(session.channel_id)
-    if not isinstance(channel, discord.abc.Messageable):
-        return
-    try:
-        msg = await channel.fetch_message(session.host_message_id)  # type: ignore[attr-defined]
-        await msg.edit(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-    except discord.DiscordException:
-        pass
+    edited = await edit_session_host_message(
+        session,
+        embed=build_live_vote_embed(session),
+        view=TVRSHostVoteView(session.session_key),
+    )
+    if not edited and session.host_message_id:
+        channel = guild.get_channel(session.channel_id)
+        if isinstance(channel, discord.abc.Messageable):
+            try:
+                msg = await channel.fetch_message(session.host_message_id)  # type: ignore[attr-defined]
+                await msg.edit(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            except discord.DiscordException:
+                pass
+    await update_public_consensus_card(bot, guild, session)
 
 
 async def begin_next_bill_vote(
@@ -300,6 +326,7 @@ async def begin_next_bill_vote(
     started_bill_id = int(bills[0].get("id") or 0)
     wake_delivery_worker()
     wake_operations_worker()
+    await update_public_consensus_card(bot, guild, session)
 
     if not await edit_session_host_message(session, embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key)):
         if session.host_message_id:
@@ -417,4 +444,4 @@ def clear_finalization_retry(session_key: str) -> None:
     if task is not None and task is not asyncio.current_task() and not task.done():
         task.cancel()
 
-__all__ = ['_finalization_retry_tasks', '_control_delivery_matches', 'deliver_consensus_control_dm', 'update_host_registration_message', 'update_host_vote_message', 'begin_next_bill_vote', 'notify_participants', 'retry_pending_finalization_once', 'schedule_finalization_retry', 'clear_finalization_retry']
+__all__ = ['_finalization_retry_tasks', '_control_delivery_matches', 'deliver_consensus_control_dm', 'update_public_consensus_card', 'update_host_registration_message', 'update_host_vote_message', 'begin_next_bill_vote', 'notify_participants', 'retry_pending_finalization_once', 'schedule_finalization_retry', 'clear_finalization_retry']

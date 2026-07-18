@@ -43,7 +43,11 @@ from modules.tvrs_presentation import (
 )
 from modules.tvrs_consensus_views import TVRSAfterResultView
 from modules.tvrs_discussion import cancel_vote_timer
-from modules.tvrs_control import clear_finalization_retry, schedule_finalization_retry
+from modules.tvrs_control import (
+    clear_finalization_retry,
+    schedule_finalization_retry,
+    update_public_consensus_card,
+)
 
 async def ensure_sticky_message(*args, **kwargs):
     from modules.tvrs_recovery import ensure_sticky_message as _implementation
@@ -112,6 +116,7 @@ async def finalize_current_vote(
     embed = build_result_embed(result, session)
     wake_delivery_worker()
     wake_operations_worker()
+    await update_public_consensus_card(bot, guild, session)
     async with consensus_session_lock(session.guild_id):
         current = _consensus_registry.find(session.session_key)
         if (
@@ -224,6 +229,7 @@ async def apply_veto_for_actor(
     embed = build_result_embed(result, session)
     wake_delivery_worker()
     wake_operations_worker()
+    await update_public_consensus_card(bot, guild, session)
     async with consensus_session_lock(session.guild_id):
         current = _consensus_registry.find(session.session_key)
         if (
@@ -272,6 +278,7 @@ async def finish_session(
     async with consensus_session_lock(session.guild_id):
         if _consensus_registry.find(session.session_key) is session and session.finished:
             await edit_session_host_message(session, embed=embed, view=None)
+    await update_public_consensus_card(bot, guild, session, terminal=True)
     await ensure_sticky_message(bot, guild, force_repost=True)
     _consensus_registry.remove(guild.id, session_key=session.session_key)
     wake_operations_worker()

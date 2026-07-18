@@ -22,6 +22,7 @@ from modules.consensus_core import (
     clean_stage_name,
     transition_session,
 )
+from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_text
 
 
 SIMULATION_COLOR = 0x9B59B6
@@ -73,6 +74,7 @@ class ConsensusSimulation:
             leader_display=self.leader_display,
             plenary_number=0,
             participants=participants,
+            engine_version=CONSENSUS_ENGINE_VERSION,
         )
         self._record("Симуляция открыта; ведущий подтверждён автоматически")
 
@@ -301,7 +303,7 @@ def _participant_lines(simulation: ConsensusSimulation) -> str:
 def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed:
     session = simulation.session
     embed = discord.Embed(
-        title="🧪 Симулятор пленарного консенсуса",
+        title=f"🧪 Симулятор Consensus V{simulation.session.engine_version}",
         description=(
             "Полностью изолированный учебный контур. Фейковые участники, голоса и проекты "
             "существуют только в этой карточке и никогда не попадают в рабочую базу."
@@ -312,6 +314,11 @@ def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed
         name="Этап",
         value=f"**{clean_stage_name(session.stage)}**",
         inline=True,
+    )
+    embed.add_field(
+        name="Маршрут",
+        value=consensus_progress_text(session.stage),
+        inline=False,
     )
     embed.add_field(
         name="Учебный кворум",
@@ -361,7 +368,12 @@ def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed
             value="\n".join(f"• {event}" for event in simulation.events)[-1024:],
             inline=False,
         )
-    embed.set_footer(text="T-Mod • учебный контур • сбрасывается при перезапуске бота")
+    embed.set_footer(
+        text=(
+            f"T-Mod • Consensus V{session.engine_version} • учебный контур • "
+            "сбрасывается при перезапуске"
+        )
+    )
     return embed
 
 

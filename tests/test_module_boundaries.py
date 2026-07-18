@@ -108,5 +108,52 @@ class SglArchiveBoundaryTests(unittest.TestCase):
         )
 
 
+class MusicBoundaryTests(unittest.TestCase):
+    EXPECTED_MODULES = {
+        "music_audio.py",
+        "music_config.py",
+        "music_domain.py",
+        "music_providers.py",
+        "music_runtime.py",
+        "music_setup.py",
+        "music_views.py",
+    }
+
+    def test_music_is_split_into_bounded_responsibilities(self) -> None:
+        actual = {path.name for path in (ROOT / "modules").glob("music_*.py")}
+        self.assertEqual(actual, self.EXPECTED_MODULES)
+        limits = {
+            "music_audio.py": 500,
+            "music_config.py": 200,
+            "music_domain.py": 300,
+            "music_providers.py": 350,
+            "music_runtime.py": 900,
+            "music_setup.py": 150,
+            "music_views.py": 500,
+        }
+        oversized = {
+            name: len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            for name, limit in limits.items()
+            if len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            > limit
+        }
+        self.assertEqual(oversized, {})
+
+    def test_music_domain_and_providers_do_not_depend_on_discord(self) -> None:
+        offenders: list[str] = []
+        for name in ("music_config.py", "music_domain.py", "music_providers.py"):
+            path = ROOT / "modules" / name
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "discord" or alias.name.startswith("discord.")
+                    for alias in node.names
+                ):
+                    offenders.append(name)
+                if isinstance(node, ast.ImportFrom) and str(node.module).startswith("discord"):
+                    offenders.append(name)
+        self.assertEqual(offenders, [])
+
+
 if __name__ == "__main__":
     unittest.main()

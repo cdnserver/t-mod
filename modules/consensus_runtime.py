@@ -33,6 +33,7 @@ def active_consensus_snapshot(guild_id: int) -> dict[str, Any] | None:
     return {
         "guild_id": session.guild_id,
         "session_key": session.session_key,
+        "engine_version": session.engine_version,
         "plenary_number": session.plenary_number,
         "stage": session.stage,
         "stage_label": clean_stage_name(session.stage),

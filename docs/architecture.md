@@ -47,6 +47,7 @@ modules/<feature>_worker.py
 * `consensus_service.py` — сценарии изменения состояния;
 * `consensus_repository.py` — SQLite-адаптер;
 * `consensus_runtime.py` — реестр активных сессий без зависимости от Discord UI;
+* `consensus_v3.py` — чистый контракт единого входа, preflight и пользовательского маршрута V3;
 * `delivery_outbox.py` — общая долговечная очередь с повторами, lease и fencing;
 * `delivery_runtime.py` — жизненный цикл воркера и технические оповещения;
 * `tvrs_delivery.py` — семантические задания и Discord-адаптеры доставки TVRS;
@@ -56,6 +57,7 @@ modules/<feature>_worker.py
 * `tvrs_presentation.py` — карточки, сводки и представление очереди;
 * `tvrs_hub_views.py` — главное меню, подача проектов и публичная панель;
 * `tvrs_consensus_views.py` — интерфейс участников и ведущего;
+* `tvrs_consensus_portal.py` — подготовка, наблюдение и резервный личный пульт V3;
 * `tvrs_discussion.py` — таймеры, дискуссия, пауза и контроль голосового кворума;
 * `tvrs_control.py` — управляющие доставки и переход к следующему проекту;
 * `tvrs_decision.py` — фиксация результата, вето и завершение заседания;
@@ -79,6 +81,19 @@ modules/<feature>_worker.py
 Для рынка выделены `market_config.py` и чистый `market_domain.py` с идентификацией, нормализацией,
 транслитерацией и ранжированием поиска. Для финансов выделены `finance_config.py` и
 `finance_formatting.py`; крафт использует только эти публичные правила, а не финансовый UI.
+
+Музыка также изолирована от остальных функций:
+
+* `music_domain.py` — допустимые YouTube-входы и строгий русский парсер голосовых намерений;
+* `music_config.py` — лимиты очереди, громкости, STT и автоотключения;
+* `music_providers.py` — адаптеры `yt-dlp` и OpenRouter Speech-to-Text;
+* `music_audio.py` — изолированные PCM-источники, сегментация речи и voice-receive;
+* `music_runtime.py` — очередь, Discord voice, PCM-сигнал и opt-in обработка речи;
+* `music_views.py` — персональная панель и публичная карточка;
+* `music_setup.py` — команда `/music` и слушатель жизненного цикла войса.
+
+Экспериментальный voice-receive находится только в runtime-адаптере. Его отказ не меняет очередь
+и не отключает обычное воспроизведение через поддерживаемый `discord.py` voice API.
 
 ## Границы хранения данных
 

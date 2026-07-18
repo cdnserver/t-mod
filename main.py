@@ -23,6 +23,7 @@ from modules.craft import setup_craft
 from modules.control_center import setup_control_center
 from modules.market import setup_market
 from modules.profile import setup_profile
+from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.delivery_runtime import setup_delivery
@@ -101,6 +102,7 @@ TVRS_EVENT_TYPES = {
     "command_craft",
     "command_market",
     "command_profile",
+    "command_music",
 }
 
 
@@ -118,7 +120,7 @@ def boot_banner() -> None:
     print("", flush=True)
     print("============================================================", flush=True)
     print(" T-MOD BOOT SEQUENCE", flush=True)
-    print(" TVRS | SGL Bureau | Registry | Audio AI | Zigmund AI", flush=True)
+    print(" TVRS | Music | SGL Bureau | Registry | Audio AI | Zigmund AI", flush=True)
     print("============================================================", flush=True)
 
 
@@ -972,6 +974,8 @@ boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
 boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
+boot_module("T-Mod Music")
+setup_music(bot, remember_command_activity)
 boot_module("SGL Bureau")
 setup_sgbureau(bot, remember_command_activity)
 boot_module("SGL Case Archive")

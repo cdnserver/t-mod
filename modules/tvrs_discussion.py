@@ -52,6 +52,13 @@ async def update_host_vote_message(*args, **kwargs):
     from modules.tvrs_control import update_host_vote_message as _implementation
     return await _implementation(*args, **kwargs)
 
+
+async def update_public_consensus_card(*args, **kwargs):
+    from modules.tvrs_control import update_public_consensus_card as _implementation
+
+    return await _implementation(*args, **kwargs)
+
+
 async def finalize_current_vote(*args, **kwargs):
     from modules.tvrs_decision import finalize_current_vote as _implementation
     return await _implementation(*args, **kwargs)
@@ -506,6 +513,7 @@ async def resume_session(
             embed=embed,
             view=TVRSAfterResultView(session.session_key),
         )
+        await update_public_consensus_card(bot, guild, session)
         return
     await update_all_vote_dms(guild, session, content=content)
     await update_host_vote_message(bot, guild, session)
