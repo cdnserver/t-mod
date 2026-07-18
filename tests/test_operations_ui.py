@@ -141,6 +141,8 @@ class OperationsCenterTests(unittest.TestCase):
                     self.assertIsNone(view.timeout)
                     self.assertTrue(view.children)
                     self.assertTrue(all(item.custom_id for item in view.children))
+            test_ids = {item.custom_id for item in BotTestView().children}
+            self.assertIn("tmod_consensus_simulation", test_ids)
 
         asyncio.run(inspect_views())
 

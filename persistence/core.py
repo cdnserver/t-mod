@@ -84,6 +84,7 @@ class ProfileCharacter:
     nickname: str
     static_id: str
     position: int
+    is_public: bool
     created_at: str
     updated_at: str
 

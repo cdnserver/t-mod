@@ -13,6 +13,7 @@ from discord.ext import commands
 
 import storage
 from modules.profile import (
+    CharacterDetailView,
     CharacterModal,
     ProfileHomeView,
     ProfileNotificationsView,
@@ -70,6 +71,26 @@ class ProfileStorageTests(unittest.TestCase):
         self.assertEqual([item.position for item in remaining], [1, 2])
         with self.assertRaisesRegex(ValueError, "profile_character_not_found"):
             storage.update_profile_character(10, 200, second.id, "Wrong Owner", "777")
+
+    def test_each_character_has_independent_public_visibility(self) -> None:
+        first = storage.add_profile_character(10, 100, "First Hero", "100")
+        second = storage.add_profile_character(10, 100, "Second Hero", "200")
+        third = storage.add_profile_character(10, 100, "Private Hero", "300")
+
+        hidden = storage.set_profile_character_visibility(
+            10,
+            100,
+            third.id,
+            is_public=False,
+        )
+        self.assertFalse(hidden.is_public)
+        characters = storage.list_profile_characters(10, 100)
+        self.assertEqual(
+            [character.id for character in characters if character.is_public],
+            [first.id, second.id],
+        )
+        with self.assertRaisesRegex(ValueError, "profile_character_not_found"):
+            storage.set_profile_character_visibility(10, 200, third.id, is_public=True)
 
     def test_status_and_note_are_normalized(self) -> None:
         profile = storage.set_member_profile_status(
@@ -160,6 +181,29 @@ class ProfileStorageTests(unittest.TestCase):
                     ) VALUES(10, 100, 'busy', 'Вернусь вечером', 'old', 'old')
                     """
                 )
+                con.execute(
+                    """
+                    CREATE TABLE profile_characters (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        guild_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        nickname TEXT NOT NULL,
+                        static_id TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (guild_id, static_id),
+                        UNIQUE (guild_id, user_id, position)
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    INSERT INTO profile_characters(
+                        guild_id, user_id, nickname, static_id, position, created_at, updated_at
+                    ) VALUES(10, 100, 'Legacy Hero', '777', 1, 'old', 'old')
+                    """
+                )
                 con.commit()
 
             storage.init_db()
@@ -178,6 +222,9 @@ class ProfileStorageTests(unittest.TestCase):
             self.assertTrue(migrated.dm_market)
             self.assertFalse(migrated.quiet_hours_enabled)
             self.assertEqual(migrated.quiet_end_minute, 480)
+            legacy_character = storage.list_profile_characters(10, 100)[0]
+            self.assertEqual(legacy_character.nickname, "Legacy Hero")
+            self.assertTrue(legacy_character.is_public)
         finally:
             storage.DATABASE_FILE = current_database
 
@@ -371,6 +418,63 @@ class ProfileUiTests(unittest.TestCase):
         settings = profile_settings_embed(member, profile, characters)
         self.assertEqual(settings.color.value, 0xEB459E)
         self.assertIn("Main Hero", "\n".join(str(field.value) for field in settings.fields))
+
+    def test_foreign_profile_only_renders_public_characters(self) -> None:
+        member = self.member()
+        profile = SimpleNamespace(
+            visibility="members",
+            show_characters=True,
+            primary_character_id=1,
+        )
+        characters = [
+            SimpleNamespace(
+                id=1,
+                nickname="Public One",
+                static_id="100",
+                position=1,
+                is_public=True,
+            ),
+            SimpleNamespace(
+                id=2,
+                nickname="Hidden Two",
+                static_id="200",
+                position=2,
+                is_public=False,
+            ),
+            SimpleNamespace(
+                id=3,
+                nickname="Public Three",
+                static_id="300",
+                position=3,
+                is_public=True,
+            ),
+        ]
+        owner = profile_embed(member, profile, characters, None, editable=True)
+        owner_text = "\n".join(
+            f"{field.name}\n{field.value}" for field in owner.fields
+        )
+        self.assertIn("Hidden Two", owner_text)
+        self.assertIn("Скрыт от других участников", owner_text)
+
+        foreign = profile_embed(member, profile, characters, None, editable=False)
+        foreign_text = "\n".join(
+            f"{field.name}\n{field.value}" for field in foreign.fields
+        )
+        self.assertIn("Public One", foreign_text)
+        self.assertIn("Public Three", foreign_text)
+        self.assertNotIn("Hidden Two", foreign_text)
+        self.assertNotIn("`200`", foreign_text)
+        self.assertTrue(any("② Public Three" in field.name for field in foreign.fields))
+        self.assertFalse(any("③" in field.name for field in foreign.fields))
+
+        async def inspect_detail() -> None:
+            detail = CharacterDetailView(100, member, characters[1])
+            visibility = next(
+                item for item in detail.children if getattr(item, "label", None) == "Показывать"
+            )
+            self.assertEqual(str(visibility.emoji), "🌐")
+
+        asyncio.run(inspect_detail())
 
     def test_quiet_clock_parser_is_strict(self) -> None:
         self.assertEqual(parse_profile_clock("02:30"), 150)

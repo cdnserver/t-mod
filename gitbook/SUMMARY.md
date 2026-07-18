@@ -31,6 +31,7 @@
 * [Участнику: подтверждение и голосование](consensus/participant.md)
 * [Председателю: проведение консенсуса](consensus/chair.md)
 * [Как принимаются решения](consensus/decision-rules.md)
+* [Учебный симулятор консенсуса](consensus/simulator.md)
 
 ## SGL Bureau
 

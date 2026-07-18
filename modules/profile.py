@@ -58,6 +58,7 @@ PROFILE_ERROR_MESSAGES = {
     "profile_static_taken": "Этот статик уже привязан к другому персонажу на сервере.",
     "profile_character_limit": "В профиле уже сохранены три персонажа.",
     "profile_character_not_found": "Персонаж уже удалён или недоступен.",
+    "profile_character_visibility_invalid": "Не удалось изменить видимость персонажа.",
     "profile_status_invalid": "Не удалось распознать выбранную доступность.",
     "profile_status_note_too_long": "Подпись доступности должна быть не длиннее 120 символов.",
     "profile_character_conflict": "Не удалось сохранить персонажа из-за конфликта данных.",
@@ -179,21 +180,37 @@ def profile_embed(
         )
 
     show_characters = editable or bool(getattr(profile, "show_characters", True))
-    if show_characters and not characters:
+    displayed_characters = (
+        list(characters)
+        if editable
+        else [character for character in characters if bool(getattr(character, "is_public", True))]
+    )
+    if show_characters and not displayed_characters:
         embed.add_field(
-            name="Персонажи · 0/3",
+            name="Персонажи",
             value=(
-                "Персонажи ещё не добавлены."
-                + (" Нажмите **«Добавить»**, чтобы сохранить первого." if editable else "")
+                "Персонажи ещё не добавлены. Нажмите **«Добавить»**, чтобы сохранить первого."
+                if editable
+                else "Владелец пока не опубликовал персонажей."
             ),
             inline=False,
         )
     elif show_characters:
         primary_character_id = getattr(profile, "primary_character_id", None)
-        for character in characters[: storage.PROFILE_MAX_CHARACTERS]:
-            position = int(getattr(character, "position", 0) or 0)
+        for display_position, character in enumerate(
+            displayed_characters[: storage.PROFILE_MAX_CHARACTERS],
+            start=1,
+        ):
+            # A compact public sequence does not disclose that a character between
+            # two visible entries exists but is hidden by its owner.
+            position = (
+                int(getattr(character, "position", 0) or 0)
+                if editable
+                else display_position
+            )
             nickname = _clean_display(getattr(character, "nickname", "Персонаж"))
             static_id = _clean_display(getattr(character, "static_id", "—"))
+            is_public = bool(getattr(character, "is_public", True))
             embed.add_field(
                 name=(
                     f"{'⭐ ' if primary_character_id == character.id else ''}"
@@ -202,12 +219,19 @@ def profile_embed(
                 value=(
                     f"Статик: `{static_id}`"
                     + ("\nОсновной персонаж" if primary_character_id == character.id else "")
+                    + ("\n🔒 Скрыт от других участников" if editable and not is_public else "")
                 ),
                 inline=True,
             )
-    embed.set_footer(
-        text=f"Персонажей: {len(characters)}/{storage.PROFILE_MAX_CHARACTERS} • T-Mod Profile"
+    visible_count = sum(
+        1 for character in characters if bool(getattr(character, "is_public", True))
     )
+    footer_count = (
+        f"Персонажей: {len(characters)}/{storage.PROFILE_MAX_CHARACTERS} · открыто: {visible_count}"
+        if editable
+        else f"Открытых персонажей: {len(displayed_characters)}"
+    )
+    embed.set_footer(text=f"{footer_count} • T-Mod Profile")
     return embed
 
 
@@ -221,6 +245,15 @@ def character_embed(member: discord.Member, character: Any) -> discord.Embed:
     embed.add_field(name="Владелец", value=_clean_display(member.display_name), inline=True)
     embed.add_field(name="Статик", value=f"`{_clean_display(character.static_id)}`", inline=True)
     embed.add_field(name="Слот", value=f"{position} из {storage.PROFILE_MAX_CHARACTERS}", inline=True)
+    embed.add_field(
+        name="Видимость",
+        value=(
+            "🌐 Видим другим участникам"
+            if bool(getattr(character, "is_public", True))
+            else "🔒 Скрыт от других участников"
+        ),
+        inline=False,
+    )
     embed.set_footer(text="Статик уникален в пределах сервера • T-Mod Profile")
     return embed
 
@@ -236,6 +269,7 @@ def character_manager_embed(member: discord.Member, characters: list[Any]) -> di
     )
     if characters:
         lines = [
+            f"{'🌐' if bool(getattr(character, 'is_public', True)) else '🔒'} "
             f"{CHARACTER_NUMBERS.get(int(character.position), '◆')} "
             f"**{_clean_display(character.nickname)}** · `{_clean_display(character.static_id)}`"
             for character in characters
@@ -1230,11 +1264,34 @@ class CharacterDetailView(ProfileBaseView):
         super().__init__(requester_id)
         self.member = member
         self.character = character
+        is_public = bool(getattr(character, "is_public", True))
+        self.visibility.label = "Скрыть" if is_public else "Показывать"
+        self.visibility.emoji = "🔒" if is_public else "🌐"
 
     @discord.ui.button(label="Изменить", emoji="✏️", style=discord.ButtonStyle.primary)
     async def edit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(
             CharacterModal(self.requester_id, self.member, character=self.character)
+        )
+
+    @discord.ui.button(label="Скрыть", emoji="🔒", style=discord.ButtonStyle.secondary)
+    async def visibility(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        current = bool(getattr(self.character, "is_public", True))
+        await interaction.response.defer()
+        try:
+            character = await asyncio.to_thread(
+                storage.set_profile_character_visibility,
+                self.member.guild.id,
+                self.member.id,
+                self.character.id,
+                is_public=not current,
+            )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await interaction.edit_original_response(
+            embed=character_embed(self.member, character),
+            view=CharacterDetailView(self.requester_id, self.member, character),
         )
 
     @discord.ui.button(label="Удалить", emoji="🗑️", style=discord.ButtonStyle.danger)

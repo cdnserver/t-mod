@@ -180,6 +180,7 @@ def init_db() -> None:
                 nickname TEXT NOT NULL,
                 static_id TEXT NOT NULL,
                 position INTEGER NOT NULL CHECK(position BETWEEN 1 AND 3),
+                is_public INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (guild_id, static_id),
@@ -925,6 +926,12 @@ def init_db() -> None:
             "quiet_end_minute": "INTEGER NOT NULL DEFAULT 480",
         }.items():
             _add_column_if_missing(con, "member_profiles", column, definition)
+        _add_column_if_missing(
+            con,
+            "profile_characters",
+            "is_public",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
         _add_column_if_missing(con, "activity_events", "category_id", "INTEGER")
         _add_column_if_missing(con, "activity_events", "category_name", "TEXT")
         _add_column_if_missing(con, "activity_summary", "last_category_id", "INTEGER")
@@ -1365,7 +1372,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-18-profile-notifications-v1")
+        set_meta(con, "schema_version", "2026-07-18-profile-character-privacy-v1")
         con.commit()
 
 

@@ -98,6 +98,7 @@ def _character_from_row(row: sqlite3.Row | None) -> ProfileCharacter | None:
         nickname=str(row["nickname"]),
         static_id=str(row["static_id"]),
         position=int(row["position"]),
+        is_public=bool(row["is_public"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -483,6 +484,46 @@ def update_profile_character(
     return character
 
 
+def set_profile_character_visibility(
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+    *,
+    is_public: bool,
+) -> ProfileCharacter:
+    if not isinstance(is_public, bool):
+        raise ValueError("profile_character_visibility_invalid")
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        cursor = con.execute(
+            """
+            UPDATE profile_characters
+            SET is_public = ?, updated_at = ?
+            WHERE id = ? AND guild_id = ? AND user_id = ?
+            """,
+            (
+                1 if is_public else 0,
+                now,
+                int(character_id),
+                int(guild_id),
+                int(user_id),
+            ),
+        )
+        if cursor.rowcount <= 0:
+            con.rollback()
+            raise ValueError("profile_character_not_found")
+        row = con.execute(
+            "SELECT * FROM profile_characters WHERE id = ?",
+            (int(character_id),),
+        ).fetchone()
+        con.commit()
+    character = _character_from_row(row)
+    if character is None:  # pragma: no cover
+        raise RuntimeError("profile_character_write_failed")
+    return character
+
+
 def delete_profile_character(guild_id: int, user_id: int, character_id: int) -> bool:
     now = utc_now_iso()
     with _db_lock, connect() as con:
@@ -556,5 +597,6 @@ __all__ = [
     "update_member_profile_preferences",
     "add_profile_character",
     "update_profile_character",
+    "set_profile_character_visibility",
     "delete_profile_character",
 ]

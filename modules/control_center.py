@@ -7,25 +7,17 @@ from discord.ext import commands
 
 from persistence import operations_context as storage
 from modules.control_center_config import (
-    ACTIVE_TASKS_CHANNEL_ID,
-    BOT_SETTINGS_CHANNEL_ID,
-    BOT_TEST_CHANNEL_ID,
     CHANNEL_SPEC_BY_KEY,
     CHANNEL_SPECS,
     CONTROL_CENTER_COLOR,
-    CONTROL_PANEL_CHANNEL_ID,
-    FINANCE_LOG_CHANNEL_ID,
+    FINANCE_LOG_CHANNEL_ID as FINANCE_LOG_CHANNEL_ID,
     OPERATIONS_AUTO_CREATE_CHANNELS,
     OPERATIONS_CATEGORY_ID,
     PANEL_MARKERS,
-    REPORTS_CHANNEL_ID,
-    TECH_LOG_CHANNEL_ID,
-    WORKSHOP_CHANNEL_ID,
-    env_bool as _env_bool,
-    env_int as _env_int,
-    positive_env_int as _positive_env_int,
+    WORKSHOP_CHANNEL_ID as WORKSHOP_CHANNEL_ID,
 )
 from modules.control_center_runtime import register_channel_resolver
+from modules.consensus_simulator import start_consensus_simulation
 from modules.majestic_api import MajesticApiError, MajesticMarketplaceSummary, get_majestic_api_client
 from modules.operations_runtime import refresh_operations_dashboard
 from modules.public_panel_runtime import public_panel_provider
@@ -295,14 +287,22 @@ def _test_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🧪 Безопасная проверка T-Mod",
         description=(
-            "Проверка не создаёт финансовых операций, крафтов или законопроектов. "
-            "Результат видит только запустивший её пользователь."
+            "Проверки не создают финансовых операций, крафтов или настоящих законопроектов. "
+            "Симулятор консенсуса работает в отдельной учебной карточке."
         ),
         color=CONTROL_CENTER_COLOR,
     )
     embed.add_field(
         name="🌐 Majestic API",
         value="Администратор может приватно проверить подключение к рыночной статистике RU15.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚖️ Симулятор консенсуса",
+        value=(
+            "Администратор становится ведущим, фейковые участники проходят весь текущий "
+            "сценарий без проверки голосового канала и без доступа к рабочей базе."
+        ),
         inline=False,
     )
     embed.set_footer(text=f"T-Mod • тестовый контур • {PANEL_MARKERS['test']}")
@@ -547,6 +547,19 @@ class BotTestView(discord.ui.View):
                 color=discord.Color.red(),
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="Симулятор консенсуса",
+        emoji="⚖️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="tmod_consensus_simulation",
+    )
+    async def run_consensus_simulation(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        await start_consensus_simulation(interaction)
 
 
 async def ensure_public_control_panel(
