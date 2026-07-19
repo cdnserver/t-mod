@@ -3,7 +3,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
 import traceback
 import zipfile
 from datetime import datetime, timedelta

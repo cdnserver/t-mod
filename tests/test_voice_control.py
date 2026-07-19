@@ -1,4 +1,3 @@
-import asyncio
 import sqlite3
 import tempfile
 import unittest
@@ -244,7 +243,9 @@ class VoiceControlServiceTests(VoiceStorageMixin, unittest.IsolatedAsyncioTestCa
         self.platform.cancel_diagnostic(10, 100)
 
     async def test_domain_registry_is_reusable_for_future_modules(self) -> None:
-        custom_parser = lambda text: SimpleNamespace(action="approve") if text == "одобри" else None
+        def custom_parser(text: str):
+            return SimpleNamespace(action="approve") if text == "одобри" else None
+
         self.platform.register_domain(
             "consensus",
             custom_parser,

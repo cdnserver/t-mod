@@ -59,6 +59,7 @@ class TemporaryOutboxDatabase:
         payload: dict | None = None,
         max_attempts: int = 8,
         priority: int = 0,
+        supersede_key: str | None = None,
     ) -> dict:
         return storage.delivery_outbox_enqueue(
             topic=topic,
@@ -66,6 +67,7 @@ class TemporaryOutboxDatabase:
             payload=payload or {"key": key},
             max_attempts=max_attempts,
             priority=priority,
+            supersede_key=supersede_key,
             now=self.started_at.isoformat(),
         )
 
@@ -205,38 +207,113 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
         self.assertNotEqual(int(claimed[0]["id"]), int(background["id"]))
         self.assertEqual(int(claimed[0]["priority"]), 100)
 
-    def test_priority_migration_rescues_preexisting_dead_consensus_control(self) -> None:
-        migration_key = "migration:delivery-priority:2026-07-20-v1"
-        with storage._db_lock, storage.connect() as connection:
-            connection.execute("DELETE FROM meta WHERE key = ?", (migration_key,))
-            connection.commit()
-        row = self.enqueue(
-            "legacy-control",
+    def test_new_control_generation_cancels_older_queued_copy(self) -> None:
+        first = self.enqueue(
+            "control-1",
             topic="tvrs.consensus.control-dm.v1",
-            max_attempts=1,
+            priority=100,
+            supersede_key="session:control:user-2",
         )
+        second = self.enqueue(
+            "control-2",
+            topic="tvrs.consensus.control-dm.v1",
+            priority=100,
+            supersede_key="session:control:user-2",
+        )
+
+        self.assertEqual(storage.delivery_outbox_get(int(first["id"]))["status"], "cancelled")  # type: ignore[index]
+        self.assertEqual(storage.delivery_outbox_get(int(second["id"]))["status"], "pending")  # type: ignore[index]
         claimed = storage.delivery_outbox_claim(
-            worker_id="legacy-worker",
+            worker_id="supersede-worker",
+            limit=10,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual([int(item["id"]) for item in claimed], [int(second["id"])])
+
+    def test_claimed_old_generation_detects_newer_control_before_sending(self) -> None:
+        scope = "session:control:user-2"
+        first = self.enqueue(
+            "control-processing",
+            topic="tvrs.consensus.control-dm.v1",
+            priority=100,
+            supersede_key=scope,
+        )
+        storage.delivery_outbox_claim(
+            worker_id="old-worker",
             limit=1,
             lease_seconds=30,
             now=self.started_at.isoformat(),
-        )[0]
-        storage.delivery_outbox_mark_failed(
-            int(row["id"]),
-            lease_token=str(claimed["lease_token"]),
-            error="old exponential retry exhausted",
-            retry_at=self.started_at.isoformat(),
-            permanent=True,
-            now=self.started_at.isoformat(),
         )
+        second = self.enqueue(
+            "control-newer",
+            topic="tvrs.consensus.control-dm.v1",
+            priority=100,
+            supersede_key=scope,
+        )
+
+        self.assertFalse(
+            storage.delivery_outbox_is_current_supersession(
+                int(first["id"]),
+                topic="tvrs.consensus.control-dm.v1",
+                supersede_key=scope,
+            )
+        )
+        self.assertTrue(
+            storage.delivery_outbox_is_current_supersession(
+                int(second["id"]),
+                topic="tvrs.consensus.control-dm.v1",
+                supersede_key=scope,
+            )
+        )
+
+    def test_cleanup_migration_cancels_legacy_control_backlog(self) -> None:
+        migration_key = "migration:delivery-control-cleanup:2026-07-20-v2"
+        with storage._db_lock, storage.connect() as connection:
+            connection.execute("DELETE FROM meta WHERE key = ?", (migration_key,))
+            connection.commit()
+        legacy = [
+            self.enqueue(
+                f"legacy-control-{index}",
+                topic="tvrs.consensus.control-dm.v1",
+                priority=100,
+            )
+            for index in range(250)
+        ]
+        background = self.enqueue("unrelated-background")
+        with storage._db_lock, storage.connect() as connection:
+            connection.execute(
+                "UPDATE delivery_outbox SET status = 'retry' WHERE id = ?",
+                (int(legacy[0]["id"]),),
+            )
+            connection.execute(
+                "UPDATE delivery_outbox SET status = 'processing', lease_owner = 'old', "
+                "lease_token = 'old-token', lease_until = ? WHERE id = ?",
+                (
+                    (self.started_at + timedelta(minutes=5)).isoformat(),
+                    int(legacy[1]["id"]),
+                ),
+            )
+            connection.execute(
+                "UPDATE delivery_outbox SET status = 'dead' WHERE id = ?",
+                (int(legacy[2]["id"]),),
+            )
+            connection.commit()
 
         storage.init_db()
 
-        rescued = storage.delivery_outbox_get(int(row["id"]))
-        self.assertEqual(rescued["status"], "retry")  # type: ignore[index]
-        self.assertEqual(rescued["attempts"], 0)  # type: ignore[index]
-        self.assertEqual(rescued["priority"], 100)  # type: ignore[index]
-        self.assertIsNone(rescued["last_error"])  # type: ignore[index]
+        for row in legacy:
+            cancelled = storage.delivery_outbox_get(int(row["id"]))
+            self.assertEqual(cancelled["status"], "cancelled")  # type: ignore[index]
+            self.assertEqual(cancelled["last_error"], "superseded_by_control_delivery_v2")  # type: ignore[index]
+        claimed = storage.delivery_outbox_claim(
+            worker_id="legacy-worker",
+            limit=10,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual([int(item["id"]) for item in claimed], [int(background["id"])])
+        self.assertEqual(storage.delivery_outbox_counts(), {"cancelled": 250, "processing": 1})
 
     def test_expired_lease_is_reclaimed_and_stale_token_is_fenced(self) -> None:
         item_id = int(self.enqueue("leased", max_attempts=3)["id"])

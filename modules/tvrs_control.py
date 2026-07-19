@@ -7,6 +7,7 @@ from typing import Any
 import discord
 from discord.ext import commands
 
+from persistence import outbox_repository as _outbox_storage
 from persistence import tvrs_repository as storage
 from modules.consensus_core import (
     LiveConsensusSession,
@@ -53,6 +54,48 @@ from modules.tvrs_consensus_views import (
 from modules.tvrs_discussion import cancel_vote_timer, session_voice_quorum_ready, update_all_vote_dms
 
 _finalization_retry_tasks: dict[str, asyncio.Task] = {}
+_control_cleanup_tasks: set[asyncio.Task] = set()
+
+
+async def _prune_duplicate_control_panels(channel: Any, keep_message_id: int) -> None:
+    """Delete obsolete interactive TVRS copies without touching result cards."""
+
+    history = getattr(channel, "history", None)
+    if history is None:
+        return
+    try:
+        async for candidate in history(limit=100):
+            if int(getattr(candidate, "id", 0) or 0) == int(keep_message_id):
+                continue
+            if getattr(getattr(candidate, "author", None), "bot", False) is not True:
+                continue
+            if not getattr(candidate, "components", None):
+                continue
+            embeds = getattr(candidate, "embeds", ())
+            is_control = any(
+                str(getattr(getattr(embed, "footer", None), "text", "") or "").startswith(
+                    "TVRS • результат зафиксирован • ref "
+                )
+                or "пленарный консенсус" in str(getattr(embed, "title", "") or "").lower()
+                for embed in embeds
+            )
+            if not is_control:
+                continue
+            try:
+                await candidate.delete()
+            except discord.DiscordException:
+                continue
+    except (discord.DiscordException, AttributeError, TypeError, ValueError):
+        return
+
+
+def _schedule_control_cleanup(channel: Any, keep_message_id: int) -> None:
+    task = asyncio.create_task(
+        _prune_duplicate_control_panels(channel, keep_message_id),
+        name=f"tvrs-control-cleanup:{int(keep_message_id)}",
+    )
+    _control_cleanup_tasks.add(task)
+    task.add_done_callback(_control_cleanup_tasks.discard)
 
 async def apply_veto_for_actor(*args, **kwargs):
     from modules.tvrs_decision import apply_veto_for_actor as _implementation
@@ -135,6 +178,13 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
         user_id=user_id,
     ):
         return DeliveryReceipt()
+    if not await asyncio.to_thread(
+        _outbox_storage.delivery_outbox_is_current_supersession,
+        message.id,
+        topic=message.topic,
+        supersede_key=message.supersede_key,
+    ):
+        return DeliveryReceipt()
 
     guild = bot.get_guild(guild_id)
     if guild is None:
@@ -157,17 +207,19 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
         existing_message_id = int(participant.dm_message_id or 0)
     else:
         embed = await asyncio.to_thread(build_dm_vote_embed, session, participant)
-        view = TVRSPermanentVoteView(session_key, user_id) if participant.permanent else TVRSVoteView(session_key, user_id)
+        view = (
+            TVRSPermanentVoteView(session_key, user_id, bill_id=bill_id)
+            if participant.permanent
+            else TVRSVoteView(session_key, user_id, bill_id=bill_id)
+        )
         bill = session.current_bill or {}
         number = str(bill.get("bill_number") or "—")
         title = " ".join(str(bill.get("title") or "Законопроект").split())[:160]
-        content = f"🔔 Открыто голосование по законопроекту №{number}: **{title}**"
-        # A vote must be a fresh DM for every bill. Editing the old registration
-        # or previous-vote message does not create an unread event in Discord,
-        # so participants can miss the control panel entirely. Idempotency is
-        # provided by the per-bill delivery marker below, not by reusing an old
-        # Discord message ID.
-        existing_message_id = 0
+        content = None
+        # Keep exactly one reusable control panel. A separate marker-fenced
+        # notification below creates the unread event that Discord does not
+        # produce when a message is merely edited.
+        existing_message_id = int(participant.vote_message_id or participant.dm_message_id or 0)
 
     marker = delivery_marker(message.dedupe_key)
     embed.set_footer(text=marker)
@@ -207,6 +259,7 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
                     target.dm_message_id = message_id
                 else:
                     target.vote_message_id = message_id
+                    target.vote_bill_id = bill_id
                 target.dm_failed = False
                 _consensus.save(
                     current,
@@ -215,6 +268,32 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
                 )
 
         await asyncio.to_thread(persist_receipt)
+    if phase == "voting":
+        # The notice identity belongs to the bill, not to a delivery retry or
+        # manual recovery generation. This guarantees one unread notification
+        # per participant and bill even when the outbox job is reconstructed.
+        notice_marker = delivery_marker(
+            f"consensus:{session_key}:bill:{bill_id}:notice:{user_id}"
+        )
+        notice = await find_delivery_marker(dm_channel, notice_marker)
+        if notice is None:
+            jump_url = str(getattr(sent, "jump_url", "") or "")
+            notice_embed = discord.Embed(
+                title="🔔 Новое голосование",
+                description=(
+                    f"Открыт законопроект №{number}: **{title}**\n"
+                    + (
+                        f"[Открыть единую панель голосования]({jump_url})"
+                        if jump_url
+                        else "Откройте актуальную панель T-Mod в этом диалоге."
+                    )
+                ),
+                color=TVRS_EMBED_COLOR,
+                timestamp=now_local(),
+            )
+            notice_embed.set_footer(text=notice_marker)
+            await member.send(embed=notice_embed)
+    _schedule_control_cleanup(dm_channel, message_id)
     return DeliveryReceipt(message_id=message_id)
 
 
@@ -452,4 +531,4 @@ def clear_finalization_retry(session_key: str) -> None:
     if task is not None and task is not asyncio.current_task() and not task.done():
         task.cancel()
 
-__all__ = ['_finalization_retry_tasks', '_control_delivery_matches', 'deliver_consensus_control_dm', 'update_public_consensus_card', 'update_host_registration_message', 'update_host_vote_message', 'begin_next_bill_vote', 'notify_participants', 'retry_pending_finalization_once', 'schedule_finalization_retry', 'clear_finalization_retry']
+__all__ = ['_finalization_retry_tasks', '_control_cleanup_tasks', '_control_delivery_matches', '_prune_duplicate_control_panels', 'deliver_consensus_control_dm', 'update_public_consensus_card', 'update_host_registration_message', 'update_host_vote_message', 'begin_next_bill_vote', 'notify_participants', 'retry_pending_finalization_once', 'schedule_finalization_retry', 'clear_finalization_retry']

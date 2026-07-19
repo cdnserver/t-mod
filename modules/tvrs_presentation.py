@@ -546,12 +546,14 @@ async def edit_or_send_vote_dm(guild: discord.Guild, session: LiveConsensusSessi
             dm_channel = member.dm_channel or await member.create_dm()
             msg = await dm_channel.fetch_message(p.vote_message_id)
             await msg.edit(content=None, embed=embed, view=view)
+            p.vote_bill_id = int((session.current_bill or {}).get("id") or 0) or None
             return
         except discord.DiscordException:
             pass
     try:
         dm = await member.send(embed=embed, view=view)
         p.vote_message_id = dm.id
+        p.vote_bill_id = int((session.current_bill or {}).get("id") or 0) or None
     except discord.DiscordException:
         p.dm_failed = True
 

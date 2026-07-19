@@ -452,6 +452,7 @@ def tvrs_consensus_save_session(
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
                 priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -575,6 +576,7 @@ def tvrs_consensus_commit_begin_bill(
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
                 priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -840,6 +842,7 @@ def tvrs_consensus_commit_finalization(
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
                 priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -981,6 +984,7 @@ def tvrs_consensus_commit_finish(
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
                 priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
                 available_at=delivery.get("available_at"),
                 now=now,
             )

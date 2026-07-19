@@ -30,6 +30,7 @@ from modules.tvrs_config import (
 )
 from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
 from modules.tvrs_delivery import (
+    build_control_dm_deliveries,
     build_retry_bill_delivery,
     build_result_deliveries,
 )
@@ -49,6 +50,32 @@ from modules.tvrs_discussion import schedule_vote_timer_task
 _sticky_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task] = {}
 _consensus_recovery_tasks: dict[int, asyncio.Task] = {}
+
+
+async def _cleanup_restored_control_copies(
+    guild: discord.Guild,
+    user_id: int,
+    keep_message_id: int,
+) -> None:
+    resolver = getattr(guild, "get_member", None)
+    if resolver is None:
+        return
+    member = resolver(int(user_id))
+    if member is None:
+        fetch = getattr(guild, "fetch_member", None)
+        if fetch is None:
+            return
+        try:
+            member = await fetch(int(user_id))
+        except discord.DiscordException:
+            return
+    try:
+        dm_channel = member.dm_channel or await member.create_dm()
+    except discord.DiscordException:
+        return
+    from modules.tvrs_control import _schedule_control_cleanup
+
+    _schedule_control_cleanup(dm_channel, int(keep_message_id))
 
 async def get_materials_channel(bot: commands.Bot | discord.Client, guild: discord.Guild | None = None) -> discord.TextChannel | None:
     channel = None
@@ -132,18 +159,34 @@ async def reconcile_restored_consensus_session(
     session: LiveConsensusSession,
 ) -> None:
     """Reattach controls and finish any operation interrupted by a restart."""
+    missing_control_users: set[int] = set()
     if session.stage == "registration":
         for participant in session.participants.values():
-            if participant.confirmed or not participant.dm_message_id:
+            if participant.confirmed:
+                continue
+            if not participant.dm_message_id:
+                missing_control_users.add(participant.user_id)
                 continue
             register_restored_view(
                 bot,
                 TVRSConfirmView(session.session_key, participant.user_id),
                 message_id=participant.dm_message_id,
             )
+            await _cleanup_restored_control_copies(
+                guild,
+                participant.user_id,
+                participant.dm_message_id,
+            )
     elif session.stage == "voting":
+        current_bill_id = consensus_bill_id(session)
         for participant in session.confirmed_participants():
-            if not participant.vote_message_id:
+            if participant.user_id == session.leader_id:
+                continue
+            if (
+                not participant.vote_message_id
+                or int(participant.vote_bill_id or 0) != current_bill_id
+            ):
+                missing_control_users.add(participant.user_id)
                 continue
             register_restored_view(
                 bot,
@@ -154,6 +197,33 @@ async def reconcile_restored_consensus_session(
                 ),
                 message_id=participant.vote_message_id,
             )
+            await _cleanup_restored_control_copies(
+                guild,
+                participant.user_id,
+                participant.vote_message_id,
+            )
+
+    if missing_control_users:
+        phase = "registration" if session.stage == "registration" else "voting"
+        recovery_deliveries = build_control_dm_deliveries(
+            session,
+            phase=phase,
+            generation="recovery-control-v2",
+        )
+        for delivery in recovery_deliveries:
+            payload = dict(delivery.get("payload") or {})
+            if int(payload.get("user_id") or 0) not in missing_control_users:
+                continue
+            await asyncio.to_thread(
+                _outbox_storage.delivery_outbox_enqueue,
+                topic=str(delivery["topic"]),
+                dedupe_key=str(delivery["dedupe_key"]),
+                payload=payload,
+                max_attempts=int(delivery.get("max_attempts") or 8),
+                priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
+            )
+        wake_delivery_worker()
 
     if session.stage == "finalizing":
         pending = session.pending_action or {}
@@ -356,4 +426,4 @@ async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:
         except Exception:
             traceback.print_exc()
 
-__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'tvrs_ensure_sticky_all']
+__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'tvrs_ensure_sticky_all']

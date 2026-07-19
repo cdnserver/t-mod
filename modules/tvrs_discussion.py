@@ -42,7 +42,6 @@ from modules.tvrs_presentation import (
     build_dm_vote_embed,
     consensus_bill_id,
     consensus_generation_matches,
-    edit_or_send_vote_dm,
     edit_session_host_message,
     edit_vote_dm_to_result,
 )
@@ -109,19 +108,11 @@ async def set_vote_timer(
             bill_id=consensus_bill_id(session),
         )
 
-    content = f"Установлен таймер голосования: {format_timer(seconds)}."
-    for p in session.confirmed_participants():
-        if p.user_id == session.leader_id:
-            continue
-        await edit_or_send_vote_dm(guild, session, p)
-        member = guild.get_member(p.user_id)
-        if member and p.vote_message_id:
-            try:
-                dm_channel = member.dm_channel or await member.create_dm()
-                msg = await dm_channel.fetch_message(p.vote_message_id)
-                await msg.edit(content=content, embed=build_dm_vote_embed(session, p), view=TVRSVoteView(session.session_key, p.user_id))
-            except discord.DiscordException:
-                pass
+    await update_all_vote_dms(
+        guild,
+        session,
+        content=f"Установлен таймер голосования: {format_timer(seconds)}.",
+    )
     await update_host_vote_message(bot, guild, session)
 
 
@@ -164,8 +155,17 @@ def schedule_vote_timer_task(
 
 
 async def update_all_vote_dms(guild: discord.Guild, session: LiveConsensusSession, content: str | None = None) -> None:
-    for p in session.confirmed_participants():
-        if session.stage not in {"voting", "paused", "discussion_type", "discussion"}:
+    expected_stage = str(session.stage)
+    expected_bill_id = consensus_bill_id(session)
+    if expected_stage not in {"voting", "paused", "discussion_type", "discussion"}:
+        return
+    receipts: dict[int, tuple[int | None, bool]] = {}
+    for p in list(session.confirmed_participants()):
+        if not consensus_generation_matches(
+            session,
+            stage=expected_stage,
+            bill_id=expected_bill_id,
+        ):
             return
         if p.user_id == session.leader_id:
             continue
@@ -174,25 +174,59 @@ async def update_all_vote_dms(guild: discord.Guild, session: LiveConsensusSessio
             try:
                 member = await guild.fetch_member(p.user_id)
             except discord.DiscordException:
+                receipts[p.user_id] = (None, True)
                 continue
         embed = build_dm_vote_embed(session, p)
-        view = TVRSVoteView(session.session_key, p.user_id)
+        view = TVRSVoteView(
+            session.session_key,
+            p.user_id,
+            bill_id=expected_bill_id,
+        )
         if p.vote_message_id:
             try:
                 dm_channel = member.dm_channel or await member.create_dm()
                 msg = await dm_channel.fetch_message(p.vote_message_id)
                 await msg.edit(content=content, embed=embed, view=view)
+                receipts[p.user_id] = (int(msg.id), False)
                 continue
             except discord.DiscordException:
                 pass
         try:
             dm = await member.send(content=content, embed=embed, view=view)
-            p.vote_message_id = dm.id
+            receipts[p.user_id] = (int(dm.id), False)
         except discord.DiscordException:
-            p.dm_failed = True
+            receipts[p.user_id] = (None, True)
     async with consensus_session_lock(session.guild_id):
-        if session.stage in {"voting", "paused", "discussion_type", "discussion"}:
-            await asyncio.to_thread(_consensus.save, session, "vote_messages_refreshed")
+        current = _active_sessions.get(session.guild_id)
+        if current is not session or not consensus_generation_matches(
+            session,
+            stage=expected_stage,
+            bill_id=expected_bill_id,
+        ):
+            return
+        with _consensus.mutation(session):
+            for user_id, (message_id, failed) in receipts.items():
+                participant = session.participants.get(user_id)
+                if participant is None:
+                    continue
+                if message_id is not None:
+                    participant.vote_message_id = message_id
+                    participant.vote_bill_id = expected_bill_id or None
+                    participant.dm_failed = False
+                elif failed:
+                    participant.dm_failed = True
+            await asyncio.to_thread(
+                _consensus.save,
+                session,
+                "vote_messages_refreshed",
+                details={
+                    "bill_id": expected_bill_id or None,
+                    "updated_count": sum(
+                        1 for message_id, _ in receipts.values() if message_id is not None
+                    ),
+                    "failed_count": sum(1 for _, failed in receipts.values() if failed),
+                },
+            )
 
 
 async def request_discussion(

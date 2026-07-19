@@ -36,6 +36,7 @@ class OutboxMessage:
     max_attempts: int
     lease_token: str
     priority: int = 0
+    supersede_key: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "OutboxMessage":
@@ -56,6 +57,7 @@ class OutboxMessage:
             attempts=int(row.get("attempts") or 0),
             max_attempts=int(row.get("max_attempts") or 1),
             priority=int(row.get("priority") or 0),
+            supersede_key=str(row.get("supersede_key") or "") or None,
             lease_token=token,
         )
 

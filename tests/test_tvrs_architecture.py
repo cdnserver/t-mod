@@ -18,7 +18,10 @@ from modules.market_domain import market_internal_id, rank_market_items
 from modules.hub_runtime import open_hub_section, register_hub_section
 from modules.operations_runtime import bind_worker_wakeup, wake_operations_worker
 from modules.tvrs_config import env_color, env_int
-from modules.tvrs_control import deliver_consensus_control_dm
+from modules.tvrs_control import (
+    _prune_duplicate_control_panels,
+    deliver_consensus_control_dm,
+)
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     TVRS_RETRY_BILL_TOPIC,
@@ -27,6 +30,7 @@ from modules.tvrs_delivery import (
     build_retry_bill_delivery,
     build_result_deliveries,
     build_session_summary_deliveries,
+    delivery_marker,
     make_result_delivery_handler,
     make_retry_bill_delivery_handler,
 )
@@ -294,6 +298,7 @@ class TVRSFormattingContractTests(unittest.TestCase):
         self.assertEqual(registration[0]["topic"], TVRS_CONTROL_DM_TOPIC)
         self.assertEqual(registration[0]["payload"]["user_id"], 2)
         self.assertEqual(registration[0]["priority"], 100)
+        self.assertIn(":control:2", registration[0]["supersede_key"])
 
         session.participants[2].confirmed = True
         session.stage = "voting"
@@ -302,6 +307,27 @@ class TVRSFormattingContractTests(unittest.TestCase):
         self.assertEqual(len(voting), 2)
         self.assertTrue(all(item["payload"]["bill_id"] == 10 for item in voting))
         self.assertTrue(all(item["priority"] == 100 for item in voting))
+        self.assertEqual(
+            registration[0]["supersede_key"],
+            next(item for item in voting if item["payload"]["user_id"] == 2)["supersede_key"],
+        )
+        recovery_bill_10 = build_control_dm_deliveries(
+            session,
+            phase="voting",
+            generation="recovery-control-v2",
+        )
+        session.current_bill = {"id": 11, "bill_number": 10, "title": "Следующий проект"}
+        recovery_bill_11 = build_control_dm_deliveries(
+            session,
+            phase="voting",
+            generation="recovery-control-v2",
+        )
+        self.assertNotEqual(
+            recovery_bill_10[0]["dedupe_key"],
+            recovery_bill_11[0]["dedupe_key"],
+        )
+        self.assertIn(":voting:10:recovery-control-v2:", recovery_bill_10[0]["dedupe_key"])
+        self.assertIn(":voting:11:recovery-control-v2:", recovery_bill_11[0]["dedupe_key"])
 
         session.results = [
             LiveResult(
@@ -385,9 +411,10 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
             max_attempts=12,
             lease_token="test-lease",
             priority=int(job.get("priority") or 0),
+            supersede_key=job.get("supersede_key"),
         )
 
-    async def test_each_bill_sends_a_fresh_visible_voting_dm(self) -> None:
+    async def test_vote_reuses_one_panel_and_sends_one_visible_notice(self) -> None:
         current = make_session()
         current.stage = "voting"
         current.current_bill = {
@@ -399,12 +426,17 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         current.participants[2].vote_message_id = 7002
         registry.add(current)
         job = build_control_dm_deliveries(current, phase="voting")[0]
-        sent = SimpleNamespace(id=8002, edit=AsyncMock())
-        dm_channel = SimpleNamespace(fetch_message=AsyncMock())
+        panel = SimpleNamespace(
+            id=7002,
+            jump_url="https://discord.com/channels/@me/500/7002",
+            edit=AsyncMock(),
+        )
+        notice = SimpleNamespace(id=8002)
+        dm_channel = SimpleNamespace(id=500, fetch_message=AsyncMock(return_value=panel))
         member = SimpleNamespace(
             dm_channel=dm_channel,
             create_dm=AsyncMock(return_value=dm_channel),
-            send=AsyncMock(return_value=sent),
+            send=AsyncMock(return_value=notice),
         )
         guild = SimpleNamespace(
             get_member=lambda user_id: member if user_id == 2 else None,
@@ -421,17 +453,157 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
                 "modules.tvrs_control.build_dm_vote_embed",
                 return_value=discord.Embed(title="Голосование"),
             ),
+            patch(
+                "modules.tvrs_control._outbox_storage.delivery_outbox_is_current_supersession",
+                return_value=True,
+            ),
+            patch("modules.tvrs_control._schedule_control_cleanup") as cleanup,
             patch("modules.tvrs_control._consensus.save", return_value={"revision": 2}),
         ):
             receipt = await deliver_consensus_control_dm(self.message(job), bot)
 
-        self.assertEqual(receipt.message_id, 8002)
-        dm_channel.fetch_message.assert_not_awaited()
+        self.assertEqual(receipt.message_id, 7002)
+        dm_channel.fetch_message.assert_awaited_once_with(7002)
+        panel.edit.assert_awaited_once()
         member.send.assert_awaited_once()
-        content = member.send.await_args.kwargs["content"]
-        self.assertIn("Открыто голосование", content)
-        self.assertIn("Срочная доставка", content)
-        self.assertEqual(current.participants[2].vote_message_id, 8002)
+        notice_embed = member.send.await_args.kwargs["embed"]
+        self.assertIn("Новое голосование", notice_embed.title)
+        self.assertIn("Срочная доставка", notice_embed.description)
+        self.assertEqual(
+            notice_embed.footer.text,
+            delivery_marker(
+                f"consensus:{current.session_key}:bill:10:notice:2"
+            ),
+        )
+        self.assertEqual(current.participants[2].vote_message_id, 7002)
+        self.assertEqual(current.participants[2].vote_bill_id, 10)
+        cleanup.assert_called_once_with(dm_channel, 7002)
+
+    async def test_vote_panel_receipt_survives_notice_delivery_failure(self) -> None:
+        current = make_session()
+        current.stage = "voting"
+        current.current_bill = {"id": 10, "bill_number": 9, "title": "Надёжная панель"}
+        registry.add(current)
+        job = build_control_dm_deliveries(current, phase="voting")[0]
+        panel = SimpleNamespace(
+            id=7002,
+            jump_url="https://discord.com/channels/@me/500/7002",
+            edit=AsyncMock(),
+        )
+        dm_channel = SimpleNamespace(id=500, fetch_message=AsyncMock())
+        member = SimpleNamespace(
+            dm_channel=dm_channel,
+            create_dm=AsyncMock(return_value=dm_channel),
+            send=AsyncMock(side_effect=[panel, RuntimeError("notice unavailable")]),
+        )
+        guild = SimpleNamespace(
+            get_member=lambda user_id: member if user_id == 2 else None,
+            fetch_member=AsyncMock(return_value=member),
+        )
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+
+        with (
+            patch("modules.tvrs_control.find_delivery_marker", new=AsyncMock(return_value=None)),
+            patch(
+                "modules.tvrs_control.build_dm_vote_embed",
+                return_value=discord.Embed(title="Голосование"),
+            ),
+            patch(
+                "modules.tvrs_control._outbox_storage.delivery_outbox_is_current_supersession",
+                return_value=True,
+            ),
+            patch("modules.tvrs_control._consensus.save", return_value={"revision": 2}) as save,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "notice unavailable"):
+                await deliver_consensus_control_dm(self.message(job), bot)
+
+        self.assertEqual(current.participants[2].vote_message_id, 7002)
+        self.assertEqual(current.participants[2].vote_bill_id, 10)
+        save.assert_called_once()
+        self.assertEqual(member.send.await_count, 2)
+
+    async def test_stale_dm_refresh_cannot_overwrite_next_bill_receipts(self) -> None:
+        current = make_session()
+        current.stage = "voting"
+        current.current_bill = {"id": 10, "bill_number": 9, "title": "Старый проект"}
+        registry.add(current)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_send(**kwargs):
+            started.set()
+            await release.wait()
+            return SimpleNamespace(id=7010)
+
+        member = SimpleNamespace(
+            dm_channel=None,
+            create_dm=AsyncMock(),
+            send=AsyncMock(side_effect=delayed_send),
+        )
+        guild = SimpleNamespace(
+            get_member=lambda user_id: member,
+            fetch_member=AsyncMock(return_value=member),
+        )
+
+        with patch(
+            "modules.tvrs_discussion.build_dm_vote_embed",
+            return_value=discord.Embed(title="Голосование"),
+        ):
+            refresh = asyncio.create_task(
+                tvrs.update_all_vote_dms(guild, current, content="Старое обновление")
+            )
+            await asyncio.wait_for(started.wait(), timeout=2)
+            current.current_bill = {"id": 11, "bill_number": 10, "title": "Новый проект"}
+            release.set()
+            await refresh
+
+        self.assertIsNone(current.participants[2].vote_message_id)
+        self.assertIsNone(current.participants[2].vote_bill_id)
+
+    async def test_duplicate_active_control_panels_are_deleted_but_results_stay(self) -> None:
+        marker_embed = discord.Embed(title="🗳️ Пленарный консенсус")
+        marker_embed.set_footer(text="TVRS • результат зафиксирован • ref abcdef123456")
+        duplicate = SimpleNamespace(
+            id=6001,
+            author=SimpleNamespace(bot=True),
+            components=[object()],
+            embeds=[marker_embed],
+            delete=AsyncMock(),
+        )
+        legacy_embed = discord.Embed(title="Пленарный консенсус Товарищества")
+        legacy = SimpleNamespace(
+            id=6000,
+            author=SimpleNamespace(bot=True),
+            components=[object()],
+            embeds=[legacy_embed],
+            delete=AsyncMock(),
+        )
+        keep = SimpleNamespace(
+            id=7002,
+            author=SimpleNamespace(bot=True),
+            components=[object()],
+            embeds=[marker_embed],
+            delete=AsyncMock(),
+        )
+        result = SimpleNamespace(
+            id=5001,
+            author=SimpleNamespace(bot=True),
+            components=[],
+            embeds=[marker_embed],
+            delete=AsyncMock(),
+        )
+
+        async def history(*, limit: int):
+            self.assertEqual(limit, 100)
+            for item in (duplicate, legacy, keep, result):
+                yield item
+
+        await _prune_duplicate_control_panels(SimpleNamespace(history=history), 7002)
+
+        duplicate.delete.assert_awaited_once()
+        legacy.delete.assert_awaited_once()
+        keep.delete.assert_not_awaited()
+        result.delete.assert_not_awaited()
 
     async def test_manual_dead_letter_replay_reuses_existing_marker_on_first_attempt(self) -> None:
         current = make_session()

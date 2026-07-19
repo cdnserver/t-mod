@@ -22,7 +22,6 @@ from modules.control_center import (
 from modules.operations_runtime import (
     bind_worker_wakeup,
     register_dashboard_refresher,
-    wake_operations_worker,
 )
 from modules.technical_log import log_technical_event
 

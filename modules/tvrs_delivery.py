@@ -53,6 +53,7 @@ def _participant_payload(participant: LiveParticipant) -> dict[str, Any]:
         "permanent": bool(participant.permanent),
         "confirmed": bool(participant.confirmed),
         "vote_message_id": int(participant.vote_message_id) if participant.vote_message_id else None,
+        "vote_bill_id": int(participant.vote_bill_id) if participant.vote_bill_id else None,
     }
 
 
@@ -143,11 +144,15 @@ def build_control_dm_deliveries(
     for participant in participants:
         if participant.user_id == session.leader_id:
             continue
-        discriminator = (
-            str(generation).strip()
-            if generation is not None and str(generation).strip()
-            else (str(selected_bill_id) if clean_phase == "voting" else "initial")
-        )
+        clean_generation = str(generation or "").strip()
+        if clean_phase == "voting":
+            # A recovery label may repeat on every restart, while a bill must
+            # never reuse another bill's idempotency key.
+            discriminator = str(selected_bill_id)
+            if clean_generation:
+                discriminator = f"{selected_bill_id}:{clean_generation}"
+        else:
+            discriminator = clean_generation or "initial"
         jobs.append(
             {
                 "topic": TVRS_CONTROL_DM_TOPIC,
@@ -166,6 +171,9 @@ def build_control_dm_deliveries(
                 },
                 "max_attempts": 12,
                 "priority": 100,
+                "supersede_key": (
+                    f"consensus:{session.session_key}:control:{participant.user_id}"
+                ),
             }
         )
     return jobs
@@ -266,6 +274,7 @@ def _render_objects(payload: dict[str, Any]) -> tuple[LiveConsensusSession, Live
             permanent=bool(item.get("permanent")),
             confirmed=bool(item.get("confirmed", True)),
             vote_message_id=(int(item["vote_message_id"]) if item.get("vote_message_id") else None),
+            vote_bill_id=(int(item["vote_bill_id"]) if item.get("vote_bill_id") else None),
         )
         participants[participant.user_id] = participant
     session = LiveConsensusSession(
@@ -493,6 +502,7 @@ def _render_summary_session(payload: dict[str, Any]) -> LiveConsensusSession:
             permanent=bool(item.get("permanent")),
             confirmed=bool(item.get("confirmed", True)),
             vote_message_id=(int(item["vote_message_id"]) if item.get("vote_message_id") else None),
+            vote_bill_id=(int(item["vote_bill_id"]) if item.get("vote_bill_id") else None),
         )
         participants[participant.user_id] = participant
     session = LiveConsensusSession(

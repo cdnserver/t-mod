@@ -30,7 +30,7 @@ async def send_links_dm_or_channel(message: discord.Message) -> None:
 
 def setup_links(bot: commands.Bot) -> None:
     @bot.tree.command(name="l", description="Получить ссылки Товарищества")
-    async def l(interaction: discord.Interaction) -> None:
+    async def links_short_command(interaction: discord.Interaction) -> None:
         await send_links_ephemeral(interaction)
 
     @bot.tree.command(name="link", description="Получить ссылки Товарищества")

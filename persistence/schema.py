@@ -542,6 +542,7 @@ def init_db() -> None:
                 attempts INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 8,
                 priority INTEGER NOT NULL DEFAULT 0,
+                supersede_key TEXT,
                 available_at TEXT NOT NULL,
                 lease_owner TEXT,
                 lease_token TEXT,
@@ -1113,37 +1114,32 @@ def init_db() -> None:
             "priority",
             "INTEGER NOT NULL DEFAULT 0",
         )
-        interactive_delivery_migration = "migration:delivery-priority:2026-07-20-v1"
-        priority_migrated = con.execute(
+        _add_column_if_missing(con, "delivery_outbox", "supersede_key", "TEXT")
+        control_cleanup_migration = "migration:delivery-control-cleanup:2026-07-20-v2"
+        control_cleanup_applied = con.execute(
             "SELECT 1 FROM meta WHERE key = ?",
-            (interactive_delivery_migration,),
+            (control_cleanup_migration,),
         ).fetchone()
-        if priority_migrated is None:
+        if control_cleanup_applied is None:
             migration_now = utc_now_iso()
-            # Rescue controls that were already waiting (or exhausted their old
-            # multi-minute backoff) before interactive priority existed. Stale
-            # session/bill jobs are harmless: their handler validates the live
-            # generation and acknowledges them without sending.
+            # The first priority migration could revive several generations of
+            # the same registration invitation. Stop the entire legacy control
+            # backlog. Recovery later reconstructs at most one missing current
+            # panel from the durable consensus snapshot.
             con.execute(
                 """
                 UPDATE delivery_outbox
-                SET priority = 100,
-                    status = CASE
-                        WHEN status IN ('processing', 'dead') THEN 'retry'
-                        ELSE status
-                    END,
-                    attempts = CASE WHEN status = 'dead' THEN 0 ELSE attempts END,
-                    available_at = ?, lease_owner = NULL, lease_token = NULL,
-                    lease_until = NULL,
-                    last_error = CASE WHEN status = 'dead' THEN NULL ELSE last_error END,
-                    dead_notified_at = CASE WHEN status = 'dead' THEN NULL ELSE dead_notified_at END,
+                SET status = 'cancelled', priority = 100,
+                    lease_owner = NULL, lease_token = NULL, lease_until = NULL,
+                    last_error = 'superseded_by_control_delivery_v2',
+                    payload_json = '{"compacted":true,"reason":"control_delivery_superseded"}',
                     updated_at = ?
                 WHERE topic = 'tvrs.consensus.control-dm.v1'
                   AND status IN ('pending', 'retry', 'processing', 'dead')
                 """,
-                (migration_now, migration_now),
+                (migration_now,),
             )
-            set_meta(con, interactive_delivery_migration, migration_now)
+            set_meta(con, control_cleanup_migration, migration_now)
 
         _add_column_if_missing(con, "craft_recipes", "version", "INTEGER NOT NULL DEFAULT 1")
         for column, definition in {
@@ -1273,6 +1269,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_delivery_outbox_priority_ready
             ON delivery_outbox(status, priority DESC, available_at, lease_until, id ASC);
+
+            CREATE INDEX IF NOT EXISTS idx_delivery_outbox_supersede
+            ON delivery_outbox(topic, supersede_key, status, id DESC);
 
             CREATE INDEX IF NOT EXISTS idx_client_profiles_user
             ON client_profiles(guild_id, discord_user_id, updated_at DESC);
@@ -1441,7 +1440,7 @@ def init_db() -> None:
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
-        set_meta(con, "schema_version", "2026-07-20-interactive-delivery-v1")
+        set_meta(con, "schema_version", "2026-07-20-control-delivery-v2")
         con.commit()
 
 

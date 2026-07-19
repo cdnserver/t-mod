@@ -19,6 +19,7 @@ def delivery_outbox_enqueue_in_connection(
     payload: dict[str, Any],
     max_attempts: int = 8,
     priority: int = 0,
+    supersede_key: str | None = None,
     available_at: str | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -36,15 +37,35 @@ def delivery_outbox_enqueue_in_connection(
         raise ValueError("outbox_topic_and_dedupe_key_required")
     created_at = str(now or utc_now_iso())
     ready_at = str(available_at or created_at)
+    clean_supersede_key = str(supersede_key or "").strip()[:300] or None
     payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    existing = con.execute(
+        "SELECT * FROM delivery_outbox WHERE topic = ? AND dedupe_key = ?",
+        (clean_topic, clean_key),
+    ).fetchone()
+    if existing is not None:
+        return dict(existing)
+    if clean_supersede_key is not None:
+        con.execute(
+            """
+            UPDATE delivery_outbox
+            SET status = 'cancelled', lease_owner = NULL, lease_token = NULL,
+                lease_until = NULL, last_error = 'superseded_by_newer_delivery',
+                payload_json = '{"compacted":true,"reason":"superseded"}',
+                updated_at = ?
+            WHERE topic = ? AND supersede_key = ?
+              AND status IN ('pending', 'retry')
+            """,
+            (created_at, clean_topic, clean_supersede_key),
+        )
     con.execute(
         """
         INSERT INTO delivery_outbox(
             topic, dedupe_key, payload_json, status, attempts, max_attempts,
-            priority, available_at, lease_owner, lease_token, lease_until, message_id,
+            priority, supersede_key, available_at, lease_owner, lease_token, lease_until, message_id,
             last_error, delivered_at, created_at, updated_at
         )
-        VALUES(?, ?, ?, 'pending', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+        VALUES(?, ?, ?, 'pending', 0, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
         ON CONFLICT(topic, dedupe_key) DO NOTHING
         """,
         (
@@ -53,6 +74,7 @@ def delivery_outbox_enqueue_in_connection(
             payload_json,
             max(1, int(max_attempts)),
             max(-1000, min(1000, int(priority))),
+            clean_supersede_key,
             ready_at,
             created_at,
             created_at,
@@ -74,6 +96,7 @@ def delivery_outbox_enqueue(
     payload: dict[str, Any],
     max_attempts: int = 8,
     priority: int = 0,
+    supersede_key: str | None = None,
     available_at: str | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -86,6 +109,7 @@ def delivery_outbox_enqueue(
             payload=payload,
             max_attempts=max_attempts,
             priority=priority,
+            supersede_key=supersede_key,
             available_at=available_at,
             now=now,
         )
@@ -326,6 +350,28 @@ def delivery_outbox_get(item_id: int) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def delivery_outbox_is_current_supersession(
+    item_id: int,
+    *,
+    topic: str,
+    supersede_key: str | None,
+) -> bool:
+    clean_key = str(supersede_key or "").strip()
+    if not clean_key:
+        return True
+    with _db_lock, connect() as con:
+        newer = con.execute(
+            """
+            SELECT 1 FROM delivery_outbox
+            WHERE topic = ? AND supersede_key = ? AND id > ?
+              AND status != 'cancelled'
+            LIMIT 1
+            """,
+            (str(topic), clean_key, int(item_id)),
+        ).fetchone()
+    return newer is None
+
+
 def delivery_outbox_counts() -> dict[str, int]:
     with _db_lock, connect() as con:
         rows = con.execute(
@@ -399,4 +445,4 @@ def delivery_outbox_requeue_dead(
         con.commit()
         return cur.rowcount == 1
 
-__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']
+__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_is_current_supersession', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']

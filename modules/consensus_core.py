@@ -85,6 +85,7 @@ class LiveParticipant:
     dm_message_id: int | None = None
     dm_failed: bool = False
     vote_message_id: int | None = None
+    vote_bill_id: int | None = None
     discussion_message_id: int | None = None
 
 
@@ -233,6 +234,7 @@ def _participant_payload(participant: LiveParticipant) -> dict[str, Any]:
         "dm_message_id": participant.dm_message_id,
         "dm_failed": bool(participant.dm_failed),
         "vote_message_id": participant.vote_message_id,
+        "vote_bill_id": participant.vote_bill_id,
         "discussion_message_id": participant.discussion_message_id,
     }
 
@@ -330,6 +332,7 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             dm_message_id=int(raw["dm_message_id"]) if raw.get("dm_message_id") else None,
             dm_failed=bool(raw.get("dm_failed")),
             vote_message_id=int(raw["vote_message_id"]) if raw.get("vote_message_id") else None,
+            vote_bill_id=int(raw["vote_bill_id"]) if raw.get("vote_bill_id") else None,
             discussion_message_id=int(raw["discussion_message_id"]) if raw.get("discussion_message_id") else None,
         )
     results = [

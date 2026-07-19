@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 import tempfile
 import threading
@@ -116,6 +117,8 @@ class ConsensusCoordinatorTests(unittest.TestCase):
     def test_vote_is_claimed_once_and_survives_snapshot_restore(self) -> None:
         bill = {"id": 10, "bill_number": 9, "title": "Новый порядок", "summary": "Описание"}
         self.coordinator.begin_bill(self.session, bill, actor=self.actor)
+        self.session.participants[2].vote_message_id = 7002
+        self.session.participants[2].vote_bill_id = 10
         self.assertFalse(self.coordinator.cast_vote(self.session, 1, "yes", actor=self.actor))
         self.assertFalse(self.coordinator.cast_vote(self.session, 2, "no", actor=ConsensusActor(2, "Председатель")))
         self.assertTrue(self.coordinator.cast_vote(self.session, 3, "yes", actor=ConsensusActor(3, "Сенатор")))
@@ -137,6 +140,8 @@ class ConsensusCoordinatorTests(unittest.TestCase):
 
         restored = session_from_snapshot(session_to_snapshot(self.session))
         self.assertEqual(restored.pending_action["bill_id"], 10)  # type: ignore[index]
+        self.assertEqual(restored.participants[2].vote_message_id, 7002)
+        self.assertEqual(restored.participants[2].vote_bill_id, 10)
         result = LiveResult(
             bill_id=10,
             bill_number=9,
@@ -1111,6 +1116,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         current.stage = "voting"
         current.current_bill = {"id": 10, "bill_number": 9, "title": "Активный проект"}
         current.participants[2].vote_message_id = 9002
+        current.participants[2].vote_bill_id = 10
         StorageConsensusRepository().save(
             current,
             "bill_voting_started",
@@ -1131,6 +1137,44 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         custom_ids = {str(item.custom_id) for item in added_views[0][0].children}  # type: ignore[attr-defined]
         self.assertIn(f"tvrs_vote_yes:{current.session_key}:2", custom_ids)
         self.assertIn(f"tvrs_vote_yes:{current.session_key}:10:2", custom_ids)
+
+    async def test_vote_recovery_replaces_panel_from_previous_bill_once(self) -> None:
+        current = session()
+        current.stage = "voting"
+        current.current_bill = {"id": 10, "bill_number": 9, "title": "Новый проект"}
+        current.participants[2].vote_message_id = 9002
+        current.participants[2].vote_bill_id = 9
+        current.participants[3].vote_message_id = 9003
+        current.participants[3].vote_bill_id = 10
+        StorageConsensusRepository().save(
+            current,
+            "bill_voting_started",
+            actor=ConsensusActor(1, "Ведущий"),
+        )
+
+        added_views: list[tuple[object, int | None]] = []
+        guild = SimpleNamespace(id=77)
+        bot = SimpleNamespace(
+            get_guild=lambda guild_id: guild if guild_id == 77 else None,
+            add_view=lambda view, message_id=None: added_views.append((view, message_id)),
+        )
+
+        restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
+
+        self.assertEqual(restored, 1)
+        self.assertEqual([message_id for _, message_id in added_views], [9003])
+        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 1})
+        with storage._db_lock, storage.connect() as connection:
+            rows = connection.execute(
+                "SELECT dedupe_key, payload_json, priority, supersede_key "
+                "FROM delivery_outbox WHERE status = 'pending'"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        payload = json.loads(rows[0]["payload_json"])
+        self.assertEqual(payload["user_id"], 2)
+        self.assertEqual(payload["bill_id"], 10)
+        self.assertEqual(rows[0]["priority"], 100)
+        self.assertEqual(rows[0]["supersede_key"], "consensus:77:test:control:2")
 
     async def test_transient_view_restore_failure_retries_without_new_ready_event(self) -> None:
         current = session()
