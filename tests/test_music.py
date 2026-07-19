@@ -1,30 +1,65 @@
 import unittest
 import wave
+import time
+import threading
+from array import array
 from io import BytesIO
+from math import pi, sin
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import davey
+import requests
 
+from modules.music_audio import failure_tone_pcm, listening_tone_pcm
+from modules.music_config import MUSIC_PANEL_REFRESH_SECONDS
 from modules.music_domain import (
     MusicInputError,
     MusicTrack,
     parse_voice_command,
     prepare_youtube_input,
+    is_wake_word_candidate,
     split_wake_word,
 )
-from modules.music_providers import OpenRouterTranscriber, YoutubeResolver, pcm_to_wav
+from modules.music_providers import (
+    OpenRouterTranscriber,
+    YoutubeResolver,
+    discord_pcm_to_stt_wav,
+    pcm_to_wav,
+)
+from modules.music_public_panel import MusicPublicPanelService
+from modules.music_public_views import PublicMusicPanelView
 from modules.music_runtime import (
     MusicGuildSession,
     MusicManager,
     MusicRuntimeError,
     PCMBytesSource,
     SignalMixerSource,
+    SpeechSegment,
     SpeechSegmenter,
     TModVoiceSink,
 )
+from modules.music_speech import SpeechWorkQueue
+from modules.music_stt_audio import prepare_discord_pcm_for_stt
 from modules.music_views import MusicPanelView, build_music_embed
+
+
+def _tone_pcm(
+    *,
+    duration: float = 0.5,
+    amplitude: int = 6_000,
+    frequency: float = 220.0,
+) -> bytes:
+    samples = array("h")
+    for index in range(round(48_000 * duration)):
+        value = round(amplitude * sin(2 * pi * frequency * index / 48_000))
+        samples.extend((value, value))
+    return samples.tobytes()
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class MusicDomainTests(unittest.TestCase):
@@ -86,6 +121,38 @@ class MusicDomainTests(unittest.TestCase):
         self.assertEqual(parse_voice_command("громкость 150").volume_percent, 100)
         self.assertIsNone(parse_voice_command("давайте обсудим проект"))
 
+    def test_russian_stt_variants_and_polite_commands_are_understood(self) -> None:
+        play_cases = {
+            "пожалуйста включить песню Кино": "кино",
+            "можешь вруби мне Цоя": "цоя",
+            "давай запусти трек Земфира Искала": "земфира искала",
+            "поставить пожалуйста Би-2": "би-2",
+            "сыграй Король и Шут": "король и шут",
+        }
+        for transcript, expected in play_cases.items():
+            with self.subTest(transcript=transcript):
+                command = parse_voice_command(transcript)
+                self.assertIsNotNone(command)
+                self.assertEqual(command.action, "play")
+                self.assertEqual(command.query, expected)
+        self.assertEqual(parse_voice_command("остановить").action, "stop")
+        self.assertEqual(parse_voice_command("приостановить").action, "pause")
+        self.assertEqual(parse_voice_command("продолжить").action, "resume")
+        self.assertEqual(parse_voice_command("следущий").action, "skip")
+        self.assertEqual(parse_voice_command("переключить").action, "skip")
+        self.assertEqual(
+            parse_voice_command("громкость пятьдесят процентов").volume_percent,
+            50,
+        )
+
+    def test_near_wake_word_only_requests_accuracy_check(self) -> None:
+        for transcript in ("бонан", "тимад", "сборщик ряса включи Цой"):
+            with self.subTest(transcript=transcript):
+                self.assertTrue(is_wake_word_candidate(transcript))
+        for transcript in ("барабан", "банка", "сборка проекта", "обычный разговор"):
+            with self.subTest(transcript=transcript):
+                self.assertFalse(is_wake_word_candidate(transcript))
+
 
 class MusicProviderTests(unittest.TestCase):
     def test_pcm_is_wrapped_as_standard_discord_wav(self) -> None:
@@ -96,6 +163,38 @@ class MusicProviderTests(unittest.TestCase):
             self.assertEqual(wav.getnchannels(), 2)
             self.assertEqual(wav.getsampwidth(), 2)
             self.assertEqual(wav.readframes(wav.getnframes()), pcm)
+
+    def test_discord_pcm_is_compacted_to_speech_ready_mono(self) -> None:
+        pcm = b"\x10\x00\x10\x00" * 48_000
+        encoded = discord_pcm_to_stt_wav(pcm)
+        with wave.open(BytesIO(encoded), "rb") as wav:
+            self.assertEqual(wav.getframerate(), 16_000)
+            self.assertEqual(wav.getnchannels(), 1)
+            self.assertEqual(wav.getsampwidth(), 2)
+            self.assertEqual(wav.getnframes(), 16_000)
+        self.assertLess(len(encoded), len(pcm) // 5)
+
+    def test_stt_audio_trims_silence_and_normalizes_quiet_speech(self) -> None:
+        silence = b"\x00" * round(192_000 * 0.5)
+        prepared = prepare_discord_pcm_for_stt(
+            silence + _tone_pcm(duration=0.4, amplitude=250) + silence
+        )
+
+        self.assertTrue(prepared.has_speech)
+        self.assertLess(prepared.output_duration_ms, prepared.input_duration_ms)
+        self.assertGreater(prepared.rms, 500)
+        self.assertLessEqual(prepared.peak, 30_000)
+        with wave.open(BytesIO(prepared.wav), "rb") as wav:
+            self.assertEqual(wav.getframerate(), 16_000)
+            self.assertEqual(wav.getnchannels(), 1)
+
+    def test_stt_audio_rejects_silence_and_dc_offset(self) -> None:
+        silence = prepare_discord_pcm_for_stt(b"\x00" * 192_000)
+        dc_offset = prepare_discord_pcm_for_stt(b"\xe8\x03" * 96_000)
+
+        self.assertFalse(silence.has_speech)
+        self.assertFalse(dc_offset.has_speech)
+        self.assertEqual(silence.wav, b"")
 
     def test_youtube_metadata_is_normalized_without_downloading(self) -> None:
         class FakeYDL:
@@ -168,24 +267,104 @@ class MusicProviderTests(unittest.TestCase):
         self.assertIn("<proxy>", text)
 
     def test_openrouter_stt_uses_audio_endpoint_without_persisting_audio(self) -> None:
-        transcriber = OpenRouterTranscriber()
-        transcriber.api_key = "test-key"
         response = SimpleNamespace(
             status_code=200,
             headers={},
-            json=lambda: {"text": "Т-Мод"},
+            json=lambda: {"text": "Т-Мод", "usage": {"cost": 0.0001}},
             text='{"text":"Т-Мод"}',
         )
-        pcm = b"\x00\x00\x00\x00" * 480
-        with patch(
-            "modules.music_providers.requests.post", return_value=response
-        ) as request:
-            result = transcriber.transcribe_pcm(pcm)
+        request = MagicMock(return_value=response)
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        result = transcriber.transcribe_pcm(_tone_pcm())
+
         self.assertEqual(result, "Т-Мод")
         payload = request.call_args.kwargs["json"]
-        self.assertEqual(payload["language"], "ru")
         self.assertEqual(payload["input_audio"]["format"], "wav")
+        self.assertEqual(payload["model"], transcriber.primary_model)
+        self.assertEqual(payload["language"], "ru")
         self.assertNotIn("test-key", str(payload))
+
+    def test_openrouter_stt_keeps_language_hint_for_legacy_whisper(self) -> None:
+        response = SimpleNamespace(
+            status_code=200,
+            headers={},
+            json=lambda: {"text": "привет"},
+            text='{"text":"привет"}',
+        )
+        request = MagicMock(return_value=response)
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        transcriber.transcribe_pcm(
+            _tone_pcm(),
+            model="openai/whisper-large-v3",
+        )
+
+        self.assertEqual(request.call_args.kwargs["json"]["language"], "ru")
+
+    def test_silent_audio_never_spends_an_api_request(self) -> None:
+        request = MagicMock()
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        self.assertEqual(transcriber.transcribe_pcm(b"\x00" * 192_000), "")
+
+        request.assert_not_called()
+
+    def test_invalid_model_enters_cooldown_instead_of_repeating_slow_calls(
+        self,
+    ) -> None:
+        response = SimpleNamespace(
+            status_code=404,
+            headers={},
+            json=lambda: {},
+            text="model not found",
+        )
+        request = MagicMock(return_value=response)
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        with self.assertRaisesRegex(Exception, "HTTP 404"):
+            transcriber.transcribe_pcm(_tone_pcm(), model="missing/model")
+        with self.assertRaisesRegex(Exception, "восстанавливается"):
+            transcriber.transcribe_pcm(_tone_pcm(), model="missing/model")
+
+        request.assert_called_once()
+
+    def test_rate_limit_retry_wait_is_strictly_bounded(self) -> None:
+        limited = SimpleNamespace(
+            status_code=429,
+            headers={"Retry-After": "99"},
+            json=lambda: {},
+            text="rate limited",
+        )
+        success = SimpleNamespace(
+            status_code=200,
+            headers={},
+            json=lambda: {"text": "банан"},
+            text='{"text":"банан"}',
+        )
+        request = MagicMock(side_effect=[limited, success])
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        with patch("modules.music_providers.time.sleep") as delay:
+            result = transcriber.transcribe_pcm(_tone_pcm())
+
+        self.assertEqual(result, "банан")
+        delay.assert_called_once_with(1.25)
+
+    def test_read_timeout_falls_back_without_repeating_a_long_request(self) -> None:
+        request = MagicMock(side_effect=requests.ReadTimeout("slow provider"))
+        transcriber = OpenRouterTranscriber(http=SimpleNamespace(post=request))
+        transcriber.api_key = "test-key"
+
+        with self.assertRaisesRegex(Exception, "временно недоступен"):
+            transcriber.transcribe_pcm(_tone_pcm())
+
+        request.assert_called_once()
 
 
 class MusicAudioRuntimeTests(unittest.TestCase):
@@ -222,6 +401,7 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         memory = PCMBytesSource(b"\x01\x00" * 10)
         self.assertEqual(len(memory.read()), 3840)
         self.assertEqual(memory.read(), b"")
+        self.assertNotEqual(failure_tone_pcm(), listening_tone_pcm())
 
     def test_corrupt_opus_packet_is_isolated_without_stopping_sink(self) -> None:
         manager = SimpleNamespace(accept_voice_packet=MagicMock())
@@ -388,6 +568,202 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         encrypted_decoder.decode.assert_called_once_with(b"decrypted-opus", fec=False)
 
 
+class MusicSpeechQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_urgent_command_overtakes_background_speech(self) -> None:
+        queue = SpeechWorkQueue(4)
+        queue.offer(SpeechSegment(1, b"background"), urgent=False)
+        queue.offer(SpeechSegment(2, b"command"), urgent=True)
+
+        urgent = await queue.get()
+        self.assertTrue(urgent.urgent)
+        self.assertEqual(urgent.segment.user_id, 2)
+        queue.done(2)
+        background = await queue.get()
+        self.assertEqual(background.segment.user_id, 1)
+
+    async def test_two_workers_never_reorder_one_speaker(self) -> None:
+        queue = SpeechWorkQueue(4)
+        queue.offer(SpeechSegment(1, b"first"), urgent=False)
+        queue.offer(SpeechSegment(1, b"second"), urgent=False)
+        queue.offer(SpeechSegment(2, b"other"), urgent=False)
+
+        first = await queue.get()
+        concurrent = await queue.get()
+        self.assertEqual(first.segment.pcm, b"first")
+        self.assertEqual(concurrent.segment.user_id, 2)
+        queue.done(1)
+        second = await queue.get()
+        self.assertEqual(second.segment.pcm, b"second")
+
+    async def test_urgent_command_evicts_old_background_when_full(self) -> None:
+        queue = SpeechWorkQueue(2)
+        queue.offer(SpeechSegment(1, b"old"), urgent=False)
+        queue.offer(SpeechSegment(2, b"newer"), urgent=False)
+
+        self.assertTrue(queue.offer(SpeechSegment(3, b"urgent"), urgent=True))
+
+        first = await queue.get()
+        queue.done(first.segment.user_id)
+        second = await queue.get()
+        self.assertEqual(first.segment.pcm, b"urgent")
+        self.assertEqual(second.segment.pcm, b"newer")
+        self.assertEqual(queue.dropped, 1)
+
+    async def test_stale_background_is_removed_before_capacity_check(self) -> None:
+        queue = SpeechWorkQueue(1)
+        queue.offer(
+            SpeechSegment(1, b"stale"),
+            urgent=False,
+            now=time.monotonic() - 10,
+        )
+
+        self.assertTrue(queue.offer(SpeechSegment(2, b"fresh"), urgent=False))
+
+        item = await queue.get()
+        self.assertEqual(item.segment.pcm, b"fresh")
+        self.assertEqual(queue.dropped, 1)
+
+    async def test_queue_stays_bounded_during_large_speech_burst(self) -> None:
+        queue = SpeechWorkQueue(8)
+        for index in range(2_000):
+            queue.offer(
+                SpeechSegment(index % 25, str(index).encode()),
+                urgent=False,
+            )
+
+        self.assertLessEqual(len(queue), 8)
+        self.assertEqual(queue.dropped, 1_992)
+        self.assertTrue(queue.offer(SpeechSegment(99, b"urgent"), urgent=True))
+        self.assertLessEqual(len(queue), 8)
+        item = await queue.get()
+        self.assertEqual(item.segment.pcm, b"urgent")
+
+
+class MusicDeploymentTests(unittest.TestCase):
+    def test_windows_launcher_merges_production_stt_defaults(self) -> None:
+        example = (ROOT / ".env.persistent.example").read_text(encoding="utf-8")
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        migration = (ROOT / "merge_env_windows.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("MUSIC_STT_MODEL=openai/gpt-4o-mini-transcribe", example)
+        self.assertIn("qwen/qwen3-asr-flash-2026-02-10", example)
+        self.assertIn("MUSIC_STT_WORKERS=2", example)
+        self.assertIn("merge_env_windows.ps1", launcher)
+        self.assertIn("MUSIC_STT_QUEUE_LIMIT=4", migration)
+        self.assertIn("MUSIC_STT_QUEUE_LIMIT=8", migration)
+
+    def test_shared_panel_defaults_to_one_second_reconciliation(self) -> None:
+        example = (ROOT / ".env.persistent.example").read_text(encoding="utf-8")
+
+        self.assertEqual(MUSIC_PANEL_REFRESH_SECONDS, 1.0)
+        self.assertIn("MUSIC_PANEL_REFRESH_SECONDS=1", example)
+        self.assertIn("MUSIC_PANEL_CHANNEL_ID=0", example)
+
+
+class MusicPublicPanelTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.guild = SimpleNamespace(id=77, voice_client=None)
+        self.bot = SimpleNamespace(
+            user=SimpleNamespace(id=999),
+            guilds=[self.guild],
+            get_guild=lambda guild_id: self.guild if guild_id == 77 else None,
+            get_channel=lambda _channel_id: None,
+            is_closed=lambda: False,
+        )
+        self.manager = MusicManager(self.bot)  # type: ignore[arg-type]
+        self.service = MusicPublicPanelService(self.bot, self.manager)  # type: ignore[arg-type]
+        self.service._retire_legacy_card = AsyncMock()  # type: ignore[method-assign]
+        self.channel = SimpleNamespace(id=300)
+        self.message = SimpleNamespace(id=400, channel=self.channel)
+
+    async def test_public_controls_are_persistent_and_not_bound_to_one_user(
+        self,
+    ) -> None:
+        view = PublicMusicPanelView(self.manager)
+        custom_ids = [item.custom_id for item in view.children]
+
+        self.assertIsNone(view.timeout)
+        self.assertTrue(view.is_persistent())
+        self.assertEqual(len(custom_ids), len(set(custom_ids)))
+        self.assertTrue(all(custom_ids))
+        self.assertIn("tmod_music_public_play", custom_ids)
+        self.assertIn("tmod_music_public_voice_command", custom_ids)
+        self.assertIn("Голос для меня", {item.label for item in view.children})
+
+    async def test_one_second_tick_reuses_single_message_without_noop_patch(
+        self,
+    ) -> None:
+        ensure = AsyncMock(return_value=self.message)
+        with (
+            patch(
+                "modules.music_public_panel.resolve_control_channel",
+                new=AsyncMock(return_value=self.channel),
+            ),
+            patch("modules.music_public_panel.ensure_panel_message", new=ensure),
+            patch(
+                "modules.music_public_panel.edit_message_with_retry",
+                new=AsyncMock(),
+            ) as edit,
+        ):
+            first = await self.service.refresh_guild(self.guild)
+            second = await self.service.refresh_guild(self.guild)
+
+        self.assertIs(first, self.message)
+        self.assertIs(second, self.message)
+        ensure.assert_awaited_once()
+        edit.assert_not_awaited()
+
+    async def test_worker_reconciles_on_one_second_cadence(self) -> None:
+        self.bot.is_closed = MagicMock(side_effect=[False, True])
+        self.service.reconcile_all = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "modules.music_public_panel.asyncio.sleep", new=AsyncMock()
+        ) as sleep:
+            await self.service._worker()
+
+        self.service.reconcile_all.assert_awaited_once()
+        delay = sleep.await_args.args[0]
+        self.assertGreaterEqual(delay, 0.9)
+        self.assertLessEqual(delay, 1.0)
+
+    async def test_public_queue_response_is_private(self) -> None:
+        interaction = SimpleNamespace(
+            guild=self.guild,
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+        await PublicMusicPanelView(self.manager).queue(interaction)
+
+        interaction.response.send_message.assert_awaited_once_with(
+            "Очередь пока не создана.", ephemeral=True
+        )
+
+    async def test_visible_state_change_edits_canonical_message_once(self) -> None:
+        ensure = AsyncMock(return_value=self.message)
+        edit = AsyncMock(return_value=self.message)
+        with (
+            patch(
+                "modules.music_public_panel.resolve_control_channel",
+                new=AsyncMock(return_value=self.channel),
+            ),
+            patch("modules.music_public_panel.ensure_panel_message", new=ensure),
+            patch("modules.music_public_panel.edit_message_with_retry", new=edit),
+        ):
+            await self.service.refresh_guild(self.guild)
+            self.manager.sessions[77] = MusicGuildSession(
+                guild_id=77,
+                voice_channel_id=100,
+                text_channel_id=300,
+                connected_by_id=7,
+                connected_by_display="Слушатель",
+            )
+            await self.service.refresh_guild(self.guild)
+
+        ensure.assert_awaited_once()
+        edit.assert_awaited_once()
+
+
 class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.member = SimpleNamespace(
@@ -453,6 +829,199 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
             parse_voice_command("пауза"),
         )
         self.manager.pause.assert_awaited_once_with(self.member)
+
+    async def test_armed_command_uses_accuracy_fallback_only_when_needed(self) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_model="openai/gpt-4o-transcribe",
+            transcribe_pcm=MagicMock(
+                side_effect=lambda _pcm, model=None: (
+                    "играй Цой" if model else "неразборчивый разговор"
+                )
+            ),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = float("inf")
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.assertEqual(transcriber.transcribe_pcm.call_count, 2)
+        self.assertEqual(
+            transcriber.transcribe_pcm.call_args.kwargs["model"],
+            "openai/gpt-4o-transcribe",
+        )
+        command = self.manager.execute_voice_command.await_args.args[1]
+        self.assertEqual(command.action, "play")
+        self.assertEqual(command.query, "цой")
+
+    async def test_unarmed_conversation_never_uses_expensive_fallback(self) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_model="openai/gpt-4o-transcribe",
+            transcribe_pcm=MagicMock(return_value="обычный разговор"),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.session.voice_users.add(7)
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertFalse(recognized)
+        transcriber.transcribe_pcm.assert_called_once_with(b"pcm")
+
+    async def test_near_wake_word_is_corrected_before_command_execution(self) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_models=("qwen/qwen3-asr-flash-2026-02-10",),
+            transcribe_pcm=MagicMock(
+                side_effect=lambda _pcm, model=None: (
+                    "банан включи Цой" if model else "бонан включи Цой"
+                )
+            ),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.assertEqual(transcriber.transcribe_pcm.call_count, 2)
+        self.manager.execute_voice_command.assert_awaited_once()
+        self.manager.play_listening_signal.assert_awaited_once_with(self.session)
+        command = self.manager.execute_voice_command.await_args.args[1]
+        self.assertEqual(command.query, "цой")
+
+    async def test_primary_provider_failure_recovers_through_accuracy_model(
+        self,
+    ) -> None:
+        def transcribe(_pcm, model=None):
+            if model is None:
+                raise RuntimeError("primary unavailable")
+            return "банан стоп"
+
+        self.manager.transcriber = SimpleNamespace(
+            accuracy_models=("openai/gpt-4o-transcribe",),
+            transcribe_pcm=MagicMock(side_effect=transcribe),
+        )  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.manager.execute_voice_command.assert_awaited_once()
+        self.assertEqual(
+            self.manager.execute_voice_command.await_args.args[1].action,
+            "stop",
+        )
+
+    async def test_ambiguous_combined_command_does_not_emit_two_signals(self) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_models=("accurate",),
+            transcribe_pcm=MagicMock(
+                side_effect=lambda _pcm, model=None: (
+                    "банан включи Кино" if model else "банан включать кино"
+                )
+            ),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+
+        await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.manager.play_listening_signal.assert_awaited_once_with(self.session)
+        self.manager.execute_voice_command.assert_awaited_once()
+
+    async def test_fast_actionable_transcript_never_calls_fallback_models(self) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_models=("accurate-one", "accurate-two"),
+            transcribe_pcm=MagicMock(return_value="банан пауза"),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        transcriber.transcribe_pcm.assert_called_once_with(b"pcm")
+
+    async def test_accuracy_models_really_start_in_parallel(self) -> None:
+        rendezvous = threading.Barrier(2)
+
+        def transcribe(_pcm, model=None):
+            if model is None:
+                return "неразборчивая команда"
+            rendezvous.wait(timeout=1)
+            return "играй Цой" if model == "accurate-two" else "шум"
+
+        transcriber = SimpleNamespace(
+            accuracy_models=("accurate-one", "accurate-two"),
+            transcribe_pcm=MagicMock(side_effect=transcribe),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = float("inf")
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.manager.execute_voice_command.assert_awaited_once()
+
+    async def test_unrecognized_armed_command_gets_failure_cue_and_retry_window(
+        self,
+    ) -> None:
+        transcriber = SimpleNamespace(
+            accuracy_models=("accurate-one", "accurate-two"),
+            transcribe_pcm=MagicMock(return_value="неразборчивый разговор"),
+        )
+        self.manager.transcriber = transcriber  # type: ignore[assignment]
+        self.manager.play_listening_signal = AsyncMock()  # type: ignore[method-assign]
+        self.manager.publish_status = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = float("inf")
+        before = time.monotonic()
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertFalse(recognized)
+        self.manager.play_listening_signal.assert_awaited_once_with(
+            self.session,
+            failed=True,
+        )
+        self.manager.publish_status.assert_awaited_once_with(self.session)
+        self.assertGreater(self.session.armed_until[7], before)
+        self.assertLess(self.session.armed_until[7], before + 10)
 
     async def test_personal_panel_has_complete_controls_without_connection(
         self,

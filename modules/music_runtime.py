@@ -11,6 +11,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 import discord
@@ -25,6 +26,7 @@ from modules.music_config import (
     MUSIC_SEARCH_COOLDOWN_SECONDS,
     MUSIC_STT_QUEUE_LIMIT,
     MUSIC_STT_TIMEOUT_SECONDS,
+    MUSIC_STT_WORKERS,
     MUSIC_VOICE_CONTROL_ENABLED,
     MUSIC_WAKE_TIMEOUT_SECONDS,
 )
@@ -34,6 +36,7 @@ from modules.music_audio import (
     SpeechSegment,
     SpeechSegmenter,
     TModVoiceSink,
+    failure_tone_pcm,
     listening_tone_pcm,
     voice_recv,
 )
@@ -44,6 +47,12 @@ from modules.music_domain import (
     split_wake_word,
 )
 from modules.music_providers import OpenRouterTranscriber, YoutubeResolver
+from modules.music_speech import (
+    SpeechWorkQueue,
+    process_speech_segment,
+    speech_sweeper,
+    speech_worker,
+)
 from modules.music_status import publish_music_status
 
 
@@ -71,9 +80,9 @@ class MusicGuildSession:
     one_shot_voice_users: set[int] = field(default_factory=set)
     armed_until: dict[int, float] = field(default_factory=dict)
     segmenter: SpeechSegmenter = field(default_factory=SpeechSegmenter)
-    speech_queue: asyncio.Queue[SpeechSegment] | None = None
+    speech_queue: SpeechWorkQueue | None = None
     speech_sweeper_task: asyncio.Task | None = None
-    speech_worker_task: asyncio.Task | None = None
+    speech_worker_tasks: list[asyncio.Task] = field(default_factory=list)
     idle_disconnect_task: asyncio.Task | None = None
     receiver_restart_count: int = 0
     receiver_last_restart_at: float = 0.0
@@ -93,6 +102,7 @@ class MusicManager:
         self.bot = bot
         self.resolver = resolver or YoutubeResolver()
         self.transcriber = transcriber or OpenRouterTranscriber()
+        self.status_publisher = partial(publish_music_status, self)
         self.sessions: dict[int, MusicGuildSession] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._resolve_semaphore = asyncio.Semaphore(MUSIC_SEARCH_CONCURRENCY)
@@ -522,11 +532,17 @@ class MusicManager:
                 "Голосовой клиент подключён без поддержки приёма. Переподключите T-Mod."
             )
         if session.speech_queue is None:
-            session.speech_queue = asyncio.Queue(maxsize=MUSIC_STT_QUEUE_LIMIT)
-        if session.speech_worker_task is None or session.speech_worker_task.done():
-            session.speech_worker_task = asyncio.create_task(
-                self._speech_worker(session),
-                name=f"music-stt:{session.guild_id}",
+            session.speech_queue = SpeechWorkQueue(MUSIC_STT_QUEUE_LIMIT)
+        session.speech_worker_tasks = [
+            task for task in session.speech_worker_tasks if not task.done()
+        ]
+        while len(session.speech_worker_tasks) < MUSIC_STT_WORKERS:
+            index = len(session.speech_worker_tasks) + 1
+            session.speech_worker_tasks.append(
+                asyncio.create_task(
+                    self._speech_worker(session),
+                    name=f"music-stt:{session.guild_id}:{index}",
+                )
             )
         if session.speech_sweeper_task is None or session.speech_sweeper_task.done():
             session.speech_sweeper_task = asyncio.create_task(
@@ -594,11 +610,14 @@ class MusicManager:
             if callable(is_listening) and is_listening() and callable(stop_listening):
                 stop_listening()
         current_task = asyncio.current_task()
-        for task in (session.speech_sweeper_task, session.speech_worker_task):
+        tasks = [session.speech_sweeper_task, *session.speech_worker_tasks]
+        for task in tasks:
             if task is not None and task is not current_task and not task.done():
                 task.cancel()
         session.speech_sweeper_task = None
-        session.speech_worker_task = None
+        session.speech_worker_tasks.clear()
+        if session.speech_queue is not None:
+            session.speech_queue.clear()
         session.speech_queue = None
         session.sink = None
         session.receiver_restart_count = 0
@@ -638,25 +657,24 @@ class MusicManager:
             session is None
             or segment.user_id not in session.voice_users
             or session.speech_queue is None
-            or session.speech_queue.full()
         ):
             return
-        if segment.user_id in session.one_shot_voice_users:
+        now = time.monotonic()
+        urgent = bool(
+            segment.user_id in session.one_shot_voice_users
+            or session.armed_until.get(segment.user_id, 0) >= now
+        )
+        if not session.speech_queue.offer(segment, urgent=urgent, now=now):
+            return
+        if urgent:
+            # Primary and parallel fallback stages can each consume one read
+            # timeout. Keep the command window alive while both are running.
             session.armed_until[segment.user_id] = (
-                time.monotonic() + MUSIC_STT_TIMEOUT_SECONDS + 5
+                now + MUSIC_STT_TIMEOUT_SECONDS * 2 + 5
             )
-        session.speech_queue.put_nowait(segment)
 
     async def _speech_sweeper(self, session: MusicGuildSession) -> None:
-        try:
-            while session.voice_users:
-                await asyncio.sleep(0.25)
-                for segment in session.segmenter.drain_ready():
-                    self._enqueue_speech_segment(session.guild_id, segment)
-                if await self._expire_armed_commands(session, time.monotonic()):
-                    return
-        except asyncio.CancelledError:
-            return
+        await speech_sweeper(self, session)
 
     async def _expire_armed_commands(
         self,
@@ -681,42 +699,29 @@ class MusicManager:
         return not session.voice_users
 
     async def _speech_worker(self, session: MusicGuildSession) -> None:
-        try:
-            while session.voice_users and session.speech_queue is not None:
-                segment = await session.speech_queue.get()
-                if segment.user_id not in session.voice_users:
-                    continue
-                try:
-                    transcript = await asyncio.to_thread(
-                        self.transcriber.transcribe_pcm,
-                        segment.pcm,
-                    )
-                except Exception as exc:
-                    session.last_error = f"Голосовое управление: {str(exc)[:500]}"
-                    await self._release_one_shot_user(
-                        session,
-                        segment.user_id,
-                    )
-                    await self.publish_status(session)
-                    continue
-                await self._handle_transcript(session, segment.user_id, transcript)
-        except asyncio.CancelledError:
-            return
+        await speech_worker(self, session)
+
+    async def _process_speech_segment(
+        self,
+        session: MusicGuildSession,
+        segment: SpeechSegment,
+    ) -> bool:
+        return await process_speech_segment(self, session, segment)
 
     async def _handle_transcript(
         self,
         session: MusicGuildSession,
         user_id: int,
         transcript: str,
-    ) -> None:
+    ) -> bool:
         guild = self.bot.get_guild(session.guild_id)
         member = guild.get_member(int(user_id)) if guild else None
         if member is None or user_id not in session.voice_users:
-            return
+            return False
         try:
             self.require_same_voice(member, session)
         except MusicRuntimeError:
-            return
+            return False
         now = time.monotonic()
         woke, remainder = split_wake_word(transcript)
         armed = session.armed_until.get(user_id, 0) >= now
@@ -728,7 +733,7 @@ class MusicManager:
         elif armed:
             command = parse_voice_command(transcript)
         if command is None:
-            return
+            return woke
         session.armed_until.pop(user_id, None)
         await self._release_one_shot_user(session, user_id)
         session.last_error = None
@@ -737,6 +742,7 @@ class MusicManager:
         except Exception as exc:
             session.last_error = f"Голосовая команда не выполнена: {str(exc)[:500]}"
             await self.publish_status(session)
+        return True
 
     async def execute_voice_command(
         self,
@@ -774,26 +780,29 @@ class MusicManager:
             )
             await self.publish_status(session)
 
-    async def play_listening_signal(self, session: MusicGuildSession) -> None:
+    async def play_listening_signal(
+        self, session: MusicGuildSession, *, failed: bool = False
+    ) -> None:
         voice_client = self._voice_client(session.guild_id)
         if voice_client is None or not voice_client.is_connected():
             return
+        signal = failure_tone_pcm() if failed else listening_tone_pcm()
         if session.source is not None and (
             voice_client.is_playing() or voice_client.is_paused()
         ):
             was_paused = voice_client.is_paused()
-            session.source.trigger_signal()
+            session.source.trigger_signal(signal)
             if was_paused:
                 voice_client.resume()
-            await asyncio.sleep(0.24)
+            await asyncio.sleep(0.34 if failed else 0.24)
             if was_paused and voice_client.is_playing():
                 voice_client.pause()
             return
         try:
-            voice_client.play(PCMBytesSource(listening_tone_pcm()))
+            voice_client.play(PCMBytesSource(signal))
         except discord.ClientException:
             return
-        await asyncio.sleep(0.22)
+        await asyncio.sleep(0.32 if failed else 0.22)
 
     async def publish_status(
         self,
@@ -801,7 +810,7 @@ class MusicManager:
         *,
         disconnected: bool = False,
     ) -> None:
-        await publish_music_status(self, session, disconnected=disconnected)
+        await self.status_publisher(session, disconnected=disconnected)
 
     async def handle_voice_state_update(
         self,

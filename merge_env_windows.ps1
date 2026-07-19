@@ -37,8 +37,17 @@ if ($toAppend.Count -gt 0) {
 # One-time visual migration: old SGL Bureau gold accent becomes light gray.
 # User-custom colors are preserved unless they are exactly the old default.
 $updatedText = Get-Content -Raw -Encoding UTF8 $TargetPath
-if ($updatedText -match '(?m)^SGBUREAU_EMBED_COLOR=0xD4AF37\s*$') {
-    $updatedText = $updatedText -replace '(?m)^SGBUREAU_EMBED_COLOR=0xD4AF37\s*$', 'SGBUREAU_EMBED_COLOR=0xD9D9D9'
-    Set-Content -Encoding UTF8 $TargetPath $updatedText
+$originalText = $updatedText
+if ($updatedText -match '(?m)^SGBUREAU_EMBED_COLOR=0xD4AF37[ \t]*\r?$') {
+    $updatedText = $updatedText -replace '(?m)^SGBUREAU_EMBED_COLOR=0xD4AF37[ \t]*\r?$', 'SGBUREAU_EMBED_COLOR=0xD9D9D9'
 }
 
+# One-time voice latency migration. Only exact former defaults are replaced;
+# deliberate custom values stay untouched.
+$updatedText = $updatedText -replace '(?m)^MUSIC_STT_MODEL=openai/whisper-large-v3[ \t]*\r?$', 'MUSIC_STT_MODEL=openai/gpt-4o-mini-transcribe'
+$updatedText = $updatedText -replace '(?m)^MUSIC_SPEECH_SILENCE_SECONDS=0\.9[ \t]*\r?$', 'MUSIC_SPEECH_SILENCE_SECONDS=0.6'
+$updatedText = $updatedText -replace '(?m)^MUSIC_STT_TIMEOUT_SECONDS=35[ \t]*\r?$', 'MUSIC_STT_TIMEOUT_SECONDS=15'
+$updatedText = $updatedText -replace '(?m)^MUSIC_STT_QUEUE_LIMIT=4[ \t]*\r?$', 'MUSIC_STT_QUEUE_LIMIT=8'
+if ($updatedText -ne $originalText) {
+    Set-Content -Encoding UTF8 $TargetPath $updatedText
+}

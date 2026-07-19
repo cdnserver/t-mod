@@ -8,6 +8,8 @@ from collections.abc import Callable
 import discord
 from discord.ext import commands
 
+from modules.music_public_panel import MusicPublicPanelService
+from modules.music_public_views import PublicMusicPanelView
 from modules.music_runtime import MusicManager
 from modules.music_views import MusicPanelView, build_music_embed
 
@@ -26,13 +28,40 @@ def setup_music(
     # jitter-buffer flushes as warnings even when the receiver stays healthy.
     logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
     manager = MusicManager(bot)
+    panel_service = MusicPublicPanelService(bot, manager)
+    manager.status_publisher = panel_service.publish
+    manager.public_panel_service = panel_service
+    persistent_view_registered = False
+
+    @bot.listen("on_ready")
+    async def music_public_panel_ready() -> None:
+        nonlocal persistent_view_registered
+        if not persistent_view_registered:
+            bot.add_view(PublicMusicPanelView(manager))
+            persistent_view_registered = True
+        await panel_service.start()
+
+    @bot.listen("on_raw_message_delete")
+    async def music_public_panel_message_deleted(
+        payload: discord.RawMessageDeleteEvent,
+    ) -> None:
+        if payload.guild_id is not None:
+            panel_service.forget_message(payload.guild_id, payload.message_id)
+
+    @bot.listen("on_guild_channel_delete")
+    async def music_public_panel_channel_deleted(
+        channel: discord.abc.GuildChannel,
+    ) -> None:
+        panel_service.forget_channel(channel.guild.id, channel.id)
 
     @bot.tree.command(
         name="music",
         description="Музыка YouTube и голосовое управление T-Mod",
     )
     async def music(interaction: discord.Interaction) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        if interaction.guild is None or not isinstance(
+            interaction.user, discord.Member
+        ):
             await interaction.response.send_message(
                 "Команда работает только на сервере Discord.",
                 ephemeral=True,

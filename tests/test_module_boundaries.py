@@ -14,7 +14,10 @@ class PersistenceBoundaryTests(unittest.TestCase):
 
         self.assertLessEqual(len(source.splitlines()), 100)
         self.assertFalse(
-            any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body),
+            any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for node in tree.body
+            ),
             "storage.py must not grow repository implementations again",
         )
 
@@ -23,7 +26,9 @@ class PersistenceBoundaryTests(unittest.TestCase):
         for path in sorted((ROOT / "persistence").glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if isinstance(node, ast.Import) and any(alias.name == "storage" for alias in node.names):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "storage" for alias in node.names
+                ):
                     offenders.append(path.name)
                 if isinstance(node, ast.ImportFrom) and node.module == "storage":
                     offenders.append(path.name)
@@ -34,7 +39,9 @@ class PersistenceBoundaryTests(unittest.TestCase):
         for path in sorted((ROOT / "modules").glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if isinstance(node, ast.Import) and any(alias.name == "storage" for alias in node.names):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "storage" for alias in node.names
+                ):
                     offenders.append(path.name)
                 if isinstance(node, ast.ImportFrom) and node.module == "storage":
                     offenders.append(path.name)
@@ -76,9 +83,12 @@ class TvrsBoundaryTests(unittest.TestCase):
         self.assertEqual(actual, self.EXPECTED_MODULES)
 
         oversized = {
-            name: len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            name: len(
+                (ROOT / "modules" / name).read_text(encoding="utf-8").splitlines()
+            )
             for name in self.EXPECTED_MODULES
-            if len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines()) > 1000
+            if len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            > 1000
         }
         self.assertEqual(oversized, {})
 
@@ -90,7 +100,9 @@ class TvrsBoundaryTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module == "modules.tvrs":
                     offenders.append(name)
-                if isinstance(node, ast.Import) and any(alias.name == "modules.tvrs" for alias in node.names):
+                if isinstance(node, ast.Import) and any(
+                    alias.name == "modules.tvrs" for alias in node.names
+                ):
                     offenders.append(name)
         self.assertEqual(offenders, [])
 
@@ -99,7 +111,9 @@ class SglArchiveBoundaryTests(unittest.TestCase):
     def test_archive_capture_and_restore_are_separate_bounded_modules(self) -> None:
         names = ("sgl_archive.py", "sgl_archive_restore.py")
         sizes = {
-            name: len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            name: len(
+                (ROOT / "modules" / name).read_text(encoding="utf-8").splitlines()
+            )
             for name in names
         }
         self.assertEqual(
@@ -114,9 +128,13 @@ class MusicBoundaryTests(unittest.TestCase):
         "music_config.py",
         "music_domain.py",
         "music_providers.py",
+        "music_public_panel.py",
+        "music_public_views.py",
         "music_runtime.py",
         "music_setup.py",
+        "music_speech.py",
         "music_status.py",
+        "music_stt_audio.py",
         "music_views.py",
     }
 
@@ -126,15 +144,21 @@ class MusicBoundaryTests(unittest.TestCase):
         limits = {
             "music_audio.py": 500,
             "music_config.py": 200,
-            "music_domain.py": 300,
+            "music_domain.py": 350,
             "music_providers.py": 350,
+            "music_public_panel.py": 500,
+            "music_public_views.py": 400,
             "music_runtime.py": 900,
             "music_setup.py": 150,
+            "music_speech.py": 350,
             "music_status.py": 200,
+            "music_stt_audio.py": 220,
             "music_views.py": 500,
         }
         oversized = {
-            name: len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
+            name: len(
+                (ROOT / "modules" / name).read_text(encoding="utf-8").splitlines()
+            )
             for name, limit in limits.items()
             if len((ROOT / "modules" / name).read_text(encoding="utf-8").splitlines())
             > limit
@@ -143,7 +167,13 @@ class MusicBoundaryTests(unittest.TestCase):
 
     def test_music_domain_and_providers_do_not_depend_on_discord(self) -> None:
         offenders: list[str] = []
-        for name in ("music_config.py", "music_domain.py", "music_providers.py"):
+        for name in (
+            "music_config.py",
+            "music_domain.py",
+            "music_providers.py",
+            "music_speech.py",
+            "music_stt_audio.py",
+        ):
             path = ROOT / "modules" / name
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
@@ -152,7 +182,9 @@ class MusicBoundaryTests(unittest.TestCase):
                     for alias in node.names
                 ):
                     offenders.append(name)
-                if isinstance(node, ast.ImportFrom) and str(node.module).startswith("discord"):
+                if isinstance(node, ast.ImportFrom) and str(node.module).startswith(
+                    "discord"
+                ):
                     offenders.append(name)
         self.assertEqual(offenders, [])
 

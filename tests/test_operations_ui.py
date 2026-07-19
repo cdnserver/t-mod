@@ -133,8 +133,19 @@ class OperationsCenterTests(unittest.TestCase):
     def test_service_channel_scaffolds_are_persistent(self) -> None:
         self.assertEqual(
             [spec.key for spec in CHANNEL_SPECS],
-            ["control_panel", "active_tasks", "workshop", "finance_log", "tech_log", "reports", "settings", "test"],
+            [
+                "control_panel",
+                "music",
+                "active_tasks",
+                "workshop",
+                "finance_log",
+                "tech_log",
+                "reports",
+                "settings",
+                "test",
+            ],
         )
+
         async def inspect_views() -> None:
             for view in (SettingsPanelView(), BotTestView()):
                 with self.subTest(view=type(view).__name__):
@@ -149,7 +160,11 @@ class OperationsCenterTests(unittest.TestCase):
     def test_public_tvrs_panel_contains_private_market_entry(self) -> None:
         async def inspect_view() -> None:
             view = TVRSPublicPanelView()
-            market_buttons = [item for item in view.children if item.custom_id == "tmod_public_tvrs_market"]
+            market_buttons = [
+                item
+                for item in view.children
+                if item.custom_id == "tmod_public_tvrs_market"
+            ]
             self.assertEqual(len(market_buttons), 1)
             self.assertEqual(market_buttons[0].label, "Рынок")
 
@@ -237,8 +252,12 @@ class OperationsCenterTests(unittest.TestCase):
         message = SimpleNamespace(edit=AsyncMock(side_effect=[temporary_error, edited]))
 
         async def retry_edit() -> object:
-            with patch("modules.control_center.asyncio.sleep", new=AsyncMock()) as sleep:
-                result = await edit_message_with_retry(message, embed=discord.Embed(title="Панель"))
+            with patch(
+                "modules.control_center.asyncio.sleep", new=AsyncMock()
+            ) as sleep:
+                result = await edit_message_with_retry(
+                    message, embed=discord.Embed(title="Панель")
+                )
                 sleep.assert_awaited_once_with(0.75)
                 return result
 

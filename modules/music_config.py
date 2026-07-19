@@ -68,6 +68,12 @@ MUSIC_IDLE_DISCONNECT_SECONDS = _env_int(
     minimum=15,
     maximum=3600,
 )
+MUSIC_PANEL_REFRESH_SECONDS = _env_float(
+    "MUSIC_PANEL_REFRESH_SECONDS",
+    1.0,
+    minimum=1.0,
+    maximum=60.0,
+)
 MUSIC_YTDLP_COOKIE_FILE_RAW = os.getenv("MUSIC_YTDLP_COOKIE_FILE", "").strip()
 MUSIC_YTDLP_COOKIE_FILE = (
     Path(MUSIC_YTDLP_COOKIE_FILE_RAW) if MUSIC_YTDLP_COOKIE_FILE_RAW else None
@@ -83,7 +89,7 @@ MUSIC_WAKE_TIMEOUT_SECONDS = _env_int(
 )
 MUSIC_SPEECH_SILENCE_SECONDS = _env_float(
     "MUSIC_SPEECH_SILENCE_SECONDS",
-    0.9,
+    0.6,
     minimum=0.35,
     maximum=3.0,
 )
@@ -101,8 +107,23 @@ MUSIC_SPEECH_MAX_SECONDS = _env_float(
 )
 MUSIC_STT_MODEL = os.getenv(
     "MUSIC_STT_MODEL",
-    "openai/whisper-large-v3",
+    "openai/gpt-4o-mini-transcribe",
 ).strip()
+MUSIC_STT_ACCURACY_MODEL = os.getenv(
+    "MUSIC_STT_ACCURACY_MODEL",
+    "openai/gpt-4o-transcribe",
+).strip()
+_MUSIC_STT_FALLBACK_MODELS_RAW = os.getenv(
+    "MUSIC_STT_FALLBACK_MODELS",
+    (f"qwen/qwen3-asr-flash-2026-02-10,{MUSIC_STT_ACCURACY_MODEL}"),
+)
+MUSIC_STT_FALLBACK_MODELS = tuple(
+    dict.fromkeys(
+        model.strip()
+        for model in _MUSIC_STT_FALLBACK_MODELS_RAW.split(",")
+        if model.strip() and model.strip() != MUSIC_STT_MODEL
+    )
+)
 MUSIC_STT_LANGUAGE = os.getenv("MUSIC_STT_LANGUAGE", "ru").strip() or "ru"
 MUSIC_STT_API_URL = os.getenv(
     "MUSIC_STT_API_URL",
@@ -110,15 +131,21 @@ MUSIC_STT_API_URL = os.getenv(
 ).strip()
 MUSIC_STT_TIMEOUT_SECONDS = _env_int(
     "MUSIC_STT_TIMEOUT_SECONDS",
-    35,
+    15,
     minimum=5,
     maximum=120,
 )
 MUSIC_STT_QUEUE_LIMIT = _env_int(
     "MUSIC_STT_QUEUE_LIMIT",
-    4,
+    8,
     minimum=1,
     maximum=20,
+)
+MUSIC_STT_WORKERS = _env_int(
+    "MUSIC_STT_WORKERS",
+    2,
+    minimum=1,
+    maximum=4,
 )
 MUSIC_SIGNAL_VOLUME = _env_float(
     "MUSIC_SIGNAL_VOLUME",

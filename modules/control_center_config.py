@@ -26,9 +26,14 @@ def positive_env_int(name: str, default: int) -> int:
 
 OPERATIONS_CATEGORY_ID = env_int("OPERATIONS_CATEGORY_ID", 1526605447878934589)
 CONTROL_PANEL_CHANNEL_ID = env_int("CONTROL_PANEL_CHANNEL_ID", 0)
-ACTIVE_TASKS_CHANNEL_ID = positive_env_int("ACTIVE_TASKS_CHANNEL_ID", 1526606213826220198)
+MUSIC_PANEL_CHANNEL_ID = env_int("MUSIC_PANEL_CHANNEL_ID", 0)
+ACTIVE_TASKS_CHANNEL_ID = positive_env_int(
+    "ACTIVE_TASKS_CHANNEL_ID", 1526606213826220198
+)
 WORKSHOP_CHANNEL_ID = positive_env_int("WORKSHOP_CHANNEL_ID", 1526606361369116672)
-FINANCE_LOG_CHANNEL_ID = positive_env_int("FINANCE_EVENT_LOG_CHANNEL_ID", 1526606262035550369)
+FINANCE_LOG_CHANNEL_ID = positive_env_int(
+    "FINANCE_EVENT_LOG_CHANNEL_ID", 1526606262035550369
+)
 TECH_LOG_CHANNEL_ID = env_int("TECH_LOG_CHANNEL_ID", 0)
 REPORTS_CHANNEL_ID = env_int("REPORTS_CHANNEL_ID", 0)
 BOT_SETTINGS_CHANNEL_ID = env_int("BOT_SETTINGS_CHANNEL_ID", 0)
@@ -53,6 +58,13 @@ CHANNEL_SPECS: tuple[ChannelSpec, ...] = (
         "CONTROL_PANEL_CHANNEL_ID",
         CONTROL_PANEL_CHANNEL_ID,
         "Единое публичное меню T-Mod. Все рабочие ответы открываются лично пользователю.",
+    ),
+    ChannelSpec(
+        "music",
+        "музыкальный-центр",
+        "MUSIC_PANEL_CHANNEL_ID",
+        MUSIC_PANEL_CHANNEL_ID,
+        "Единая живая панель музыки T-Mod. Нажатия и ответы остаются личными.",
     ),
     ChannelSpec(
         "active_tasks",
@@ -108,6 +120,7 @@ CHANNEL_SPEC_BY_KEY = {spec.key: spec for spec in CHANNEL_SPECS}
 
 PANEL_MARKERS = {
     "control_panel": "tmod-public-control-panel",
+    "music": "tmod-music-public-panel",
     "reports": "tmod-reports-scaffold",
     "settings": "tmod-settings-panel",
     "test": "tmod-test-panel",

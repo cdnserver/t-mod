@@ -47,6 +47,8 @@ PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_SAMPLE_WIDTH
 class SpeechSegment:
     user_id: int
     pcm: bytes
+    started_at: float = 0.0
+    ended_at: float = 0.0
 
 
 @dataclass(slots=True)
@@ -69,7 +71,12 @@ class SpeechSegmenter:
         state = self._buffers.pop(int(user_id), None)
         if state is None or len(state.data) < self._minimum_bytes:
             return None
-        return SpeechSegment(int(user_id), bytes(state.data))
+        return SpeechSegment(
+            int(user_id),
+            bytes(state.data),
+            state.started_at,
+            state.last_packet_at,
+        )
 
     def accept(
         self,
@@ -154,6 +161,17 @@ def listening_tone_pcm(
     return samples.tobytes()
 
 
+def failure_tone_pcm() -> bytes:
+    """A short descending cue that means: repeat the command."""
+
+    gap = b"\x00" * round(PCM_BYTES_PER_SECOND * 0.04)
+    return (
+        listening_tone_pcm(360.0, duration=0.11, volume=MUSIC_SIGNAL_VOLUME * 0.85)
+        + gap
+        + listening_tone_pcm(250.0, duration=0.16, volume=MUSIC_SIGNAL_VOLUME * 0.85)
+    )
+
+
 class PCMBytesSource(discord.AudioSource):
     def __init__(self, data: bytes) -> None:
         self._data = memoryview(bytes(data))
@@ -190,8 +208,8 @@ class SignalMixerSource(discord.AudioSource):
     def volume(self, value: float) -> None:
         self.source.volume = max(0.0, min(1.0, float(value)))
 
-    def trigger_signal(self) -> None:
-        signal = listening_tone_pcm()
+    def trigger_signal(self, signal: bytes | None = None) -> None:
+        signal = listening_tone_pcm() if signal is None else bytes(signal)
         with self._signal_lock:
             self._signal = memoryview(signal)
             self._signal_offset = 0
@@ -442,6 +460,7 @@ __all__ = [
     "SpeechSegment",
     "SpeechSegmenter",
     "TModVoiceSink",
+    "failure_tone_pcm",
     "listening_tone_pcm",
     "voice_recv",
 ]
