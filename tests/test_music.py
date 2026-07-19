@@ -1123,6 +1123,41 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 0.8)
         self.assertEqual(self.manager.transcriber.transcribe_pcm.call_count, 2)
 
+    async def test_armed_local_control_can_win_without_waiting_for_cloud(self) -> None:
+        def slow_cloud(_pcm, model=None):
+            time.sleep(0.4)
+            return "пауза"
+
+        self.manager.transcriber = SimpleNamespace(
+            accuracy_models=("cloud-backup",),
+            transcribe_pcm=MagicMock(side_effect=slow_cloud),
+        )  # type: ignore[assignment]
+        self.manager.voice_control.try_local = AsyncMock(
+            return_value=SimpleNamespace(
+                outcome="accept",
+                transcript=SimpleNamespace(
+                    text="пауза",
+                    model="local/tiny",
+                ),
+            )
+        )
+        self.manager.voice_control.record_recognition = AsyncMock()
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = float("inf")
+        started = time.monotonic()
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.assertLess(time.monotonic() - started, 0.2)
+        command = self.manager.execute_voice_command.await_args.args[1]
+        self.assertEqual(command.action, "pause")
+        self.manager.voice_control.record_recognition.assert_awaited_once()
+
     async def test_unrecognized_armed_command_gets_failure_cue_and_retry_window(
         self,
     ) -> None:

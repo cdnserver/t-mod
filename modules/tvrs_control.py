@@ -158,8 +158,16 @@ async def deliver_consensus_control_dm(message: OutboxMessage, bot: commands.Bot
     else:
         embed = await asyncio.to_thread(build_dm_vote_embed, session, participant)
         view = TVRSPermanentVoteView(session_key, user_id) if participant.permanent else TVRSVoteView(session_key, user_id)
-        content = None
-        existing_message_id = int(participant.vote_message_id or participant.dm_message_id or 0)
+        bill = session.current_bill or {}
+        number = str(bill.get("bill_number") or "—")
+        title = " ".join(str(bill.get("title") or "Законопроект").split())[:160]
+        content = f"🔔 Открыто голосование по законопроекту №{number}: **{title}**"
+        # A vote must be a fresh DM for every bill. Editing the old registration
+        # or previous-vote message does not create an unread event in Discord,
+        # so participants can miss the control panel entirely. Idempotency is
+        # provided by the per-bill delivery marker below, not by reusing an old
+        # Discord message ID.
+        existing_message_id = 0
 
     marker = delivery_marker(message.dedupe_key)
     embed.set_footer(text=marker)

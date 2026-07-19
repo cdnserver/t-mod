@@ -132,12 +132,15 @@ class MusicBoundaryTests(unittest.TestCase):
         "music_public_panel.py",
         "music_public_views.py",
         "music_runtime.py",
+        "music_runtime_errors.py",
         "music_setup.py",
         "music_speech.py",
         "music_status.py",
         "music_stt_audio.py",
         "music_stt_orchestrator.py",
         "music_views.py",
+        "music_voice_diagnostics.py",
+        "music_voice_setup.py",
     }
 
     def test_music_is_split_into_bounded_responsibilities(self) -> None:
@@ -152,12 +155,15 @@ class MusicBoundaryTests(unittest.TestCase):
             "music_public_panel.py": 500,
             "music_public_views.py": 400,
             "music_runtime.py": 900,
+            "music_runtime_errors.py": 50,
             "music_setup.py": 150,
             "music_speech.py": 350,
             "music_status.py": 200,
             "music_stt_audio.py": 220,
             "music_stt_orchestrator.py": 350,
             "music_views.py": 500,
+            "music_voice_diagnostics.py": 100,
+            "music_voice_setup.py": 100,
         }
         oversized = {
             name: len(
@@ -193,6 +199,25 @@ class MusicBoundaryTests(unittest.TestCase):
                 ):
                     offenders.append(name)
         self.assertEqual(offenders, [])
+
+
+class VoiceControlBoundaryTests(unittest.TestCase):
+    EXPECTED_MODULES = {
+        "voice_control_audio.py",
+        "voice_control_config.py",
+        "voice_control_domain.py",
+        "voice_control_local.py",
+        "voice_control_service.py",
+    }
+
+    def test_voice_control_is_a_standalone_reusable_platform(self) -> None:
+        actual = {path.name for path in (ROOT / "modules").glob("voice_control_*.py")}
+        self.assertEqual(actual, self.EXPECTED_MODULES)
+        for name in self.EXPECTED_MODULES:
+            source = (ROOT / "modules" / name).read_text(encoding="utf-8")
+            self.assertNotIn("import discord", source)
+            self.assertNotIn("from discord", source)
+            self.assertLessEqual(len(source.splitlines()), 400)
 
 
 if __name__ == "__main__":

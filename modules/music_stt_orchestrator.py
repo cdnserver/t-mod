@@ -187,40 +187,114 @@ async def process_speech_segment(
 ) -> bool:
     """Use a fast primary path and hedge latency-sensitive active commands."""
 
+    started_at = time.monotonic()
     was_armed = (
         segment.user_id in session.one_shot_voice_users
         or session.armed_until.get(segment.user_id, 0) >= time.monotonic()
     )
+
+    if manager.voice_control.diagnostic_pending(session.guild_id, segment.user_id):
+        return await manager.voice_control.consume_diagnostic(
+            session.guild_id,
+            segment.user_id,
+            segment.pcm,
+        )
+
+    conditioned_pcm = await manager.voice_control.condition_pcm(
+        session.guild_id,
+        segment.user_id,
+        segment.pcm,
+    )
+    async def deliver(text: str, *, engine: str) -> bool:
+        handled = await manager._handle_transcript(
+            session,
+            segment.user_id,
+            text,
+        )
+        if handled:
+            await manager.voice_control.record_recognition(
+                session.guild_id,
+                segment.user_id,
+                success=True,
+                latency_ms=round((time.monotonic() - started_at) * 1000),
+                engine=engine,
+            )
+        return handled
+
     models = _fallback_models(manager.transcriber)
     if was_armed and models:
-        hedged, errors = await _hedged_command_transcript(
-            manager,
-            segment.pcm,
-            models,
-        )
-        if hedged is not None:
-            return await manager._handle_transcript(
-                session,
-                segment.user_id,
-                hedged.text,
+        async def local_branch() -> tuple[str, Any]:
+            return (
+                "local",
+                await manager.voice_control.try_local(
+                    "music",
+                    conditioned_pcm,
+                    armed=True,
+                ),
             )
+
+        async def cloud_branch() -> tuple[str, Any]:
+            return (
+                "cloud",
+                await _hedged_command_transcript(
+                    manager,
+                    conditioned_pcm,
+                    models,
+                ),
+            )
+
+        tasks = [
+            asyncio.create_task(local_branch(), name="music-stt:local-active"),
+            asyncio.create_task(cloud_branch(), name="music-stt:cloud-active"),
+        ]
+        errors: list[Exception] = []
+        try:
+            for completed in asyncio.as_completed(tasks):
+                source, value = await completed
+                if source == "local":
+                    local = value
+                    if local.outcome == "accept" and local.transcript is not None:
+                        return await deliver(
+                            local.transcript.text,
+                            engine=local.transcript.model,
+                        )
+                else:
+                    hedged, errors = value
+                    if hedged is not None:
+                        return await deliver(hedged.text, engine="cloud/hedged")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         if len(errors) == len(models) + 1:
             raise errors[0]
         primary_error = None
         primary = _analyze_transcript("", armed=True)
     else:
+        local = await manager.voice_control.try_local(
+            "music",
+            conditioned_pcm,
+            armed=was_armed,
+        )
+        if local.outcome == "accept" and local.transcript is not None:
+            return await deliver(
+                local.transcript.text,
+                engine=local.transcript.model,
+            )
+        if local.outcome == "reject":
+            return False
         primary_error = None
         try:
-            primary_text = await _transcribe(manager, segment.pcm)
+            primary_text = await _transcribe(manager, conditioned_pcm)
         except Exception as exc:
             primary_error = exc
             primary_text = ""
         primary = _analyze_transcript(primary_text, armed=was_armed)
         if primary.decisive:
-            return await manager._handle_transcript(
-                session,
-                segment.user_id,
+            return await deliver(
                 primary.text,
+                engine=str(getattr(manager.transcriber, "primary_model", "cloud")),
             )
 
     fallback_needed = bool(
@@ -233,27 +307,19 @@ async def process_speech_segment(
     if models:
         accurate, errors = await _accurate_transcript(
             manager,
-            segment.pcm,
+            conditioned_pcm,
             models,
             armed=was_armed,
         )
         if accurate is not None:
-            return await manager._handle_transcript(
-                session,
-                segment.user_id,
-                accurate.text,
-            )
+            return await deliver(accurate.text, engine="cloud/accuracy")
         if primary_error is not None and len(errors) == len(models):
             raise primary_error
     elif primary_error is not None:
         raise primary_error
 
     if primary.woke:
-        return await manager._handle_transcript(
-            session,
-            segment.user_id,
-            primary.text,
-        )
+        return await deliver(primary.text, engine="cloud/wake")
     if was_armed and segment.user_id in session.voice_users:
         session.armed_until[segment.user_id] = (
             time.monotonic() + MUSIC_WAKE_TIMEOUT_SECONDS
@@ -263,6 +329,13 @@ async def process_speech_segment(
         )
         await manager.play_listening_signal(session, failed=True)
         await manager.publish_status(session)
+        await manager.voice_control.record_recognition(
+            session.guild_id,
+            segment.user_id,
+            success=False,
+            latency_ms=round((time.monotonic() - started_at) * 1000),
+            engine="unrecognized",
+        )
     return False
 
 

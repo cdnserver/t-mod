@@ -165,6 +165,7 @@ def build_control_dm_deliveries(
                     "user_id": int(participant.user_id),
                 },
                 "max_attempts": 12,
+                "priority": 100,
             }
         )
     return jobs

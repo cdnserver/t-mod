@@ -451,6 +451,7 @@ def tvrs_consensus_save_session(
                 dedupe_key=str(delivery.get("dedupe_key") or ""),
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
+                priority=int(delivery.get("priority") or 0),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -573,6 +574,7 @@ def tvrs_consensus_commit_begin_bill(
                 dedupe_key=str(delivery.get("dedupe_key") or ""),
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
+                priority=int(delivery.get("priority") or 0),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -837,6 +839,7 @@ def tvrs_consensus_commit_finalization(
                 dedupe_key=str(delivery.get("dedupe_key") or ""),
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
+                priority=int(delivery.get("priority") or 0),
                 available_at=delivery.get("available_at"),
                 now=now,
             )
@@ -977,6 +980,7 @@ def tvrs_consensus_commit_finish(
                 dedupe_key=str(delivery.get("dedupe_key") or ""),
                 payload=dict(delivery.get("payload") or {}),
                 max_attempts=int(delivery.get("max_attempts") or 8),
+                priority=int(delivery.get("priority") or 0),
                 available_at=delivery.get("available_at"),
                 now=now,
             )

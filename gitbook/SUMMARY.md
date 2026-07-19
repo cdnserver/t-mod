@@ -5,6 +5,7 @@
 ## Что нового
 
 * [Журнал изменений](changelog/README.md)
+  * [20 июля 2026 — Voice Control v2](changelog/2026-07-20.md)
   * [19 июля 2026 — Consensus V3 и T-Mod Music](changelog/2026-07-19.md)
   * [18 июля 2026 — персональные настройки профиля](changelog/2026-07-18.md)
   * [17 июля 2026 — профили и production-защита](changelog/2026-07-17.md)

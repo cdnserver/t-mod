@@ -359,7 +359,15 @@ class ProfileUiTests(unittest.TestCase):
                 primary_character_id=2,
             )
             full_settings = ProfileSettingsView(100, member, configured, characters)
-            self.assertEqual(len(full_settings.children), 7)
+            self.assertEqual(len(full_settings.children), 8)
+            self.assertIn(
+                "Микрофон",
+                {
+                    item.label
+                    for item in full_settings.children
+                    if isinstance(item, discord.ui.Button)
+                },
+            )
             self.assertEqual(
                 len([item for item in full_settings.children if isinstance(item, discord.ui.Select)]),
                 2,

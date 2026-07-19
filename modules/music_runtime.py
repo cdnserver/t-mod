@@ -1,5 +1,4 @@
 """Discord voice runtime for T-Mod Music.
-
 The queue is intentionally ephemeral. Provider calls and Discord audio threads
 never mutate it directly; every transition returns to the bot event loop.
 """
@@ -61,10 +60,9 @@ from modules.music_speech import (
 )
 from modules.music_status import publish_music_status
 from modules.music_stt_orchestrator import process_speech_segment
-
-
-class MusicRuntimeError(RuntimeError):
-    pass
+from modules.music_runtime_errors import MusicRuntimeError
+from modules.music_voice_setup import configure_music_voice_control
+from modules.voice_control_service import VoiceControlPlatform
 
 
 @dataclass(slots=True)
@@ -88,6 +86,7 @@ class MusicGuildSession:
     track_paused_seconds: float = 0.0
     voice_users: set[int] = field(default_factory=set)
     one_shot_voice_users: set[int] = field(default_factory=set)
+    diagnostic_users: set[int] = field(default_factory=set)
     armed_until: dict[int, float] = field(default_factory=dict)
     segmenter: SpeechSegmenter = field(default_factory=SpeechSegmenter)
     speech_queue: SpeechWorkQueue | None = None
@@ -108,10 +107,16 @@ class MusicManager:
         *,
         resolver: YoutubeResolver | None = None,
         transcriber: OpenRouterTranscriber | None = None,
+        voice_control: VoiceControlPlatform | None = None,
     ) -> None:
         self.bot = bot
         self.resolver = resolver or YoutubeResolver()
-        self.transcriber = transcriber or OpenRouterTranscriber()
+        self.voice_control = configure_music_voice_control(
+            bot,
+            transcriber=transcriber,
+            voice_control=voice_control,
+        )
+        self.transcriber = self.voice_control.cloud_transcriber
         self.status_publisher = partial(publish_music_status, self)
         self.sessions: dict[int, MusicGuildSession] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -642,6 +647,7 @@ class MusicManager:
         session.receiver_last_restart_at = 0.0
         session.voice_users.clear()
         session.one_shot_voice_users.clear()
+        session.diagnostic_users.clear()
         session.armed_until.clear()
         session.segmenter.clear()
 
@@ -842,6 +848,7 @@ class MusicManager:
         ):
             session.voice_users.discard(member.id)
             session.one_shot_voice_users.discard(member.id)
+            session.diagnostic_users.discard(member.id)
             session.armed_until.pop(member.id, None)
             session.segmenter.discard(member.id)
             if not session.voice_users:

@@ -58,12 +58,14 @@ class TemporaryOutboxDatabase:
         topic: str = "test.delivery",
         payload: dict | None = None,
         max_attempts: int = 8,
+        priority: int = 0,
     ) -> dict:
         return storage.delivery_outbox_enqueue(
             topic=topic,
             dedupe_key=key,
             payload=payload or {"key": key},
             max_attempts=max_attempts,
+            priority=priority,
             now=self.started_at.isoformat(),
         )
 
@@ -187,6 +189,54 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
         self.assertEqual(first_ids | second_ids, expected_ids)
         self.assertEqual({int(row["attempts"]) for row in first + second}, {1})
         self.assertEqual({str(row["lease_owner"]) for row in first + second}, {"worker-a", "worker-b"})
+
+    def test_interactive_delivery_is_claimed_before_older_background_work(self) -> None:
+        background = self.enqueue("background", priority=0)
+        interactive = self.enqueue("interactive", priority=100)
+
+        claimed = storage.delivery_outbox_claim(
+            worker_id="priority-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertEqual(int(claimed[0]["id"]), int(interactive["id"]))
+        self.assertNotEqual(int(claimed[0]["id"]), int(background["id"]))
+        self.assertEqual(int(claimed[0]["priority"]), 100)
+
+    def test_priority_migration_rescues_preexisting_dead_consensus_control(self) -> None:
+        migration_key = "migration:delivery-priority:2026-07-20-v1"
+        with storage._db_lock, storage.connect() as connection:
+            connection.execute("DELETE FROM meta WHERE key = ?", (migration_key,))
+            connection.commit()
+        row = self.enqueue(
+            "legacy-control",
+            topic="tvrs.consensus.control-dm.v1",
+            max_attempts=1,
+        )
+        claimed = storage.delivery_outbox_claim(
+            worker_id="legacy-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )[0]
+        storage.delivery_outbox_mark_failed(
+            int(row["id"]),
+            lease_token=str(claimed["lease_token"]),
+            error="old exponential retry exhausted",
+            retry_at=self.started_at.isoformat(),
+            permanent=True,
+            now=self.started_at.isoformat(),
+        )
+
+        storage.init_db()
+
+        rescued = storage.delivery_outbox_get(int(row["id"]))
+        self.assertEqual(rescued["status"], "retry")  # type: ignore[index]
+        self.assertEqual(rescued["attempts"], 0)  # type: ignore[index]
+        self.assertEqual(rescued["priority"], 100)  # type: ignore[index]
+        self.assertIsNone(rescued["last_error"])  # type: ignore[index]
 
     def test_expired_lease_is_reclaimed_and_stale_token_is_fenced(self) -> None:
         item_id = int(self.enqueue("leased", max_attempts=3)["id"])
@@ -320,6 +370,14 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
 
 
 class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAsyncioTestCase):
+    async def test_interactive_retry_never_backs_off_for_minutes(self) -> None:
+        dispatcher = OutboxDispatcher(StorageOutboxRepository())
+
+        self.assertEqual(dispatcher.retry_delay(1, priority=100), 2)
+        self.assertEqual(dispatcher.retry_delay(4, priority=100), 15)
+        self.assertEqual(dispatcher.retry_delay(10, priority=100), 15)
+        self.assertGreater(dispatcher.retry_delay(10), 15)
+
     async def test_policy_deferral_preserves_attempt_and_delivers_when_ready(self) -> None:
         item_id = int(self.enqueue("quiet-hours", max_attempts=2)["id"])
         clock = FakeClock(self.started_at)

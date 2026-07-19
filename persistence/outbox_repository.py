@@ -18,6 +18,7 @@ def delivery_outbox_enqueue_in_connection(
     dedupe_key: str,
     payload: dict[str, Any],
     max_attempts: int = 8,
+    priority: int = 0,
     available_at: str | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -40,10 +41,10 @@ def delivery_outbox_enqueue_in_connection(
         """
         INSERT INTO delivery_outbox(
             topic, dedupe_key, payload_json, status, attempts, max_attempts,
-            available_at, lease_owner, lease_token, lease_until, message_id,
+            priority, available_at, lease_owner, lease_token, lease_until, message_id,
             last_error, delivered_at, created_at, updated_at
         )
-        VALUES(?, ?, ?, 'pending', 0, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+        VALUES(?, ?, ?, 'pending', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
         ON CONFLICT(topic, dedupe_key) DO NOTHING
         """,
         (
@@ -51,6 +52,7 @@ def delivery_outbox_enqueue_in_connection(
             clean_key,
             payload_json,
             max(1, int(max_attempts)),
+            max(-1000, min(1000, int(priority))),
             ready_at,
             created_at,
             created_at,
@@ -71,6 +73,7 @@ def delivery_outbox_enqueue(
     dedupe_key: str,
     payload: dict[str, Any],
     max_attempts: int = 8,
+    priority: int = 0,
     available_at: str | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -82,6 +85,7 @@ def delivery_outbox_enqueue(
             dedupe_key=dedupe_key,
             payload=payload,
             max_attempts=max_attempts,
+            priority=priority,
             available_at=available_at,
             now=now,
         )
@@ -129,7 +133,7 @@ def delivery_outbox_claim(
                     (status IN ('pending', 'retry') AND available_at <= ?)
                  OR (status = 'processing' AND lease_until <= ?)
               )
-            ORDER BY available_at ASC, id ASC
+            ORDER BY priority DESC, available_at ASC, id ASC
             LIMIT ?
             """,
             (now_iso, now_iso, max(1, min(int(limit), 100))),

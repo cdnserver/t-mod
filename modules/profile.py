@@ -12,8 +12,11 @@ from discord import app_commands
 from discord.ext import commands
 
 from persistence import profile_context as storage
+from persistence import voice_control_context as voice_storage
 from modules.technical_log import log_technical_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
+from modules.voice_control_service import VoiceDiagnosticResult, get_voice_control
+from modules.profile_voice import ProfileMicrophoneView, profile_microphone_embed
 
 
 PROFILE_COLOR = 0x5865F2
@@ -284,6 +287,8 @@ def profile_settings_embed(
     member: discord.Member,
     profile: Any | None,
     characters: list[Any],
+    voice_profile: Any | None = None,
+    local_status: str = "unknown",
 ) -> discord.Embed:
     visibility = str(getattr(profile, "visibility", None) or "members")
     visibility_emoji, visibility_label, visibility_description = PROFILE_VISIBILITY_INFO.get(
@@ -358,6 +363,22 @@ def profile_settings_embed(
         inline=True,
     )
     embed.add_field(name="Оформление", value=f"{theme_emoji} **{theme_label}**", inline=True)
+    quality_score = int(getattr(voice_profile, "quality_score", 0) or 0)
+    calibrated_at = getattr(voice_profile, "calibrated_at", None)
+    local_ready = local_status == "ready"
+    embed.add_field(
+        name="Голос и микрофон",
+        value=(
+            f"{'🟢' if local_ready else '🟡'} Быстрый движок: "
+            f"**{'готов' if local_ready else 'подготавливается'}**\n"
+            + (
+                f"Калибровка: **{quality_score}/100** · {_discord_time(calibrated_at)}"
+                if calibrated_at
+                else "Калибровка ещё не выполнена"
+            )
+        ),
+        inline=True,
+    )
     embed.add_field(name="Основной персонаж", value=primary_text, inline=False)
     embed.set_footer(text="Настройки можно вернуть к стандартным одной кнопкой • T-Mod Profile")
     return embed
@@ -486,15 +507,62 @@ async def _edit_profile_settings(
 ) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer()
-    profile, characters = await asyncio.to_thread(
-        storage.get_profile_snapshot,
+    (profile, characters), voice_profile = await asyncio.gather(
+        asyncio.to_thread(
+            storage.get_profile_snapshot,
+            member.guild.id,
+            member.id,
+        ),
+        asyncio.to_thread(
+            voice_storage.get_voice_user_profile,
+            member.guild.id,
+            member.id,
+        ),
+    )
+    voice_control = get_voice_control(interaction.client)
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_settings_embed(
+            member,
+            profile,
+            characters,
+            voice_profile,
+            voice_control.local_status if voice_control is not None else "unavailable",
+        ),
+        view=ProfileSettingsView(requester_id, member, profile, characters),
+    )
+
+
+async def _edit_profile_microphone(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+    *,
+    diagnostic: VoiceDiagnosticResult | None = None,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    voice_profile = await asyncio.to_thread(
+        voice_storage.get_voice_user_profile,
         member.guild.id,
         member.id,
     )
+    voice_control = get_voice_control(interaction.client)
     await interaction.edit_original_response(
         content=None,
-        embed=profile_settings_embed(member, profile, characters),
-        view=ProfileSettingsView(requester_id, member, profile, characters),
+        embed=profile_microphone_embed(
+            member,
+            voice_profile,
+            local_status=(voice_control.local_status if voice_control else "unavailable"),
+            diagnostic=diagnostic,
+        ),
+        view=ProfileMicrophoneView(
+            requester_id,
+            member,
+            render=_edit_profile_microphone,
+            back=_edit_profile_settings,
+            report_error=_report_unexpected_profile_error,
+        ),
     )
 
 
@@ -1149,6 +1217,10 @@ class ProfileSettingsView(ProfileBaseView):
     async def quiet_hours(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _edit_profile_quiet_hours(interaction, self.requester_id, self.member)
 
+    @discord.ui.button(label="Микрофон", emoji="🎙️", style=discord.ButtonStyle.secondary, row=2)
+    async def microphone(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_microphone(interaction, self.requester_id, self.member)
+
     @discord.ui.button(label="По умолчанию", emoji="♻️", style=discord.ButtonStyle.secondary, row=3)
     async def reset(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _save_profile_preferences(
@@ -1420,6 +1492,7 @@ __all__ = [
     "CharacterModal",
     "ProfileBaseView",
     "ProfileHomeView",
+    "ProfileMicrophoneView",
     "ProfileSettingsView",
     "ProfileStatusView",
     "StatusNoteModal",
@@ -1427,6 +1500,7 @@ __all__ = [
     "character_manager_embed",
     "member_position_text",
     "profile_embed",
+    "profile_microphone_embed",
     "profile_settings_embed",
     "setup_profile",
 ]

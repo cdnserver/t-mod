@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import Literal
 from urllib.parse import urlparse
+
+from modules.voice_control_domain import (
+    is_wake_word_candidate,
+    normalize_speech,
+    split_wake_word,
+)
 
 
 MusicAction = Literal[
@@ -33,18 +38,7 @@ _YOUTUBE_HOSTS = frozenset(
         "www.youtu.be",
     }
 )
-_WAKE_RE = re.compile(
-    r"(?:^|\s)(?:"
-    r"т[иые]?\s*[-–—]?\s*мо[дт]|ти\s+мод|t\s*[-–—]?\s*mod|teamod|"
-    r"сборщик(?:а)?\s+риса|банан"
-    r")(?=\s|$)",
-    re.IGNORECASE,
-)
-_WAKE_CANDIDATES = ("тмод", "тимод", "банан", "сборщикриса")
-_WAKE_FALSE_POSITIVES = frozenset({"банк", "банка", "банки", "баран"})
-_WAKE_ASR_CANDIDATES = frozenset({"тима", "тимад", "димод", "бонан"})
 _SPACE_RE = re.compile(r"\s+")
-_PUNCT_RE = re.compile(r"[^0-9a-zа-яё%\s-]+", re.IGNORECASE)
 _LEADING_FILLERS = (
     "пожалуйста",
     "давай",
@@ -88,43 +82,6 @@ class VoiceCommand:
     action: MusicAction
     query: str | None = None
     volume_percent: int | None = None
-
-
-def normalize_speech(value: str) -> str:
-    text = str(value or "").strip().lower().replace("ё", "е")
-    text = _PUNCT_RE.sub(" ", text)
-    return _SPACE_RE.sub(" ", text).strip(" -")
-
-
-def split_wake_word(value: str) -> tuple[bool, str]:
-    normalized = normalize_speech(value)
-    match = _WAKE_RE.search(normalized)
-    if match is None:
-        return False, normalized
-    remainder = f"{normalized[: match.start()]} {normalized[match.end() :]}"
-    return True, _SPACE_RE.sub(" ", remainder).strip(" -")
-
-
-def is_wake_word_candidate(value: str) -> bool:
-    """Identify a likely STT typo without ever treating it as a real wake word."""
-
-    normalized = normalize_speech(value)
-    if not normalized or split_wake_word(normalized)[0]:
-        return False
-    tokens = normalized.split()
-    if tokens and tokens[0] in _WAKE_FALSE_POSITIVES:
-        return False
-    if tokens and tokens[0] in _WAKE_ASR_CANDIDATES:
-        return True
-    for alias in _WAKE_CANDIDATES:
-        word_count = 2 if alias == "сборщикриса" else 1
-        candidate = "".join(tokens[:word_count])
-        if abs(len(candidate) - len(alias)) > max(1, len(alias) // 5):
-            continue
-        threshold = 0.78 if len(alias) > 5 else 0.79
-        if SequenceMatcher(None, candidate, alias).ratio() >= threshold:
-            return True
-    return False
 
 
 def prepare_youtube_input(value: str) -> str:

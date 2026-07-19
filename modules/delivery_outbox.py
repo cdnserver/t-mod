@@ -35,6 +35,7 @@ class OutboxMessage:
     attempts: int
     max_attempts: int
     lease_token: str
+    priority: int = 0
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "OutboxMessage":
@@ -54,6 +55,7 @@ class OutboxMessage:
             payload=payload,
             attempts=int(row.get("attempts") or 0),
             max_attempts=int(row.get("max_attempts") or 1),
+            priority=int(row.get("priority") or 0),
             lease_token=token,
         )
 
@@ -207,8 +209,17 @@ class OutboxDispatcher:
             raise ValueError("outbox_topic_required")
         self.handlers[clean_topic] = handler
 
-    def retry_delay(self, attempts: int) -> int:
-        return min(self.max_retry_seconds, self.base_retry_seconds * (2 ** max(0, int(attempts) - 1)))
+    def retry_delay(self, attempts: int, *, priority: int = 0) -> int:
+        if int(priority) >= 100:
+            # Interactive controls become useless if they arrive minutes after
+            # the user was expected to act. Retry them quickly while retaining
+            # the durable dead-letter protection.
+            base = min(self.base_retry_seconds, 2)
+            maximum = min(self.max_retry_seconds, 15)
+        else:
+            base = self.base_retry_seconds
+            maximum = self.max_retry_seconds
+        return min(maximum, base * (2 ** max(0, int(attempts) - 1)))
 
     async def _run_handler_with_heartbeat(
         self,
@@ -275,7 +286,12 @@ class OutboxDispatcher:
                 continue
             except Exception as exc:
                 failed_at = _as_utc(self.clock())
-                retry_at = failed_at + timedelta(seconds=self.retry_delay(message.attempts))
+                retry_at = failed_at + timedelta(
+                    seconds=self.retry_delay(
+                        message.attempts,
+                        priority=message.priority,
+                    )
+                )
                 await asyncio.to_thread(
                     self.repository.failed,
                     message,

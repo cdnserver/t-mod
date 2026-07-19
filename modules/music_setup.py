@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 
 import discord
 from discord.ext import commands
@@ -12,6 +13,7 @@ from modules.music_public_panel import MusicPublicPanelService
 from modules.music_public_views import PublicMusicPanelView
 from modules.music_runtime import MusicManager
 from modules.music_views import MusicPanelView, build_music_embed
+from modules.music_voice_diagnostics import run_microphone_diagnostic
 
 
 def setup_music(
@@ -28,6 +30,10 @@ def setup_music(
     # jitter-buffer flushes as warnings even when the receiver stays healthy.
     logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
     manager = MusicManager(bot)
+    bot.voice_control = manager.voice_control
+    manager.voice_control.set_diagnostic_gateway(
+        partial(run_microphone_diagnostic, manager)
+    )
     panel_service = MusicPublicPanelService(bot, manager)
     manager.status_publisher = panel_service.publish
     manager.public_panel_service = panel_service
@@ -36,6 +42,7 @@ def setup_music(
     @bot.listen("on_ready")
     async def music_public_panel_ready() -> None:
         nonlocal persistent_view_registered
+        manager.voice_control.start()
         if not persistent_view_registered:
             bot.add_view(PublicMusicPanelView(manager))
             persistent_view_registered = True

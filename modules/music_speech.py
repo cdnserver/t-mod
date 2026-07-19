@@ -118,6 +118,7 @@ def accept_voice_packet(manager: Any, guild_id: int, user_id: int, pcm: bytes) -
     now = time.monotonic()
     armed = bool(
         user_id in session.one_shot_voice_users
+        or user_id in getattr(session, "diagnostic_users", ())
         or session.armed_until.get(user_id, 0) >= now
     )
     completed = session.segmenter.accept(
@@ -141,6 +142,7 @@ def enqueue_speech_segment(manager: Any, guild_id: int, segment: SpeechSegment) 
     now = time.monotonic()
     urgent = bool(
         segment.user_id in session.one_shot_voice_users
+        or segment.user_id in getattr(session, "diagnostic_users", ())
         or session.armed_until.get(segment.user_id, 0) >= now
     )
     if not session.speech_queue.offer(segment, urgent=urgent, now=now):
