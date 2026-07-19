@@ -29,6 +29,13 @@ from modules.music_providers import (
     discord_pcm_to_stt_wav,
     pcm_to_wav,
 )
+from modules.music_progress import (
+    pause_playback_clock,
+    playback_elapsed_seconds,
+    reset_playback_clock,
+    resume_playback_clock,
+    start_playback_clock,
+)
 from modules.music_public_panel import MusicPublicPanelService
 from modules.music_public_views import PublicMusicPanelView
 from modules.music_runtime import (
@@ -195,6 +202,13 @@ class MusicProviderTests(unittest.TestCase):
         self.assertFalse(silence.has_speech)
         self.assertFalse(dc_offset.has_speech)
         self.assertEqual(silence.wav, b"")
+
+    def test_stt_audio_keeps_and_boosts_a_very_quiet_microphone(self) -> None:
+        prepared = prepare_discord_pcm_for_stt(_tone_pcm(duration=0.45, amplitude=90))
+
+        self.assertTrue(prepared.has_speech)
+        self.assertGreater(prepared.rms, 250)
+        self.assertTrue(prepared.wav)
 
     def test_youtube_metadata_is_normalized_without_downloading(self) -> None:
         class FakeYDL:
@@ -385,6 +399,32 @@ class MusicAudioRuntimeTests(unittest.TestCase):
         segmenter.discard(1)
         ready = segmenter.drain_ready(now=2.0)
         self.assertEqual([item.user_id for item in ready], [2])
+
+    def test_armed_command_uses_shorter_endpoint_without_changing_default(self) -> None:
+        packet = b"\x01\x00\x01\x00" * 15_000
+        command = SpeechSegmenter()
+        background = SpeechSegmenter()
+        command.accept(1, packet, now=0.0, silence_seconds=0.42)
+        background.accept(1, packet, now=0.0)
+
+        self.assertEqual([item.user_id for item in command.drain_ready(now=0.43)], [1])
+        self.assertEqual(background.drain_ready(now=0.43), [])
+
+
+class MusicProgressTests(unittest.TestCase):
+    def test_monotonic_clock_excludes_pause_time_and_resets(self) -> None:
+        session = SimpleNamespace(
+            track_started_at=None,
+            track_paused_at=None,
+            track_paused_seconds=0.0,
+        )
+        start_playback_clock(session, now=100.0)
+        pause_playback_clock(session, now=105.0)
+        self.assertEqual(playback_elapsed_seconds(session, now=120.0), 5)
+        resume_playback_clock(session, now=120.0)
+        self.assertEqual(playback_elapsed_seconds(session, now=123.0), 8)
+        reset_playback_clock(session)
+        self.assertEqual(playback_elapsed_seconds(session, now=200.0), 0)
 
     def test_pcm_sources_are_non_opus_and_signal_mixes_into_music(self) -> None:
         frame = b"\x00" * 3840
@@ -645,12 +685,14 @@ class MusicDeploymentTests(unittest.TestCase):
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         migration = (ROOT / "merge_env_windows.ps1").read_text(encoding="utf-8")
 
-        self.assertIn("MUSIC_STT_MODEL=openai/gpt-4o-mini-transcribe", example)
+        self.assertIn("MUSIC_STT_MODEL=qwen/qwen3-asr-flash-2026-02-10", example)
         self.assertIn("qwen/qwen3-asr-flash-2026-02-10", example)
+        self.assertIn("MUSIC_STT_HEDGE_DELAY_SECONDS=0.25", example)
         self.assertIn("MUSIC_STT_WORKERS=2", example)
         self.assertIn("merge_env_windows.ps1", launcher)
         self.assertIn("MUSIC_STT_QUEUE_LIMIT=4", migration)
         self.assertIn("MUSIC_STT_QUEUE_LIMIT=8", migration)
+        self.assertIn("MUSIC_STT_TIMEOUT_SECONDS=8", migration)
 
     def test_shared_panel_defaults_to_one_second_reconciliation(self) -> None:
         example = (ROOT / ".env.persistent.example").read_text(encoding="utf-8")
@@ -738,6 +780,67 @@ class MusicPublicPanelTests(unittest.IsolatedAsyncioTestCase):
         interaction.response.send_message.assert_awaited_once_with(
             "Очередь пока не создана.", ephemeral=True
         )
+
+    async def test_refresh_updates_shared_card_without_opening_another_menu(
+        self,
+    ) -> None:
+        self.manager.public_panel_service = SimpleNamespace(refresh_guild=AsyncMock())
+        interaction = SimpleNamespace(
+            guild=self.guild,
+            response=SimpleNamespace(defer=AsyncMock()),
+            edit_original_response=AsyncMock(),
+        )
+
+        await PublicMusicPanelView(self.manager).refresh(interaction)
+
+        self.manager.public_panel_service.refresh_guild.assert_awaited_once_with(
+            self.guild
+        )
+        interaction.response.defer.assert_awaited_once_with(
+            ephemeral=True, thinking=True
+        )
+        kwargs = interaction.edit_original_response.await_args.kwargs
+        self.assertEqual(kwargs, {"content": "Общая музыкальная панель обновлена."})
+
+    async def test_playback_clock_causes_real_second_by_second_panel_edit(self) -> None:
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True,
+            is_paused=lambda: False,
+            is_playing=lambda: True,
+        )
+        self.manager._voice_client = lambda _guild_id: voice_client  # type: ignore[method-assign]
+        session = MusicGuildSession(
+            guild_id=77,
+            voice_channel_id=100,
+            text_channel_id=300,
+            connected_by_id=7,
+            connected_by_display="Слушатель",
+            current=MusicTrack("Кино", "https://youtu.be/test", 120),
+        )
+        session.track_started_at = 90.0
+        self.manager.sessions[77] = session
+        ensure = AsyncMock(return_value=self.message)
+        edit = AsyncMock(return_value=self.message)
+
+        with (
+            patch(
+                "modules.music_public_panel.resolve_control_channel",
+                new=AsyncMock(return_value=self.channel),
+            ),
+            patch("modules.music_public_panel.ensure_panel_message", new=ensure),
+            patch("modules.music_public_panel.edit_message_with_retry", new=edit),
+            patch(
+                "modules.music_progress.time.monotonic",
+                side_effect=[100.0, 100.0, 101.0, 101.0],
+            ),
+        ):
+            await self.service.refresh_guild(self.guild)
+            await self.service.refresh_guild(self.guild)
+
+        ensure.assert_awaited_once()
+        edit.assert_awaited_once()
+        rendered = edit.await_args.kwargs["embed"]
+        self.assertIn("`0:11`", str(rendered.fields[0].value))
 
     async def test_visible_state_change_edits_canonical_message_once(self) -> None:
         ensure = AsyncMock(return_value=self.message)
@@ -994,6 +1097,31 @@ class MusicManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(recognized)
         self.manager.execute_voice_command.assert_awaited_once()
+
+    async def test_slow_primary_is_hedged_before_it_finishes(self) -> None:
+        rendezvous = threading.Barrier(2)
+
+        def transcribe(_pcm, model=None):
+            rendezvous.wait(timeout=1)
+            return "играй Цой" if model else "неразборчивая команда"
+
+        self.manager.transcriber = SimpleNamespace(
+            accuracy_models=("fast-backup",),
+            transcribe_pcm=MagicMock(side_effect=transcribe),
+        )  # type: ignore[assignment]
+        self.manager.execute_voice_command = AsyncMock()  # type: ignore[method-assign]
+        self.session.voice_users.add(7)
+        self.session.armed_until[7] = float("inf")
+        started = time.monotonic()
+
+        recognized = await self.manager._process_speech_segment(
+            self.session,
+            SpeechSegment(7, b"pcm"),
+        )
+
+        self.assertTrue(recognized)
+        self.assertLess(time.monotonic() - started, 0.8)
+        self.assertEqual(self.manager.transcriber.transcribe_pcm.call_count, 2)
 
     async def test_unrecognized_armed_command_gets_failure_cue_and_retry_window(
         self,

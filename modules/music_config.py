@@ -89,9 +89,15 @@ MUSIC_WAKE_TIMEOUT_SECONDS = _env_int(
 )
 MUSIC_SPEECH_SILENCE_SECONDS = _env_float(
     "MUSIC_SPEECH_SILENCE_SECONDS",
-    0.6,
-    minimum=0.35,
+    0.5,
+    minimum=0.3,
     maximum=3.0,
+)
+MUSIC_SPEECH_COMMAND_SILENCE_SECONDS = _env_float(
+    "MUSIC_SPEECH_COMMAND_SILENCE_SECONDS",
+    0.42,
+    minimum=0.3,
+    maximum=1.5,
 )
 MUSIC_SPEECH_MIN_SECONDS = _env_float(
     "MUSIC_SPEECH_MIN_SECONDS",
@@ -107,7 +113,7 @@ MUSIC_SPEECH_MAX_SECONDS = _env_float(
 )
 MUSIC_STT_MODEL = os.getenv(
     "MUSIC_STT_MODEL",
-    "openai/gpt-4o-mini-transcribe",
+    "qwen/qwen3-asr-flash-2026-02-10",
 ).strip()
 MUSIC_STT_ACCURACY_MODEL = os.getenv(
     "MUSIC_STT_ACCURACY_MODEL",
@@ -115,7 +121,7 @@ MUSIC_STT_ACCURACY_MODEL = os.getenv(
 ).strip()
 _MUSIC_STT_FALLBACK_MODELS_RAW = os.getenv(
     "MUSIC_STT_FALLBACK_MODELS",
-    (f"qwen/qwen3-asr-flash-2026-02-10,{MUSIC_STT_ACCURACY_MODEL}"),
+    (f"openai/gpt-4o-mini-transcribe,{MUSIC_STT_ACCURACY_MODEL}"),
 )
 MUSIC_STT_FALLBACK_MODELS = tuple(
     dict.fromkeys(
@@ -131,9 +137,15 @@ MUSIC_STT_API_URL = os.getenv(
 ).strip()
 MUSIC_STT_TIMEOUT_SECONDS = _env_int(
     "MUSIC_STT_TIMEOUT_SECONDS",
-    15,
-    minimum=5,
+    8,
+    minimum=3,
     maximum=120,
+)
+MUSIC_STT_HEDGE_DELAY_SECONDS = _env_float(
+    "MUSIC_STT_HEDGE_DELAY_SECONDS",
+    0.25,
+    minimum=0.0,
+    maximum=2.0,
 )
 MUSIC_STT_QUEUE_LIMIT = _env_int(
     "MUSIC_STT_QUEUE_LIMIT",

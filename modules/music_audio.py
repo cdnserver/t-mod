@@ -56,6 +56,7 @@ class _SpeechBuffer:
     data: bytearray
     started_at: float
     last_packet_at: float
+    silence_seconds: float
 
 
 class SpeechSegmenter:
@@ -84,6 +85,7 @@ class SpeechSegmenter:
         pcm: bytes,
         *,
         now: float | None = None,
+        silence_seconds: float | None = None,
     ) -> list[SpeechSegment]:
         if not pcm:
             return []
@@ -93,14 +95,19 @@ class SpeechSegmenter:
             state = self._buffers.get(int(user_id))
             if (
                 state is not None
-                and timestamp - state.last_packet_at >= MUSIC_SPEECH_SILENCE_SECONDS
+                and timestamp - state.last_packet_at >= state.silence_seconds
             ):
                 segment = self._finish_locked(int(user_id))
                 if segment is not None:
                     completed.append(segment)
                 state = None
             if state is None:
-                state = _SpeechBuffer(bytearray(), timestamp, timestamp)
+                threshold = (
+                    MUSIC_SPEECH_SILENCE_SECONDS
+                    if silence_seconds is None
+                    else max(0.1, float(silence_seconds))
+                )
+                state = _SpeechBuffer(bytearray(), timestamp, timestamp, threshold)
                 self._buffers[int(user_id)] = state
             state.data.extend(pcm)
             state.last_packet_at = timestamp
@@ -117,7 +124,7 @@ class SpeechSegmenter:
             ready = [
                 user_id
                 for user_id, state in self._buffers.items()
-                if timestamp - state.last_packet_at >= MUSIC_SPEECH_SILENCE_SECONDS
+                if timestamp - state.last_packet_at >= state.silence_seconds
             ]
             for user_id in ready:
                 segment = self._finish_locked(user_id)

@@ -128,6 +128,7 @@ class MusicBoundaryTests(unittest.TestCase):
         "music_config.py",
         "music_domain.py",
         "music_providers.py",
+        "music_progress.py",
         "music_public_panel.py",
         "music_public_views.py",
         "music_runtime.py",
@@ -135,6 +136,7 @@ class MusicBoundaryTests(unittest.TestCase):
         "music_speech.py",
         "music_status.py",
         "music_stt_audio.py",
+        "music_stt_orchestrator.py",
         "music_views.py",
     }
 
@@ -146,6 +148,7 @@ class MusicBoundaryTests(unittest.TestCase):
             "music_config.py": 200,
             "music_domain.py": 350,
             "music_providers.py": 350,
+            "music_progress.py": 100,
             "music_public_panel.py": 500,
             "music_public_views.py": 400,
             "music_runtime.py": 900,
@@ -153,6 +156,7 @@ class MusicBoundaryTests(unittest.TestCase):
             "music_speech.py": 350,
             "music_status.py": 200,
             "music_stt_audio.py": 220,
+            "music_stt_orchestrator.py": 350,
             "music_views.py": 500,
         }
         oversized = {
@@ -171,8 +175,10 @@ class MusicBoundaryTests(unittest.TestCase):
             "music_config.py",
             "music_domain.py",
             "music_providers.py",
+            "music_progress.py",
             "music_speech.py",
             "music_stt_audio.py",
+            "music_stt_orchestrator.py",
         ):
             path = ROOT / "modules" / name
             tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -253,7 +253,6 @@ class OpenRouterTranscriber:
             },
             "language": MUSIC_STT_LANGUAGE,
             "temperature": 0,
-            "max_tokens": 96,
         }
         started_at = time.monotonic()
         last_error = ""

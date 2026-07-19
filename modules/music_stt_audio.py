@@ -95,13 +95,13 @@ def _active_span(samples: array) -> tuple[int, int, int]:
     if not frame_rms:
         return 0, 0, 0
     peak_rms = max(frame_rms)
-    if peak_rms < 80:
+    if peak_rms < 45:
         return 0, 0, 0
     ordered = sorted(frame_rms)
     noise_floor = ordered[min(len(ordered) - 1, len(ordered) // 5)]
-    threshold = max(80, min(round(peak_rms * 0.35), noise_floor * 5 // 2 + 40))
+    threshold = max(45, min(round(peak_rms * 0.32), noise_floor * 2 + 30))
     active = [index for index, value in enumerate(frame_rms) if value >= threshold]
-    if len(active) < 3:
+    if len(active) < 2:
         return 0, 0, 0
     first = max(0, active[0] - _EDGE_PADDING_FRAMES)
     last = min(len(frame_rms), active[-1] + _EDGE_PADDING_FRAMES + 1)
@@ -115,9 +115,9 @@ def _normalize(samples: array) -> tuple[array, int, int]:
         return samples, peak, current_rms
     # Normal microphone levels need no rewrite. Boost only genuinely quiet
     # speech, keeping the common path fast and preserving its waveform.
-    if current_rms >= 700:
+    if current_rms >= 900:
         return samples, peak, current_rms
-    desired_gain = max(1.0, min(3.5, 1_800 / current_rms))
+    desired_gain = max(1.0, min(6.0, 2_200 / current_rms))
     headroom_gain = 30_000 / peak
     gain = min(desired_gain, headroom_gain)
     if gain <= 1.08:

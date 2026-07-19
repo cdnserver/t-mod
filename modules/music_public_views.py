@@ -7,10 +7,11 @@ from typing import Any, Callable, Coroutine
 import discord
 
 from modules.control_center_config import PANEL_MARKERS
+from modules.music_domain import format_duration
+from modules.music_progress import playback_elapsed_seconds, progress_bar
 from modules.music_runtime import MusicGuildSession, MusicManager, MusicRuntimeError
 from modules.music_views import (
     MUSIC_COLOR,
-    MusicPanelView,
     MusicSearchModal,
     build_music_embed,
     build_queue_embed,
@@ -32,6 +33,24 @@ def build_public_music_embed(
             "одно состояние, а результат каждого нажатия T-Mod показывает только нажавшему."
         )
     embed.color = MUSIC_COLOR
+    if (
+        session is not None
+        and session.current is not None
+        and session.track_started_at is not None
+    ):
+        elapsed = playback_elapsed_seconds(session)
+        duration = session.current.duration_seconds
+        if duration is not None:
+            elapsed = min(elapsed, duration)
+        timeline = progress_bar(elapsed, duration)
+        timing = (
+            f"`{format_duration(elapsed)}` {timeline} `{format_duration(duration)}`"
+        )
+        for index, field in enumerate(embed.fields):
+            if field.name == "Сейчас играет":
+                value = f"{str(field.value)[:850]}\n{timing}"
+                embed.set_field_at(index, name=field.name, value=value, inline=False)
+                break
     embed.set_footer(
         text=(
             "T-Mod Music • общая панель • проверка каждую секунду • "
@@ -208,17 +227,7 @@ class PublicMusicPanelView(discord.ui.View):
         return True
 
     async def _finish(self, interaction: discord.Interaction, content: str) -> None:
-        assert interaction.guild is not None
-        assert isinstance(interaction.user, discord.Member)
-        await interaction.edit_original_response(
-            content=content,
-            embed=build_music_embed(
-                self.manager, self.manager.get(interaction.guild.id)
-            ),
-            view=MusicPanelView(
-                self.manager, interaction.user.id, interaction.guild.id
-            ),
-        )
+        await interaction.edit_original_response(content=content)
 
     async def _run(
         self,
@@ -268,7 +277,12 @@ class PublicMusicPanelView(discord.ui.View):
     async def play(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
         await interaction.response.send_modal(
-            MusicSearchModal(self.manager, interaction.user.id, interaction.guild.id)
+            MusicSearchModal(
+                self.manager,
+                interaction.user.id,
+                interaction.guild.id,
+                compact_response=True,
+            )
         )
 
     async def pause_or_resume(self, interaction: discord.Interaction) -> None:
@@ -319,8 +333,16 @@ class PublicMusicPanelView(discord.ui.View):
         )
 
     async def refresh(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await self._finish(interaction, "Общее состояние проверено.")
+        service = getattr(self.manager, "public_panel_service", None)
+        try:
+            if service is not None:
+                await service.refresh_guild(interaction.guild)
+            content = "Общая музыкальная панель обновлена."
+        except Exception as exc:
+            content = f"Не удалось обновить общую панель: {str(exc)[:1200]}"
+        await self._finish(interaction, content)
 
 
 __all__ = ["PublicMusicPanelView", "build_public_music_embed"]

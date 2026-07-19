@@ -25,7 +25,6 @@ from modules.music_config import (
     MUSIC_SEARCH_CONCURRENCY,
     MUSIC_SEARCH_COOLDOWN_SECONDS,
     MUSIC_STT_QUEUE_LIMIT,
-    MUSIC_STT_TIMEOUT_SECONDS,
     MUSIC_STT_WORKERS,
     MUSIC_VOICE_CONTROL_ENABLED,
     MUSIC_WAKE_TIMEOUT_SECONDS,
@@ -47,13 +46,21 @@ from modules.music_domain import (
     split_wake_word,
 )
 from modules.music_providers import OpenRouterTranscriber, YoutubeResolver
+from modules.music_progress import (
+    pause_playback_clock,
+    reset_playback_clock,
+    resume_playback_clock,
+    start_playback_clock,
+)
 from modules.music_speech import (
     SpeechWorkQueue,
-    process_speech_segment,
+    accept_voice_packet,
+    enqueue_speech_segment,
     speech_sweeper,
     speech_worker,
 )
 from modules.music_status import publish_music_status
+from modules.music_stt_orchestrator import process_speech_segment
 
 
 class MusicRuntimeError(RuntimeError):
@@ -76,6 +83,9 @@ class MusicGuildSession:
     last_error: str | None = None
     status_message_id: int | None = None
     status_message_obj: Any | None = None
+    track_started_at: float | None = None
+    track_paused_at: float | None = None
+    track_paused_seconds: float = 0.0
     voice_users: set[int] = field(default_factory=set)
     one_shot_voice_users: set[int] = field(default_factory=set)
     armed_until: dict[int, float] = field(default_factory=dict)
@@ -228,6 +238,7 @@ class MusicManager:
             session.queue.clear()
             session.current = None
             session.source = None
+            reset_playback_clock(session)
             session.generation += 1
         if voice_client is not None:
             self._stop_playing(voice_client)
@@ -331,6 +342,7 @@ class MusicManager:
             )
             if valid:
                 session.source = source
+                start_playback_clock(session)
                 session.last_notice = f"Сейчас играет: {track.title}"
         if not valid or voice_client is None:
             source.cleanup()
@@ -352,6 +364,7 @@ class MusicManager:
                 if session.generation == generation:
                     session.current = None
                     session.source = None
+                    reset_playback_clock(session)
                     session.last_error = f"Discord не запустил аудио: {str(exc)[:500]}"
             await self.publish_status(session)
             await self.start_next(session)
@@ -373,6 +386,7 @@ class MusicManager:
             finished = session.current
             session.current = None
             session.source = None
+            reset_playback_clock(session)
             if error is not None:
                 session.last_error = f"Ошибка аудиопотока: {str(error)[:500]}"
             elif finished is not None:
@@ -394,6 +408,7 @@ class MusicManager:
         if voice_client is None or not voice_client.is_playing():
             raise MusicRuntimeError("Сейчас нечего ставить на паузу.")
         voice_client.pause()
+        pause_playback_clock(session)
         session.last_notice = "Воспроизведение приостановлено."
         await self.publish_status(session)
 
@@ -403,6 +418,7 @@ class MusicManager:
         if voice_client is None or not voice_client.is_paused():
             raise MusicRuntimeError("Музыка сейчас не стоит на паузе.")
         voice_client.resume()
+        resume_playback_clock(session)
         session.last_notice = "Воспроизведение продолжено."
         await self.publish_status(session)
 
@@ -412,6 +428,7 @@ class MusicManager:
         if session.current is None or voice_client is None:
             raise MusicRuntimeError("Сейчас нет композиции, которую можно пропустить.")
         session.last_notice = f"Пропущено: {session.current.title}"
+        reset_playback_clock(session)
         self._stop_playing(voice_client)
         await self.publish_status(session)
 
@@ -422,6 +439,7 @@ class MusicManager:
             session.queue.clear()
             session.current = None
             session.source = None
+            reset_playback_clock(session)
             session.generation += 1
             session.last_notice = "Воспроизведение остановлено, очередь очищена."
         if voice_client is not None:
@@ -643,35 +661,10 @@ class MusicManager:
         return True
 
     def accept_voice_packet(self, guild_id: int, user_id: int, pcm: bytes) -> None:
-        session = self.get(guild_id)
-        loop = self._loop
-        if session is None or loop is None or user_id not in session.voice_users:
-            return
-        completed = session.segmenter.accept(user_id, pcm)
-        for segment in completed:
-            loop.call_soon_threadsafe(self._enqueue_speech_segment, guild_id, segment)
+        accept_voice_packet(self, guild_id, user_id, pcm)
 
     def _enqueue_speech_segment(self, guild_id: int, segment: SpeechSegment) -> None:
-        session = self.get(guild_id)
-        if (
-            session is None
-            or segment.user_id not in session.voice_users
-            or session.speech_queue is None
-        ):
-            return
-        now = time.monotonic()
-        urgent = bool(
-            segment.user_id in session.one_shot_voice_users
-            or session.armed_until.get(segment.user_id, 0) >= now
-        )
-        if not session.speech_queue.offer(segment, urgent=urgent, now=now):
-            return
-        if urgent:
-            # Primary and parallel fallback stages can each consume one read
-            # timeout. Keep the command window alive while both are running.
-            session.armed_until[segment.user_id] = (
-                now + MUSIC_STT_TIMEOUT_SECONDS * 2 + 5
-            )
+        enqueue_speech_segment(self, guild_id, segment)
 
     async def _speech_sweeper(self, session: MusicGuildSession) -> None:
         await speech_sweeper(self, session)

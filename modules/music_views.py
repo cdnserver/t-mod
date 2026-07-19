@@ -388,11 +388,19 @@ class MusicPanelView(discord.ui.View):
 
 
 class MusicSearchModal(discord.ui.Modal):
-    def __init__(self, manager: MusicManager, requester_id: int, guild_id: int) -> None:
+    def __init__(
+        self,
+        manager: MusicManager,
+        requester_id: int,
+        guild_id: int,
+        *,
+        compact_response: bool = False,
+    ) -> None:
         super().__init__(title="Включить музыку", timeout=600)
         self.manager = manager
         self.requester_id = int(requester_id)
         self.guild_id = int(guild_id)
+        self.compact_response = bool(compact_response)
         self.query = discord.ui.TextInput(
             label="Название или ссылка YouTube",
             placeholder="Например: Кино — Группа крови",
@@ -418,6 +426,9 @@ class MusicSearchModal(discord.ui.Modal):
             content = f"Добавлено: **{_safe_title(track.title, 180)}**"
         except Exception as exc:
             content = f"Не удалось добавить композицию: {str(exc)[:1200]}"
+        if self.compact_response:
+            await interaction.edit_original_response(content=content)
+            return
         await interaction.edit_original_response(
             content=content,
             embed=build_music_embed(self.manager, self.manager.get(self.guild_id)),
