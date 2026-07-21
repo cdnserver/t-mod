@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 import discord
 from discord.ext import commands
 
@@ -17,6 +15,7 @@ from modules.consensus_runtime import (
     session_lock as consensus_session_lock,
 )
 from modules.consensus_service import ConsensusActor
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.delivery_runtime import wake_delivery_worker
 from modules.operations_runtime import wake_operations_worker
 from modules.tvrs_config import (
@@ -67,8 +66,10 @@ async def finalize_current_vote(
             return
         if session.stage == "voting":
             if session.current_bill is None:
-                return
-            await asyncio.to_thread(
+                raise ConsensusStateError(
+                    "Текущий законопроект уже закрыт; голосование не фиксировалось."
+                )
+            await run_blocking_cancellation_safe(
                 _consensus.claim_finalization,
                 session,
                 kind="vote",
@@ -99,7 +100,7 @@ async def finalize_current_vote(
             participant_content="Голосование по текущему законопроекту завершено.",
         )
         try:
-            await asyncio.to_thread(
+            await run_blocking_cancellation_safe(
                 _consensus.complete_result_atomically,
                 session,
                 result,
@@ -164,8 +165,8 @@ async def apply_veto_for_actor(
             raise ConsensusStateError("Это подтверждение вето относится к уже завершённому проекту.")
         if session.stage == "voting":
             if session.current_bill is None:
-                return
-            await asyncio.to_thread(
+                raise ConsensusStateError("Текущий законопроект уже закрыт; вето не применено.")
+            await run_blocking_cancellation_safe(
                 _consensus.claim_finalization,
                 session,
                 kind="veto",
@@ -174,12 +175,14 @@ async def apply_veto_for_actor(
             )
             await cancel_vote_timer(session)
         elif session.stage != "finalizing" or (session.pending_action or {}).get("kind") != "veto":
-            return
+            raise ConsensusStateError(
+                "Голосование уже перешло к другому решению; вето не применено."
+            )
         if session.current_bill is None:
-            return
+            raise ConsensusStateError("Текущий законопроект уже закрыт; вето не применено.")
         bill = dict(session.current_bill)
         try:
-            retry = await asyncio.to_thread(
+            retry = await run_blocking_cancellation_safe(
                 storage.tvrs_create_retry_bill,
                 int(bill["id"]),
                 int(actor.user_id or 0),
@@ -208,7 +211,7 @@ async def apply_veto_for_actor(
         if retry is not None:
             deliveries.append(build_retry_bill_delivery(session, result, retry))
         try:
-            await asyncio.to_thread(
+            await run_blocking_cancellation_safe(
                 _consensus.complete_result_atomically,
                 session,
                 result,
@@ -266,7 +269,7 @@ async def finish_session(
         if session.finished:
             return
         deliveries = build_session_summary_deliveries(session)
-        await asyncio.to_thread(
+        await run_blocking_cancellation_safe(
             _consensus.finish_atomically,
             session,
             actor=ConsensusActor(session.leader_id, session.leader_display),

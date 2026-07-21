@@ -12,6 +12,7 @@ from modules.consensus_core import (
     ConsensusRules,
     LiveConsensusSession,
     LiveParticipant,
+    LiveResult,
     session_from_snapshot,
     session_to_snapshot,
 )
@@ -24,10 +25,17 @@ from modules.consensus_v3 import (
     resolve_consensus_access,
 )
 from modules.tvrs_consensus_portal import (
+    TVRSConsensusEntryView,
+    TVRSObserverView,
     TVRSParticipantPortalView,
     build_observer_embed,
     build_participant_portal_embed,
     ensure_public_consensus_card,
+)
+from modules.tvrs_consensus_views import (
+    TVRSAfterResultView,
+    TVRSHostVoteView,
+    TVRSRegistrationView,
 )
 from modules.tvrs_hub_views import TVRSMainPanelView
 
@@ -193,6 +201,112 @@ class ConsensusV3UiTests(unittest.TestCase):
 
         asyncio.run(inspect())
 
+    def test_public_entry_routes_every_request_to_a_fresh_private_panel(self) -> None:
+        async def inspect() -> None:
+            current = session()
+            current.participants[2].confirmed = False
+            registry.add(current)
+            entry = TVRSConsensusEntryView()
+            self.assertIsNone(entry.timeout)
+            self.assertEqual(len(entry.children), 1)
+            self.assertEqual(entry.children[0].custom_id, "tvrs_consensus_entry:v1")
+
+            def interaction_for(user_id: int, *, guild=True):
+                return SimpleNamespace(
+                    guild=(SimpleNamespace(id=current.guild_id) if guild else None),
+                    user=SimpleNamespace(id=user_id),
+                    response=SimpleNamespace(send_message=AsyncMock()),
+                )
+
+            with (
+                patch(
+                    "modules.tvrs_consensus_portal.queue_short_lines",
+                    return_value="Очередь пуста.",
+                ),
+                patch(
+                    "modules.tvrs_presentation.queue_short_lines",
+                    return_value="Очередь пуста.",
+                ),
+            ):
+                leader_registration = interaction_for(1)
+                await entry.open_personal_panel(leader_registration)
+                leader_kwargs = leader_registration.response.send_message.await_args.kwargs
+                self.assertTrue(leader_kwargs["ephemeral"])
+                self.assertIsInstance(leader_kwargs["view"], TVRSRegistrationView)
+
+                registration_participant = interaction_for(2)
+                await entry.open_personal_panel(registration_participant)
+                registration_kwargs = (
+                    registration_participant.response.send_message.await_args.kwargs
+                )
+                self.assertIsInstance(
+                    registration_kwargs["view"],
+                    TVRSParticipantPortalView,
+                )
+
+                current.stage = "voting"
+                current.current_bill = {
+                    "id": 10,
+                    "bill_number": 9,
+                    "title": "Надёжный личный пульт",
+                    "summary": "Проверка маршрутизации",
+                }
+
+                leader_voting = interaction_for(1)
+                await entry.open_personal_panel(leader_voting)
+                voting_kwargs = leader_voting.response.send_message.await_args.kwargs
+                self.assertIsInstance(voting_kwargs["view"], TVRSHostVoteView)
+
+                confirmed_participant = interaction_for(3)
+                await entry.open_personal_panel(confirmed_participant)
+                confirmed_kwargs = (
+                    confirmed_participant.response.send_message.await_args.kwargs
+                )
+                self.assertIsInstance(
+                    confirmed_kwargs["view"],
+                    TVRSParticipantPortalView,
+                )
+
+                unconfirmed_participant = interaction_for(2)
+                await entry.open_personal_panel(unconfirmed_participant)
+                unconfirmed_kwargs = (
+                    unconfirmed_participant.response.send_message.await_args.kwargs
+                )
+                self.assertIsInstance(unconfirmed_kwargs["view"], TVRSObserverView)
+                self.assertIn("не подтвердили", unconfirmed_kwargs["content"])
+
+                outsider = interaction_for(99)
+                await entry.open_personal_panel(outsider)
+                outsider_kwargs = outsider.response.send_message.await_args.kwargs
+                self.assertIsInstance(outsider_kwargs["view"], TVRSObserverView)
+                self.assertIn("не входите", outsider_kwargs["content"])
+
+                current.stage = "after_result"
+                current.results.append(
+                    LiveResult(
+                        bill_id=10,
+                        bill_number=9,
+                        title="Надёжный личный пульт",
+                        status="accepted",
+                        internal_percent=100.0,
+                        overall_percent=100.0,
+                        internal_active=True,
+                        votes={1: "yes", 3: "yes"},
+                    )
+                )
+                leader_result = interaction_for(1)
+                await entry.open_personal_panel(leader_result)
+                result_kwargs = leader_result.response.send_message.await_args.kwargs
+                self.assertIsInstance(result_kwargs["view"], TVRSAfterResultView)
+
+            direct_message = interaction_for(1, guild=False)
+            await entry.open_personal_panel(direct_message)
+            dm_kwargs = direct_message.response.send_message.await_args.kwargs
+            self.assertTrue(dm_kwargs["ephemeral"])
+            self.assertIn("только на сервере", dm_kwargs["content"])
+
+        asyncio.run(inspect())
+
     def test_concurrent_public_updates_do_not_duplicate_the_card(self) -> None:
         async def inspect() -> None:
             current = session()
@@ -279,11 +393,104 @@ class ConsensusV3UiTests(unittest.TestCase):
             message.edit.assert_awaited_once()
             channel.send.assert_not_awaited()
             edited_embed = message.edit.await_args.kwargs["embed"]
+            self.assertIsInstance(
+                message.edit.await_args.kwargs["view"],
+                TVRSConsensusEntryView,
+            )
             self.assertIn(current.session_key, edited_embed.footer.text)
             store_message_id.assert_called_once_with(
                 f"tvrs_consensus_public_status_message_id:{current.guild_id}",
                 "500",
             )
+
+        asyncio.run(inspect())
+
+    def test_terminal_public_card_removes_the_entry_button(self) -> None:
+        async def inspect() -> None:
+            current = session()
+            current.finished = True
+            message = SimpleNamespace(id=502, edit=AsyncMock())
+            channel = SimpleNamespace(
+                fetch_message=AsyncMock(return_value=message),
+                send=AsyncMock(),
+            )
+            guild = SimpleNamespace(
+                id=current.guild_id,
+                get_channel=lambda _channel_id: channel,
+            )
+            bot = SimpleNamespace(get_channel=lambda _channel_id: None)
+            with (
+                patch(
+                    "modules.tvrs_consensus_portal._activity_storage.get_meta",
+                    return_value="502",
+                ),
+                patch(
+                    "modules.tvrs_consensus_portal._activity_storage.set_meta_value",
+                ),
+            ):
+                await ensure_public_consensus_card(
+                    bot,
+                    guild,  # type: ignore[arg-type]
+                    current,
+                    terminal=True,
+                )
+
+            self.assertIsNone(message.edit.await_args.kwargs["view"])
+
+        asyncio.run(inspect())
+
+    def test_replaced_session_fences_delayed_terminal_public_write(self) -> None:
+        async def inspect() -> None:
+            old = session()
+            old.stage = "finished"
+            old.finished = True
+            registry.add(old)
+            fetch_started = asyncio.Event()
+            release_fetch = asyncio.Event()
+            message = SimpleNamespace(id=503, edit=AsyncMock())
+
+            async def fetch_message(message_id: int):
+                fetch_started.set()
+                await release_fetch.wait()
+                return message
+
+            channel = SimpleNamespace(
+                fetch_message=AsyncMock(side_effect=fetch_message),
+                send=AsyncMock(),
+            )
+            guild = SimpleNamespace(
+                id=old.guild_id,
+                get_channel=lambda _channel_id: channel,
+            )
+            bot = SimpleNamespace(get_channel=lambda _channel_id: None)
+            with (
+                patch(
+                    "modules.tvrs_consensus_portal._activity_storage.get_meta",
+                    return_value="503",
+                ),
+                patch(
+                    "modules.tvrs_consensus_portal._activity_storage.set_meta_value",
+                ) as store_message_id,
+            ):
+                delayed = asyncio.create_task(
+                    ensure_public_consensus_card(
+                        bot,
+                        guild,  # type: ignore[arg-type]
+                        old,
+                        terminal=True,
+                    )
+                )
+                await fetch_started.wait()
+                current = session()
+                current.session_key = "77:v3:replacement"
+                registry.add(current)
+                release_fetch.set()
+                result = await delayed
+
+            self.assertIsNone(result)
+            message.edit.assert_not_awaited()
+            channel.send.assert_not_awaited()
+            store_message_id.assert_not_called()
 
         asyncio.run(inspect())
 

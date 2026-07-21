@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+import uuid
 from datetime import datetime, timezone
 
 import discord
@@ -31,6 +32,9 @@ from modules.tvrs_config import (
 from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
 from modules.tvrs_delivery import (
     build_control_dm_deliveries,
+    build_control_notice_deliveries,
+    build_discussion_invite_deliveries,
+    build_phase_announcement_delivery,
     build_retry_bill_delivery,
     build_result_deliveries,
 )
@@ -50,6 +54,7 @@ from modules.tvrs_discussion import schedule_vote_timer_task
 _sticky_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task] = {}
 _consensus_recovery_tasks: dict[int, asyncio.Task] = {}
+_consensus_delivery_watchdog_task: asyncio.Task | None = None
 
 
 async def _cleanup_restored_control_copies(
@@ -134,10 +139,13 @@ def schedule_sticky_refresh(bot: commands.Bot, guild: discord.Guild) -> None:
 
 
 def register_tvrs_persistent_views(bot: commands.Bot) -> None:
+    from modules.tvrs_consensus_portal import TVRSConsensusEntryView
+
     register_public_panel_provider(build_public_universality_embed, TVRSPublicPanelView)
     register_tvrs_hub_handler(_open_tvrs_hub_impl)
     bot.add_view(TVRSStickyView())
     bot.add_view(TVRSPublicPanelView())
+    bot.add_view(TVRSConsensusEntryView())
 
 
 def register_restored_view(
@@ -159,86 +167,14 @@ async def reconcile_restored_consensus_session(
     session: LiveConsensusSession,
 ) -> None:
     """Reattach controls and finish any operation interrupted by a restart."""
-    missing_control_users: set[int] = set()
-    if session.stage == "registration":
-        for participant in session.participants.values():
-            if participant.confirmed:
-                continue
-            if not participant.dm_message_id:
-                missing_control_users.add(participant.user_id)
-                continue
-            register_restored_view(
-                bot,
-                TVRSConfirmView(session.session_key, participant.user_id),
-                message_id=participant.dm_message_id,
-            )
-            await _cleanup_restored_control_copies(
-                guild,
-                participant.user_id,
-                participant.dm_message_id,
-            )
-    elif session.stage == "voting":
-        current_bill_id = consensus_bill_id(session)
-        for participant in session.confirmed_participants():
-            if participant.user_id == session.leader_id:
-                continue
-            if (
-                not participant.vote_message_id
-                or int(participant.vote_bill_id or 0) != current_bill_id
-            ):
-                missing_control_users.add(participant.user_id)
-                continue
-            register_restored_view(
-                bot,
-                TVRSRestoredVoteView(
-                    session.session_key,
-                    participant.user_id,
-                    bill_id=consensus_bill_id(session),
-                ),
-                message_id=participant.vote_message_id,
-            )
-            await _cleanup_restored_control_copies(
-                guild,
-                participant.user_id,
-                participant.vote_message_id,
-            )
-
-    if missing_control_users:
-        phase = "registration" if session.stage == "registration" else "voting"
-        recovery_deliveries = build_control_dm_deliveries(
-            session,
-            phase=phase,
-            generation="recovery-control-v2",
-        )
-        for delivery in recovery_deliveries:
-            payload = dict(delivery.get("payload") or {})
-            if int(payload.get("user_id") or 0) not in missing_control_users:
-                continue
-            await asyncio.to_thread(
-                _outbox_storage.delivery_outbox_enqueue,
-                topic=str(delivery["topic"]),
-                dedupe_key=str(delivery["dedupe_key"]),
-                payload=payload,
-                max_attempts=int(delivery.get("max_attempts") or 8),
-                priority=int(delivery.get("priority") or 0),
-                supersede_key=delivery.get("supersede_key"),
-            )
-        wake_delivery_worker()
-
-    if session.stage == "finalizing":
-        pending = session.pending_action or {}
-        if pending.get("kind") == "veto":
-            await apply_veto_for_actor(
-                bot,
-                guild,
-                session,
-                ConsensusActor(
-                    int(pending.get("actor_id") or TVRS_PERMANENT_CHAIR_ID),
-                    str(pending.get("actor_display") or "Постоянный председатель"),
-                ),
-            )
-        else:
-            await finalize_current_vote(bot, guild, session, forced=bool(pending.get("forced")))
+    await reconcile_consensus_liveness(bot, guild, session)
+    await reconcile_current_consensus_deliveries(
+        bot,
+        guild,
+        session,
+        verify_discord_messages=True,
+        retry_permanent_failures=True,
+    )
 
     if session.stage == "after_result" and session.results:
         result = session.results[-1]
@@ -280,13 +216,6 @@ async def reconcile_restored_consensus_session(
                 )
                 wake_delivery_worker()
 
-    if session.stage == "voting" and session.timer_deadline is not None:
-        remaining = int((session.timer_deadline - datetime.now(timezone.utc)).total_seconds())
-        if remaining <= 0:
-            await finalize_current_vote(bot, guild, session, forced=True)
-        else:
-            schedule_vote_timer_task(bot, guild, session, remaining)
-
     # The card is only a projection of durable state. Rebuild it last, after
     # interrupted finalization and timer recovery have settled the session.
     from modules.tvrs_control import update_public_consensus_card
@@ -297,6 +226,390 @@ async def reconcile_restored_consensus_session(
         session,
         terminal=session.finished,
     )
+
+
+async def reconcile_consensus_liveness(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+) -> bool:
+    """Resume durable business actions that lost their in-memory coroutine."""
+
+    if session.finished:
+        return False
+    if session.stage == "finalizing":
+        pending = session.pending_action or {}
+        if pending.get("kind") == "veto":
+            await apply_veto_for_actor(
+                bot,
+                guild,
+                session,
+                ConsensusActor(
+                    int(pending.get("actor_id") or TVRS_PERMANENT_CHAIR_ID),
+                    str(pending.get("actor_display") or "Постоянный председатель"),
+                ),
+            )
+        else:
+            await finalize_current_vote(
+                bot,
+                guild,
+                session,
+                forced=bool(pending.get("forced")),
+                expected_bill_id=consensus_bill_id(session),
+            )
+        return True
+    if session.stage != "voting" or session.current_bill is None:
+        return False
+    bill_id = consensus_bill_id(session)
+    if session.all_voted():
+        await finalize_current_vote(
+            bot,
+            guild,
+            session,
+            forced=False,
+            expected_bill_id=bill_id,
+        )
+        return True
+    if session.timer_deadline is None:
+        return False
+    remaining = int(
+        (session.timer_deadline - datetime.now(timezone.utc)).total_seconds()
+    )
+    if remaining <= 0:
+        await finalize_current_vote(
+            bot,
+            guild,
+            session,
+            forced=True,
+            expected_bill_id=bill_id,
+        )
+        return True
+    timer_task = session.timer_task
+    if timer_task is None or timer_task.done():
+        schedule_vote_timer_task(
+            bot,
+            guild,
+            session,
+            remaining,
+            bill_id=bill_id,
+        )
+        return True
+    return False
+
+
+async def _saved_control_message_exists(
+    guild: discord.Guild,
+    user_id: int,
+    message_id: int,
+) -> bool | None:
+    """Return True/False, or None when Discord cannot answer reliably."""
+
+    resolver = getattr(guild, "get_member", None)
+    if not callable(resolver):
+        # Lightweight adapters cannot verify Discord state.  Trusting the
+        # durable receipt is safer than manufacturing a duplicate message.
+        return True
+    member = resolver(int(user_id))
+    if member is None:
+        fetch_member = getattr(guild, "fetch_member", None)
+        if not callable(fetch_member):
+            return True
+        try:
+            member = await fetch_member(int(user_id))
+        except (discord.NotFound, discord.Forbidden):
+            return False
+        except discord.HTTPException:
+            return None
+    try:
+        dm_channel = member.dm_channel or await member.create_dm()
+    except (discord.NotFound, discord.Forbidden):
+        return False
+    except discord.HTTPException:
+        return None
+    fetch_message = getattr(dm_channel, "fetch_message", None)
+    if fetch_message is None:
+        # Lightweight test adapters and old discord.py shims cannot validate;
+        # preserve the durable receipt instead of creating a possible duplicate.
+        return True
+    try:
+        await fetch_message(int(message_id))
+        return True
+    except discord.NotFound:
+        return False
+    except discord.Forbidden:
+        return False
+    except discord.HTTPException:
+        return None
+
+
+async def _enqueue_control_jobs(
+    session: LiveConsensusSession,
+    *,
+    phase: str,
+    user_ids: set[int],
+    retry_permanent_failures: bool,
+    generation: str,
+    replace_live: bool = False,
+) -> set[int]:
+    if not user_ids:
+        return set()
+    deliveries = build_control_dm_deliveries(
+        session,
+        phase=phase,
+        bill_id=consensus_bill_id(session) if phase == "voting" else None,
+        generation=str(generation),
+    )
+    created: set[int] = set()
+    for delivery in deliveries:
+        payload = dict(delivery.get("payload") or {})
+        user_id = int(payload.get("user_id") or 0)
+        participant = session.participants.get(user_id)
+        if user_id not in user_ids or participant is None:
+            continue
+        if participant.dm_failed and not retry_permanent_failures:
+            continue
+        _, was_created = await asyncio.to_thread(
+            _outbox_storage.delivery_outbox_ensure_current,
+            topic=str(delivery["topic"]),
+            dedupe_key=str(delivery["dedupe_key"]),
+            payload=payload,
+            max_attempts=int(delivery.get("max_attempts") or 120),
+            priority=int(delivery.get("priority") or 0),
+            supersede_key=delivery.get("supersede_key"),
+            replace_live=replace_live,
+        )
+        if was_created:
+            created.add(user_id)
+    return created
+
+
+async def _enqueue_repair_control_jobs(
+    session: LiveConsensusSession,
+    *,
+    phase: str,
+    user_ids: set[int],
+    retry_permanent_failures: bool,
+) -> set[int]:
+    return await _enqueue_control_jobs(
+        session,
+        phase=phase,
+        user_ids=user_ids,
+        retry_permanent_failures=retry_permanent_failures,
+        generation=f"repair-r{int(session.revision)}-{uuid.uuid4().hex[:12]}",
+    )
+
+
+async def _enqueue_current_control_projection(
+    session: LiveConsensusSession,
+    *,
+    phase: str,
+    user_ids: set[int],
+    retry_permanent_failures: bool,
+) -> set[int]:
+    """Enqueue one idempotent projection for this exact durable state."""
+
+    return await _enqueue_control_jobs(
+        session,
+        phase=phase,
+        user_ids=user_ids,
+        retry_permanent_failures=retry_permanent_failures,
+        generation=f"projection-r{int(session.revision)}-{session.stage}",
+        replace_live=True,
+    )
+
+
+async def _enqueue_semantic_delivery(delivery: dict) -> bool:
+    row = await asyncio.to_thread(
+        _outbox_storage.delivery_outbox_enqueue,
+        topic=str(delivery["topic"]),
+        dedupe_key=str(delivery["dedupe_key"]),
+        payload=dict(delivery.get("payload") or {}),
+        max_attempts=int(delivery.get("max_attempts") or 8),
+        priority=int(delivery.get("priority") or 0),
+        supersede_key=delivery.get("supersede_key"),
+    )
+    return str(row.get("status") or "") in {"pending", "retry", "processing"}
+
+
+async def reconcile_current_consensus_deliveries(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+    *,
+    verify_discord_messages: bool,
+    retry_permanent_failures: bool,
+) -> int:
+    """Converge every active participant toward one current control panel."""
+
+    if session.finished:
+        return 0
+    missing: set[int] = set()
+    projection_targets: set[int] = set()
+    uncertain = False
+    phase: str | None = None
+    bill_id = consensus_bill_id(session)
+    if session.stage == "registration":
+        phase = "registration"
+        candidates = [
+            item
+            for item in session.participants.values()
+            if not item.confirmed and item.user_id != session.leader_id
+        ]
+        projection_targets = {int(item.user_id) for item in candidates}
+        for participant in candidates:
+            message_id = int(participant.dm_message_id or 0)
+            exists = (
+                await _saved_control_message_exists(
+                    guild,
+                    participant.user_id,
+                    message_id,
+                )
+                if message_id and verify_discord_messages
+                else bool(message_id)
+            )
+            if exists is None:
+                uncertain = True
+                continue
+            if not exists:
+                missing.add(participant.user_id)
+                continue
+            if verify_discord_messages:
+                register_restored_view(
+                    bot,
+                    TVRSConfirmView(session.session_key, participant.user_id),
+                    message_id=message_id,
+                )
+                await _cleanup_restored_control_copies(
+                    guild,
+                    participant.user_id,
+                    message_id,
+                )
+    elif session.stage in {"voting", "paused", "discussion_type", "discussion"}:
+        phase = "voting"
+        candidates = [
+            item
+            for item in session.confirmed_participants()
+            if item.user_id != session.leader_id
+        ]
+        projection_targets = {int(item.user_id) for item in candidates}
+        for participant in candidates:
+            message_id = int(participant.vote_message_id or 0)
+            receipt_matches = message_id > 0 and int(participant.vote_bill_id or 0) == bill_id
+            exists = (
+                await _saved_control_message_exists(
+                    guild,
+                    participant.user_id,
+                    message_id,
+                )
+                if receipt_matches and verify_discord_messages
+                else receipt_matches
+            )
+            if exists is None:
+                uncertain = True
+                continue
+            # Non-voting stages must be projected once after restart so stale
+            # voting buttons are removed even when the receipt still exists.
+            if not exists or (verify_discord_messages and session.stage != "voting"):
+                missing.add(participant.user_id)
+                continue
+            if verify_discord_messages:
+                register_restored_view(
+                    bot,
+                    TVRSRestoredVoteView(
+                        session.session_key,
+                        participant.user_id,
+                        bill_id=bill_id,
+                    ),
+                    message_id=message_id,
+                )
+                await _cleanup_restored_control_copies(
+                    guild,
+                    participant.user_id,
+                    message_id,
+                )
+
+    queued = 0
+    if phase is not None:
+        # Every durable revision/stage owns one stable projection generation.
+        # Startup and the watchdog both call this path; the semantic dedupe key
+        # prevents periodic duplicate jobs while healing a lost enqueue after
+        # pause/resume/discussion transitions.
+        projected = await _enqueue_current_control_projection(
+            session,
+            phase=phase,
+            user_ids=projection_targets,
+            retry_permanent_failures=retry_permanent_failures,
+        )
+        queued += len(projected)
+        repaired = await _enqueue_repair_control_jobs(
+            session,
+            phase=phase,
+            user_ids=missing - projected,
+            retry_permanent_failures=retry_permanent_failures,
+        )
+        queued += len(repaired)
+
+    # Reconstruct split notification/fallback jobs introduced after older
+    # active snapshots were created. Stable semantic keys make this idempotent.
+    if session.stage == "registration":
+        queued += int(
+            await _enqueue_semantic_delivery(
+                build_phase_announcement_delivery(session, phase="registration")
+            )
+        )
+    elif session.stage in {"voting", "paused", "discussion_type", "discussion"} and bill_id:
+        for delivery in build_control_notice_deliveries(session, bill_id=bill_id):
+            delivery = dict(delivery)
+            delivery["payload"] = {
+                **dict(delivery.get("payload") or {}),
+                "recover_marker": True,
+            }
+            queued += int(await _enqueue_semantic_delivery(delivery))
+        queued += int(
+            await _enqueue_semantic_delivery(
+                build_phase_announcement_delivery(
+                    session,
+                    phase="voting",
+                    bill_id=bill_id,
+                )
+            )
+        )
+    if session.stage == "discussion" and session.discussion_channel_id:
+        discussion_jobs = build_discussion_invite_deliveries(
+            session,
+            channel_id=int(session.discussion_channel_id),
+            discussion_type=str(session.discussion_type or "Иная"),
+            allowed_user_ids=session.discussion_allowed_user_ids,
+        )
+        for delivery in discussion_jobs:
+            user_id = int(dict(delivery.get("payload") or {}).get("user_id") or 0)
+            participant = session.participants.get(user_id)
+            if participant is not None and participant.discussion_message_id:
+                continue
+            if (
+                participant is not None
+                and participant.dm_failed
+                and not retry_permanent_failures
+            ):
+                continue
+            _, was_created = await asyncio.to_thread(
+                _outbox_storage.delivery_outbox_ensure_current,
+                topic=str(delivery["topic"]),
+                dedupe_key=(
+                    f"{delivery['dedupe_key']}:repair-r{int(session.revision)}-"
+                    f"{uuid.uuid4().hex[:8]}"
+                ),
+                payload=dict(delivery.get("payload") or {}),
+                max_attempts=int(delivery.get("max_attempts") or 120),
+                priority=int(delivery.get("priority") or 0),
+                supersede_key=delivery.get("supersede_key"),
+            )
+            queued += int(was_created)
+    if queued:
+        wake_delivery_worker()
+    if uncertain:
+        raise RuntimeError("consensus_control_verification_temporarily_unavailable")
+    return queued
 
 
 def schedule_consensus_recovery_retry(bot: commands.Bot, guild_id: int) -> asyncio.Task:
@@ -416,8 +729,65 @@ async def restore_tvrs_consensus_sessions(
     return restored_count
 
 
+def ensure_consensus_delivery_watchdog(bot: commands.Bot) -> asyncio.Task:
+    """Continuously heal missing transient control deliveries."""
+
+    global _consensus_delivery_watchdog_task
+    if (
+        _consensus_delivery_watchdog_task is not None
+        and not _consensus_delivery_watchdog_task.done()
+    ):
+        return _consensus_delivery_watchdog_task
+
+    is_closed = getattr(bot, "is_closed", None)
+    if not callable(is_closed):
+        async def unsupported_adapter() -> None:
+            return
+
+        _consensus_delivery_watchdog_task = asyncio.create_task(
+            unsupported_adapter(),
+            name="tvrs-consensus-watchdog-unavailable",
+        )
+        return _consensus_delivery_watchdog_task
+
+    async def runner() -> None:
+        while not is_closed():
+            try:
+                await asyncio.sleep(60)
+                for session in list(_consensus_registry.sessions.values()):
+                    if session.finished:
+                        continue
+                    guild = bot.get_guild(session.guild_id)
+                    if guild is None:
+                        continue
+                    try:
+                        await reconcile_consensus_liveness(bot, guild, session)
+                        await reconcile_current_consensus_deliveries(
+                            bot,
+                            guild,
+                            session,
+                            verify_discord_messages=False,
+                            retry_permanent_failures=False,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        traceback.print_exc()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                traceback.print_exc()
+
+    _consensus_delivery_watchdog_task = asyncio.create_task(
+        runner(),
+        name="tvrs-consensus-delivery-watchdog",
+    )
+    return _consensus_delivery_watchdog_task
+
+
 async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:
     await restore_tvrs_consensus_sessions(bot)
+    ensure_consensus_delivery_watchdog(bot)
     for guild in bot.guilds:
         if _consensus_registry.get(guild.id) is not None:
             continue
@@ -426,4 +796,4 @@ async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:
         except Exception:
             traceback.print_exc()
 
-__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'tvrs_ensure_sticky_all']
+__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'reconcile_consensus_liveness', 'reconcile_current_consensus_deliveries', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'ensure_consensus_delivery_watchdog', 'tvrs_ensure_sticky_all']

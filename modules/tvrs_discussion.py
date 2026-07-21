@@ -9,6 +9,7 @@ from typing import Any
 import discord
 from discord.ext import commands
 
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_core import (
     ConsensusStateError,
     LiveConsensusSession,
@@ -20,6 +21,7 @@ from modules.consensus_runtime import (
     session_lock as consensus_session_lock,
 )
 from modules.consensus_service import ConsensusActor
+from modules.delivery_runtime import wake_delivery_worker
 from modules.operations_runtime import wake_operations_worker
 from modules.tvrs_config import (
     TVRS_CHAIR_ROLE_ID,
@@ -31,6 +33,7 @@ from modules.tvrs_embeds import (
     build_discussion_embed,
     build_result_embed,
 )
+from modules.tvrs_delivery import build_discussion_invite_deliveries
 from modules.tvrs_formatting import (
     format_bill_number,
     format_timer,
@@ -39,13 +42,11 @@ from modules.tvrs_formatting import (
 )
 
 from modules.tvrs_presentation import (
-    build_dm_vote_embed,
     consensus_bill_id,
     consensus_generation_matches,
     edit_session_host_message,
-    edit_vote_dm_to_result,
 )
-from modules.tvrs_consensus_views import TVRSAfterResultView, TVRSVoteView
+from modules.tvrs_consensus_views import TVRSAfterResultView
 
 async def update_host_vote_message(*args, **kwargs):
     from modules.tvrs_control import update_host_vote_message as _implementation
@@ -62,11 +63,19 @@ async def finalize_current_vote(*args, **kwargs):
     from modules.tvrs_decision import finalize_current_vote as _implementation
     return await _implementation(*args, **kwargs)
 
-async def cancel_vote_timer(session: LiveConsensusSession) -> None:
+async def _cancel_runtime_vote_timer(session: LiveConsensusSession) -> None:
+    """Detach the in-process task without changing persisted timer fields."""
+
     task = session.timer_task
     if task and task is not asyncio.current_task() and not task.done():
         task.cancel()
     session.timer_task = None
+
+
+async def cancel_vote_timer(session: LiveConsensusSession) -> None:
+    """Stop both runtime and durable parts of an already-committed timer."""
+
+    await _cancel_runtime_vote_timer(session)
     session.timer_deadline = None
     session.timer_seconds = None
 
@@ -79,6 +88,7 @@ async def set_vote_timer(
     *,
     expected_bill_id: int | None = None,
 ) -> None:
+    clean_seconds = max(0, int(seconds))
     async with consensus_session_lock(session.guild_id):
         if not consensus_generation_matches(
             session,
@@ -87,31 +97,39 @@ async def set_vote_timer(
         ) or session.current_bill is None:
             raise ConsensusStateError("Таймер можно установить только во время голосования.")
         previous_task = session.timer_task
-        with _consensus.mutation(session):
-            session.timer_seconds = int(seconds)
-            session.timer_deadline = datetime.now(timezone.utc) + timedelta(seconds=int(seconds))
-            await asyncio.to_thread(
-                _consensus.save,
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=clean_seconds)
+        try:
+            await run_blocking_cancellation_safe(
+                _consensus.set_timer,
                 session,
-                "timer_set",
+                seconds=clean_seconds,
+                deadline=deadline,
                 actor=ConsensusActor(session.leader_id, session.leader_display),
-                details={"seconds": int(seconds)},
             )
-        if previous_task and previous_task is not asyncio.current_task() and not previous_task.done():
-            previous_task.cancel()
-        session.timer_task = None
-        schedule_vote_timer_task(
-            bot,
-            guild,
-            session,
-            int(seconds),
-            bill_id=consensus_bill_id(session),
-        )
+        finally:
+            # The helper can re-raise cancellation after the blocking commit.
+            # Complete the runtime half whenever that commit visibly won;
+            # otherwise a new durable deadline would have no matching task.
+            if session.timer_deadline == deadline and session.timer_seconds == clean_seconds:
+                if (
+                    previous_task
+                    and previous_task is not asyncio.current_task()
+                    and not previous_task.done()
+                ):
+                    previous_task.cancel()
+                session.timer_task = None
+                schedule_vote_timer_task(
+                    bot,
+                    guild,
+                    session,
+                    clean_seconds,
+                    bill_id=consensus_bill_id(session),
+                )
 
     await update_all_vote_dms(
         guild,
         session,
-        content=f"Установлен таймер голосования: {format_timer(seconds)}.",
+        content=f"Установлен таймер голосования: {format_timer(clean_seconds)}.",
     )
     await update_host_vote_message(bot, guild, session)
 
@@ -155,78 +173,12 @@ def schedule_vote_timer_task(
 
 
 async def update_all_vote_dms(guild: discord.Guild, session: LiveConsensusSession, content: str | None = None) -> None:
-    expected_stage = str(session.stage)
-    expected_bill_id = consensus_bill_id(session)
-    if expected_stage not in {"voting", "paused", "discussion_type", "discussion"}:
-        return
-    receipts: dict[int, tuple[int | None, bool]] = {}
-    for p in list(session.confirmed_participants()):
-        if not consensus_generation_matches(
-            session,
-            stage=expected_stage,
-            bill_id=expected_bill_id,
-        ):
-            return
-        if p.user_id == session.leader_id:
-            continue
-        member = guild.get_member(p.user_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(p.user_id)
-            except discord.DiscordException:
-                receipts[p.user_id] = (None, True)
-                continue
-        embed = build_dm_vote_embed(session, p)
-        view = TVRSVoteView(
-            session.session_key,
-            p.user_id,
-            bill_id=expected_bill_id,
-        )
-        if p.vote_message_id:
-            try:
-                dm_channel = member.dm_channel or await member.create_dm()
-                msg = await dm_channel.fetch_message(p.vote_message_id)
-                await msg.edit(content=content, embed=embed, view=view)
-                receipts[p.user_id] = (int(msg.id), False)
-                continue
-            except discord.DiscordException:
-                pass
-        try:
-            dm = await member.send(content=content, embed=embed, view=view)
-            receipts[p.user_id] = (int(dm.id), False)
-        except discord.DiscordException:
-            receipts[p.user_id] = (None, True)
-    async with consensus_session_lock(session.guild_id):
-        current = _active_sessions.get(session.guild_id)
-        if current is not session or not consensus_generation_matches(
-            session,
-            stage=expected_stage,
-            bill_id=expected_bill_id,
-        ):
-            return
-        with _consensus.mutation(session):
-            for user_id, (message_id, failed) in receipts.items():
-                participant = session.participants.get(user_id)
-                if participant is None:
-                    continue
-                if message_id is not None:
-                    participant.vote_message_id = message_id
-                    participant.vote_bill_id = expected_bill_id or None
-                    participant.dm_failed = False
-                elif failed:
-                    participant.dm_failed = True
-            await asyncio.to_thread(
-                _consensus.save,
-                session,
-                "vote_messages_refreshed",
-                details={
-                    "bill_id": expected_bill_id or None,
-                    "updated_count": sum(
-                        1 for message_id, _ in receipts.values() if message_id is not None
-                    ),
-                    "failed_count": sum(1 for _, failed in receipts.values() if failed),
-                },
-            )
+    # Discord I/O is projected through the durable outbox.  Keeping this
+    # compatibility entrypoint lets lifecycle callers request a refresh
+    # without blocking a state transition on every participant's DM.
+    from modules.tvrs_control import enqueue_current_control_projection
+
+    await enqueue_current_control_projection(guild, session, content=content)
 
 
 async def request_discussion(
@@ -243,11 +195,27 @@ async def request_discussion(
             stage="voting",
             bill_id=expected_bill_id,
         ) or session.current_bill is None:
-            return
+            raise ConsensusStateError(
+                "Голосование уже перешло к другому этапу. Обновите личный пульт."
+            )
         if session.discussion_initiator_id:
-            return
-        await cancel_vote_timer(session)
-        await asyncio.to_thread(_consensus.request_discussion, session, initiator)
+            raise ConsensusStateError("Дискуссия по этому проекту уже инициирована.")
+        try:
+            await run_blocking_cancellation_safe(
+                _consensus.request_discussion,
+                session,
+                initiator,
+            )
+        finally:
+            # The helper deliberately delays cancellation until the database
+            # write finishes, then re-raises it.  A committed transition still
+            # needs its obsolete runtime timer detached in that path.
+            if (
+                session.stage == "discussion_type"
+                and session.discussion_initiator_id == initiator.user_id
+                and session.timer_deadline is None
+            ):
+                await _cancel_runtime_vote_timer(session)
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content=f"<@{initiator.user_id}> инициировал дискуссию. Голосование временно приостановлено.")
     await update_host_vote_message(bot, guild, session)
@@ -266,14 +234,22 @@ async def start_discussion_channel(
         stage="discussion_type",
         bill_id=expected_bill_id,
     ):
-        return
+        raise ConsensusStateError(
+            "Выбор типа дискуссии уже устарел. Обновите пульт консенсуса."
+        )
     category = guild.get_channel(TVRS_DISCUSSION_CATEGORY_ID)
-    if category is None:
+    if not isinstance(category, discord.CategoryChannel):
         try:
             fetched = await bot.fetch_channel(TVRS_DISCUSSION_CATEGORY_ID)  # type: ignore[attr-defined]
             category = fetched if isinstance(fetched, discord.CategoryChannel) else None
-        except discord.DiscordException:
-            category = None
+        except discord.DiscordException as exc:
+            raise ConsensusStateError(
+                "Не удалось открыть категорию дискуссий. Состояние консенсуса не изменено; попробуйте ещё раз."
+            ) from exc
+    if not isinstance(category, discord.CategoryChannel):
+        raise ConsensusStateError(
+            "Категория дискуссий не найдена или недоступна. Состояние консенсуса не изменено."
+        )
     overwrites: dict[Any, discord.PermissionOverwrite] = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True) if guild.me else discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -287,62 +263,85 @@ async def start_discussion_channel(
     number = format_bill_number(int(session.current_bill.get("bill_number") or 0))
     safe_title = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+", "-", str(session.current_bill.get("title") or "project")).strip("-")[:35]
     channel_name = f"дискуссия-{number}-{safe_title}"[:90]
-    created = None
     try:
-        created = await guild.create_text_channel(channel_name, category=category if isinstance(category, discord.CategoryChannel) else None, overwrites=overwrites, reason="TVRS live consensus discussion")
-    except discord.DiscordException:
-        created = None
+        created = await guild.create_text_channel(
+            channel_name,
+            category=category,
+            overwrites=overwrites,
+            reason="TVRS live consensus discussion",
+        )
+    except discord.DiscordException as exc:
+        raise ConsensusStateError(
+            "Discord временно не дал создать канал дискуссии. Консенсус остался на выборе типа; повторите попытку."
+        ) from exc
+    if created is None:
+        raise ConsensusStateError(
+            "Канал дискуссии не был создан. Консенсус остался на выборе типа; повторите попытку."
+        )
     allowed: set[int] = {p.user_id for p in session.confirmed_participants() if p.kind == "senator"}
     non_leader_chair = next((p for p in session.confirmed_participants() if p.kind == "chair" and p.user_id != session.leader_id), None)
     if non_leader_chair:
         allowed.add(non_leader_chair.user_id)
-    async with consensus_session_lock(session.guild_id):
-        if session.current_bill is None or not consensus_generation_matches(
-            session,
-            stage="discussion_type",
-            bill_id=expected_bill_id,
-        ):
-            if created is not None:
+    activation_committed = False
+    try:
+        async with consensus_session_lock(session.guild_id):
+            if session.current_bill is None or not consensus_generation_matches(
+                session,
+                stage="discussion_type",
+                bill_id=expected_bill_id,
+            ):
+                should_activate = False
+            else:
+                should_activate = True
+                deliveries = build_discussion_invite_deliveries(
+                    session,
+                    channel_id=int(created.id),
+                    discussion_type=discussion_type,
+                    allowed_user_ids=allowed,
+                )
                 try:
-                    await created.delete(reason="TVRS discussion state changed before activation")
-                except discord.DiscordException:
-                    pass
-            return
-        await asyncio.to_thread(
-            _consensus.begin_discussion,
-            session,
-            discussion_type,
-            channel_id=created.id if created else None,
-            allowed_user_ids=allowed,
+                    await run_blocking_cancellation_safe(
+                        _consensus.begin_discussion,
+                        session,
+                        discussion_type,
+                        channel_id=int(created.id),
+                        allowed_user_ids=allowed,
+                        deliveries=deliveries,
+                    )
+                finally:
+                    activation_committed = (
+                        session.stage == "discussion"
+                        and session.discussion_channel_id == int(created.id)
+                    )
+    except BaseException:
+        if not activation_committed:
+            try:
+                await created.delete(reason="TVRS discussion activation failed")
+            except discord.DiscordException:
+                pass
+        else:
+            # Invitations were committed atomically with the stage.  Wake the
+            # outbox even when the caller itself was cancelled immediately
+            # after the blocking commit.
+            wake_delivery_worker()
+            wake_operations_worker()
+        raise
+    if not should_activate:
+        try:
+            await created.delete(reason="TVRS discussion state changed before activation")
+        except discord.DiscordException:
+            pass
+        raise ConsensusStateError(
+            "Пока создавался канал, этап консенсуса изменился. Обновите пульт; "
+            "лишний канал уже удалён."
         )
+    wake_delivery_worker()
     wake_operations_worker()
     if created:
         try:
             await created.send(embed=build_discussion_embed(session), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except discord.DiscordException:
             pass
-    for p in session.confirmed_participants():
-        if session.stage != "discussion":
-            break
-        if p.user_id not in allowed:
-            continue
-        member = guild.get_member(p.user_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(p.user_id)
-            except discord.DiscordException:
-                continue
-        try:
-            msg = await member.send(
-                content="Дискуссия начата. Ответьте именно на это сообщение, чтобы бот перенес вашу позицию и материалы в канал дискуссии.",
-                embed=build_discussion_embed(session),
-            )
-            p.discussion_message_id = msg.id
-        except discord.DiscordException:
-            p.dm_failed = True
-    async with consensus_session_lock(session.guild_id):
-        if session.stage == "discussion":
-            await asyncio.to_thread(_consensus.save, session, "discussion_invitations_sent")
     await update_all_vote_dms(guild, session, content="Дискуссия начата. Голосование временно скрыто.")
     await update_host_vote_message(bot, guild, session)
 
@@ -415,13 +414,7 @@ async def end_discussion(
         return
     if session.stage not in {"discussion_type", "discussion"}:
         return
-    if session.discussion_channel_id:
-        channel = guild.get_channel(session.discussion_channel_id)
-        if hasattr(channel, "send"):
-            try:
-                await channel.send("Дискуссия завершена ведущим. Голосование возвращено в активный режим.")  # type: ignore[attr-defined]
-            except discord.DiscordException:
-                pass
+    closed_channel_id: int | None = None
     async with consensus_session_lock(session.guild_id):
         if expected_stage is not None and not consensus_generation_matches(
             session,
@@ -431,12 +424,23 @@ async def end_discussion(
             return
         if session.stage not in {"discussion_type", "discussion"}:
             return
-        await asyncio.to_thread(
+        closed_channel_id = int(session.discussion_channel_id or 0) or None
+        await run_blocking_cancellation_safe(
             _consensus.end_discussion,
             session,
             actor=ConsensusActor(session.leader_id, session.leader_display),
         )
     wake_operations_worker()
+    if closed_channel_id:
+        channel = guild.get_channel(closed_channel_id)
+        if hasattr(channel, "send"):
+            try:
+                await channel.send(
+                    "Дискуссия завершена ведущим. "
+                    "Голосование возвращено в активный режим."
+                )  # type: ignore[attr-defined]
+            except discord.DiscordException:
+                pass
     await update_all_vote_dms(guild, session, content="Дискуссия завершена. Голосование снова открыто.")
     await update_host_vote_message(bot, guild, session)
 
@@ -460,21 +464,35 @@ async def pause_session(
             return
         if session.stage == "paused":
             return
-        await cancel_vote_timer(session)
-        await asyncio.to_thread(
-            _consensus.pause,
-            session,
-            reason,
-            automatic=automatic,
-            actor=None if automatic else ConsensusActor(session.leader_id, session.leader_display),
-        )
+        if automatic:
+            quorum_ready, current_reason = session_voice_quorum_ready(guild, session)
+            if quorum_ready:
+                return
+            reason = current_reason
+        try:
+            await run_blocking_cancellation_safe(
+                _consensus.pause,
+                session,
+                reason,
+                automatic=automatic,
+                actor=None
+                if automatic
+                else ConsensusActor(session.leader_id, session.leader_display),
+            )
+        finally:
+            # See request_discussion(): runtime cancellation follows, never
+            # precedes, the durable transition, including cancellation after
+            # a successful blocking commit.
+            if session.stage == "paused" and session.timer_deadline is None:
+                await _cancel_runtime_vote_timer(session)
     wake_operations_worker()
     await update_all_vote_dms(guild, session, content=reason)
     await update_host_vote_message(bot, guild, session)
 
 
 def session_voice_quorum_ready(guild: discord.Guild, session: LiveConsensusSession) -> tuple[bool, str]:
-    channel = guild.get_channel(TVRS_CONSENSUS_VOICE_CHANNEL_ID)
+    get_channel = getattr(guild, "get_channel", None)
+    channel = get_channel(TVRS_CONSENSUS_VOICE_CHANNEL_ID) if callable(get_channel) else None
     if not isinstance(channel, discord.VoiceChannel):
         return False, "Голосовой канал консенсуса не найден."
     voice_ids = {m.id for m in channel.members if not m.bot}
@@ -493,7 +511,7 @@ def session_voice_quorum_ready(guild: discord.Guild, session: LiveConsensusSessi
 
 
 async def check_realtime_quorum(bot: commands.Bot | discord.Client, guild: discord.Guild, session: LiveConsensusSession) -> None:
-    if session.finished or session.stage in {"registration", "finalizing"}:
+    if session.finished or session.stage in {"registration", "finalizing", "after_result"}:
         return
     ok, reason = session_voice_quorum_ready(guild, session)
     if not ok and session.stage != "paused":
@@ -523,7 +541,7 @@ async def resume_session(
             quorum_failed = True
             target = ""
         else:
-            target = await asyncio.to_thread(
+            target = await run_blocking_cancellation_safe(
                 _consensus.resume,
                 session,
                 actor=ConsensusActor(session.leader_id, session.leader_display),
@@ -540,8 +558,6 @@ async def resume_session(
     wake_operations_worker()
     if target == "after_result" and session.results:
         embed = build_result_embed(session.results[-1], session)
-        for participant in session.confirmed_participants():
-            await edit_vote_dm_to_result(guild, session, participant, embed, content=content)
         await edit_session_host_message(
             session,
             embed=embed,

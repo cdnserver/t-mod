@@ -6,6 +6,7 @@ from typing import Any
 
 import discord
 
+from modules.async_safety import run_blocking_cancellation_safe
 from persistence import tvrs_repository as storage
 from modules.consensus_core import ConsensusStateError
 from modules.consensus_runtime import (
@@ -612,7 +613,7 @@ class TVRSMainPanelView(TVRSBaseView):
             else:
                 previous_host = session.host_message_obj
                 session.host_message_obj = interaction.message
-                await asyncio.to_thread(
+                await run_blocking_cancellation_safe(
                     _consensus.bind_host_message,
                     session,
                     getattr(interaction.message, "id", None),

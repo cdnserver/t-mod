@@ -276,6 +276,30 @@ class ConsensusCoordinator:
                 )
         return session.all_voted()
 
+    def set_timer(
+        self,
+        session: LiveConsensusSession,
+        *,
+        seconds: int,
+        deadline: datetime,
+        actor: ConsensusActor,
+    ) -> None:
+        """Persist a voting deadline as one rollback-safe state mutation."""
+
+        if session.stage != "voting" or session.current_bill is None:
+            raise ConsensusStateError("Таймер можно установить только во время голосования.")
+        clean_seconds = max(0, int(seconds))
+        clean_deadline = deadline.astimezone(timezone.utc)
+        with self.mutation(session):
+            session.timer_seconds = clean_seconds
+            session.timer_deadline = clean_deadline
+            self.save(
+                session,
+                "timer_set",
+                actor=actor,
+                details={"seconds": clean_seconds},
+            )
+
     def begin_bill(self, session: LiveConsensusSession, bill: dict[str, Any], *, actor: ConsensusActor) -> None:
         if session.stage not in {"registration", "after_result"}:
             raise ConsensusStateError("Нельзя открыть следующий проект на текущем этапе.")
@@ -372,6 +396,12 @@ class ConsensusCoordinator:
                 "bill_id": int(session.current_bill.get("id") or 0),
                 "claimed_at": datetime.now(timezone.utc).isoformat(),
             }
+            # A timer only belongs to the active voting stage.  Clear its
+            # durable representation in the same transaction as the stage
+            # transition; the asyncio task is cancelled by the runtime only
+            # after this write succeeds.
+            session.timer_deadline = None
+            session.timer_seconds = None
             self.transition(
                 session,
                 "finalizing",
@@ -479,6 +509,11 @@ class ConsensusCoordinator:
         with self.mutation(session):
             session.previous_stage = "voting"
             session.discussion_initiator_id = initiator.user_id
+            # Do not leave a restorable voting timer attached to the
+            # discussion-selection stage.  This mutation is rolled back with
+            # the stage when persistence fails.
+            session.timer_deadline = None
+            session.timer_seconds = None
             self.transition(
                 session,
                 "discussion_type",
@@ -493,19 +528,35 @@ class ConsensusCoordinator:
         *,
         channel_id: int | None,
         allowed_user_ids: Iterable[int],
+        deliveries: Iterable[dict[str, Any]] = (),
     ) -> None:
         if session.stage != "discussion_type":
             raise ConsensusStateError("Тип дискуссии сейчас выбрать нельзя.")
+        delivery_jobs = tuple(deliveries)
         with self.mutation(session):
             session.discussion_type = str(discussion_type).strip()[:80]
             session.discussion_channel_id = int(channel_id) if channel_id else None
             session.discussion_allowed_user_ids = {int(user_id) for user_id in allowed_user_ids}
-            self.transition(
-                session,
-                "discussion",
-                "discussion_started",
-                details={"type": session.discussion_type, "channel_id": session.discussion_channel_id},
-            )
+            previous, _ = transition_session(session, "discussion")
+            details = {
+                "type": session.discussion_type,
+                "channel_id": session.discussion_channel_id,
+            }
+            if delivery_jobs:
+                self.save_with_deliveries(
+                    session,
+                    "discussion_started",
+                    stage_from=previous,
+                    details=details,
+                    deliveries=delivery_jobs,
+                )
+            else:
+                self.save(
+                    session,
+                    "discussion_started",
+                    stage_from=previous,
+                    details=details,
+                )
 
     def end_discussion(self, session: LiveConsensusSession, *, actor: ConsensusActor) -> None:
         if session.stage not in {"discussion_type", "discussion"}:
@@ -534,6 +585,11 @@ class ConsensusCoordinator:
             session.previous_stage = session.stage
             session.paused_reason = str(reason).strip()[:1000]
             session.pause_is_automatic = bool(automatic)
+            # Pausing and stopping the durable timer are one state change.
+            # The runtime task must remain alive until this save succeeds so
+            # a database outage cannot silently lose the deadline.
+            session.timer_deadline = None
+            session.timer_seconds = None
             self.transition(
                 session,
                 "paused",

@@ -33,6 +33,9 @@ from modules.tvrs_formatting import (
 from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
+    TVRS_CONTROL_NOTICE_TOPIC,
+    TVRS_DISCUSSION_INVITE_TOPIC,
+    TVRS_PHASE_ANNOUNCEMENT_TOPIC,
     TVRS_BILL_PUBLICATION_TOPIC,
     TVRS_RETRY_BILL_TOPIC,
     TVRS_RESULT_TOPIC,
@@ -50,7 +53,12 @@ from modules.tvrs_presentation import (
 )
 from modules.tvrs_hub_views import TVRSPublicPanelView, TVRSUniversalityView
 from modules.tvrs_discussion import check_realtime_quorum, forward_discussion_message
-from modules.tvrs_control import deliver_consensus_control_dm
+from modules.tvrs_control import (
+    deliver_consensus_control_dm,
+    deliver_consensus_control_notice,
+    deliver_consensus_discussion_invite,
+    deliver_consensus_phase_announcement,
+)
 from modules.tvrs_recovery import ensure_sticky_message, schedule_sticky_refresh
 
 def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.Interaction, str, str], None]) -> None:
@@ -62,6 +70,18 @@ def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.I
     register_delivery_handler(
         TVRS_CONTROL_DM_TOPIC,
         lambda message: deliver_consensus_control_dm(message, bot),
+    )
+    register_delivery_handler(
+        TVRS_CONTROL_NOTICE_TOPIC,
+        lambda message: deliver_consensus_control_notice(message, bot),
+    )
+    register_delivery_handler(
+        TVRS_PHASE_ANNOUNCEMENT_TOPIC,
+        lambda message: deliver_consensus_phase_announcement(message, bot),
+    )
+    register_delivery_handler(
+        TVRS_DISCUSSION_INVITE_TOPIC,
+        lambda message: deliver_consensus_discussion_invite(message, bot),
     )
     register_delivery_handler(TVRS_SESSION_SUMMARY_TOPIC, make_session_summary_delivery_handler(bot))
 

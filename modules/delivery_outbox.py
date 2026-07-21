@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -72,6 +73,10 @@ class DeliveryDeferred(Exception):
         super().__init__(reason)
         self.available_at = _as_utc(available_at)
         self.reason = str(reason or "policy")
+
+
+class DeliveryPermanentFailure(Exception):
+    """A destination or payload failure that retries cannot repair."""
 
 
 class OutboxRepository(Protocol):
@@ -189,6 +194,7 @@ class OutboxDispatcher:
         clock: Callable[[], datetime] = utc_now,
         lease_seconds: int = 90,
         heartbeat_seconds: float | None = None,
+        handler_timeout_seconds: float | None = 60.0,
         base_retry_seconds: int = 5,
         max_retry_seconds: int = 3600,
     ) -> None:
@@ -201,6 +207,13 @@ class OutboxDispatcher:
             if heartbeat_seconds is not None
             else max(1.0, float(self.lease_seconds) / 3.0)
         )
+        if handler_timeout_seconds is None:
+            self.handler_timeout_seconds: float | None = None
+        else:
+            clean_timeout = float(handler_timeout_seconds)
+            if not math.isfinite(clean_timeout) or clean_timeout <= 0:
+                raise ValueError("outbox_handler_timeout_must_be_positive")
+            self.handler_timeout_seconds = max(0.01, clean_timeout)
         self.base_retry_seconds = max(1, int(base_retry_seconds))
         self.max_retry_seconds = max(self.base_retry_seconds, int(max_retry_seconds))
         self.handlers: dict[str, DeliveryHandler] = {}
@@ -231,11 +244,29 @@ class OutboxDispatcher:
         """Keep ownership while a slow external request is in flight."""
 
         task = asyncio.create_task(handler(message), name=f"outbox-handler:{message.id}")
+        loop = asyncio.get_running_loop()
+        deadline = (
+            loop.time() + self.handler_timeout_seconds
+            if self.handler_timeout_seconds is not None
+            else None
+        )
         try:
             while True:
-                done, _ = await asyncio.wait({task}, timeout=self.heartbeat_seconds)
+                wait_seconds = self.heartbeat_seconds
+                if deadline is not None:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"outbox_handler_timeout:{self.handler_timeout_seconds:g}s"
+                        )
+                    wait_seconds = min(wait_seconds, remaining)
+                done, _ = await asyncio.wait({task}, timeout=wait_seconds)
                 if task in done:
                     return await task
+                if deadline is not None and loop.time() >= deadline:
+                    raise TimeoutError(
+                        f"outbox_handler_timeout:{self.handler_timeout_seconds:g}s"
+                    )
                 renewed = await asyncio.to_thread(
                     self.repository.renew,
                     message,
@@ -247,7 +278,26 @@ class OutboxDispatcher:
         finally:
             if not task.done():
                 task.cancel()
+                # Cooperative handlers stop immediately.  A broken handler that
+                # suppresses cancellation is detached after a short grace period
+                # so it cannot head-of-line block every later delivery.
+                done, _ = await asyncio.wait(
+                    {task},
+                    timeout=min(0.25, self.heartbeat_seconds),
+                )
+                if task not in done:
+                    task.add_done_callback(self._consume_task_exception)
+            if task.done():
                 await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def run_once(self, *, limit: int = 25) -> int:
         processed = 0
@@ -284,6 +334,17 @@ class OutboxDispatcher:
                     available_at=deferred.available_at,
                     reason=deferred.reason,
                     now=_as_utc(self.clock()),
+                )
+                continue
+            except DeliveryPermanentFailure as exc:
+                failed_at = _as_utc(self.clock())
+                await asyncio.to_thread(
+                    self.repository.failed,
+                    message,
+                    exc,
+                    retry_at=failed_at,
+                    now=failed_at,
+                    permanent=True,
                 )
                 continue
             except Exception as exc:

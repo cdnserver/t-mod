@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import storage
 from modules.delivery_outbox import (
     DeliveryDeferred,
+    DeliveryPermanentFailure,
     DeliveryReceipt,
     OutboxDispatcher,
     StorageOutboxRepository,
@@ -73,6 +74,105 @@ class TemporaryOutboxDatabase:
 
 
 class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
+    def test_exact_projection_can_queue_behind_an_older_leased_generation(self) -> None:
+        scope = "session:control:user-2"
+        first = self.enqueue("projection-old", supersede_key=scope)
+        claimed = storage.delivery_outbox_claim(
+            worker_id="projection-old-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        )[0]
+
+        replacement, created = storage.delivery_outbox_ensure_current(
+            topic="test.delivery",
+            dedupe_key="projection-current",
+            payload={"generation": "current"},
+            supersede_key=scope,
+            replace_live=True,
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertTrue(created)
+        self.assertEqual(replacement["status"], "pending")
+        self.assertEqual(storage.delivery_outbox_claim(
+            worker_id="projection-current-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        ), [])
+        storage.delivery_outbox_mark_delivered(
+            int(first["id"]),
+            lease_token=str(claimed["lease_token"]),
+            now=self.started_at.isoformat(),
+        )
+        next_claim = storage.delivery_outbox_claim(
+            worker_id="projection-current-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual([int(row["id"]) for row in next_claim], [int(replacement["id"])])
+
+    def test_one_supersession_scope_cannot_have_two_active_leases(self) -> None:
+        scope = "session:control:user-2"
+        first = self.enqueue("generation-1", supersede_key=scope)
+        claimed_first = storage.delivery_outbox_claim(
+            worker_id="first-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual([int(row["id"]) for row in claimed_first], [int(first["id"])])
+
+        second = self.enqueue("generation-2", supersede_key=scope)
+        blocked = storage.delivery_outbox_claim(
+            worker_id="second-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual(blocked, [])
+        latest = storage.delivery_outbox_latest_supersession(
+            topic="test.delivery",
+            supersede_key=scope,
+        )
+        self.assertEqual(int(latest["id"]), int(second["id"]))  # type: ignore[index]
+        self.assertEqual(latest["status"], "pending")  # type: ignore[index]
+
+        self.assertTrue(
+            storage.delivery_outbox_mark_delivered(
+                int(first["id"]),
+                lease_token=str(claimed_first[0]["lease_token"]),
+                now=self.started_at.isoformat(),
+            )
+        )
+        claimed_second = storage.delivery_outbox_claim(
+            worker_id="second-worker",
+            limit=1,
+            now=self.started_at.isoformat(),
+        )
+        self.assertEqual([int(row["id"]) for row in claimed_second], [int(second["id"])])
+
+    def test_expired_scope_owner_and_new_generation_yield_only_newest_lease(self) -> None:
+        scope = "session:control:user-3"
+        expired = self.enqueue("expired-generation", supersede_key=scope)
+        claimed_expired = storage.delivery_outbox_claim(
+            worker_id="expired-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )[0]
+        newer = self.enqueue("newest-generation", supersede_key=scope)
+        reclaim_at = self.started_at + timedelta(seconds=31)
+
+        claimed = storage.delivery_outbox_claim(
+            worker_id="replacement-worker",
+            limit=10,
+            lease_seconds=30,
+            now=reclaim_at.isoformat(),
+        )
+
+        self.assertEqual([int(row["id"]) for row in claimed], [int(newer["id"])])
+        old_row = storage.delivery_outbox_get(int(expired["id"]))
+        self.assertEqual(old_row["status"], "processing")  # type: ignore[index]
+        self.assertEqual(old_row["lease_token"], claimed_expired["lease_token"])  # type: ignore[index]
+
     def test_connection_enqueue_obeys_caller_commit_and_rollback(self) -> None:
         with storage._db_lock, storage.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -266,6 +366,186 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
                 supersede_key=scope,
             )
         )
+
+    def test_dead_newer_generation_does_not_tombstone_live_predecessor(self) -> None:
+        scope = "session:control:user-2"
+        first = self.enqueue(
+            "control-live",
+            topic="tvrs.consensus.control-dm.v1",
+            priority=100,
+            supersede_key=scope,
+        )
+        claimed_first = storage.delivery_outbox_claim(
+            worker_id="live-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )[0]
+        newer = self.enqueue(
+            "control-doomed",
+            topic="tvrs.consensus.control-dm.v1",
+            priority=100,
+            supersede_key=scope,
+        )
+        # A supersession scope is serialized: the newer generation can only be
+        # leased after the predecessor releases ownership.
+        storage.delivery_outbox_mark_delivered(
+            int(first["id"]),
+            lease_token=str(claimed_first["lease_token"]),
+            now=self.started_at.isoformat(),
+        )
+        claimed_newer = storage.delivery_outbox_claim(
+            worker_id="doomed-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )[0]
+        storage.delivery_outbox_mark_failed(
+            int(newer["id"]),
+            lease_token=str(claimed_newer["lease_token"]),
+            error="permanent destination failure",
+            retry_at=self.started_at.isoformat(),
+            permanent=True,
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertTrue(
+            storage.delivery_outbox_is_current_supersession(
+                int(first["id"]),
+                topic="tvrs.consensus.control-dm.v1",
+                supersede_key=scope,
+            )
+        )
+
+    def test_ensure_current_inserts_repair_without_reviving_tombstones(self) -> None:
+        topic = "tvrs.consensus.control-dm.v1"
+        scope = "session:control:user-7"
+        tombstone = self.enqueue(
+            "repair-original",
+            topic=topic,
+            supersede_key=scope,
+            max_attempts=1,
+        )
+        claimed = storage.delivery_outbox_claim(
+            worker_id="repair-worker",
+            limit=1,
+            lease_seconds=30,
+            now=self.started_at.isoformat(),
+        )[0]
+        storage.delivery_outbox_mark_failed(
+            int(tombstone["id"]),
+            lease_token=str(claimed["lease_token"]),
+            error="closed dm",
+            retry_at=self.started_at.isoformat(),
+            permanent=True,
+            now=self.started_at.isoformat(),
+        )
+
+        same, same_created = storage.delivery_outbox_ensure_current(
+            topic=topic,
+            dedupe_key="repair-original",
+            payload={"generation": 2},
+            supersede_key=scope,
+            now=self.started_at.isoformat(),
+        )
+        self.assertFalse(same_created)
+        self.assertEqual(int(same["id"]), int(tombstone["id"]))
+        self.assertEqual(same["status"], "dead")
+
+        repair, repair_created = storage.delivery_outbox_ensure_current(
+            topic=topic,
+            dedupe_key="repair-fresh-1",
+            payload={"generation": 2},
+            supersede_key=scope,
+            now=self.started_at.isoformat(),
+        )
+        self.assertTrue(repair_created)
+        self.assertEqual(repair["status"], "pending")
+
+        open_row, open_created = storage.delivery_outbox_ensure_current(
+            topic=topic,
+            dedupe_key="repair-original",
+            payload={"generation": 3},
+            supersede_key=scope,
+            now=self.started_at.isoformat(),
+        )
+        self.assertFalse(open_created)
+        self.assertEqual(int(open_row["id"]), int(repair["id"]))
+
+        current, duplicate_created = storage.delivery_outbox_ensure_current(
+            topic=topic,
+            dedupe_key="repair-fresh-2",
+            payload={"generation": 3},
+            supersede_key=scope,
+            now=self.started_at.isoformat(),
+        )
+        self.assertFalse(duplicate_created)
+        self.assertEqual(int(current["id"]), int(repair["id"]))
+        with storage._db_lock, storage.connect() as connection:
+            missing = connection.execute(
+                "SELECT 1 FROM delivery_outbox WHERE topic = ? AND dedupe_key = ?",
+                (topic, "repair-fresh-2"),
+            ).fetchone()
+        self.assertIsNone(missing)
+
+    def test_concurrent_ensure_current_creates_exactly_one_repair(self) -> None:
+        topic = "tvrs.consensus.control-dm.v1"
+        scope = "session:control:user-9"
+        ready = threading.Barrier(2)
+
+        def ensure(index: int) -> tuple[dict, bool]:
+            ready.wait(timeout=5)
+            return storage.delivery_outbox_ensure_current(
+                topic=topic,
+                dedupe_key=f"concurrent-repair-{index}",
+                payload={"repair": index},
+                supersede_key=scope,
+                now=self.started_at.isoformat(),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(ensure, 1), pool.submit(ensure, 2)]
+            results = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual(sum(1 for _row, created in results if created), 1)
+        self.assertEqual(
+            {int(row["id"]) for row, _created in results},
+            {int(results[0][0]["id"])},
+        )
+        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 1})
+
+    def test_next_due_delay_tracks_future_work_and_empty_queue(self) -> None:
+        ready_at = self.started_at + timedelta(seconds=37)
+        row = storage.delivery_outbox_enqueue(
+            topic="test.due",
+            dedupe_key="future",
+            payload={"future": True},
+            available_at=ready_at.isoformat(),
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertEqual(
+            storage.delivery_outbox_next_due_delay(now=self.started_at.isoformat()),
+            37.0,
+        )
+        self.assertEqual(
+            storage.delivery_outbox_next_due_delay(
+                now=(ready_at + timedelta(seconds=1)).isoformat()
+            ),
+            0.0,
+        )
+        claimed = storage.delivery_outbox_claim(
+            worker_id="due-worker",
+            limit=1,
+            lease_seconds=30,
+            now=ready_at.isoformat(),
+        )[0]
+        storage.delivery_outbox_mark_delivered(
+            int(row["id"]),
+            lease_token=str(claimed["lease_token"]),
+            now=ready_at.isoformat(),
+        )
+        self.assertIsNone(storage.delivery_outbox_next_due_delay(now=ready_at.isoformat()))
 
     def test_cleanup_migration_cancels_legacy_control_backlog(self) -> None:
         migration_key = "migration:delivery-control-cleanup:2026-07-20-v2"
@@ -576,6 +856,63 @@ class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAs
         self.assertEqual(requeued["status"], "retry")  # type: ignore[index]
         self.assertEqual(requeued["attempts"], 0)  # type: ignore[index]
 
+    async def test_permanent_failure_dead_letters_immediately_and_isolates_item(self) -> None:
+        failed_id = int(self.enqueue("permanent", max_attempts=8)["id"])
+        delivered_id = int(self.enqueue("after-permanent", max_attempts=8)["id"])
+        dispatcher = OutboxDispatcher(
+            StorageOutboxRepository(),
+            worker_id="permanent-worker",
+            clock=FakeClock(self.started_at),
+        )
+
+        async def handler(message) -> DeliveryReceipt:
+            if message.id == failed_id:
+                raise DeliveryPermanentFailure("destination_forbidden")
+            return DeliveryReceipt(message_id=8123)
+
+        dispatcher.register("test.delivery", handler)
+        self.assertEqual(await dispatcher.run_once(limit=2), 2)
+
+        failed = storage.delivery_outbox_get(failed_id)
+        delivered = storage.delivery_outbox_get(delivered_id)
+        self.assertEqual(failed["status"], "dead")  # type: ignore[index]
+        self.assertEqual(failed["attempts"], 1)  # type: ignore[index]
+        self.assertIn("DeliveryPermanentFailure: destination_forbidden", failed["last_error"])  # type: ignore[index]
+        self.assertEqual(delivered["status"], "delivered")  # type: ignore[index]
+        self.assertEqual(delivered["message_id"], 8123)  # type: ignore[index]
+
+    async def test_handler_timeout_cancels_stall_and_does_not_block_queue(self) -> None:
+        stalled_id = int(self.enqueue("stalled", max_attempts=1)["id"])
+        delivered_id = int(self.enqueue("after-timeout", max_attempts=2)["id"])
+        dispatcher = OutboxDispatcher(
+            StorageOutboxRepository(),
+            worker_id="timeout-worker",
+            clock=FakeClock(self.started_at),
+            heartbeat_seconds=0.01,
+            handler_timeout_seconds=0.04,
+        )
+        cancelled = asyncio.Event()
+
+        async def handler(message) -> DeliveryReceipt:
+            if message.id == stalled_id:
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            return DeliveryReceipt(message_id=9911)
+
+        dispatcher.register("test.delivery", handler)
+        self.assertEqual(
+            await asyncio.wait_for(dispatcher.run_once(limit=2), timeout=1),
+            2,
+        )
+        self.assertTrue(cancelled.is_set())
+        stalled = storage.delivery_outbox_get(stalled_id)
+        delivered = storage.delivery_outbox_get(delivered_id)
+        self.assertEqual(stalled["status"], "dead")  # type: ignore[index]
+        self.assertIn("TimeoutError: outbox_handler_timeout:0.04s", stalled["last_error"])  # type: ignore[index]
+        self.assertEqual(delivered["status"], "delivered")  # type: ignore[index]
+
     async def test_handler_failure_and_missing_handler_do_not_block_other_topics(self) -> None:
         failed_id = int(self.enqueue("fails", topic="test.fails", max_attempts=3)["id"])
         missing_id = int(self.enqueue("missing", topic="test.missing", max_attempts=3)["id"])
@@ -644,7 +981,7 @@ class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAs
             patch("modules.delivery_runtime._dispatcher.run_once", new=AsyncMock(side_effect=run_once)) as claimed,
             patch("modules.delivery_runtime._report_dead_deliveries", new=AsyncMock()),
         ):
-            task = asyncio.create_task(delivery_worker(bot, idle_seconds=1))
+            task = asyncio.create_task(delivery_worker(bot, idle_seconds=1, concurrency=1))
             await asyncio.sleep(0)
             self.assertEqual(claimed.await_count, 0)
             bot.ready = True
@@ -683,10 +1020,111 @@ class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAs
             ) as reporter,
             patch("modules.delivery_runtime.traceback.print_exc"),
         ):
-            await delivery_worker(bot, idle_seconds=1)
+            await delivery_worker(bot, idle_seconds=1, concurrency=1)
 
         self.assertEqual(runs, 2)
         self.assertEqual(reporter.await_count, 2)
+
+    async def test_worker_parallelism_prevents_slow_delivery_head_of_line_blocking(self) -> None:
+        slow_id = int(self.enqueue("slow-head")["id"])
+        fast_ids = {int(self.enqueue(f"fast-{index}")["id"]) for index in range(12)}
+        dispatcher = OutboxDispatcher(
+            StorageOutboxRepository(),
+            worker_id="parallel-worker",
+            handler_timeout_seconds=2,
+        )
+        slow_started = asyncio.Event()
+        all_fast_delivered = asyncio.Event()
+        release_slow = asyncio.Event()
+        fast_seen: set[int] = set()
+
+        async def handler(message) -> DeliveryReceipt:
+            if message.id == slow_id:
+                slow_started.set()
+                await release_slow.wait()
+            else:
+                fast_seen.add(message.id)
+                if fast_seen == fast_ids:
+                    all_fast_delivered.set()
+            return DeliveryReceipt(message_id=message.id + 10_000)
+
+        dispatcher.register("test.delivery", handler)
+
+        class FakeBot:
+            closed = False
+
+            def is_closed(self) -> bool:
+                return self.closed
+
+            def is_ready(self) -> bool:
+                return True
+
+            def get_guild(self, guild_id: int):
+                return None
+
+        bot = FakeBot()
+        with (
+            patch("modules.delivery_runtime._dispatcher", dispatcher),
+            patch("modules.delivery_runtime._report_dead_deliveries", new=AsyncMock()),
+        ):
+            worker = asyncio.create_task(
+                delivery_worker(bot, idle_seconds=1, concurrency=4)
+            )
+            try:
+                await asyncio.wait_for(slow_started.wait(), timeout=1)
+                await asyncio.wait_for(all_fast_delivered.wait(), timeout=1)
+                self.assertFalse(release_slow.is_set())
+                self.assertFalse(worker.done())
+            finally:
+                bot.closed = True
+                release_slow.set()
+                await asyncio.wait_for(worker, timeout=1)
+
+        for item_id in [slow_id, *fast_ids]:
+            self.assertEqual(storage.delivery_outbox_get(item_id)["status"], "delivered")  # type: ignore[index]
+
+    async def test_worker_sleeps_until_database_due_time(self) -> None:
+        class FakeBot:
+            closed = False
+
+            def is_closed(self) -> bool:
+                return self.closed
+
+            def is_ready(self) -> bool:
+                return True
+
+            def get_guild(self, guild_id: int):
+                return None
+
+        bot = FakeBot()
+        runs = 0
+        observed_timeouts: list[float] = []
+
+        async def run_once(*, limit: int) -> int:
+            nonlocal runs
+            runs += 1
+            if runs == 2:
+                bot.closed = True
+                return 1
+            return 0
+
+        async def fake_wait_for(awaitable, *, timeout: float):
+            observed_timeouts.append(timeout)
+            awaitable.close()
+            raise asyncio.TimeoutError
+
+        with (
+            patch("modules.delivery_runtime._dispatcher.run_once", new=AsyncMock(side_effect=run_once)),
+            patch("modules.delivery_runtime._report_dead_deliveries", new=AsyncMock()),
+            patch(
+                "modules.delivery_runtime.storage.delivery_outbox_next_due_delay",
+                return_value=0.25,
+            ),
+            patch("modules.delivery_runtime.asyncio.wait_for", new=fake_wait_for),
+        ):
+            await delivery_worker(bot, idle_seconds=30, concurrency=1)
+
+        self.assertEqual(observed_timeouts, [0.25])
 
     async def test_dead_reporter_isolates_poison_payload_and_does_not_starve_later_rows(self) -> None:
         def make_dead(key: str, payload: dict) -> int:

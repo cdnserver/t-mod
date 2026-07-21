@@ -11,6 +11,13 @@ from persistence.core import _db_lock, connect, utc_now_iso
 OUTBOX_OPEN_STATUSES = frozenset({"pending", "processing", "retry"})
 
 
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def delivery_outbox_enqueue_in_connection(
     con: sqlite3.Connection,
     *,
@@ -117,6 +124,76 @@ def delivery_outbox_enqueue(
         return row
 
 
+def delivery_outbox_ensure_current(
+    *,
+    topic: str,
+    dedupe_key: str,
+    payload: dict[str, Any],
+    max_attempts: int = 8,
+    priority: int = 0,
+    supersede_key: str,
+    replace_live: bool = False,
+    available_at: str | None = None,
+    now: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Ensure one exact delivery generation exists for a semantic scope.
+
+    Recovery callers must supply a fresh dedupe key for every repair attempt.
+    An accidental reuse returns the existing row unchanged, including terminal
+    ``dead``/``cancelled`` rows; tombstones are never silently resurrected.
+    By default any live generation owns the scope.  ``replace_live`` is reserved
+    for a newer durable state projection: it atomically supersedes queued older
+    work while a currently leased predecessor is allowed to finish behind the
+    handler's generation fence.
+    """
+
+    clean_topic = str(topic).strip()
+    clean_key = str(dedupe_key).strip()
+    clean_supersede_key = str(supersede_key or "").strip()[:300]
+    if not clean_topic or not clean_key:
+        raise ValueError("outbox_topic_and_dedupe_key_required")
+    if not clean_supersede_key:
+        raise ValueError("outbox_supersede_key_required")
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        current = con.execute(
+            """
+            SELECT * FROM delivery_outbox
+            WHERE topic = ? AND supersede_key = ?
+              AND status IN ('pending', 'processing', 'retry')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (clean_topic, clean_supersede_key),
+        ).fetchone()
+        if current is not None:
+            if (
+                str(current["dedupe_key"] or "") == clean_key
+                or not bool(replace_live)
+            ):
+                con.commit()
+                return dict(current), False
+        existing_key = con.execute(
+            "SELECT * FROM delivery_outbox WHERE topic = ? AND dedupe_key = ?",
+            (clean_topic, clean_key),
+        ).fetchone()
+        if existing_key is not None:
+            con.commit()
+            return dict(existing_key), False
+        row = delivery_outbox_enqueue_in_connection(
+            con,
+            topic=clean_topic,
+            dedupe_key=clean_key,
+            payload=payload,
+            max_attempts=max_attempts,
+            priority=priority,
+            supersede_key=clean_supersede_key,
+            available_at=available_at,
+            now=now,
+        )
+        con.commit()
+        return row, True
+
+
 def delivery_outbox_claim(
     *,
     worker_id: str,
@@ -151,16 +228,40 @@ def delivery_outbox_claim(
         )
         rows = con.execute(
             """
-            SELECT id FROM delivery_outbox
-            WHERE attempts < max_attempts
-              AND (
-                    (status IN ('pending', 'retry') AND available_at <= ?)
-                 OR (status = 'processing' AND lease_until <= ?)
-              )
+            WITH eligible AS (
+                SELECT candidate.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY
+                               candidate.topic,
+                               candidate.supersede_key,
+                               CASE WHEN candidate.supersede_key IS NULL THEN candidate.id ELSE 0 END
+                           ORDER BY candidate.id DESC
+                       ) AS scope_rank
+                FROM delivery_outbox AS candidate
+                WHERE candidate.attempts < candidate.max_attempts
+                  AND (
+                        (candidate.status IN ('pending', 'retry') AND candidate.available_at <= ?)
+                     OR (candidate.status = 'processing' AND candidate.lease_until <= ?)
+                  )
+                  AND (
+                        candidate.supersede_key IS NULL
+                     OR NOT EXISTS (
+                            SELECT 1
+                            FROM delivery_outbox AS active
+                            WHERE active.topic = candidate.topic
+                              AND active.supersede_key = candidate.supersede_key
+                              AND active.status = 'processing'
+                              AND active.lease_until > ?
+                              AND active.id != candidate.id
+                        )
+                  )
+            )
+            SELECT id FROM eligible
+            WHERE scope_rank = 1
             ORDER BY priority DESC, available_at ASC, id ASC
             LIMIT ?
             """,
-            (now_iso, now_iso, max(1, min(int(limit), 100))),
+            (now_iso, now_iso, now_iso, max(1, min(int(limit), 100))),
         ).fetchall()
         for selected in rows:
             item_id = int(selected["id"])
@@ -364,12 +465,69 @@ def delivery_outbox_is_current_supersession(
             """
             SELECT 1 FROM delivery_outbox
             WHERE topic = ? AND supersede_key = ? AND id > ?
-              AND status != 'cancelled'
+              AND status IN ('pending', 'retry', 'processing', 'delivered')
             LIMIT 1
             """,
             (str(topic), clean_key, int(item_id)),
         ).fetchone()
     return newer is None
+
+
+def delivery_outbox_latest_supersession(
+    *,
+    topic: str,
+    supersede_key: str,
+) -> dict[str, Any] | None:
+    """Return the newest durable state for a semantic delivery scope."""
+
+    clean_topic = str(topic).strip()
+    clean_key = str(supersede_key).strip()
+    if not clean_topic or not clean_key:
+        return None
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT * FROM delivery_outbox
+            WHERE topic = ? AND supersede_key = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (clean_topic, clean_key),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def delivery_outbox_next_due_delay(*, now: str | None = None) -> float | None:
+    """Return seconds until the next claim or expired-lease cleanup is due."""
+
+    now_dt = _parse_utc(str(now or utc_now_iso()))
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT due_at
+            FROM (
+                SELECT available_at AS due_at
+                FROM delivery_outbox
+                WHERE status IN ('pending', 'retry') AND attempts < max_attempts
+                UNION ALL
+                SELECT COALESCE(lease_until, available_at, updated_at) AS due_at
+                FROM delivery_outbox
+                WHERE status = 'processing'
+            )
+            WHERE due_at IS NOT NULL
+            ORDER BY julianday(due_at) ASC, due_at ASC
+            LIMIT 1
+            """
+        ).fetchone()
+    if row is None or row["due_at"] is None:
+        return None
+    try:
+        due_at = _parse_utc(str(row["due_at"]))
+    except (TypeError, ValueError):
+        # A malformed legacy timestamp should trigger a diagnostic claim cycle
+        # instead of putting the whole delivery worker to sleep indefinitely.
+        return 0.0
+    return max(0.0, (due_at - now_dt).total_seconds())
 
 
 def delivery_outbox_counts() -> dict[str, int]:
@@ -445,4 +603,4 @@ def delivery_outbox_requeue_dead(
         con.commit()
         return cur.rowcount == 1
 
-__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_is_current_supersession', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']
+__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_ensure_current', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_is_current_supersession', 'delivery_outbox_latest_supersession', 'delivery_outbox_next_due_delay', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']

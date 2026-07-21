@@ -22,6 +22,7 @@ from modules.consensus_runtime import (
     session_lock as consensus_session_lock,
 )
 from modules.consensus_service import ConsensusActor
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_v3 import (
     CONSENSUS_ENGINE_VERSION,
     ConsensusPreflight,
@@ -36,13 +37,17 @@ from modules.tvrs_config import (
     TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
     TVRS_EMBED_COLOR,
 )
-from modules.tvrs_delivery import build_control_dm_deliveries
+from modules.tvrs_delivery import (
+    build_control_dm_deliveries,
+    build_phase_announcement_delivery,
+)
 from modules.tvrs_embeds import build_final_summary_embed, build_result_embed
 from modules.tvrs_formatting import clip_text, format_bill_number, role_label, ru_ordinal
 from modules.tvrs_hub_views import TVRSBaseView
 from modules.tvrs_navigation_runtime import open_tvrs_hub
 from modules.tvrs_presentation import (
     build_dm_vote_embed,
+    build_live_vote_embed,
     build_registration_embed,
     delete_sticky_message,
     is_chair,
@@ -242,6 +247,13 @@ def _public_status_marker(session_key: str) -> str:
     return f"tmod-consensus-status:{str(session_key)[:72]}"
 
 
+def _public_projection_is_current(session: LiveConsensusSession) -> bool:
+    """Fence delayed writes from a session already replaced in memory."""
+
+    current = _active_sessions.get(int(session.guild_id))
+    return current is None or current.session_key == session.session_key
+
+
 async def ensure_public_consensus_card(
     bot,
     guild: discord.Guild,
@@ -249,15 +261,18 @@ async def ensure_public_consensus_card(
     *,
     terminal: bool = False,
 ) -> discord.Message | None:
-    """Create or update the one canonical read-only card for the guild.
+    """Create or update the one canonical status card for the guild.
 
     The stored message id is preferred.  A footer marker recovers the same
     message if the process stopped after Discord accepted a send but before the
-    receipt reached SQLite.
+    receipt reached SQLite.  While the session is active, its single persistent
+    entry button opens a fresh private control surface for the requester.
     """
 
     lock = _public_status_locks.setdefault(int(guild.id), asyncio.Lock())
     async with lock:
+        if not _public_projection_is_current(session):
+            return None
         return await _ensure_public_consensus_card_unlocked(
             bot,
             guild,
@@ -310,20 +325,32 @@ async def _ensure_public_consensus_card_unlocked(
             # A history transport failure must not create a possible duplicate.
             return None
 
-    embed = build_final_summary_embed(session) if terminal else build_observer_embed(session)
+    # Fetch/history can yield while another task opens the next session.  Check
+    # the generation again immediately before the Discord write so a delayed
+    # terminal projection cannot remove the new session's entry button.
+    if not _public_projection_is_current(session):
+        return None
+    if terminal and session.stage == "cancelled":
+        embed = build_observer_embed(session)
+        embed.title = f"⚪ Заседание отменено • {ru_ordinal(session.plenary_number)}"
+        embed.description = "Регистрация закрыта ведущим. Решения на этом заседании не принимались."
+    else:
+        embed = build_final_summary_embed(session) if terminal else build_observer_embed(session)
+    view = None if terminal else TVRSConsensusEntryView()
     footer_prefix = str(getattr(embed.footer, "text", "") or "").strip()
     embed.set_footer(text=f"{footer_prefix} • {marker}" if footer_prefix else marker)
     try:
         if message is None:
             message = await channel.send(
                 embed=embed,
+                view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         else:
             await message.edit(
                 content=None,
                 embed=embed,
-                view=None,
+                view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         await asyncio.to_thread(
@@ -334,6 +361,93 @@ async def _ensure_public_consensus_card_unlocked(
     except (discord.DiscordException, OSError, sqlite3.Error):
         return None
     return message
+
+
+class TVRSConsensusEntryView(TVRSBaseView):
+    """Stable public entry point that always resolves the current live session."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        button = discord.ui.Button(
+            label="Открыть личный пульт",
+            emoji="⚖️",
+            style=discord.ButtonStyle.primary,
+            custom_id="tvrs_consensus_entry:v1",
+        )
+        button.callback = self.open_personal_panel
+        self.add_item(button)
+
+    async def open_personal_panel(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                content="Личный пульт консенсуса работает только на сервере Discord.",
+                ephemeral=True,
+            )
+            return
+
+        session = _active_sessions.get(int(interaction.guild.id))
+        if session is None or session.finished:
+            await interaction.response.send_message(
+                content=(
+                    "Сейчас активного заседания нет. Карточка будет обновлена автоматически."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        user_id = int(interaction.user.id)
+        if user_id == session.leader_id:
+            from modules.tvrs_consensus_views import (
+                TVRSAfterResultView,
+                TVRSHostVoteView,
+                TVRSRegistrationView,
+            )
+
+            if session.stage == "registration":
+                embed = build_registration_embed(session)
+                view: discord.ui.View = TVRSRegistrationView(session.session_key)
+            elif session.stage == "after_result" and session.results:
+                embed = build_result_embed(session.results[-1], session)
+                view = TVRSAfterResultView(session.session_key)
+            else:
+                embed = build_live_vote_embed(session)
+                view = TVRSHostVoteView(session.session_key)
+            await interaction.response.send_message(
+                embed=embed,
+                view=view,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        participant = session.participants.get(user_id)
+        if participant is not None and (
+            session.stage == "registration" or participant.confirmed
+        ):
+            await interaction.response.send_message(
+                embed=build_participant_portal_embed(session, user_id),
+                view=TVRSParticipantPortalView(session.session_key, user_id),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        if participant is not None:
+            explanation = (
+                "Вы не подтвердили участие во время регистрации, поэтому для этого "
+                "заседания доступен режим наблюдения."
+            )
+        else:
+            explanation = (
+                "Вы не входите в состав этого заседания. Открыт безопасный режим наблюдения."
+            )
+        await interaction.response.send_message(
+            content=explanation,
+            embed=build_observer_embed(session),
+            view=TVRSObserverView(user_id, session.session_key),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 class _RequesterPortalView(TVRSBaseView):
@@ -466,7 +580,13 @@ class TVRSPreparationView(_RequesterPortalView):
             _consensus_registry.add(session)
             try:
                 deliveries = build_control_dm_deliveries(session, phase="registration")
-                await asyncio.to_thread(
+                deliveries.append(
+                    build_phase_announcement_delivery(
+                        session,
+                        phase="registration",
+                    )
+                )
+                await run_blocking_cancellation_safe(
                     _consensus.save_with_deliveries,
                     session,
                     "v3_registration_opened",
@@ -490,6 +610,9 @@ class TVRSPreparationView(_RequesterPortalView):
 
         from modules.tvrs_consensus_views import TVRSRegistrationView
 
+        # Invitations and the public fallback were committed with the session;
+        # wake their worker before any best-effort Discord projection below.
+        wake_delivery_worker()
         await delete_sticky_message(interaction.client, interaction.guild)
         await interaction.edit_original_response(
             content=None,
@@ -504,13 +627,12 @@ class TVRSPreparationView(_RequesterPortalView):
         session.host_message_obj = interaction.message
         async with consensus_session_lock(interaction.guild.id):
             if _consensus_registry.find(session.session_key) is session:
-                await asyncio.to_thread(
+                await run_blocking_cancellation_safe(
                     _consensus.bind_host_message,
                     session,
                     getattr(interaction.message, "id", None),
                     "v3_host_panel_bound",
                 )
-        wake_delivery_worker()
         wake_operations_worker()
 
 
@@ -723,6 +845,7 @@ async def open_observer_portal(
 
 
 __all__ = [
+    "TVRSConsensusEntryView",
     "TVRSObserverView",
     "TVRSParticipantPortalView",
     "TVRSPreparationView",

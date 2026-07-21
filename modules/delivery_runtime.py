@@ -15,6 +15,9 @@ from modules.technical_log import log_technical_event
 _dispatcher = OutboxDispatcher(StorageOutboxRepository())
 _wakeup = asyncio.Event()
 _worker_task: asyncio.Task[Any] | None = None
+_DEFAULT_CONCURRENCY = 4
+_MAX_CONCURRENCY = 16
+_DELIVERIES_PER_SLOT = 25
 
 
 def register_delivery_handler(topic: str, handler: DeliveryHandler) -> None:
@@ -74,7 +77,36 @@ async def _report_dead_deliveries(bot: Any) -> None:
             traceback.print_exc()
 
 
-async def delivery_worker(bot: Any, *, idle_seconds: float = 30.0) -> None:
+async def _run_delivery_round(concurrency: int) -> int:
+    async def run_slot() -> int:
+        try:
+            # Each slot keeps draining while the other slots may be waiting on
+            # a slow destination.  This avoids a round barrier after only one
+            # message without exceeding the configured handler concurrency.
+            return await _dispatcher.run_once(limit=_DELIVERIES_PER_SLOT)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            traceback.print_exc()
+            return 0
+
+    results = await asyncio.gather(*(run_slot() for _ in range(concurrency)))
+    return sum(results)
+
+
+async def delivery_worker(
+    bot: Any,
+    *,
+    idle_seconds: float = 30.0,
+    concurrency: int | None = None,
+) -> None:
+    parallelism = max(
+        1,
+        min(
+            _MAX_CONCURRENCY,
+            _DEFAULT_CONCURRENCY if concurrency is None else int(concurrency),
+        ),
+    )
     while not bot.is_closed():
         if hasattr(bot, "is_ready") and not bot.is_ready():
             waiter = getattr(bot, "wait_until_ready", None)
@@ -86,7 +118,7 @@ async def delivery_worker(bot: Any, *, idle_seconds: float = 30.0) -> None:
         # observed below, while all older wakeups are represented by database rows.
         _wakeup.clear()
         try:
-            processed = await _dispatcher.run_once(limit=25)
+            processed = await _run_delivery_round(parallelism)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -101,8 +133,18 @@ async def delivery_worker(bot: Any, *, idle_seconds: float = 30.0) -> None:
             traceback.print_exc()
         if processed:
             continue
+        sleep_seconds = max(0.05, float(idle_seconds))
         try:
-            await asyncio.wait_for(_wakeup.wait(), timeout=max(1.0, float(idle_seconds)))
+            next_due = await asyncio.to_thread(storage.delivery_outbox_next_due_delay)
+        except Exception:
+            traceback.print_exc()
+            next_due = None
+        if next_due is not None:
+            if next_due <= 0:
+                continue
+            sleep_seconds = min(sleep_seconds, max(0.05, float(next_due)))
+        try:
+            await asyncio.wait_for(_wakeup.wait(), timeout=sleep_seconds)
         except asyncio.TimeoutError:
             pass
 

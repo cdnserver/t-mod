@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-
 import discord
 
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_core import (
     ConsensusStateError,
     LiveConsensusSession,
@@ -39,6 +38,10 @@ from modules.tvrs_presentation import (
     consensus_result_bill_id,
 )
 from modules.tvrs_hub_views import TVRSBaseView
+from modules.tvrs_registration_gate import (
+    TVRSStartCurrentRosterConfirmView,
+    build_incomplete_roster_warning,
+)
 
 async def ensure_sticky_message(*args, **kwargs):
     from modules.tvrs_recovery import ensure_sticky_message as _implementation
@@ -139,6 +142,25 @@ class TVRSRegistrationView(TVRSBaseView):
         if not voice_ok:
             await interaction.response.send_message(voice_reason, ephemeral=True)
             return
+        unconfirmed = [
+            participant
+            for participant in session.participants.values()
+            if not participant.confirmed
+        ]
+        if unconfirmed:
+            await interaction.response.send_message(
+                build_incomplete_roster_warning(session),
+                view=TVRSStartCurrentRosterConfirmView(
+                    session.session_key,
+                    session.leader_id,
+                    confirmed_user_ids={
+                        participant.user_id
+                        for participant in session.confirmed_participants()
+                    },
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer()
         await begin_next_bill_vote(
             interaction.client,
@@ -156,12 +178,13 @@ class TVRSRegistrationView(TVRSBaseView):
             await interaction.response.send_message("Сессия консенсуса не найдена.", ephemeral=True)
             return
         await interaction.response.defer()
+        cancelled_session: LiveConsensusSession | None = None
         async with consensus_session_lock(interaction.guild.id):
             current = self.session(interaction.guild.id)
             if current is None or current.stage != "registration":
                 await interaction.followup.send("Сессия уже завершена.", ephemeral=True)
                 return
-            await asyncio.to_thread(
+            await run_blocking_cancellation_safe(
                 _consensus.finish_atomically,
                 current,
                 actor=ConsensusActor(
@@ -170,8 +193,23 @@ class TVRSRegistrationView(TVRSBaseView):
                 ),
                 cancelled=True,
             )
-            _consensus_registry.remove(interaction.guild.id, session_key=current.session_key)
+            cancelled_session = current
+        assert cancelled_session is not None
+        # Remove only after leaving the guild lock: popping a lock while it is
+        # held would allow the next session to create a second lock generation.
+        _consensus_registry.remove(
+            interaction.guild.id,
+            session_key=cancelled_session.session_key,
+        )
         wake_operations_worker()
+        from modules.tvrs_consensus_portal import ensure_public_consensus_card
+
+        await ensure_public_consensus_card(
+            interaction.client,
+            interaction.guild,
+            cancelled_session,
+            terminal=True,
+        )
         await interaction.edit_original_response(content="Консенсус отменен.", embed=None, view=None)
         await ensure_sticky_message(interaction.client, interaction.guild, force_repost=True)
 
@@ -192,7 +230,7 @@ class TVRSRegistrationView(TVRSBaseView):
                 phase="registration",
                 generation=f"manual-{session.revision + 1}",
             )
-            await asyncio.to_thread(
+            await run_blocking_cancellation_safe(
                 _consensus.save_with_deliveries,
                 session,
                 "registration_invitations_retried",
@@ -263,7 +301,7 @@ async def confirm_consensus_participant(
         if session.stage != "registration":
             await interaction.followup.send("Регистрация уже завершена.", ephemeral=True)
             return None
-        await asyncio.to_thread(
+        await run_blocking_cancellation_safe(
             _consensus.confirm_participant,
             session,
             int(user_id),
@@ -411,13 +449,17 @@ class TVRSVoteView(TVRSBaseView):
             await interaction.response.send_message("Сервер не найден.", ephemeral=True)
             return
         await interaction.response.defer()
-        await request_discussion(
-            interaction.client,
-            guild,
-            session,
-            p,
-            expected_bill_id=self.bill_id,
-        )
+        try:
+            await request_discussion(
+                interaction.client,
+                guild,
+                session,
+                p,
+                expected_bill_id=self.bill_id,
+            )
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
         try:
             await interaction.followup.send("Дискуссия инициирована. Выберите тип дискуссии ниже.", view=TVRSDiscussionTypeView(session.session_key, self.user_id, bill_id=self.bill_id), ephemeral=True)
         except discord.HTTPException:
@@ -465,7 +507,7 @@ class TVRSVoteView(TVRSBaseView):
             if not consensus_generation_matches(session, stage="voting", bill_id=self.bill_id):
                 await interaction.followup.send("Эта кнопка относится к уже завершённому проекту.", ephemeral=True)
                 return
-            should_finalize = await asyncio.to_thread(
+            should_finalize = await run_blocking_cancellation_safe(
                 _consensus.cast_vote,
                 session,
                 self.user_id,
@@ -475,6 +517,22 @@ class TVRSVoteView(TVRSBaseView):
                     getattr(interaction.user, "display_name", str(interaction.user)),
                 ),
             )
+        guild = (
+            getattr(interaction, "guild", None)
+            or interaction.client.get_guild(session.guild_id)
+        )
+        # Finalization is the durable business action.  It must run before any
+        # best-effort Discord projection: an unavailable/stale DM or host panel
+        # must never leave a fully voted bill stuck in the voting stage.
+        if should_finalize and guild:
+            await finalize_current_vote(
+                interaction.client,
+                guild,
+                session,
+                forced=False,
+                expected_bill_id=self.bill_id,
+            )
+            return
         try:
             await interaction.message.edit(
                 embed=build_dm_vote_embed(session, session.participants[self.user_id]),
@@ -489,17 +547,11 @@ class TVRSVoteView(TVRSBaseView):
             )  # type: ignore[union-attr]
         except discord.DiscordException:
             pass
-        guild = interaction.client.get_guild(session.guild_id)
         if guild:
-            await update_host_vote_message(interaction.client, guild, session)
-        if should_finalize and guild:
-            await finalize_current_vote(
-                interaction.client,
-                guild,
-                session,
-                forced=False,
-                expected_bill_id=self.bill_id,
-            )
+            try:
+                await update_host_vote_message(interaction.client, guild, session)
+            except discord.DiscordException:
+                pass
 
 
 class TVRSPermanentVoteView(TVRSVoteView):
@@ -546,13 +598,17 @@ class TVRSDiscussionTypeView(TVRSBaseView):
                 await interaction.response.send_message("Сервер не найден.", ephemeral=True)
                 return
             await interaction.response.defer()
-            await start_discussion_channel(
-                interaction.client,
-                guild,
-                session,
-                label,
-                expected_bill_id=self.bill_id,
-            )
+            try:
+                await start_discussion_channel(
+                    interaction.client,
+                    guild,
+                    session,
+                    label,
+                    expected_bill_id=self.bill_id,
+                )
+            except ConsensusStateError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
             try:
                 await interaction.followup.send(f"Дискуссия типа **{label}** начата.", ephemeral=True)
             except discord.HTTPException:
@@ -641,7 +697,7 @@ class TVRSHostVoteView(TVRSBaseView):
             if not consensus_generation_matches(session, stage="voting", bill_id=self.bill_id):
                 await interaction.followup.send("Эта панель относится к уже завершённому проекту.", ephemeral=True)
                 return
-            should_finalize = await asyncio.to_thread(
+            should_finalize = await run_blocking_cancellation_safe(
                 _consensus.cast_vote,
                 session,
                 session.leader_id,
@@ -651,9 +707,13 @@ class TVRSHostVoteView(TVRSBaseView):
                     getattr(interaction.user, "display_name", str(interaction.user)),
                 ),
             )
-        await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         if should_finalize:
             await finalize_current_vote(interaction.client, interaction.guild, session, forced=False, expected_bill_id=self.bill_id)
+            return
+        try:
+            await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        except discord.DiscordException:
+            pass
 
     async def host_no(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
@@ -669,7 +729,7 @@ class TVRSHostVoteView(TVRSBaseView):
             if not consensus_generation_matches(session, stage="voting", bill_id=self.bill_id):
                 await interaction.followup.send("Эта панель относится к уже завершённому проекту.", ephemeral=True)
                 return
-            should_finalize = await asyncio.to_thread(
+            should_finalize = await run_blocking_cancellation_safe(
                 _consensus.cast_vote,
                 session,
                 session.leader_id,
@@ -679,9 +739,13 @@ class TVRSHostVoteView(TVRSBaseView):
                     getattr(interaction.user, "display_name", str(interaction.user)),
                 ),
             )
-        await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         if should_finalize:
             await finalize_current_vote(interaction.client, interaction.guild, session, forced=False, expected_bill_id=self.bill_id)
+            return
+        try:
+            await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        except discord.DiscordException:
+            pass
 
     async def finish(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
@@ -744,13 +808,17 @@ class TVRSHostVoteView(TVRSBaseView):
                 await interaction.response.send_message("Тип дискуссии уже выбран.", ephemeral=True)
                 return
             await interaction.response.defer()
-            await start_discussion_channel(
-                interaction.client,
-                interaction.guild,
-                session,
-                label,
-                expected_bill_id=self.bill_id,
-            )
+            try:
+                await start_discussion_channel(
+                    interaction.client,
+                    interaction.guild,
+                    session,
+                    label,
+                    expected_bill_id=self.bill_id,
+                )
+            except ConsensusStateError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
             await interaction.followup.send(f"Дискуссия типа **{label}** начата.", ephemeral=True)
 
         return callback
@@ -921,4 +989,4 @@ class TVRSAfterResultView(TVRSBaseView):
                 expected_result_bill_id=self.result_bill_id,
             )
 
-__all__ = ['TVRSRegistrationView', 'TVRSConfirmView', 'confirm_consensus_participant', 'TVRSVoteView', 'TVRSPermanentVoteView', 'TVRSRestoredVoteView', 'TVRSDiscussionTypeView', 'TVRSHostVoteView', 'TVRSVetoConfirmView', 'TVRSAfterResultView']
+__all__ = ['TVRSRegistrationView', 'TVRSStartCurrentRosterConfirmView', 'TVRSConfirmView', 'confirm_consensus_participant', 'TVRSVoteView', 'TVRSPermanentVoteView', 'TVRSRestoredVoteView', 'TVRSDiscussionTypeView', 'TVRSHostVoteView', 'TVRSVetoConfirmView', 'TVRSAfterResultView']

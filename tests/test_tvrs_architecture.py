@@ -21,12 +21,14 @@ from modules.tvrs_config import env_color, env_int
 from modules.tvrs_control import (
     _prune_duplicate_control_panels,
     deliver_consensus_control_dm,
+    deliver_consensus_control_notice,
 )
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     TVRS_RETRY_BILL_TOPIC,
     TVRS_SESSION_SUMMARY_TOPIC,
     build_control_dm_deliveries,
+    build_control_notice_deliveries,
     build_retry_bill_delivery,
     build_result_deliveries,
     build_session_summary_deliveries,
@@ -297,7 +299,7 @@ class TVRSFormattingContractTests(unittest.TestCase):
         self.assertEqual(len(registration), 1)
         self.assertEqual(registration[0]["topic"], TVRS_CONTROL_DM_TOPIC)
         self.assertEqual(registration[0]["payload"]["user_id"], 2)
-        self.assertEqual(registration[0]["priority"], 100)
+        self.assertEqual(registration[0]["priority"], 200)
         self.assertIn(":control:2", registration[0]["supersede_key"])
 
         session.participants[2].confirmed = True
@@ -306,7 +308,7 @@ class TVRSFormattingContractTests(unittest.TestCase):
         voting = build_control_dm_deliveries(session, phase="voting")
         self.assertEqual(len(voting), 2)
         self.assertTrue(all(item["payload"]["bill_id"] == 10 for item in voting))
-        self.assertTrue(all(item["priority"] == 100 for item in voting))
+        self.assertTrue(all(item["priority"] == 200 for item in voting))
         self.assertEqual(
             registration[0]["supersede_key"],
             next(item for item in voting if item["payload"]["user_id"] == 2)["supersede_key"],
@@ -461,8 +463,14 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
             patch("modules.tvrs_control._consensus.save", return_value={"revision": 2}),
         ):
             receipt = await deliver_consensus_control_dm(self.message(job), bot)
+            notice_job = build_control_notice_deliveries(current, bill_id=10)[0]
+            notice_receipt = await deliver_consensus_control_notice(
+                self.message(notice_job),
+                bot,
+            )
 
         self.assertEqual(receipt.message_id, 7002)
+        self.assertEqual(notice_receipt.message_id, 8002)
         dm_channel.fetch_message.assert_awaited_once_with(7002)
         panel.edit.assert_awaited_once()
         member.send.assert_awaited_once()
@@ -477,7 +485,7 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(current.participants[2].vote_message_id, 7002)
         self.assertEqual(current.participants[2].vote_bill_id, 10)
-        cleanup.assert_called_once_with(dm_channel, 7002)
+        cleanup.assert_not_called()
 
     async def test_vote_panel_receipt_survives_notice_delivery_failure(self) -> None:
         current = make_session()
@@ -514,9 +522,15 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("modules.tvrs_control._consensus.save", return_value={"revision": 2}) as save,
         ):
+            receipt = await deliver_consensus_control_dm(self.message(job), bot)
+            notice_job = build_control_notice_deliveries(current, bill_id=10)[0]
             with self.assertRaisesRegex(RuntimeError, "notice unavailable"):
-                await deliver_consensus_control_dm(self.message(job), bot)
+                await deliver_consensus_control_notice(
+                    self.message(notice_job),
+                    bot,
+                )
 
+        self.assertEqual(receipt.message_id, 7002)
         self.assertEqual(current.participants[2].vote_message_id, 7002)
         self.assertEqual(current.participants[2].vote_bill_id, 10)
         save.assert_called_once()
@@ -527,36 +541,23 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         current.stage = "voting"
         current.current_bill = {"id": 10, "bill_number": 9, "title": "Старый проект"}
         registry.add(current)
-        started = asyncio.Event()
-        release = asyncio.Event()
-
-        async def delayed_send(**kwargs):
-            started.set()
-            await release.wait()
-            return SimpleNamespace(id=7010)
-
         member = SimpleNamespace(
             dm_channel=None,
             create_dm=AsyncMock(),
-            send=AsyncMock(side_effect=delayed_send),
+            send=AsyncMock(return_value=SimpleNamespace(id=7010)),
         )
         guild = SimpleNamespace(
             get_member=lambda user_id: member,
             fetch_member=AsyncMock(return_value=member),
         )
 
-        with patch(
-            "modules.tvrs_discussion.build_dm_vote_embed",
-            return_value=discord.Embed(title="Голосование"),
-        ):
-            refresh = asyncio.create_task(
-                tvrs.update_all_vote_dms(guild, current, content="Старое обновление")
-            )
-            await asyncio.wait_for(started.wait(), timeout=2)
-            current.current_bill = {"id": 11, "bill_number": 10, "title": "Новый проект"}
-            release.set()
-            await refresh
+        stale_job = build_control_dm_deliveries(current, phase="voting")[0]
+        current.current_bill = {"id": 11, "bill_number": 10, "title": "Новый проект"}
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+        receipt = await deliver_consensus_control_dm(self.message(stale_job), bot)
 
+        self.assertIsNone(receipt.message_id)
+        member.send.assert_not_awaited()
         self.assertIsNone(current.participants[2].vote_message_id)
         self.assertIsNone(current.participants[2].vote_bill_id)
 
@@ -594,7 +595,7 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def history(*, limit: int):
-            self.assertEqual(limit, 100)
+            self.assertEqual(limit, 30)
             for item in (duplicate, legacy, keep, result):
                 yield item
 

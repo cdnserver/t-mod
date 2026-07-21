@@ -14,8 +14,9 @@ from typing import Any
 import discord
 from persistence import tvrs_repository as storage
 
+from modules.async_safety import consensus_projection_lock
 from modules.consensus_core import ConsensusRules, LiveConsensusSession, LiveParticipant, LiveResult
-from modules.consensus_runtime import active_consensus_snapshot
+from modules.consensus_runtime import registry as _consensus_registry
 from modules.delivery_outbox import DeliveryDeferred, DeliveryReceipt, OutboxMessage
 from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
@@ -26,6 +27,9 @@ TVRS_RESULT_TOPIC = "tvrs.consensus.result.v1"
 TVRS_RETRY_BILL_TOPIC = "tvrs.consensus.retry-bill.v1"
 TVRS_BILL_PUBLICATION_TOPIC = "tvrs.bill.publication.v1"
 TVRS_CONTROL_DM_TOPIC = "tvrs.consensus.control-dm.v1"
+TVRS_CONTROL_NOTICE_TOPIC = "tvrs.consensus.control-notice.v1"
+TVRS_PHASE_ANNOUNCEMENT_TOPIC = "tvrs.consensus.phase-announcement.v1"
+TVRS_DISCUSSION_INVITE_TOPIC = "tvrs.consensus.discussion-invite.v1"
 TVRS_SESSION_SUMMARY_TOPIC = "tvrs.consensus.session-summary.v1"
 
 
@@ -169,10 +173,153 @@ def build_control_dm_deliveries(
                     "bill_id": selected_bill_id or None,
                     "user_id": int(participant.user_id),
                 },
-                "max_attempts": 12,
-                "priority": 100,
+                # Discord outages and global rate limits can last longer than a
+                # couple of minutes.  Interactive controls keep retrying for a
+                # useful window; permanent DM failures are classified by the
+                # handler and stop immediately.
+                "max_attempts": 120,
+                "priority": 200,
                 "supersede_key": (
                     f"consensus:{session.session_key}:control:{participant.user_id}"
+                ),
+            }
+        )
+    return jobs
+
+
+def build_control_notice_deliveries(
+    session: LiveConsensusSession,
+    *,
+    bill_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Create one unread DM notice per participant and bill.
+
+    The reusable control panel and the unread notification intentionally live
+    in different outbox jobs.  A temporary notice failure must never turn a
+    successfully delivered voting panel into a failed delivery.
+    """
+
+    selected_bill_id = int(bill_id or (session.current_bill or {}).get("id") or 0)
+    if selected_bill_id <= 0:
+        raise ValueError("tvrs_control_notice_bill_required")
+    jobs: list[dict[str, Any]] = []
+    for participant in session.confirmed_participants():
+        if participant.user_id == session.leader_id:
+            continue
+        jobs.append(
+            {
+                "topic": TVRS_CONTROL_NOTICE_TOPIC,
+                "dedupe_key": (
+                    f"consensus:{session.session_key}:bill:{selected_bill_id}:"
+                    f"notice:{participant.user_id}"
+                ),
+                "payload": {
+                    "payload_version": 1,
+                    "guild_id": int(session.guild_id),
+                    "session_key": str(session.session_key),
+                    "engine_version": int(session.engine_version),
+                    "bill_id": selected_bill_id,
+                    "user_id": int(participant.user_id),
+                },
+                "max_attempts": 60,
+                "priority": 150,
+                "supersede_key": (
+                    f"consensus:{session.session_key}:notice:{participant.user_id}"
+                ),
+            }
+        )
+    return jobs
+
+
+def build_phase_announcement_delivery(
+    session: LiveConsensusSession,
+    *,
+    phase: str,
+    bill_id: int | None = None,
+) -> dict[str, Any]:
+    """Build one server-side call to action for a whole consensus phase.
+
+    This is the durable fallback for members whose direct messages are closed.
+    It creates one aggregate message, not one public message per participant.
+    """
+
+    clean_phase = str(phase).strip().lower()
+    if clean_phase not in {"registration", "voting"}:
+        raise ValueError("tvrs_phase_announcement_phase_invalid")
+    selected_bill_id = int(bill_id or (session.current_bill or {}).get("id") or 0)
+    if clean_phase == "voting" and selected_bill_id <= 0:
+        raise ValueError("tvrs_phase_announcement_bill_required")
+    participants = (
+        [item for item in session.participants.values() if not item.confirmed]
+        if clean_phase == "registration"
+        else session.confirmed_participants()
+    )
+    user_ids = [
+        int(item.user_id)
+        for item in participants
+        if int(item.user_id) != int(session.leader_id)
+    ]
+    discriminator = str(selected_bill_id) if clean_phase == "voting" else "initial"
+    bill = dict(session.current_bill or {})
+    return {
+        "topic": TVRS_PHASE_ANNOUNCEMENT_TOPIC,
+        "dedupe_key": (
+            f"consensus:{session.session_key}:phase:{clean_phase}:{discriminator}"
+        ),
+        "payload": {
+            "payload_version": 1,
+            "guild_id": int(session.guild_id),
+            "session_key": str(session.session_key),
+            "engine_version": int(session.engine_version),
+            "channel_id": int(session.channel_id),
+            "phase": clean_phase,
+            "bill_id": selected_bill_id or None,
+            "bill_number": int(bill.get("bill_number") or 0) or None,
+            "bill_title": str(bill.get("title") or "")[:300],
+            "user_ids": user_ids,
+        },
+        "max_attempts": 60,
+        "priority": 250,
+        "supersede_key": f"consensus:{session.session_key}:phase-announcement",
+    }
+
+
+def build_discussion_invite_deliveries(
+    session: LiveConsensusSession,
+    *,
+    channel_id: int,
+    discussion_type: str,
+    allowed_user_ids: set[int] | list[int] | tuple[int, ...],
+) -> list[dict[str, Any]]:
+    """Create durable, independently retryable discussion invitations."""
+
+    bill_id = int((session.current_bill or {}).get("id") or 0)
+    selected_channel_id = int(channel_id)
+    if bill_id <= 0 or selected_channel_id <= 0:
+        raise ValueError("tvrs_discussion_invite_identity_required")
+    jobs: list[dict[str, Any]] = []
+    for user_id in sorted({int(item) for item in allowed_user_ids if int(item) > 0}):
+        jobs.append(
+            {
+                "topic": TVRS_DISCUSSION_INVITE_TOPIC,
+                "dedupe_key": (
+                    f"consensus:{session.session_key}:bill:{bill_id}:"
+                    f"discussion-invite:{user_id}"
+                ),
+                "payload": {
+                    "payload_version": 1,
+                    "guild_id": int(session.guild_id),
+                    "session_key": str(session.session_key),
+                    "engine_version": int(session.engine_version),
+                    "bill_id": bill_id,
+                    "channel_id": selected_channel_id,
+                    "discussion_type": str(discussion_type).strip()[:80],
+                    "user_id": user_id,
+                },
+                "max_attempts": 120,
+                "priority": 170,
+                "supersede_key": (
+                    f"consensus:{session.session_key}:discussion-invite:{user_id}"
                 ),
             }
         )
@@ -340,20 +487,40 @@ async def result_control_message_was_reused(payload: dict[str, Any]) -> bool:
     guild_id = int(payload.get("guild_id") or 0)
     session_key = str(payload.get("session_key") or "")
     result_bill_id = int(dict(payload.get("result") or {}).get("bill_id") or 0)
+    user_id = int(payload.get("destination_user_id") or 0)
     if guild_id <= 0 or not session_key or result_bill_id <= 0:
         return False
 
-    snapshot = active_consensus_snapshot(guild_id)
-    if snapshot is None:
-        snapshots = await asyncio.to_thread(storage.tvrs_consensus_active_sessions, guild_id)
-        snapshot = next(
-            (item for item in snapshots if str(item.get("session_key") or "") == session_key),
-            None,
+    current = _consensus_registry.find(session_key)
+    if current is not None and int(current.guild_id) == guild_id:
+        current_bill_id = int(dict(current.current_bill or {}).get("id") or 0)
+        participant = current.participants.get(user_id)
+        panel_bill_id = int(participant.vote_bill_id or 0) if participant else 0
+        return (
+            current_bill_id > 0 and current_bill_id != result_bill_id
+        ) or (
+            panel_bill_id > 0 and panel_bill_id != result_bill_id
         )
+
+    snapshots = await asyncio.to_thread(storage.tvrs_consensus_active_sessions, guild_id)
+    snapshot = next(
+        (item for item in snapshots if str(item.get("session_key") or "") == session_key),
+        None,
+    )
     if snapshot is None or str(snapshot.get("session_key") or "") != session_key:
         return False
     current_bill_id = int(dict(snapshot.get("current_bill") or {}).get("id") or 0)
-    return current_bill_id > 0 and current_bill_id != result_bill_id
+    panel_bill_id = 0
+    for raw_participant in snapshot.get("participants") or []:
+        participant = dict(raw_participant)
+        if int(participant.get("user_id") or 0) == user_id:
+            panel_bill_id = int(participant.get("vote_bill_id") or 0)
+            break
+    return (
+        current_bill_id > 0 and current_bill_id != result_bill_id
+    ) or (
+        panel_bill_id > 0 and panel_bill_id != result_bill_id
+    )
 
 
 def make_result_delivery_handler(bot: Any):
@@ -393,26 +560,34 @@ def make_result_delivery_handler(bot: Any):
         if destination != "participant_dm":
             raise ValueError(f"tvrs_delivery_destination_invalid:{destination}")
         user_id = int(payload.get("destination_user_id") or 0)
-        member = guild.get_member(user_id)
-        if member is None:
-            member = await guild.fetch_member(user_id)
-        dm_channel = member.dm_channel or await member.create_dm()
-        existing_message_id = int(payload.get("destination_message_id") or 0)
-        if existing_message_id and await result_control_message_was_reused(payload):
-            existing_message_id = 0
-        if existing_message_id:
-            try:
-                existing = await dm_channel.fetch_message(existing_message_id)
-            except discord.NotFound:
-                existing = None
-            if existing is not None:
-                await existing.edit(content=str(payload.get("content") or ""), embed=embed, view=None)
-                return DeliveryReceipt(message_id=int(existing.id))
-        previous = await find_delivery_marker(dm_channel, marker)
-        if previous is not None:
-            return DeliveryReceipt(message_id=int(previous.id))
-        sent = await member.send(content=str(payload.get("content") or ""), embed=embed)
-        return DeliveryReceipt(message_id=int(sent.id))
+        async with consensus_projection_lock(session.session_key, user_id):
+            member = guild.get_member(user_id)
+            if member is None:
+                member = await guild.fetch_member(user_id)
+            dm_channel = member.dm_channel or await member.create_dm()
+            existing_message_id = int(payload.get("destination_message_id") or 0)
+            if existing_message_id and await result_control_message_was_reused(payload):
+                existing_message_id = 0
+            if existing_message_id:
+                try:
+                    existing = await dm_channel.fetch_message(existing_message_id)
+                except discord.NotFound:
+                    existing = None
+                if existing is not None:
+                    # Ownership can change while Discord resolves the message.
+                    # Fence again immediately before removing its controls.
+                    if not await result_control_message_was_reused(payload):
+                        await existing.edit(
+                            content=str(payload.get("content") or ""),
+                            embed=embed,
+                            view=None,
+                        )
+                        return DeliveryReceipt(message_id=int(existing.id))
+            previous = await find_delivery_marker(dm_channel, marker)
+            if previous is not None:
+                return DeliveryReceipt(message_id=int(previous.id))
+            sent = await member.send(content=str(payload.get("content") or ""), embed=embed)
+            return DeliveryReceipt(message_id=int(sent.id))
 
     return deliver
 

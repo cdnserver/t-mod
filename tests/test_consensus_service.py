@@ -1163,18 +1163,35 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(restored, 1)
         self.assertEqual([message_id for _, message_id in added_views], [9003])
-        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 1})
+        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 5})
         with storage._db_lock, storage.connect() as connection:
             rows = connection.execute(
-                "SELECT dedupe_key, payload_json, priority, supersede_key "
+                "SELECT topic, dedupe_key, payload_json, priority, supersede_key "
                 "FROM delivery_outbox WHERE status = 'pending'"
             ).fetchall()
-        self.assertEqual(len(rows), 1)
-        payload = json.loads(rows[0]["payload_json"])
-        self.assertEqual(payload["user_id"], 2)
-        self.assertEqual(payload["bill_id"], 10)
-        self.assertEqual(rows[0]["priority"], 100)
-        self.assertEqual(rows[0]["supersede_key"], "consensus:77:test:control:2")
+        control_rows = [
+            row for row in rows if row["topic"] == "tvrs.consensus.control-dm.v1"
+        ]
+        self.assertEqual(len(control_rows), 2)
+        self.assertEqual(
+            {row["topic"] for row in rows},
+            {
+                "tvrs.consensus.control-dm.v1",
+                "tvrs.consensus.control-notice.v1",
+                "tvrs.consensus.phase-announcement.v1",
+            },
+        )
+        payloads = [json.loads(row["payload_json"]) for row in control_rows]
+        self.assertEqual({payload["user_id"] for payload in payloads}, {2, 3})
+        self.assertTrue(all(payload["bill_id"] == 10 for payload in payloads))
+        self.assertTrue(all(row["priority"] == 200 for row in control_rows))
+        self.assertEqual(
+            {row["supersede_key"] for row in control_rows},
+            {
+                "consensus:77:test:control:2",
+                "consensus:77:test:control:3",
+            },
+        )
 
     async def test_transient_view_restore_failure_retries_without_new_ready_event(self) -> None:
         current = session()
@@ -1280,11 +1297,10 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         guild = SimpleNamespace(id=77, get_channel=get_channel)
         bot = SimpleNamespace()
 
-        with patch("modules.tvrs_discussion.edit_vote_dm_to_result", new=AsyncMock()):
-            await asyncio.gather(
-                finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
-                finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
-            )
+        await asyncio.gather(
+            finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
+            finalize_current_vote(bot, guild, current, forced=False),  # type: ignore[arg-type]
+        )
 
         self.assertEqual(current.stage, "after_result")
         self.assertEqual(len(current.results), 1)
