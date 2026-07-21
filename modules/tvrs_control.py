@@ -36,7 +36,6 @@ from modules.discord_delivery import (
 from modules.operations_runtime import wake_operations_worker
 from modules.tvrs_config import (
     TVRS_EMBED_COLOR,
-    TVRS_PERMANENT_CHAIR_ID,
 )
 from modules.tvrs_formatting import (
     format_bill_number,
@@ -52,7 +51,12 @@ from modules.tvrs_delivery import (
     delivery_marker,
     find_delivery_marker,
 )
-from modules.technical_log import log_technical_event
+from modules.consensus_finalization_recovery import (
+    _finalization_retry_tasks,
+    clear_finalization_retry,
+    retry_pending_finalization_once,
+    schedule_finalization_retry,
+)
 
 from modules.tvrs_presentation import (
     build_dm_vote_embed,
@@ -74,8 +78,6 @@ from modules.tvrs_control_cleanup import (
     _prune_duplicate_control_panels,
     _schedule_control_cleanup,
 )
-
-_finalization_retry_tasks: dict[str, asyncio.Task] = {}
 
 async def apply_veto_for_actor(*args, **kwargs):
     from modules.tvrs_decision import apply_veto_for_actor as _implementation
@@ -905,79 +907,6 @@ async def begin_next_bill_vote(
             except discord.DiscordException:
                 pass
 
-
-async def retry_pending_finalization_once(
-    bot: commands.Bot | discord.Client,
-    guild: discord.Guild,
-    session: LiveConsensusSession,
-) -> bool:
-    if session.stage != "finalizing":
-        return True
-    pending = session.pending_action or {}
-    if pending.get("kind") == "veto":
-        await apply_veto_for_actor(
-            bot,
-            guild,
-            session,
-            ConsensusActor(
-                int(pending.get("actor_id") or TVRS_PERMANENT_CHAIR_ID),
-                str(pending.get("actor_display") or "Постоянный председатель"),
-            ),
-        )
-    else:
-        await finalize_current_vote(bot, guild, session, forced=bool(pending.get("forced")))
-    return session.stage != "finalizing"
-
-
-def schedule_finalization_retry(
-    bot: commands.Bot | discord.Client,
-    guild: discord.Guild,
-    session: LiveConsensusSession,
-) -> asyncio.Task:
-    existing = _finalization_retry_tasks.get(session.session_key)
-    if existing is not None and not existing.done():
-        return existing
-
-    async def runner() -> None:
-        delay = 5
-        attempt = 0
-        try:
-            while session.stage == "finalizing" and not session.finished:
-                await asyncio.sleep(delay)
-                attempt += 1
-                try:
-                    if await retry_pending_finalization_once(bot, guild, session):
-                        return
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    traceback.print_exc()
-                    await log_technical_event(
-                        bot,
-                        guild,
-                        title="Фиксация консенсуса будет повторена",
-                        details=(
-                            f"Сессия: `{session.session_key[:120]}`\n"
-                            f"Попытка: `{attempt}`\n"
-                            f"Ошибка: `{type(exc).__name__}: {str(exc)[:700]}`"
-                        ),
-                        dedupe_key=f"consensus-finalization-retry:{session.session_key}",
-                        cooldown_seconds=300,
-                    )
-                delay = min(300, delay * 2)
-        finally:
-            if _finalization_retry_tasks.get(session.session_key) is asyncio.current_task():
-                _finalization_retry_tasks.pop(session.session_key, None)
-
-    task = asyncio.create_task(runner(), name=f"consensus-finalization:{session.session_key}")
-    _finalization_retry_tasks[session.session_key] = task
-    return task
-
-
-def clear_finalization_retry(session_key: str) -> None:
-    task = _finalization_retry_tasks.pop(str(session_key), None)
-    if task is not None and task is not asyncio.current_task() and not task.done():
-        task.cancel()
 
 __all__ = [
     "_finalization_retry_tasks",

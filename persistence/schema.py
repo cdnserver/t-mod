@@ -502,6 +502,10 @@ def init_db() -> None:
                 votes_json TEXT,
                 veto_by_id INTEGER,
                 veto_by_display TEXT,
+                resolution_method TEXT NOT NULL DEFAULT 'vote',
+                resolution_note TEXT,
+                resolved_by_id INTEGER,
+                resolved_by_display TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -1095,6 +1099,18 @@ def init_db() -> None:
             "voter_display": "TEXT",
         }.items():
             _add_column_if_missing(con, "tvrs_votes", column, definition)
+
+        for column, definition in {
+            "resolution_method": "TEXT NOT NULL DEFAULT 'vote'",
+            "resolution_note": "TEXT",
+            "resolved_by_id": "INTEGER",
+            "resolved_by_display": "TEXT",
+        }.items():
+            _add_column_if_missing(con, "tvrs_live_results", column, definition)
+        con.execute(
+            "UPDATE tvrs_live_results SET resolution_method = 'veto' "
+            "WHERE status = 'vetoed' AND resolution_method = 'vote'"
+        )
 
 
         for column, definition in {

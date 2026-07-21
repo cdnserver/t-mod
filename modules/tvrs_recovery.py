@@ -15,6 +15,7 @@ from modules.consensus_core import (
     ConsensusStateError,
     LiveConsensusSession,
 )
+from modules.consensus_health import assess_consensus_health
 from modules.consensus_runtime import (
     registry as _consensus_registry,
     repository as _consensus_repository,
@@ -699,6 +700,20 @@ async def restore_tvrs_consensus_sessions(
                 continue
         if session is None:
             continue
+        health = assess_consensus_health(session)
+        if health.critical:
+            await log_technical_event(
+                bot,
+                guild,
+                title="Консенсус требует проверки председателя",
+                details=(
+                    f"Сессия: `{session.session_key[:120]}`\n"
+                    + "\n".join(f"• {item.message}" for item in health.critical[:5])
+                    + "\nОткройте `/tvrs` → **Восстановление**."
+                ),
+                dedupe_key=f"consensus-health:{session.session_key}",
+                cooldown_seconds=300,
+            )
         try:
             await reconcile_restored_consensus_session(bot, guild, session)
         except Exception as exc:
@@ -761,6 +776,20 @@ def ensure_consensus_delivery_watchdog(bot: commands.Bot) -> asyncio.Task:
                     if guild is None:
                         continue
                     try:
+                        health = assess_consensus_health(session)
+                        if health.critical:
+                            await log_technical_event(
+                                bot,
+                                guild,
+                                title="Нарушена целостность активного консенсуса",
+                                details=(
+                                    f"Сессия: `{session.session_key[:120]}`\n"
+                                    + "\n".join(f"• {item.message}" for item in health.critical[:5])
+                                    + "\nАвтоматические проекции продолжат восстанавливаться; решение принимает председатель через **Восстановление**."
+                                ),
+                                dedupe_key=f"consensus-health:{session.session_key}",
+                                cooldown_seconds=300,
+                            )
                         await reconcile_consensus_liveness(bot, guild, session)
                         await reconcile_current_consensus_deliveries(
                             bot,

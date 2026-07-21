@@ -376,17 +376,33 @@ class ConsensusCoordinator:
         actor: ConsensusActor | None,
         forced: bool = False,
         veto_authorized: bool = False,
+        oral_authorized: bool = False,
+        action_details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if session.stage == "finalizing" and session.pending_action:
             if session.pending_action.get("kind") != kind:
                 raise ConsensusStateError("Голосование уже фиксируется другим способом.")
             return dict(session.pending_action)
-        if session.stage != "voting" or session.current_bill is None:
+        allowed_stages = {"voting"}
+        if kind == "oral":
+            allowed_stages.update({"paused", "discussion_type", "discussion"})
+        if session.stage not in allowed_stages or session.current_bill is None:
             raise ConsensusStateError("Текущее голосование уже закрыто.")
-        if kind not in {"vote", "veto"}:
+        if kind not in {"vote", "veto", "oral"}:
             raise ConsensusStateError("Неизвестный способ завершения голосования.")
         if kind == "veto" and (actor is None or actor.user_id is None or not veto_authorized):
             raise ConsensusStateError("Право вето не подтверждено для этого участника.")
+        if kind == "oral" and (actor is None or actor.user_id is None or not oral_authorized):
+            raise ConsensusStateError("Устное решение может зафиксировать только уполномоченный председатель.")
+        clean_action_details = dict(action_details or {})
+        protected_keys = {"kind", "forced", "actor_id", "actor_display", "bill_id", "claimed_at"}
+        if protected_keys.intersection(clean_action_details):
+            raise ConsensusStateError("Служебные поля фиксации нельзя переопределить.")
+        if kind == "oral":
+            if str(clean_action_details.get("oral_status") or "") not in {"accepted", "rejected"}:
+                raise ConsensusStateError("Для устного решения не указан корректный итог.")
+            if len(str(clean_action_details.get("oral_note") or "").strip()) < 3:
+                raise ConsensusStateError("Для устного решения необходимо основание.")
         with self.mutation(session):
             session.pending_action = {
                 "kind": kind,
@@ -395,7 +411,13 @@ class ConsensusCoordinator:
                 "actor_display": actor.display_name if actor else None,
                 "bill_id": int(session.current_bill.get("id") or 0),
                 "claimed_at": datetime.now(timezone.utc).isoformat(),
+                **clean_action_details,
             }
+            if kind == "oral":
+                session.discussion_channel_id = None
+                session.discussion_initiator_id = None
+                session.discussion_type = None
+                session.discussion_allowed_user_ids.clear()
             # A timer only belongs to the active voting stage.  Clear its
             # durable representation in the same transaction as the stage
             # transition; the asyncio task is cancelled by the runtime only
@@ -630,6 +652,7 @@ class ConsensusCoordinator:
         *,
         actor: ConsensusActor,
         cancelled: bool = False,
+        reason: str | None = None,
         deliveries: Iterable[dict[str, Any]] = (),
     ) -> dict[str, Any]:
         """Close a session, requeue its bill and advance numbering in one commit."""
@@ -651,7 +674,12 @@ class ConsensusCoordinator:
         candidate.timer_seconds = None
         target = "cancelled" if cancelled else "finished"
         transition_session(candidate, target)
-        details = {"result_count": len(candidate.results), "requeued_bill_id": current_bill_id}
+        details = {
+            "result_count": len(candidate.results),
+            "requeued_bill_id": current_bill_id,
+            "reason": str(reason or "").strip()[:1000] or None,
+            "administrative": bool(actor.user_id != session.leader_id),
+        }
         receipt = self.repository.commit_finish(
             candidate,
             expected_revision=int(session.revision),
@@ -666,6 +694,51 @@ class ConsensusCoordinator:
         candidate.revision = int(persisted.get("revision") or candidate.revision + 1)
         self._restore_checkpoint(session, session_to_snapshot(candidate))
         return receipt
+
+    def transfer_leadership(
+        self,
+        session: LiveConsensusSession,
+        *,
+        new_leader_id: int,
+        new_leader_display: str,
+        actor: ConsensusActor,
+    ) -> bool:
+        """Transfer only operational leadership; the participant roster is immutable.
+
+        A takeover is deliberately limited to an already confirmed chair.  This
+        prevents an administrative recovery action from silently changing the
+        quorum or adding a new vote to a running consensus.
+        """
+
+        if session.finished:
+            raise ConsensusStateError("Завершённому консенсусу нельзя сменить ведущего.")
+        participant = session.participants.get(int(new_leader_id))
+        if participant is None or not participant.confirmed or participant.kind != "chair":
+            raise ConsensusStateError(
+                "Новым ведущим может стать только подтверждённый председатель из состава заседания."
+            )
+        if int(session.leader_id) == int(new_leader_id):
+            return False
+        previous_id = int(session.leader_id)
+        previous_display = str(session.leader_display)
+        with self.mutation(session):
+            session.leader_id = int(new_leader_id)
+            session.leader_display = str(new_leader_display).strip()[:200] or str(new_leader_id)
+            session.host_message_id = None
+            session.host_message_obj = None
+            self.save(
+                session,
+                "leadership_transferred",
+                actor=actor,
+                details={
+                    "previous_leader_id": previous_id,
+                    "previous_leader_display": previous_display,
+                    "new_leader_id": int(new_leader_id),
+                    "new_leader_display": session.leader_display,
+                    "stage": str(session.stage),
+                },
+            )
+        return True
 
     @staticmethod
     def calculate(session: LiveConsensusSession) -> dict[str, Any]:

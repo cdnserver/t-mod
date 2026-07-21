@@ -462,6 +462,12 @@ class ConsensusStorageIdempotencyTests(unittest.TestCase):
             kind=kind,
             actor=ConsensusActor(1, "Ведущий"),
             veto_authorized=kind == "veto",
+            oral_authorized=kind == "oral",
+            action_details=(
+                {"oral_status": "accepted", "oral_note": "Решение принято очно"}
+                if kind == "oral"
+                else None
+            ),
         )
         result = LiveResult(
             bill_id=bill.id,
@@ -474,6 +480,40 @@ class ConsensusStorageIdempotencyTests(unittest.TestCase):
             votes=dict(current.votes),
         )
         return coordinator, current, bill, result
+
+    def test_oral_finalization_is_atomic_audited_and_distinct_from_votes(self) -> None:
+        coordinator, current, bill, _ = self._prepared_finalization(kind="oral")
+        result = LiveResult(
+            bill_id=bill.id,
+            bill_number=bill.bill_number,
+            title=bill.title,
+            status="accepted",
+            internal_percent=0.0,
+            overall_percent=0.0,
+            internal_active=False,
+            votes=dict(current.votes),
+            resolution_method="oral",
+            resolution_note="Решение принято очно",
+            resolved_by_id=1,
+            resolved_by_display="Ведущий",
+        )
+
+        coordinator.complete_result_atomically(
+            current,
+            result,
+            bill_status="accepted",
+            result_summary="принят • устное решение",
+            event_type="oral_result_recorded",
+            actor=ConsensusActor(1, "Ведущий"),
+        )
+
+        persisted = storage.tvrs_live_result_for_bill(current.session_key, bill.id)
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted["resolution_method"], "oral")  # type: ignore[index]
+        self.assertEqual(persisted["resolution_note"], "Решение принято очно")  # type: ignore[index]
+        self.assertEqual(persisted["resolved_by_id"], 1)  # type: ignore[index]
+        self.assertEqual(current.results[-1].resolution_method, "oral")
+        self.assertEqual(storage.tvrs_consensus_events(current.session_key)[-1]["event_type"], "oral_result_recorded")
 
     def test_atomic_finalization_commits_result_session_bill_event_and_delivery(self) -> None:
         coordinator, current, bill, result = self._prepared_finalization()
@@ -824,6 +864,26 @@ class ConsensusStorageIdempotencyTests(unittest.TestCase):
         self.assertEqual(storage.tvrs_get_bill_dict_by_id(bill.id)["status"], "requeued")  # type: ignore[index]
         events = storage.tvrs_consensus_events(current.session_key)
         self.assertEqual(events[-1]["event_type"], "session_quarantined")
+
+    def test_persisted_takeover_survives_restart_without_changing_roster(self) -> None:
+        repository = StorageConsensusRepository()
+        coordinator = ConsensusCoordinator(repository)
+        current = session()
+        coordinator.save(current, "session_created", actor=ConsensusActor(1, "Ведущий"))
+        original_roster = set(current.participants)
+
+        coordinator.transfer_leadership(
+            current,
+            new_leader_id=2,
+            new_leader_display="Новый ведущий",
+            actor=ConsensusActor(2, "Новый ведущий"),
+        )
+
+        restored = session_from_snapshot(repository.active_snapshots(77)[0])
+        self.assertEqual(restored.leader_id, 2)
+        self.assertEqual(restored.leader_display, "Новый ведущий")
+        self.assertEqual(set(restored.participants), original_roster)
+        self.assertEqual(storage.tvrs_consensus_events(current.session_key)[-1]["event_type"], "leadership_transferred")
 
     def test_malformed_snapshot_is_returned_for_quarantine(self) -> None:
         current = session()

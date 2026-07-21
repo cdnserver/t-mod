@@ -47,6 +47,8 @@ modules/<feature>_worker.py
 * `consensus_service.py` — сценарии изменения состояния;
 * `consensus_repository.py` — SQLite-адаптер;
 * `consensus_runtime.py` — реестр активных сессий без зависимости от Discord UI;
+* `consensus_health.py` — чистая диагностика межэтапных инвариантов и рекомендации восстановления;
+* `consensus_finalization_recovery.py` — отдельный повтор атомарной фиксации результатов;
 * `consensus_v3.py` — чистый контракт единого входа, preflight и пользовательского маршрута V3;
 * `delivery_outbox.py` — общая долговечная очередь с повторами, lease и fencing;
 * `delivery_runtime.py` — жизненный цикл воркера и технические оповещения;
@@ -58,6 +60,7 @@ modules/<feature>_worker.py
 * `tvrs_hub_views.py` — главное меню, подача проектов и публичная панель;
 * `tvrs_consensus_views.py` — интерфейс участников и ведущего;
 * `tvrs_consensus_portal.py` — подготовка, наблюдение и резервный личный пульт V3;
+* `tvrs_consensus_admin.py` — журналируемые аварийные действия председателя без доступа к обычным голосам;
 * `tvrs_discussion.py` — таймеры, дискуссия, пауза и контроль голосового кворума;
 * `tvrs_control.py` — управляющие доставки и переход к следующему проекту;
 * `tvrs_decision.py` — фиксация результата, вето и завершение заседания;

@@ -36,9 +36,9 @@ CONSENSUS_TRANSITIONS = {
     "registration": frozenset({"voting", "cancelled", "finished"}),
     "voting": frozenset({"discussion_type", "paused", "finalizing", "cancelled", "finished"}),
     "finalizing": frozenset({"after_result", "cancelled"}),
-    "discussion_type": frozenset({"discussion", "voting", "paused", "cancelled", "finished"}),
-    "discussion": frozenset({"voting", "paused", "cancelled", "finished"}),
-    "paused": frozenset({"voting", "discussion_type", "discussion", "after_result", "cancelled", "finished"}),
+    "discussion_type": frozenset({"discussion", "voting", "paused", "finalizing", "cancelled", "finished"}),
+    "discussion": frozenset({"voting", "paused", "finalizing", "cancelled", "finished"}),
+    "paused": frozenset({"voting", "discussion_type", "discussion", "after_result", "finalizing", "cancelled", "finished"}),
     "after_result": frozenset({"voting", "paused", "finished", "cancelled"}),
     "finished": frozenset(),
     "cancelled": frozenset(),
@@ -101,6 +101,10 @@ class LiveResult:
     votes: dict[int, str]
     veto_by_id: int | None = None
     retry_bill_number: int | None = None
+    resolution_method: Literal["vote", "veto", "oral"] = "vote"
+    resolution_note: str | None = None
+    resolved_by_id: int | None = None
+    resolved_by_display: str | None = None
 
 
 @dataclass
@@ -251,6 +255,10 @@ def _result_payload(result: LiveResult) -> dict[str, Any]:
         "votes": {str(user_id): str(vote) for user_id, vote in result.votes.items()},
         "veto_by_id": result.veto_by_id,
         "retry_bill_number": result.retry_bill_number,
+        "resolution_method": str(result.resolution_method),
+        "resolution_note": result.resolution_note,
+        "resolved_by_id": result.resolved_by_id,
+        "resolved_by_display": result.resolved_by_display,
     }
 
 
@@ -313,7 +321,7 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
         raise ConsensusStateError(f"Для этапа {stage} отсутствует текущий законопроект.")
     pending_action = snapshot.get("pending_action")
     if stage == "finalizing" and (
-        not isinstance(pending_action, dict) or pending_action.get("kind") not in {"vote", "veto"}
+        not isinstance(pending_action, dict) or pending_action.get("kind") not in {"vote", "veto", "oral"}
     ):
         raise ConsensusStateError("Для фиксации результата отсутствует сохранённое действие.")
     participants: dict[int, LiveParticipant] = {}
@@ -347,6 +355,14 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             votes={int(user_id): str(vote) for user_id, vote in (raw.get("votes") or {}).items()},
             veto_by_id=int(raw["veto_by_id"]) if raw.get("veto_by_id") else None,
             retry_bill_number=int(raw["retry_bill_number"]) if raw.get("retry_bill_number") else None,
+            resolution_method=(
+                str(raw.get("resolution_method") or ("veto" if raw.get("veto_by_id") else "vote"))
+            ),  # type: ignore[arg-type]
+            resolution_note=(str(raw["resolution_note"]) if raw.get("resolution_note") else None),
+            resolved_by_id=(int(raw["resolved_by_id"]) if raw.get("resolved_by_id") else None),
+            resolved_by_display=(
+                str(raw["resolved_by_display"]) if raw.get("resolved_by_display") else None
+            ),
         )
         for raw in (snapshot.get("results") or [])
     ]

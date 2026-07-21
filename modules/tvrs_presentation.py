@@ -111,6 +111,8 @@ def is_senator(member: discord.Member) -> bool:
 
 
 def participant_kind(member: discord.Member) -> str | None:
+    if member.guild_permissions.administrator:
+        return "chair"
     if member.id == TVRS_PERMANENT_CHAIR_ID:
         return "chair"
     if TVRS_CHAIR_ROLE_ID and any(role.id == TVRS_CHAIR_ROLE_ID for role in member.roles):

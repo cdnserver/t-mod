@@ -680,6 +680,14 @@ def tvrs_consensus_commit_finalization(
                 "votes_json": normalized_votes_json,
                 "veto_by_id": int(result["veto_by_id"]) if result.get("veto_by_id") else None,
                 "veto_by_display": result.get("veto_by_display"),
+                "resolution_method": (
+                    "veto"
+                    if str(result.get("status") or bill_status) == "vetoed"
+                    else ("oral" if str(result.get("resolution_method") or "") == "oral" else "vote")
+                ),
+                "resolution_note": result.get("resolution_note"),
+                "resolved_by_id": int(result["resolved_by_id"]) if result.get("resolved_by_id") else None,
+                "resolved_by_display": result.get("resolved_by_display"),
             }
             if result_conflicts(existing_result, expected_existing):
                 con.rollback()
@@ -711,7 +719,13 @@ def tvrs_consensus_commit_finalization(
             pending_kind = str(dict(persisted_snapshot.get("pending_action") or {}).get("kind") or "")
         except (TypeError, ValueError, json.JSONDecodeError):
             pending_kind = ""
-        result_kind = "veto" if str(result.get("status") or bill_status) == "vetoed" else "vote"
+        result_kind = str(result.get("resolution_method") or "").strip().lower()
+        if str(result.get("status") or bill_status) == "vetoed":
+            # Backward compatibility: pre-metadata callers represented veto
+            # only through the result status.
+            result_kind = "veto"
+        elif result_kind not in {"vote", "oral"}:
+            result_kind = "vote"
         if pending_kind != result_kind:
             con.rollback()
             raise RuntimeError("consensus_finalization_kind_conflict")
@@ -730,6 +744,10 @@ def tvrs_consensus_commit_finalization(
             normalized_votes_json,
             int(result["veto_by_id"]) if result.get("veto_by_id") else None,
             result.get("veto_by_display"),
+            result_kind,
+            result.get("resolution_note"),
+            int(result["resolved_by_id"]) if result.get("resolved_by_id") else None,
+            result.get("resolved_by_display"),
             now,
         )
         if existing_result is None:
@@ -738,8 +756,10 @@ def tvrs_consensus_commit_finalization(
                 INSERT INTO tvrs_live_results(
                     guild_id, session_key, plenary_number, bill_id, bill_number,
                     bill_title, status, internal_percent, overall_percent,
-                    internal_active, votes_json, veto_by_id, veto_by_display, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    internal_active, votes_json, veto_by_id, veto_by_display,
+                    resolution_method, resolution_note, resolved_by_id,
+                    resolved_by_display, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 result_values,
             )
@@ -756,6 +776,10 @@ def tvrs_consensus_commit_finalization(
                 "votes_json": normalized_votes_json,
                 "veto_by_id": int(result["veto_by_id"]) if result.get("veto_by_id") else None,
                 "veto_by_display": result.get("veto_by_display"),
+                "resolution_method": result_kind,
+                "resolution_note": result.get("resolution_note"),
+                "resolved_by_id": int(result["resolved_by_id"]) if result.get("resolved_by_id") else None,
+                "resolved_by_display": result.get("resolved_by_display"),
             }
             if result_conflicts(existing_result, comparable):
                 con.rollback()
@@ -1262,13 +1286,19 @@ def tvrs_save_live_result(
     votes_json: str,
     veto_by_id: int | None = None,
     veto_by_display: str | None = None,
+    resolution_method: str = "vote",
+    resolution_note: str | None = None,
+    resolved_by_id: int | None = None,
+    resolved_by_display: str | None = None,
 ) -> int:
     now = utc_now_iso()
+    if str(status) == "vetoed" and str(resolution_method) == "vote":
+        resolution_method = "veto"
     with _db_lock, connect() as con:
         cur = con.execute(
             """
-            INSERT INTO tvrs_live_results(guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, internal_active, votes_json, veto_by_id, veto_by_display, created_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tvrs_live_results(guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, internal_active, votes_json, veto_by_id, veto_by_display, resolution_method, resolution_note, resolved_by_id, resolved_by_display, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_key, bill_id) DO UPDATE SET
                 plenary_number = excluded.plenary_number,
                 bill_number = excluded.bill_number,
@@ -1279,9 +1309,13 @@ def tvrs_save_live_result(
                 internal_active = excluded.internal_active,
                 votes_json = excluded.votes_json,
                 veto_by_id = excluded.veto_by_id,
-                veto_by_display = excluded.veto_by_display
+                veto_by_display = excluded.veto_by_display,
+                resolution_method = excluded.resolution_method,
+                resolution_note = excluded.resolution_note,
+                resolved_by_id = excluded.resolved_by_id,
+                resolved_by_display = excluded.resolved_by_display
             """,
-            (guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, 1 if internal_active else 0, votes_json, veto_by_id, veto_by_display, now),
+            (guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, 1 if internal_active else 0, votes_json, veto_by_id, veto_by_display, resolution_method, resolution_note, resolved_by_id, resolved_by_display, now),
         )
         row = con.execute(
             "SELECT id FROM tvrs_live_results WHERE session_key = ? AND bill_id = ?",

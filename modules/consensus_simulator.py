@@ -254,6 +254,7 @@ class ConsensusSimulation:
             internal_percent=0.0,
             overall_percent=0.0,
             internal_active=False,
+            resolution_method="veto",
             votes=dict(self.session.votes),
             veto_by_id=self.leader_id,
         )

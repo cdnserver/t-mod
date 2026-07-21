@@ -120,46 +120,69 @@ def build_result_embed(result: LiveResult, session: LiveConsensusSession) -> dis
     color = 0x7FD17F if result.status == "accepted" else (0xD6B46A if result.status == "vetoed" else 0xD67F7F)
     icon = "✅" if result.status == "accepted" else ("🟨" if result.status == "vetoed" else "❌")
     embed = discord.Embed(
-        title=f"{icon} Итог голосования • №{format_bill_number(result.bill_number)}",
+        title=(
+            f"{icon} Итог устного решения • №{format_bill_number(result.bill_number)}"
+            if result.resolution_method == "oral"
+            else f"{icon} Итог голосования • №{format_bill_number(result.bill_number)}"
+        ),
         description=f"**{clip_text(result.title, 240)}**\n\nРешение: **{result_status_text(result.status)}**",
         color=color,
         timestamp=now_local(),
     )
-    embed.add_field(
-        name="🏛️ Внутренний консенсус",
-        value=(
-            f"`{result.internal_percent}%` {progress_bar(result.internal_percent, 10)}\n"
-            f"{'✅ активирован' if result.internal_active else '❌ не активирован'}"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="🌐 Общий консенсус",
-        value=(
-            f"`{result.overall_percent}%` {progress_bar(result.overall_percent, 10)}\n"
-            f"порог принятия `{session.rules.acceptance_percent}%`"
-        ),
-        inline=True,
-    )
+    if result.resolution_method == "oral":
+        recorder = f"<@{result.resolved_by_id}>" if result.resolved_by_id else "не указан"
+        embed.add_field(
+            name="🗣️ Способ фиксации",
+            value=f"Решение принято устно и внесено в систему председателем {recorder}.",
+            inline=False,
+        )
+        if result.resolution_note:
+            embed.add_field(
+                name="📝 Основание",
+                value=clip_text(result.resolution_note, 1000),
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="🏛️ Внутренний консенсус",
+            value=(
+                f"`{result.internal_percent}%` {progress_bar(result.internal_percent, 10)}\n"
+                f"{'✅ активирован' if result.internal_active else '❌ не активирован'}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="🌐 Общий консенсус",
+            value=(
+                f"`{result.overall_percent}%` {progress_bar(result.overall_percent, 10)}\n"
+                f"порог принятия `{session.rules.acceptance_percent}%`"
+            ),
+            inline=True,
+        )
     if result.veto_by_id:
         value = f"<@{result.veto_by_id}>"
         if result.retry_bill_number:
             value += f"\nПовторное рассмотрение: №`{format_bill_number(result.retry_bill_number)}`"
         embed.add_field(name="🛑 Право вето", value=value, inline=False)
-    lines = [
-        f"{participant.mention} · `{role_label(participant)}` · "
-        f"**{vote_label(result.votes.get(participant.user_id))}**"
-        for participant in sorted(
-            session.confirmed_participants(),
-            key=lambda item: (item.kind != "chair", item.display_name.lower()),
+    if result.resolution_method != "oral":
+        lines = [
+            f"{participant.mention} · `{role_label(participant)}` · "
+            f"**{vote_label(result.votes.get(participant.user_id))}**"
+            for participant in sorted(
+                session.confirmed_participants(),
+                key=lambda item: (item.kind != "chair", item.display_name.lower()),
+            )
+        ]
+        embed.add_field(
+            name="🧾 Зафиксированные голоса",
+            value=clip_text("\n".join(lines), 1000, "Нет голосов."),
+            inline=False,
         )
-    ]
-    embed.add_field(
-        name="🧾 Зафиксированные голоса",
-        value=clip_text("\n".join(lines), 1000, "Нет голосов."),
-        inline=False,
+    embed.set_footer(
+        text="TVRS • устное решение зафиксировано"
+        if result.resolution_method == "oral"
+        else "TVRS • результат зафиксирован"
     )
-    embed.set_footer(text="TVRS • результат зафиксирован")
     return embed
 
 
@@ -196,10 +219,14 @@ def build_final_summary_embed(session: LiveConsensusSession) -> discord.Embed:
         lines = []
         for result in session.results:
             mark = "✅" if result.status == "accepted" else ("🟨" if result.status == "vetoed" else "❌")
+            suffix = (
+                "устное решение"
+                if result.resolution_method == "oral"
+                else f"общий `{result.overall_percent}%`"
+            )
             lines.append(
                 f"{mark} №`{format_bill_number(result.bill_number)}` • "
-                f"**{clip_text(result.title, 80)}** — {result_status_text(result.status)} • "
-                f"общий `{result.overall_percent}%`"
+                f"**{clip_text(result.title, 80)}** — {result_status_text(result.status)} • {suffix}"
             )
         embed.add_field(name="Рассмотренные законопроекты", value=clip_text("\n".join(lines), 1000), inline=False)
     else:

@@ -37,7 +37,9 @@ from modules.tvrs_consensus_views import (
     TVRSHostVoteView,
     TVRSRegistrationView,
 )
+from modules.tvrs_consensus_admin import TVRSConsensusAdminView, build_consensus_admin_embed
 from modules.tvrs_hub_views import TVRSMainPanelView
+from modules.tvrs_presentation import participant_kind
 
 
 def participant(user_id: int, kind: str, *, confirmed: bool = True) -> LiveParticipant:
@@ -136,6 +138,15 @@ class ConsensusV3UiTests(unittest.TestCase):
         registry.sessions.clear()
         registry._locks.clear()
 
+    def test_administrator_is_a_chair_in_the_consensus_roster(self) -> None:
+        member = SimpleNamespace(
+            id=99,
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+
+        self.assertEqual(participant_kind(member), "chair")
+
     def test_center_never_shows_old_conflicting_buttons(self) -> None:
         async def inspect() -> None:
             idle = TVRSMainPanelView(
@@ -154,9 +165,20 @@ class ConsensusV3UiTests(unittest.TestCase):
             leader = TVRSMainPanelView(1, guild_id=77, has_chair_access=True)
             participant_view = TVRSMainPanelView(3, guild_id=77, has_chair_access=False)
             outsider = TVRSMainPanelView(99, guild_id=77, has_chair_access=False)
+            recovery_chair = TVRSMainPanelView(2, guild_id=77, has_chair_access=True)
             self.assertIn("Управлять заседанием", {str(item.label) for item in leader.children})
             self.assertIn("Открыть личный пульт", {str(item.label) for item in participant_view.children})
             self.assertIn("Наблюдать за заседанием", {str(item.label) for item in outsider.children})
+            self.assertIn("Восстановление", {str(item.label) for item in recovery_chair.children})
+            self.assertNotIn("Восстановление", {str(item.label) for item in outsider.children})
+
+            recovery = TVRSConsensusAdminView(2, current.session_key)
+            recovery_labels = {str(item.label) for item in recovery.children}
+            self.assertIn("Принять ведение", recovery_labels)
+            self.assertIn("Восстановить", recovery_labels)
+            self.assertIn("Безопасно закрыть", recovery_labels)
+            fields = {field.name: field.value for field in build_consensus_admin_embed(current).fields}
+            self.assertIn("Диагностика", fields)
 
         asyncio.run(inspect())
 

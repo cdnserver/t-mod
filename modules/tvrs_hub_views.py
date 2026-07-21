@@ -525,6 +525,20 @@ class TVRSMainPanelView(TVRSBaseView):
             )
             observer.callback = self.observe
             self.add_item(observer)
+        if (
+            session is not None
+            and not session.finished
+            and self.has_chair_access
+            and int(session.leader_id) != self.requester_id
+        ):
+            administration = discord.ui.Button(
+                label="Восстановление",
+                emoji="🛟",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+            )
+            administration.callback = self.administration
+            self.add_item(administration)
         queue = discord.ui.Button(
             label="Очередь",
             emoji="📚",
@@ -646,6 +660,19 @@ class TVRSMainPanelView(TVRSBaseView):
             view=view,
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
+
+    async def administration(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
+        session = _active_sessions.get(interaction.guild.id)
+        if session is None or session.finished:
+            await interaction.response.send_message("Активного заседания сейчас нет.", ephemeral=True)
+            return
+        if not is_chair(interaction.user):
+            await interaction.response.send_message("Восстановление доступно только председателю.", ephemeral=True)
+            return
+        from modules.tvrs_consensus_admin import open_consensus_admin_panel
+
+        await open_consensus_admin_panel(interaction, session)
 
     async def observe(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None

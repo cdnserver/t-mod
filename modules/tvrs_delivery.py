@@ -45,6 +45,10 @@ def _result_payload(result: LiveResult) -> dict[str, Any]:
         "votes": {str(user_id): str(vote) for user_id, vote in result.votes.items()},
         "veto_by_id": int(result.veto_by_id) if result.veto_by_id else None,
         "retry_bill_number": int(result.retry_bill_number) if result.retry_bill_number else None,
+        "resolution_method": str(result.resolution_method),
+        "resolution_note": result.resolution_note,
+        "resolved_by_id": int(result.resolved_by_id) if result.resolved_by_id else None,
+        "resolved_by_display": result.resolved_by_display,
     }
 
 
@@ -451,6 +455,12 @@ def _render_objects(payload: dict[str, Any]) -> tuple[LiveConsensusSession, Live
         retry_bill_number=(
             int(raw_result["retry_bill_number"]) if raw_result.get("retry_bill_number") else None
         ),
+        resolution_method=str(raw_result.get("resolution_method") or "vote"),  # type: ignore[arg-type]
+        resolution_note=(str(raw_result["resolution_note"]) if raw_result.get("resolution_note") else None),
+        resolved_by_id=(int(raw_result["resolved_by_id"]) if raw_result.get("resolved_by_id") else None),
+        resolved_by_display=(
+            str(raw_result["resolved_by_display"]) if raw_result.get("resolved_by_display") else None
+        ),
     )
     return session, result
 
@@ -708,6 +718,12 @@ def _render_summary_session(payload: dict[str, Any]) -> LiveConsensusSession:
                 veto_by_id=(int(item["veto_by_id"]) if item.get("veto_by_id") else None),
                 retry_bill_number=(
                     int(item["retry_bill_number"]) if item.get("retry_bill_number") else None
+                ),
+                resolution_method=str(item.get("resolution_method") or "vote"),  # type: ignore[arg-type]
+                resolution_note=(str(item["resolution_note"]) if item.get("resolution_note") else None),
+                resolved_by_id=(int(item["resolved_by_id"]) if item.get("resolved_by_id") else None),
+                resolved_by_display=(
+                    str(item["resolved_by_display"]) if item.get("resolved_by_display") else None
                 ),
             )
         )

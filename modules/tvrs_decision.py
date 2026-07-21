@@ -202,6 +202,9 @@ async def apply_veto_for_actor(
             votes=dict(session.votes),
             veto_by_id=actor.user_id,
             retry_bill_number=(int(retry["bill_number"]) if retry else None),
+            resolution_method="veto",
+            resolved_by_id=actor.user_id,
+            resolved_by_display=actor.display_name,
         )
         deliveries = build_result_deliveries(
             session,
@@ -248,6 +251,98 @@ async def apply_veto_for_actor(
             )
 
 
+async def record_oral_result(
+    bot: commands.Bot | discord.Client,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+    actor: ConsensusActor,
+    *,
+    status: str,
+    note: str,
+    expected_bill_id: int | None = None,
+) -> LiveResult:
+    """Record a chair-authorized oral decision without inventing vote totals."""
+
+    clean_status = str(status).strip().lower()
+    if clean_status not in {"accepted", "rejected"}:
+        raise ConsensusStateError("Устный итог должен быть принят или отклонён.")
+    clean_note = " ".join(str(note).split()).strip()[:1000]
+    if len(clean_note) < 3:
+        raise ConsensusStateError("Укажите краткое основание устного решения.")
+    if actor.user_id is None:
+        raise ConsensusStateError("Не удалось определить председателя, фиксирующего решение.")
+
+    async with consensus_session_lock(session.guild_id):
+        if expected_bill_id is not None and consensus_bill_id(session) != int(expected_bill_id):
+            raise ConsensusStateError("Устное решение относится к уже сменившемуся проекту.")
+        if session.stage != "finalizing":
+            await run_blocking_cancellation_safe(
+                _consensus.claim_finalization,
+                session,
+                kind="oral",
+                actor=actor,
+                oral_authorized=True,
+                action_details={"oral_status": clean_status, "oral_note": clean_note},
+            )
+            await cancel_vote_timer(session)
+        elif (session.pending_action or {}).get("kind") != "oral":
+            raise ConsensusStateError("Проект уже фиксируется другим способом.")
+
+        pending = dict(session.pending_action or {})
+        clean_status = str(pending.get("oral_status") or clean_status)
+        clean_note = str(pending.get("oral_note") or clean_note)
+        if session.current_bill is None:
+            raise ConsensusStateError("Текущий законопроект уже закрыт.")
+        bill = dict(session.current_bill)
+        result = LiveResult(
+            bill_id=int(bill["id"]),
+            bill_number=int(bill["bill_number"]),
+            title=str(bill.get("title") or ""),
+            status=clean_status,
+            internal_percent=0.0,
+            overall_percent=0.0,
+            internal_active=False,
+            votes=dict(session.votes),
+            resolution_method="oral",
+            resolution_note=clean_note,
+            resolved_by_id=int(pending.get("actor_id") or actor.user_id),
+            resolved_by_display=str(pending.get("actor_display") or actor.display_name or actor.user_id),
+        )
+        deliveries = build_result_deliveries(
+            session,
+            result,
+            participant_content="Устное решение по текущему законопроекту внесено в систему.",
+        )
+        try:
+            await run_blocking_cancellation_safe(
+                _consensus.complete_result_atomically,
+                session,
+                result,
+                bill_status=clean_status,
+                result_summary=f"{result_status_text(clean_status)} • устное решение: {clean_note}",
+                event_type="oral_result_recorded",
+                actor=actor,
+                details={"resolution_method": "oral", "resolution_note": clean_note},
+                deliveries=deliveries,
+            )
+        except Exception:
+            schedule_finalization_retry(bot, guild, session)
+            raise
+
+    clear_finalization_retry(session.session_key)
+    wake_delivery_worker()
+    wake_operations_worker()
+    await update_public_consensus_card(bot, guild, session)
+    async with consensus_session_lock(session.guild_id):
+        if _consensus_registry.find(session.session_key) is session and session.stage == "after_result":
+            await edit_session_host_message(
+                session,
+                embed=build_result_embed(result, session),
+                view=TVRSAfterResultView(session.session_key),
+            )
+    return result
+
+
 async def finish_session(
     bot: commands.Bot | discord.Client,
     guild: discord.Guild,
@@ -257,6 +352,9 @@ async def finish_session(
     expected_stage: str | None = None,
     expected_bill_id: int | None = None,
     expected_result_bill_id: int | None = None,
+    actor: ConsensusActor | None = None,
+    cancelled: bool = False,
+    reason: str | None = None,
 ) -> None:
     async with consensus_session_lock(session.guild_id):
         if expected_stage is not None and not consensus_generation_matches(
@@ -268,12 +366,20 @@ async def finish_session(
             return
         if session.finished:
             return
-        deliveries = build_session_summary_deliveries(session)
+        effective_actor = actor or ConsensusActor(session.leader_id, session.leader_display)
+        deliveries = [] if cancelled else build_session_summary_deliveries(session)
+        finish_kwargs = {
+            "actor": effective_actor,
+            "deliveries": deliveries,
+        }
+        if cancelled:
+            finish_kwargs["cancelled"] = True
+        if reason is not None:
+            finish_kwargs["reason"] = reason
         await run_blocking_cancellation_safe(
             _consensus.finish_atomically,
             session,
-            actor=ConsensusActor(session.leader_id, session.leader_display),
-            deliveries=deliveries,
+            **finish_kwargs,
         )
     wake_delivery_worker()
     await cancel_vote_timer(session)
@@ -286,4 +392,4 @@ async def finish_session(
     _consensus_registry.remove(guild.id, session_key=session.session_key)
     wake_operations_worker()
 
-__all__ = ['finalize_current_vote', 'apply_veto', 'apply_veto_for_actor', 'finish_session']
+__all__ = ['finalize_current_vote', 'apply_veto', 'apply_veto_for_actor', 'record_oral_result', 'finish_session']
