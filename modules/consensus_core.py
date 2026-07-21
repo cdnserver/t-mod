@@ -407,7 +407,11 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
         results=results,
         finished=snapshot_finished or stage in CONSENSUS_TERMINAL_STAGES,
         timer_deadline=parse_datetime(snapshot.get("timer_deadline")),
-        timer_seconds=int(snapshot["timer_seconds"]) if snapshot.get("timer_seconds") else None,
+        timer_seconds=(
+            int(snapshot["timer_seconds"])
+            if snapshot.get("timer_seconds") is not None
+            else None
+        ),
         previous_stage=str(snapshot["previous_stage"]) if snapshot.get("previous_stage") else None,
         paused_reason=str(snapshot["paused_reason"]) if snapshot.get("paused_reason") else None,
         pause_is_automatic=bool(snapshot.get("pause_is_automatic")),

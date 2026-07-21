@@ -725,6 +725,96 @@ class DeliveryOutboxStorageTests(TemporaryOutboxDatabase, unittest.TestCase):
             )
         )
 
+    def test_consensus_recovery_revives_semantic_jobs_but_rebuilds_control_panels(self) -> None:
+        payload = {"guild_id": 202, "session_key": "202:session"}
+        result = self.enqueue(
+            "dead-result",
+            topic="tvrs.consensus.result.v1",
+            payload={**payload, "destination": "participant_dm"},
+            max_attempts=1,
+        )
+        control = self.enqueue(
+            "dead-control",
+            topic="tvrs.consensus.control-dm.v1",
+            payload={**payload, "user_id": 7},
+            max_attempts=1,
+        )
+        claimed = storage.delivery_outbox_claim(
+            worker_id="consensus-dead-worker",
+            limit=2,
+            now=self.started_at.isoformat(),
+        )
+        for row in claimed:
+            storage.delivery_outbox_mark_failed(
+                int(row["id"]),
+                lease_token=str(row["lease_token"]),
+                error="discord unavailable",
+                retry_at=self.started_at.isoformat(),
+                permanent=True,
+                now=self.started_at.isoformat(),
+            )
+
+        status = storage.delivery_outbox_consensus_status(
+            "202:session",
+            guild_id=202,
+        )
+        revived = storage.delivery_outbox_requeue_dead_for_consensus(
+            "202:session",
+            guild_id=202,
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertEqual(status["counts"], {"dead": 2})
+        self.assertEqual(revived, [int(result["id"])])
+        self.assertEqual(storage.delivery_outbox_get(int(result["id"]))["status"], "retry")  # type: ignore[index]
+        self.assertEqual(storage.delivery_outbox_get(int(control["id"]))["status"], "dead")  # type: ignore[index]
+
+    def test_consensus_recovery_never_revives_superseded_or_foreign_dead_job(self) -> None:
+        payload = {"guild_id": 202, "session_key": "202:session"}
+        stale = self.enqueue(
+            "stale-notice",
+            topic="tvrs.consensus.control-notice.v1",
+            payload=payload,
+            max_attempts=1,
+            supersede_key="202:session:notice:7",
+        )
+        foreign = self.enqueue(
+            "foreign-result",
+            topic="tvrs.consensus.result.v1",
+            payload={"guild_id": 303, "session_key": "303:session"},
+            max_attempts=1,
+        )
+        claimed = storage.delivery_outbox_claim(
+            worker_id="consensus-scope-worker",
+            limit=2,
+            now=self.started_at.isoformat(),
+        )
+        for row in claimed:
+            storage.delivery_outbox_mark_failed(
+                int(row["id"]),
+                lease_token=str(row["lease_token"]),
+                error="terminal",
+                retry_at=self.started_at.isoformat(),
+                permanent=True,
+                now=self.started_at.isoformat(),
+            )
+        self.enqueue(
+            "new-notice",
+            topic="tvrs.consensus.control-notice.v1",
+            payload=payload,
+            supersede_key="202:session:notice:7",
+        )
+
+        revived = storage.delivery_outbox_requeue_dead_for_consensus(
+            "202:session",
+            guild_id=202,
+            now=self.started_at.isoformat(),
+        )
+
+        self.assertEqual(revived, [])
+        self.assertEqual(storage.delivery_outbox_get(int(stale["id"]))["status"], "dead")  # type: ignore[index]
+        self.assertEqual(storage.delivery_outbox_get(int(foreign["id"]))["status"], "dead")  # type: ignore[index]
+
 
 class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAsyncioTestCase):
     async def test_interactive_retry_never_backs_off_for_minutes(self) -> None:

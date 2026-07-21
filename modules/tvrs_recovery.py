@@ -11,23 +11,25 @@ from discord.ext import commands
 from persistence import activity_repository as _activity_storage
 from persistence import outbox_repository as _outbox_storage
 from persistence import tvrs_repository as _tvrs_storage
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_core import (
     ConsensusStateError,
     LiveConsensusSession,
 )
+from modules.consensus_finalization_recovery import retry_pending_finalization_once
 from modules.consensus_health import assess_consensus_health
+from modules.consensus_operational import collect_consensus_operational_state
 from modules.consensus_runtime import (
+    coordinator as _consensus,
     registry as _consensus_registry,
     repository as _consensus_repository,
     restored_guilds as _restored_consensus_guilds,
 )
-from modules.consensus_service import ConsensusActor
 from modules.delivery_runtime import wake_delivery_worker
 from modules.operations_runtime import wake_operations_worker
 from modules.public_panel_runtime import register_public_panel_provider
 from modules.tvrs_config import (
     TVRS_MATERIALS_CHANNEL_ID,
-    TVRS_PERMANENT_CHAIR_ID,
     TVRS_STICKY_DEBOUNCE_SECONDS,
 )
 from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
@@ -49,8 +51,12 @@ from modules.tvrs_presentation import (
 )
 from modules.tvrs_hub_views import TVRSPublicPanelView, TVRSStickyView
 from modules.tvrs_consensus_views import TVRSConfirmView, TVRSRestoredVoteView
-from modules.tvrs_decision import apply_veto_for_actor, finalize_current_vote
-from modules.tvrs_discussion import schedule_vote_timer_task
+from modules.tvrs_decision import finalize_current_vote
+from modules.tvrs_discussion import (
+    cancel_vote_timer,
+    check_realtime_quorum,
+    schedule_vote_timer_task,
+)
 
 _sticky_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task] = {}
@@ -168,8 +174,7 @@ async def reconcile_restored_consensus_session(
     session: LiveConsensusSession,
 ) -> None:
     """Reattach controls and finish any operation interrupted by a restart."""
-    await reconcile_consensus_liveness(bot, guild, session)
-    await reconcile_current_consensus_deliveries(
+    await recover_consensus_session(
         bot,
         guild,
         session,
@@ -238,26 +243,10 @@ async def reconcile_consensus_liveness(
 
     if session.finished:
         return False
+    if assess_consensus_health(session).critical:
+        return False
     if session.stage == "finalizing":
-        pending = session.pending_action or {}
-        if pending.get("kind") == "veto":
-            await apply_veto_for_actor(
-                bot,
-                guild,
-                session,
-                ConsensusActor(
-                    int(pending.get("actor_id") or TVRS_PERMANENT_CHAIR_ID),
-                    str(pending.get("actor_display") or "Постоянный председатель"),
-                ),
-            )
-        else:
-            await finalize_current_vote(
-                bot,
-                guild,
-                session,
-                forced=bool(pending.get("forced")),
-                expected_bill_id=consensus_bill_id(session),
-            )
+        await retry_pending_finalization_once(bot, guild, session)
         return True
     if session.stage != "voting" or session.current_bill is None:
         return False
@@ -296,6 +285,73 @@ async def reconcile_consensus_liveness(
         )
         return True
     return False
+
+
+async def repair_safe_consensus_invariants(
+    session: LiveConsensusSession,
+) -> tuple[str, ...]:
+    """Persist unambiguous cleanup before touching runtime projections."""
+
+    async with _consensus_registry.lock(session.guild_id):
+        repaired = await run_blocking_cancellation_safe(
+            _consensus.repair_safe_invariants,
+            session,
+        )
+    if "timer_outside_voting" in repaired or "partial_timer_state" in repaired:
+        await cancel_vote_timer(session)
+    if repaired:
+        wake_operations_worker()
+    return tuple(repaired)
+
+
+async def requeue_consensus_dead_deliveries(session: LiveConsensusSession) -> int:
+    revived = await asyncio.to_thread(
+        _outbox_storage.delivery_outbox_requeue_dead_for_consensus,
+        session.session_key,
+        guild_id=session.guild_id,
+    )
+    if revived:
+        wake_delivery_worker()
+    return len(revived)
+
+
+async def recover_consensus_session(
+    bot: commands.Bot | discord.Client,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+    *,
+    verify_discord_messages: bool,
+    retry_permanent_failures: bool,
+) -> dict[str, object]:
+    """Run the safe automatic recovery pipeline in dependency order."""
+
+    repaired = await repair_safe_consensus_invariants(session)
+    # Production guilds expose the channel cache. Lightweight adapters used by
+    # migrations/tests do not; absence of that interface is unknown state, not
+    # proof that quorum disappeared.
+    if callable(getattr(guild, "get_channel", None)):
+        await check_realtime_quorum(bot, guild, session)
+    liveness_changed = await reconcile_consensus_liveness(bot, guild, session)
+    # Permanent failures are retried only during an explicit/full recovery
+    # (startup or chair action), never on every watchdog tick.
+    revived = (
+        await requeue_consensus_dead_deliveries(session)
+        if retry_permanent_failures
+        else 0
+    )
+    queued = await reconcile_current_consensus_deliveries(
+        bot,
+        guild,
+        session,
+        verify_discord_messages=verify_discord_messages,
+        retry_permanent_failures=retry_permanent_failures,
+    )
+    return {
+        "repaired": repaired,
+        "liveness_changed": liveness_changed,
+        "revived": revived,
+        "queued": queued,
+    }
 
 
 async def _saved_control_message_exists(
@@ -790,8 +846,7 @@ def ensure_consensus_delivery_watchdog(bot: commands.Bot) -> asyncio.Task:
                                 dedupe_key=f"consensus-health:{session.session_key}",
                                 cooldown_seconds=300,
                             )
-                        await reconcile_consensus_liveness(bot, guild, session)
-                        await reconcile_current_consensus_deliveries(
+                        await recover_consensus_session(
                             bot,
                             guild,
                             session,
@@ -825,4 +880,4 @@ async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:
         except Exception:
             traceback.print_exc()
 
-__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'reconcile_consensus_liveness', 'reconcile_current_consensus_deliveries', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'ensure_consensus_delivery_watchdog', 'tvrs_ensure_sticky_all']
+__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'reconcile_consensus_liveness', 'repair_safe_consensus_invariants', 'collect_consensus_operational_state', 'requeue_consensus_dead_deliveries', 'recover_consensus_session', 'reconcile_current_consensus_deliveries', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'ensure_consensus_delivery_watchdog', 'tvrs_ensure_sticky_all']

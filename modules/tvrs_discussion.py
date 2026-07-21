@@ -403,6 +403,7 @@ async def end_discussion(
     guild: discord.Guild,
     session: LiveConsensusSession,
     *,
+    actor: ConsensusActor | None = None,
     expected_stage: str | None = None,
     expected_bill_id: int | None = None,
 ) -> None:
@@ -428,7 +429,7 @@ async def end_discussion(
         await run_blocking_cancellation_safe(
             _consensus.end_discussion,
             session,
-            actor=ConsensusActor(session.leader_id, session.leader_display),
+            actor=actor or ConsensusActor(session.leader_id, session.leader_display),
         )
     wake_operations_worker()
     if closed_channel_id:
@@ -441,7 +442,13 @@ async def end_discussion(
                 )  # type: ignore[attr-defined]
             except discord.DiscordException:
                 pass
-    await update_all_vote_dms(guild, session, content="Дискуссия завершена. Голосование снова открыто.")
+    await check_realtime_quorum(bot, guild, session)
+    content = (
+        "Дискуссия завершена, но голосование приостановлено до восстановления кворума."
+        if session.stage == "paused"
+        else "Дискуссия завершена. Голосование снова открыто."
+    )
+    await update_all_vote_dms(guild, session, content=content)
     await update_host_vote_message(bot, guild, session)
 
 
@@ -496,6 +503,8 @@ def session_voice_quorum_ready(guild: discord.Guild, session: LiveConsensusSessi
     if not isinstance(channel, discord.VoiceChannel):
         return False, "Голосовой канал консенсуса не найден."
     voice_ids = {m.id for m in channel.members if not m.bot}
+    if int(session.leader_id) not in voice_ids:
+        return False, "Ведущий отсутствует в голосовом канале. Консенсус приостановлен."
     confirmed = [p for p in session.confirmed_participants() if p.user_id in voice_ids]
     chairs = [p for p in confirmed if p.kind == "chair"]
     senators = [p for p in confirmed if p.kind == "senator"]
@@ -516,6 +525,8 @@ async def check_realtime_quorum(bot: commands.Bot | discord.Client, guild: disco
     ok, reason = session_voice_quorum_ready(guild, session)
     if not ok and session.stage != "paused":
         await pause_session(bot, guild, session, reason, automatic=True)
+    elif ok and session.stage == "paused" and session.pause_is_automatic:
+        await resume_session(bot, guild, session)
 
 
 async def resume_session(

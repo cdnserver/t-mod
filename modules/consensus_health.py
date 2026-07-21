@@ -212,6 +212,8 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
         or session.discussion_initiator_id
         or session.discussion_type
         or session.discussion_allowed_user_ids
+        or session.discussion_note_message_id
+        or any(item.discussion_message_id for item in session.participants.values())
     )
     if session.stage == "discussion" and not session.discussion_type:
         add(

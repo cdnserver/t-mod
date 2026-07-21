@@ -27,6 +27,7 @@ from modules.tvrs_delivery import (
     make_result_delivery_handler,
 )
 from modules.tvrs_recovery import (
+    recover_consensus_session,
     reconcile_consensus_liveness,
     reconcile_current_consensus_deliveries,
 )
@@ -59,6 +60,7 @@ def _session(*, stage: str = "registration") -> LiveConsensusSession:
         plenary_number=4,
         participants=participants,
         stage=stage,
+        revision=1,
     )
     if stage != "registration":
         current.current_bill = {
@@ -117,6 +119,51 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("recovery-control-v2", repair["dedupe_key"])
         self.assertEqual(repair["payload"]["user_id"], 2)
         wake.assert_called_once()
+
+    async def test_recovery_checks_quorum_before_resuming_liveness(self) -> None:
+        current = _session(stage="voting")
+        order: list[str] = []
+
+        async def lose_quorum(*_args) -> None:
+            order.append("quorum")
+            current.stage = "paused"
+
+        async def liveness(*_args) -> bool:
+            order.append(f"liveness:{current.stage}")
+            return False
+
+        guild = SimpleNamespace(id=77, get_channel=lambda _channel_id: None)
+        with (
+            patch(
+                "modules.tvrs_recovery.repair_safe_consensus_invariants",
+                new=AsyncMock(return_value=()),
+            ),
+            patch(
+                "modules.tvrs_recovery.check_realtime_quorum",
+                new=AsyncMock(side_effect=lose_quorum),
+            ),
+            patch(
+                "modules.tvrs_recovery.reconcile_consensus_liveness",
+                new=AsyncMock(side_effect=liveness),
+            ),
+            patch(
+                "modules.tvrs_recovery.requeue_consensus_dead_deliveries",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "modules.tvrs_recovery.reconcile_current_consensus_deliveries",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            await recover_consensus_session(
+                SimpleNamespace(),  # type: ignore[arg-type]
+                guild,  # type: ignore[arg-type]
+                current,
+                verify_discord_messages=False,
+                retry_permanent_failures=False,
+            )
+
+        self.assertEqual(order, ["quorum", "liveness:paused"])
 
     async def test_startup_reprojects_existing_voting_panel_instead_of_only_registering_view(self) -> None:
         current = _session(stage="voting")
@@ -792,6 +839,50 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
         schedule.assert_called_once()
         self.assertEqual(schedule.call_args.kwargs["bill_id"], 10)
         self.assertGreater(schedule.call_args.args[3], 0)
+
+    async def test_liveness_routes_oral_finalization_through_durable_recovery(self) -> None:
+        current = _session(stage="finalizing")
+        current.revision = 1
+        current.pending_action = {
+            "kind": "oral",
+            "bill_id": 10,
+            "actor_id": 1,
+            "actor_display": "Ведущий",
+            "oral_status": "accepted",
+            "oral_note": "Решение заседания",
+        }
+        bot = SimpleNamespace()
+        guild = SimpleNamespace(id=77)
+
+        with patch(
+            "modules.tvrs_recovery.retry_pending_finalization_once",
+            new=AsyncMock(return_value=True),
+        ) as retry:
+            changed = await reconcile_consensus_liveness(
+                bot,  # type: ignore[arg-type]
+                guild,  # type: ignore[arg-type]
+                current,
+            )
+
+        self.assertTrue(changed)
+        retry.assert_awaited_once_with(bot, guild, current)
+
+    async def test_liveness_blocks_ambiguous_finalization(self) -> None:
+        current = _session(stage="finalizing")
+        current.pending_action = {"kind": "unknown", "bill_id": 10}
+
+        with patch(
+            "modules.tvrs_recovery.retry_pending_finalization_once",
+            new=AsyncMock(),
+        ) as retry:
+            changed = await reconcile_consensus_liveness(
+                SimpleNamespace(),  # type: ignore[arg-type]
+                SimpleNamespace(id=77),  # type: ignore[arg-type]
+                current,
+            )
+
+        self.assertFalse(changed)
+        retry.assert_not_awaited()
 
 
 if __name__ == "__main__":

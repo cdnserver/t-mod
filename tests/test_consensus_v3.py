@@ -176,9 +176,11 @@ class ConsensusV3UiTests(unittest.TestCase):
             recovery_labels = {str(item.label) for item in recovery.children}
             self.assertIn("Принять ведение", recovery_labels)
             self.assertIn("Восстановить", recovery_labels)
+            self.assertIn("Завершить дискуссию", recovery_labels)
             self.assertIn("Безопасно закрыть", recovery_labels)
             fields = {field.name: field.value for field in build_consensus_admin_embed(current).fields}
             self.assertIn("Диагностика", fields)
+            self.assertIn("План восстановления", fields)
 
         asyncio.run(inspect())
 

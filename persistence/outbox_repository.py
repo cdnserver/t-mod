@@ -9,6 +9,8 @@ from typing import Any
 from persistence.core import _db_lock, connect, utc_now_iso
 
 OUTBOX_OPEN_STATUSES = frozenset({"pending", "processing", "retry"})
+CONSENSUS_TOPIC_PREFIX = "tvrs.consensus."
+CONSENSUS_CONTROL_DM_TOPIC = "tvrs.consensus.control-dm.v1"
 
 
 def _parse_utc(value: str) -> datetime:
@@ -603,4 +605,152 @@ def delivery_outbox_requeue_dead(
         con.commit()
         return cur.rowcount == 1
 
-__all__ = ['OUTBOX_OPEN_STATUSES', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_ensure_current', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_is_current_supersession', 'delivery_outbox_latest_supersession', 'delivery_outbox_next_due_delay', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead']
+
+def _consensus_payload_matches(
+    raw_payload: object,
+    *,
+    session_key: str,
+    guild_id: int,
+) -> bool:
+    try:
+        payload = json.loads(str(raw_payload or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        owner_guild_id = int(payload.get("guild_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    return owner_guild_id == int(guild_id) and str(payload.get("session_key") or "") == str(
+        session_key
+    )
+
+
+def delivery_outbox_consensus_status(
+    session_key: str,
+    *,
+    guild_id: int,
+) -> dict[str, Any]:
+    """Summarize delivery state owned by one consensus session.
+
+    Ownership is verified from the durable payload rather than inferred from a
+    dedupe key.  This prevents one guild's recovery panel from exposing or
+    reviving another guild's jobs.
+    """
+
+    clean_session_key = str(session_key).strip()
+    if not clean_session_key:
+        raise ValueError("consensus_session_key_required")
+    with _db_lock, connect() as con:
+        rows = con.execute(
+            """
+            SELECT id, topic, status, supersede_key, payload_json, last_error
+            FROM delivery_outbox
+            WHERE topic LIKE ?
+            ORDER BY id ASC
+            """,
+            (f"{CONSENSUS_TOPIC_PREFIX}%",),
+        ).fetchall()
+    owned = [
+        dict(row)
+        for row in rows
+        if _consensus_payload_matches(
+            row["payload_json"],
+            session_key=clean_session_key,
+            guild_id=int(guild_id),
+        )
+    ]
+    counts: dict[str, int] = {}
+    for row in owned:
+        status = str(row.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    dead = [row for row in owned if str(row.get("status") or "") == "dead"]
+    return {
+        "session_key": clean_session_key,
+        "guild_id": int(guild_id),
+        "total": len(owned),
+        "counts": counts,
+        "dead_ids": [int(row["id"]) for row in dead],
+        "dead_errors": [str(row.get("last_error") or "delivery_failed") for row in dead],
+    }
+
+
+def delivery_outbox_requeue_dead_for_consensus(
+    session_key: str,
+    *,
+    guild_id: int,
+    allowed_topics: set[str] | frozenset[str] | None = None,
+    now: str | None = None,
+    limit: int = 100,
+) -> list[int]:
+    """Revive current dead semantic deliveries for an active consensus.
+
+    Control DMs are intentionally excluded: their recovery creates a fresh
+    generation protected by a supersession fence.  For every other superseded
+    scope only the newest generation may be revived, so a dead stale panel or
+    notice can never overwrite a newer delivered state.
+    """
+
+    clean_session_key = str(session_key).strip()
+    if not clean_session_key:
+        raise ValueError("consensus_session_key_required")
+    topics = (
+        {str(topic).strip() for topic in allowed_topics if str(topic).strip()}
+        if allowed_topics is not None
+        else None
+    )
+    ready_at = str(now or utc_now_iso())
+    selected_ids: list[int] = []
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        rows = con.execute(
+            """
+            SELECT id, topic, supersede_key, payload_json
+            FROM delivery_outbox
+            WHERE status = 'dead' AND topic LIKE ?
+            ORDER BY id DESC
+            """,
+            (f"{CONSENSUS_TOPIC_PREFIX}%",),
+        ).fetchall()
+        for row in rows:
+            topic = str(row["topic"] or "")
+            if topic == CONSENSUS_CONTROL_DM_TOPIC or (topics is not None and topic not in topics):
+                continue
+            if not _consensus_payload_matches(
+                row["payload_json"],
+                session_key=clean_session_key,
+                guild_id=int(guild_id),
+            ):
+                continue
+            supersede_key = str(row["supersede_key"] or "").strip()
+            if supersede_key:
+                newest = con.execute(
+                    """
+                    SELECT id FROM delivery_outbox
+                    WHERE topic = ? AND supersede_key = ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (topic, supersede_key),
+                ).fetchone()
+                if newest is None or int(newest["id"]) != int(row["id"]):
+                    continue
+            selected_ids.append(int(row["id"]))
+            if len(selected_ids) >= max(1, min(int(limit), 500)):
+                break
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            con.execute(
+                f"""
+                UPDATE delivery_outbox
+                SET status = 'retry', attempts = 0, available_at = ?,
+                    lease_owner = NULL, lease_token = NULL, lease_until = NULL,
+                    last_error = NULL, dead_notified_at = NULL, updated_at = ?
+                WHERE status = 'dead' AND id IN ({placeholders})
+                """,
+                (ready_at, ready_at, *selected_ids),
+            )
+        con.commit()
+    return list(reversed(selected_ids))
+
+__all__ = ['OUTBOX_OPEN_STATUSES', 'CONSENSUS_TOPIC_PREFIX', 'CONSENSUS_CONTROL_DM_TOPIC', 'delivery_outbox_enqueue_in_connection', 'delivery_outbox_enqueue', 'delivery_outbox_ensure_current', 'delivery_outbox_claim', 'delivery_outbox_renew_lease', 'delivery_outbox_mark_delivered', 'delivery_outbox_mark_failed', 'delivery_outbox_defer', 'delivery_outbox_get', 'delivery_outbox_is_current_supersession', 'delivery_outbox_latest_supersession', 'delivery_outbox_next_due_delay', 'delivery_outbox_counts', 'delivery_outbox_unreported_dead', 'delivery_outbox_mark_dead_notified', 'delivery_outbox_requeue_dead', 'delivery_outbox_consensus_status', 'delivery_outbox_requeue_dead_for_consensus']

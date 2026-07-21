@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from modules.consensus_core import (
     ConsensusStateError,
@@ -82,6 +83,74 @@ def make_session(*, stage: str = "voting") -> LiveConsensusSession:
 
 
 class ConsensusLifecycleSafetyTests(unittest.TestCase):
+    def test_zero_second_timer_survives_restart_snapshot(self) -> None:
+        session = make_session(stage="voting")
+        session.timer_seconds = 0
+        session.timer_deadline = datetime.now(timezone.utc)
+
+        restored = session_from_snapshot(session_to_snapshot(session))
+
+        self.assertEqual(restored.timer_seconds, 0)
+        self.assertIsNotNone(restored.timer_deadline)
+
+    def test_safe_invariant_repair_is_atomic_and_audited(self) -> None:
+        repository = MemoryRepository()
+        coordinator = ConsensusCoordinator(repository)
+        session = make_session(stage="after_result")
+        session.votes = {1: "yes"}
+        session.pending_action = {"kind": "vote", "bill_id": 10}
+        session.timer_deadline = datetime.now(timezone.utc)
+        session.timer_seconds = 30
+        session.discussion_channel_id = 555
+        session.discussion_note_message_id = 777
+        session.participants[2].discussion_message_id = 888
+
+        repaired = coordinator.repair_safe_invariants(session)
+
+        self.assertEqual(
+            set(repaired),
+            {
+                "timer_outside_voting",
+                "stale_votes",
+                "stale_discussion_state",
+                "orphan_pending_action",
+            },
+        )
+        self.assertIsNone(session.timer_deadline)
+        self.assertEqual(session.votes, {})
+        self.assertIsNone(session.pending_action)
+        self.assertIsNone(session.discussion_channel_id)
+        self.assertIsNone(session.participants[2].discussion_message_id)
+        self.assertEqual(repository.events[-1]["event_type"], "session_invariants_repaired")
+
+    def test_safe_invariant_repair_does_not_guess_critical_business_state(self) -> None:
+        repository = MemoryRepository()
+        coordinator = ConsensusCoordinator(repository)
+        session = make_session(stage="voting")
+        session.votes = {999: "maybe"}
+        session.pending_action = {"kind": "vote", "bill_id": 10}
+        original_bill = dict(session.current_bill or {})
+
+        repaired = coordinator.repair_safe_invariants(session)
+
+        self.assertEqual(repaired, ())
+        self.assertEqual(session.current_bill, original_bill)
+        self.assertEqual(session.votes, {999: "maybe"})
+        self.assertEqual(session.pending_action, {"kind": "vote", "bill_id": 10})
+        self.assertEqual(repository.events, [])
+
+    def test_safe_invariant_repair_rolls_back_on_database_failure(self) -> None:
+        repository = MemoryRepository()
+        repository.fail_save = True
+        coordinator = ConsensusCoordinator(repository)
+        session = make_session(stage="after_result")
+        session.votes = {1: "yes"}
+
+        with self.assertRaises(OSError):
+            coordinator.repair_safe_invariants(session)
+
+        self.assertEqual(session.votes, {1: "yes"})
+
     def test_oral_result_metadata_survives_snapshot_roundtrip(self) -> None:
         session = make_session(stage="after_result")
         session.results.append(

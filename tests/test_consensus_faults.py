@@ -98,6 +98,27 @@ class ConsensusLifecycleFaultTests(unittest.IsolatedAsyncioTestCase):
         quorum.assert_not_called()
         pause.assert_not_awaited()
 
+    async def test_automatic_quorum_pause_resumes_when_quorum_returns(self) -> None:
+        session = _discussion_session()
+        session.stage = "paused"
+        session.previous_stage = "voting"
+        session.pause_is_automatic = True
+
+        with (
+            patch(
+                "modules.tvrs_discussion.session_voice_quorum_ready",
+                return_value=(True, "Кворум восстановлен"),
+            ),
+            patch("modules.tvrs_discussion.resume_session", new=AsyncMock()) as resume,
+        ):
+            await check_realtime_quorum(
+                SimpleNamespace(),  # type: ignore[arg-type]
+                SimpleNamespace(id=77),  # type: ignore[arg-type]
+                session,
+            )
+
+        resume.assert_awaited_once()
+
     async def test_discussion_channel_race_deletes_orphan_and_reports_stale_state(self) -> None:
         class FakeCategory:
             pass
@@ -179,6 +200,7 @@ class ConsensusLifecycleFaultTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("modules.tvrs_discussion.update_all_vote_dms", new=AsyncMock()),
             patch("modules.tvrs_discussion.update_host_vote_message", new=AsyncMock()),
+            patch("modules.tvrs_discussion.check_realtime_quorum", new=AsyncMock()),
             patch("modules.tvrs_discussion.wake_operations_worker"),
         ):
             await end_discussion(

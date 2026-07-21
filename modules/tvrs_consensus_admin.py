@@ -12,6 +12,10 @@ import discord
 from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_core import ConsensusStateError, LiveConsensusSession
 from modules.consensus_health import assess_consensus_health
+from modules.consensus_recovery_plan import (
+    ConsensusOperationalState,
+    build_consensus_recovery_plan,
+)
 from modules.consensus_runtime import (
     active_sessions as _active_sessions,
     coordinator as _consensus,
@@ -35,9 +39,14 @@ def _session_by_key(session_key: str) -> LiveConsensusSession | None:
     )
 
 
-def build_consensus_admin_embed(session: LiveConsensusSession) -> discord.Embed:
+def build_consensus_admin_embed(
+    session: LiveConsensusSession,
+    operational: ConsensusOperationalState | None = None,
+) -> discord.Embed:
     report = assess_consensus_health(session)
-    color = 0xD67F7F if report.critical else (0xD6B46A if report.warnings else 0x7FD17F)
+    plan = build_consensus_recovery_plan(session, report, operational)
+    plan_has_warning = any(item.priority == "warning" for item in plan.actions)
+    color = 0xD67F7F if plan.critical else (0xD6B46A if plan_has_warning else 0x7FD17F)
     embed = discord.Embed(
         title=f"🛟 Восстановление консенсуса №{session.plenary_number}",
         description=(
@@ -69,6 +78,51 @@ def build_consensus_admin_embed(session: LiveConsensusSession) -> discord.Embed:
             for item in report.issues[:6]
         )
     embed.add_field(name="Диагностика", value=clip_text(diagnostic, 1000), inline=False)
+    if operational is not None:
+        counts = dict(operational.delivery_counts)
+        delivery_line = ", ".join(
+            f"{name}: `{count}`" for name, count in sorted(counts.items()) if count
+        ) or "нет задач"
+        live_lines = [
+            f"Ведущий на сервере: {'✅' if operational.leader_present else '❌'}",
+            f"Ведущий в голосовом: {'✅' if operational.leader_in_voice else '❌'}",
+            f"Кворум: {'✅' if operational.quorum_ready else '⏸️'} {operational.quorum_reason or ''}",
+            f"Доставки: {delivery_line}",
+        ]
+        if operational.discussion_channel_available is not None:
+            live_lines.append(
+                "Канал дискуссии: "
+                + ("✅ доступен" if operational.discussion_channel_available else "❌ отсутствует")
+            )
+        if operational.timer_task_running is not None:
+            live_lines.append(
+                "Таймер процесса: "
+                + ("✅ работает" if operational.timer_task_running else "❌ требует восстановления")
+            )
+        if operational.missing_control_user_ids:
+            live_lines.append(
+                f"Личные панели требуют ремонта: `{len(operational.missing_control_user_ids)}`"
+            )
+        if operational.dead_delivery_errors:
+            live_lines.append(
+                "Последняя ошибка доставки: `"
+                + clip_text(operational.dead_delivery_errors[0], 180).replace("`", "'")
+                + "`"
+            )
+        embed.add_field(
+            name="Живое состояние",
+            value=clip_text("\n".join(live_lines), 1000),
+            inline=False,
+        )
+    plan_lines = [
+        f"{'🤖' if item.automatic else '👤'} {item.message}"
+        for item in plan.actions[:6]
+    ]
+    embed.add_field(
+        name="План восстановления",
+        value=clip_text("\n".join(plan_lines), 1000),
+        inline=False,
+    )
     embed.add_field(
         name="Гарантии",
         value=(
@@ -105,6 +159,42 @@ class _ChairRecoveryView(discord.ui.View):
             await interaction.response.send_message("Аварийное управление доступно только председателю.", ephemeral=True)
             return False
         return True
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        message = (
+            "Восстановление не завершено. Состояние сохранено; повторите действие чуть позже "
+            "или безопасно закройте заседание."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.DiscordException:
+            pass
+        if interaction.guild is not None:
+            from modules.technical_log import log_technical_event
+
+            try:
+                await log_technical_event(
+                    interaction.client,
+                    interaction.guild,
+                    title="Ошибка аварийного управления консенсусом",
+                    details=(
+                        f"Сессия: `{self.session_key[:120]}`\n"
+                        f"Действие: `{getattr(item, 'label', None) or type(item).__name__}`\n"
+                        f"Ошибка: `{type(error).__name__}: {str(error)[:700]}`"
+                    ),
+                    dedupe_key=f"consensus-admin-error:{self.session_key}:{type(error).__name__}",
+                    cooldown_seconds=60,
+                )
+            except Exception:
+                pass
 
 
 class OralResolutionModal(discord.ui.Modal):
@@ -281,6 +371,15 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
         )
         rejected.callback = self.oral_rejected
         self.add_item(rejected)
+        end_discussion_button = discord.ui.Button(
+            label="Завершить дискуссию",
+            emoji="🗣️",
+            style=discord.ButtonStyle.secondary,
+            disabled=not bool(session and session.stage in {"discussion_type", "discussion"}),
+            row=2,
+        )
+        end_discussion_button.callback = self.end_discussion
+        self.add_item(end_discussion_button)
         close = discord.ui.Button(label="Безопасно закрыть", emoji="🛑", style=discord.ButtonStyle.danger, row=2)
         close.callback = self.close
         self.add_item(close)
@@ -324,16 +423,35 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
                 pass
         wake_operations_worker()
         await self.repair_after_defer(interaction, session)
+        operational = await self.operational_state(interaction, session)
         await interaction.edit_original_response(
-            embed=build_consensus_admin_embed(session),
+            embed=build_consensus_admin_embed(session, operational),
             view=TVRSConsensusAdminView(interaction.user.id, session.session_key),
         )
 
-    async def repair_after_defer(self, interaction: discord.Interaction, session: LiveConsensusSession) -> int:
-        from modules.tvrs_consensus_portal import ensure_public_consensus_card
-        from modules.tvrs_recovery import reconcile_current_consensus_deliveries
+    async def operational_state(
+        self,
+        interaction: discord.Interaction,
+        session: LiveConsensusSession,
+    ) -> ConsensusOperationalState | None:
+        from modules.consensus_operational import collect_consensus_operational_state
 
-        repaired = await reconcile_current_consensus_deliveries(
+        if interaction.guild is None:
+            return None
+        try:
+            return await collect_consensus_operational_state(interaction.guild, session)
+        except Exception:
+            return None
+
+    async def repair_after_defer(
+        self,
+        interaction: discord.Interaction,
+        session: LiveConsensusSession,
+    ) -> dict[str, object]:
+        from modules.tvrs_consensus_portal import ensure_public_consensus_card
+        from modules.tvrs_recovery import recover_consensus_session
+
+        repaired = await recover_consensus_session(
             interaction.client,
             interaction.guild,
             session,
@@ -351,19 +469,20 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
             await interaction.response.send_message("Сессия уже завершена.", ephemeral=True)
             return
         await interaction.response.defer()
-        if session.stage == "finalizing":
-            from modules.tvrs_control import retry_pending_finalization_once
-
-            await retry_pending_finalization_once(interaction.client, interaction.guild, session)
-            repaired = 0
-        else:
-            repaired = await self.repair_after_defer(interaction, session)
+        repaired = await self.repair_after_defer(interaction, session)
+        operational = await self.operational_state(interaction, session)
         await interaction.edit_original_response(
-            embed=build_consensus_admin_embed(session),
+            embed=build_consensus_admin_embed(session, operational),
             view=TVRSConsensusAdminView(interaction.user.id, session.session_key),
         )
+        repaired_count = (
+            len(tuple(repaired.get("repaired") or ()))
+            + int(repaired.get("revived") or 0)
+            + int(repaired.get("queued") or 0)
+            + int(bool(repaired.get("liveness_changed")))
+        )
         await interaction.followup.send(
-            f"Проверка завершена. Поставлено задач восстановления: `{repaired}`.",
+            f"Проверка завершена. Выполнено или поставлено задач восстановления: `{repaired_count}`.",
             ephemeral=True,
         )
 
@@ -372,10 +491,37 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
         if session is None:
             await interaction.response.edit_message(content="Сессия уже завершена.", embed=None, view=None)
             return
+        operational = await self.operational_state(interaction, session)
         await interaction.response.edit_message(
             content=None,
-            embed=build_consensus_admin_embed(session),
+            embed=build_consensus_admin_embed(session, operational),
             view=TVRSConsensusAdminView(interaction.user.id, session.session_key),
+        )
+
+    async def end_discussion(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        session = self.session()
+        if session is None or session.stage not in {"discussion_type", "discussion"}:
+            await interaction.response.send_message("Активная дискуссия уже завершена.", ephemeral=True)
+            return
+        from modules.tvrs_discussion import end_discussion
+
+        await interaction.response.defer()
+        await end_discussion(
+            interaction.client,
+            interaction.guild,
+            session,
+            actor=ConsensusActor(interaction.user.id, interaction.user.display_name),
+        )
+        await self.repair_after_defer(interaction, session)
+        operational = await self.operational_state(interaction, session)
+        await interaction.edit_original_response(
+            embed=build_consensus_admin_embed(session, operational),
+            view=TVRSConsensusAdminView(interaction.user.id, session.session_key),
+        )
+        await interaction.followup.send(
+            "Дискуссия завершена. Кворум перепроверен, личные панели приведены к текущему этапу.",
+            ephemeral=True,
         )
 
     async def oral_accepted(self, interaction: discord.Interaction) -> None:
@@ -389,8 +535,16 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
 
 
 async def open_consensus_admin_panel(interaction: discord.Interaction, session: LiveConsensusSession) -> None:
+    operational = None
+    if interaction.guild is not None:
+        from modules.consensus_operational import collect_consensus_operational_state
+
+        try:
+            operational = await collect_consensus_operational_state(interaction.guild, session)
+        except Exception:
+            operational = None
     await interaction.response.send_message(
-        embed=build_consensus_admin_embed(session),
+        embed=build_consensus_admin_embed(session, operational),
         view=TVRSConsensusAdminView(interaction.user.id, session.session_key),
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),

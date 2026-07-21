@@ -244,6 +244,78 @@ class ConsensusCoordinator:
             session.host_message_id = int(message_id) if message_id else None
             self.save(session, event_type, details={"message_id": session.host_message_id})
 
+    def repair_safe_invariants(
+        self,
+        session: LiveConsensusSession,
+        *,
+        actor: ConsensusActor | None = None,
+    ) -> tuple[str, ...]:
+        """Repair only stale fields whose intended value is unambiguous.
+
+        This deliberately refuses to infer a missing bill, rewrite a roster or
+        touch a finalization claim.  Those situations require a chair decision;
+        background recovery may only remove leftovers that cannot belong to the
+        current stage.
+        """
+
+        repaired: list[str] = []
+        with self.mutation(session):
+            partial_timer = (session.timer_deadline is None) != (session.timer_seconds is None)
+            if session.stage != "voting" and (
+                session.timer_deadline is not None or session.timer_seconds is not None
+            ):
+                session.timer_deadline = None
+                session.timer_seconds = None
+                repaired.append("timer_outside_voting")
+            elif partial_timer:
+                session.timer_deadline = None
+                session.timer_seconds = None
+                repaired.append("partial_timer_state")
+
+            if (
+                session.stage in {"registration", "after_result"}
+                and session.current_bill is None
+                and session.votes
+            ):
+                session.votes.clear()
+                repaired.append("stale_votes")
+
+            if session.stage not in {"discussion", "discussion_type", "paused", "finalizing"}:
+                discussion_fields = bool(
+                    session.discussion_channel_id
+                    or session.discussion_initiator_id
+                    or session.discussion_type
+                    or session.discussion_allowed_user_ids
+                    or session.discussion_note_message_id
+                    or any(item.discussion_message_id for item in session.participants.values())
+                )
+                if discussion_fields:
+                    session.discussion_channel_id = None
+                    session.discussion_initiator_id = None
+                    session.discussion_type = None
+                    session.discussion_allowed_user_ids.clear()
+                    session.discussion_note_message_id = None
+                    for participant in session.participants.values():
+                        participant.discussion_message_id = None
+                    repaired.append("stale_discussion_state")
+
+            if (
+                session.stage in {"registration", "after_result"}
+                and session.current_bill is None
+                and session.pending_action is not None
+            ):
+                session.pending_action = None
+                repaired.append("orphan_pending_action")
+
+            if repaired:
+                self.save(
+                    session,
+                    "session_invariants_repaired",
+                    actor=actor,
+                    details={"repairs": repaired},
+                )
+        return tuple(repaired)
+
     def cast_vote(
         self,
         session: LiveConsensusSession,
@@ -584,9 +656,11 @@ class ConsensusCoordinator:
         if session.stage not in {"discussion_type", "discussion"}:
             raise ConsensusStateError("Активной дискуссии сейчас нет.")
         with self.mutation(session):
+            session.discussion_channel_id = None
             session.discussion_type = None
             session.discussion_initiator_id = None
             session.discussion_allowed_user_ids.clear()
+            session.discussion_note_message_id = None
             for participant in session.participants.values():
                 participant.discussion_message_id = None
             self.transition(session, "voting", "discussion_finished", actor=actor)
