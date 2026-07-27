@@ -337,7 +337,7 @@ class ProfileUiTests(unittest.TestCase):
             )
 
             privacy = ProfilePrivacyView(100, member, None)
-            self.assertEqual(len(privacy.children), 7)
+            self.assertEqual(len(privacy.children), 8)
             notifications = ProfileNotificationsView(100, member, None)
             self.assertEqual(len(notifications.children), 7)
             quiet_hours = ProfileQuietHoursView(100, member, None)

@@ -29,11 +29,32 @@ def env_color(name: str, default: str = "0xD9D9D9") -> int:
         return 0xD9D9D9
 
 
+def env_int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv(name, ",".join(str(item) for item in default))
+    values: list[int] = []
+    for item in raw.split(","):
+        try:
+            value = int(item.strip())
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in values:
+            values.append(value)
+    return tuple(values) or tuple(default)
+
+
 TVRS_MATERIALS_CHANNEL_ID = env_int("TVRS_MATERIALS_CHANNEL_ID", 1492583702641774642)
 TVRS_BILLS_CHANNEL_ID = env_int("TVRS_BILLS_CHANNEL_ID", 1492471371085643937)
 TVRS_CONSENSUS_VOICE_CHANNEL_ID = env_int("TVRS_CONSENSUS_VOICE_CHANNEL_ID", 1519419533667078145)
 TVRS_SENATOR_ROLE_ID = env_int("TVRS_SENATOR_ROLE_ID", 1500563715622174881)
 TVRS_PERMANENT_CHAIR_ID = env_int("TVRS_PERMANENT_CHAIR_ID", 811862068214890537)
+TVRS_COCHAIR_IDS = env_int_tuple(
+    "TVRS_COCHAIR_IDS",
+    (
+        721577061143019555,
+        902235631952998410,
+        811862068214890537,
+    ),
+)
 TVRS_CHAIR_ROLE_ID = env_int("TVRS_CHAIR_ROLE_ID", 1488207163879985233)
 TVRS_DEFAULT_NEXT_BILL_NUMBER = env_int("TVRS_DEFAULT_NEXT_BILL_NUMBER", 9)
 TVRS_DEFAULT_NEXT_PLENARY_NUMBER = env_int("TVRS_DEFAULT_NEXT_PLENARY_NUMBER", 4)

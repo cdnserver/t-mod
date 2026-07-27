@@ -61,6 +61,7 @@ from modules.tvrs_discussion import (
 _sticky_locks: dict[int, asyncio.Lock] = {}
 _sticky_tasks: dict[int, asyncio.Task] = {}
 _consensus_recovery_tasks: dict[int, asyncio.Task] = {}
+_consensus_restore_locks: dict[int, asyncio.Lock] = {}
 _consensus_delivery_watchdog_task: asyncio.Task | None = None
 
 
@@ -147,12 +148,14 @@ def schedule_sticky_refresh(bot: commands.Bot, guild: discord.Guild) -> None:
 
 def register_tvrs_persistent_views(bot: commands.Bot) -> None:
     from modules.tvrs_consensus_portal import TVRSConsensusEntryView
+    from modules.tvrs_bill_editor import register_bill_workspace_views
 
     register_public_panel_provider(build_public_universality_embed, TVRSPublicPanelView)
     register_tvrs_hub_handler(_open_tvrs_hub_impl)
     bot.add_view(TVRSStickyView())
     bot.add_view(TVRSPublicPanelView())
     bot.add_view(TVRSConsensusEntryView())
+    register_bill_workspace_views(bot)
 
 
 def register_restored_view(
@@ -410,6 +413,12 @@ async def _enqueue_control_jobs(
 ) -> set[int]:
     if not user_ids:
         return set()
+    if phase == "voting" and (
+        session.current_bill is None or consensus_bill_id(session) <= 0
+    ):
+        # A pause between bills is a valid state.  Recovery must never invent
+        # a bill identity merely to rebuild an old voting panel.
+        return set()
     deliveries = build_control_dm_deliveries(
         session,
         phase=phase,
@@ -531,17 +540,26 @@ async def reconcile_current_consensus_deliveries(
                 missing.add(participant.user_id)
                 continue
             if verify_discord_messages:
-                register_restored_view(
-                    bot,
-                    TVRSConfirmView(session.session_key, participant.user_id),
-                    message_id=message_id,
-                )
+                try:
+                    register_restored_view(
+                        bot,
+                        TVRSConfirmView(session.session_key, participant.user_id),
+                        message_id=message_id,
+                    )
+                except RuntimeError:
+                    missing.add(participant.user_id)
+                    uncertain = True
+                    continue
                 await _cleanup_restored_control_copies(
                     guild,
                     participant.user_id,
                     message_id,
                 )
-    elif session.stage in {"voting", "paused", "discussion_type", "discussion"}:
+    elif (
+        session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        and session.current_bill is not None
+        and bill_id > 0
+    ):
         phase = "voting"
         candidates = [
             item
@@ -570,15 +588,20 @@ async def reconcile_current_consensus_deliveries(
                 missing.add(participant.user_id)
                 continue
             if verify_discord_messages:
-                register_restored_view(
-                    bot,
-                    TVRSRestoredVoteView(
-                        session.session_key,
-                        participant.user_id,
-                        bill_id=bill_id,
-                    ),
-                    message_id=message_id,
-                )
+                try:
+                    register_restored_view(
+                        bot,
+                        TVRSRestoredVoteView(
+                            session.session_key,
+                            participant.user_id,
+                            bill_id=bill_id,
+                        ),
+                        message_id=message_id,
+                    )
+                except RuntimeError:
+                    missing.add(participant.user_id)
+                    uncertain = True
+                    continue
                 await _cleanup_restored_control_copies(
                     guild,
                     participant.user_id,
@@ -614,7 +637,11 @@ async def reconcile_current_consensus_deliveries(
                 build_phase_announcement_delivery(session, phase="registration")
             )
         )
-    elif session.stage in {"voting", "paused", "discussion_type", "discussion"} and bill_id:
+    elif (
+        session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        and session.current_bill is not None
+        and bill_id > 0
+    ):
         for delivery in build_control_notice_deliveries(session, bill_id=bill_id):
             delivery = dict(delivery)
             delivery["payload"] = {
@@ -631,12 +658,23 @@ async def reconcile_current_consensus_deliveries(
                 )
             )
         )
-    if session.stage == "discussion" and session.discussion_channel_id:
+    if (
+        session.stage == "discussion"
+        and session.current_bill is not None
+        and bill_id > 0
+        and int(session.discussion_channel_id or 0) > 0
+        and str(session.discussion_type or "").strip()
+    ):
+        allowed_user_ids = {
+            int(user_id)
+            for user_id in session.discussion_allowed_user_ids
+            if int(user_id) in session.participants
+        }
         discussion_jobs = build_discussion_invite_deliveries(
             session,
             channel_id=int(session.discussion_channel_id),
-            discussion_type=str(session.discussion_type or "Иная"),
-            allowed_user_ids=session.discussion_allowed_user_ids,
+            discussion_type=str(session.discussion_type),
+            allowed_user_ids=allowed_user_ids,
         )
         for delivery in discussion_jobs:
             user_id = int(dict(delivery.get("payload") or {}).get("user_id") or 0)
@@ -706,6 +744,60 @@ def schedule_consensus_recovery_retry(bot: commands.Bot, guild_id: int) -> async
     return task
 
 
+async def _reconcile_restored_session_once(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    session: LiveConsensusSession,
+) -> bool:
+    """Serialize on-ready/retry races for one guild and report one outcome."""
+
+    guild_id = int(session.guild_id)
+    lock = _consensus_restore_locks.setdefault(guild_id, asyncio.Lock())
+    async with lock:
+        if guild_id in _restored_consensus_guilds:
+            return False
+        health = assess_consensus_health(session)
+        if health.critical:
+            await log_technical_event(
+                bot,
+                guild,
+                title="Консенсус требует проверки председателя",
+                details=(
+                    f"Сессия: `{session.session_key[:120]}`\n"
+                    + "\n".join(f"• {item.message}" for item in health.critical[:5])
+                    + "\nОткройте `/tvrs` → **Восстановление**."
+                ),
+                dedupe_key=f"consensus-health:{session.session_key}",
+                cooldown_seconds=300,
+            )
+        try:
+            await reconcile_restored_consensus_session(bot, guild, session)
+        except Exception as exc:
+            traceback.print_exc()
+            await log_technical_event(
+                bot,
+                guild,
+                title="Восстановление консенсуса будет повторено",
+                details=(
+                    f"Сессия: `{session.session_key[:120]}`\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:700]}`"
+                ),
+                dedupe_key=f"consensus-recovery:{guild_id}",
+                cooldown_seconds=300,
+            )
+            schedule_consensus_recovery_retry(bot, guild_id)
+            return False
+        _restored_consensus_guilds.add(guild_id)
+        retry_task = _consensus_recovery_tasks.pop(guild_id, None)
+        if (
+            retry_task is not None
+            and retry_task is not asyncio.current_task()
+            and not retry_task.done()
+        ):
+            retry_task.cancel()
+        return True
+
+
 async def restore_tvrs_consensus_sessions(
     bot: commands.Bot,
     guild_id: int | None = None,
@@ -734,8 +826,18 @@ async def restore_tvrs_consensus_sessions(
             try:
                 restored = _consensus_registry.restore([snapshot])
                 session = restored[0] if restored else None
-            except (ConsensusStateError, KeyError, TypeError, ValueError) as exc:
-                traceback.print_exc()
+            except (
+                ConsensusStateError,
+                KeyError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                AttributeError,
+            ) as exc:
+                print(
+                    "Consensus snapshot quarantined: "
+                    f"guild={guild_id} error={type(exc).__name__}: {str(exc)[:300]}"
+                )
                 await asyncio.to_thread(
                     _consensus_repository.quarantine,
                     str(snapshot.get("session_key") or ""),
@@ -756,44 +858,8 @@ async def restore_tvrs_consensus_sessions(
                 continue
         if session is None:
             continue
-        health = assess_consensus_health(session)
-        if health.critical:
-            await log_technical_event(
-                bot,
-                guild,
-                title="Консенсус требует проверки председателя",
-                details=(
-                    f"Сессия: `{session.session_key[:120]}`\n"
-                    + "\n".join(f"• {item.message}" for item in health.critical[:5])
-                    + "\nОткройте `/tvrs` → **Восстановление**."
-                ),
-                dedupe_key=f"consensus-health:{session.session_key}",
-                cooldown_seconds=300,
-            )
-        try:
-            await reconcile_restored_consensus_session(bot, guild, session)
-        except Exception as exc:
-            # A temporary Discord or storage outage must not mark recovery as
-            # complete. A later on_ready pass can safely retry the same state.
-            traceback.print_exc()
-            await log_technical_event(
-                bot,
-                guild,
-                title="Восстановление консенсуса будет повторено",
-                details=(
-                    f"Сессия: `{session.session_key[:120]}`\n"
-                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:700]}`"
-                ),
-                dedupe_key=f"consensus-recovery:{guild_id}",
-                cooldown_seconds=300,
-            )
-            schedule_consensus_recovery_retry(bot, guild_id)
-            continue
-        _restored_consensus_guilds.add(guild_id)
-        retry_task = _consensus_recovery_tasks.pop(guild_id, None)
-        if retry_task is not None and retry_task is not asyncio.current_task() and not retry_task.done():
-            retry_task.cancel()
-        restored_count += 1
+        if await _reconcile_restored_session_once(bot, guild, session):
+            restored_count += 1
 
     if restored_count:
         wake_operations_worker()
@@ -880,4 +946,4 @@ async def tvrs_ensure_sticky_all(bot: commands.Bot) -> None:
         except Exception:
             traceback.print_exc()
 
-__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'reconcile_consensus_liveness', 'repair_safe_consensus_invariants', 'collect_consensus_operational_state', 'requeue_consensus_dead_deliveries', 'recover_consensus_session', 'reconcile_current_consensus_deliveries', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'ensure_consensus_delivery_watchdog', 'tvrs_ensure_sticky_all']
+__all__ = ['_sticky_locks', '_sticky_tasks', '_consensus_recovery_tasks', '_consensus_restore_locks', '_cleanup_restored_control_copies', 'get_materials_channel', 'ensure_sticky_message', 'schedule_sticky_refresh', 'register_tvrs_persistent_views', 'register_restored_view', 'reconcile_restored_consensus_session', 'reconcile_consensus_liveness', 'repair_safe_consensus_invariants', 'collect_consensus_operational_state', 'requeue_consensus_dead_deliveries', 'recover_consensus_session', 'reconcile_current_consensus_deliveries', 'schedule_consensus_recovery_retry', 'restore_tvrs_consensus_sessions', 'ensure_consensus_delivery_watchdog', 'tvrs_ensure_sticky_all']

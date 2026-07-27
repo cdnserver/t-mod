@@ -34,7 +34,7 @@ class ConsensusSimulationTests(unittest.TestCase):
 
         calculation = calculate_consensus(simulation.session)
         self.assertEqual(calculation["internal_percent"], 66.67)
-        self.assertEqual(calculation["overall_percent"], 51.0)
+        self.assertEqual(calculation["overall_percent"], 75.0)
         result = simulation.finalize()
         self.assertEqual(result.status, "accepted")
         self.assertEqual(simulation.session.stage, "after_result")

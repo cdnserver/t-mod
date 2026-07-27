@@ -459,6 +459,10 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
                 "modules.tvrs_control._outbox_storage.delivery_outbox_is_current_supersession",
                 return_value=True,
             ),
+            patch(
+                "modules.tvrs_control._enqueue_notice_deletion",
+                new=AsyncMock(),
+            ),
             patch("modules.tvrs_control._schedule_control_cleanup") as cleanup,
             patch("modules.tvrs_control._consensus.save", return_value={"revision": 2}),
         ):

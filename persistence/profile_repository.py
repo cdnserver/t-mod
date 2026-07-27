@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 
 from persistence.core import (
     MemberProfile,
@@ -19,6 +20,9 @@ PROFILE_THEMES = frozenset({"indigo", "emerald", "gold", "rose"})
 PROFILE_MAX_CHARACTERS = 3
 PROFILE_NICKNAME_MAX_LENGTH = 48
 PROFILE_STATUS_NOTE_MAX_LENGTH = 120
+PROFILE_BIOGRAPHY_MAX_LENGTH = 500
+PROFILE_CONTRIBUTION_MAX_LENGTH = 500
+PROFILE_RESPONSIBILITIES_MAX_LENGTH = 700
 
 
 def normalize_profile_nickname(value: str) -> str:
@@ -54,6 +58,30 @@ def normalize_profile_status_note(value: str | None) -> str | None:
     return note or None
 
 
+def _normalize_directory_text(
+    value: str | None,
+    *,
+    maximum: int,
+    error: str,
+    required: bool,
+) -> str | None:
+    text = " ".join(str(value or "").strip().split())
+    if (required and len(text) < 3) or len(text) > maximum:
+        raise ValueError(error)
+    return text or None
+
+
+def normalize_membership_since(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = date.fromisoformat(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("profile_membership_since_invalid") from exc
+    return parsed.isoformat()
+
+
 def _profile_from_row(row: sqlite3.Row | None) -> MemberProfile | None:
     if row is None:
         return None
@@ -68,6 +96,7 @@ def _profile_from_row(row: sqlite3.Row | None) -> MemberProfile | None:
         show_position=bool(row["show_position"]),
         show_characters=bool(row["show_characters"]),
         show_join_date=bool(row["show_join_date"]),
+        show_directory=bool(row["show_directory"]),
         theme=str(row["theme"] or "indigo"),
         primary_character_id=(
             int(row["primary_character_id"])
@@ -83,6 +112,13 @@ def _profile_from_row(row: sqlite3.Row | None) -> MemberProfile | None:
         quiet_hours_enabled=bool(row["quiet_hours_enabled"]),
         quiet_start_minute=int(row["quiet_start_minute"] or 0),
         quiet_end_minute=int(row["quiet_end_minute"] or 0),
+        biography=row["biography"],
+        contribution=row["contribution"],
+        responsibilities=row["responsibilities"],
+        membership_since=row["membership_since"],
+        directory_completed_at=row["directory_completed_at"],
+        directory_required=bool(row["directory_required"]),
+        onboarding_prompted_at=row["onboarding_prompted_at"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -218,6 +254,127 @@ def set_member_profile_status(
     return profile
 
 
+def update_member_directory(
+    guild_id: int,
+    user_id: int,
+    *,
+    biography: str,
+    contribution: str,
+    responsibilities: str,
+    membership_since: str | None,
+) -> MemberProfile:
+    clean_biography = _normalize_directory_text(
+        biography,
+        maximum=PROFILE_BIOGRAPHY_MAX_LENGTH,
+        error="profile_biography_invalid",
+        required=True,
+    )
+    clean_contribution = _normalize_directory_text(
+        contribution,
+        maximum=PROFILE_CONTRIBUTION_MAX_LENGTH,
+        error="profile_contribution_invalid",
+        required=True,
+    )
+    clean_responsibilities = _normalize_directory_text(
+        responsibilities,
+        maximum=PROFILE_RESPONSIBILITIES_MAX_LENGTH,
+        error="profile_responsibilities_invalid",
+        required=True,
+    )
+    clean_since = normalize_membership_since(membership_since)
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        _ensure_profile(con, guild_id, user_id, now=now)
+        con.execute(
+            """
+            UPDATE member_profiles
+            SET biography = ?, contribution = ?, responsibilities = ?,
+                membership_since = ?, directory_completed_at = ?,
+                directory_required = 0,
+                updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (
+                clean_biography,
+                clean_contribution,
+                clean_responsibilities,
+                clean_since,
+                now,
+                now,
+                int(guild_id),
+                int(user_id),
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+        con.commit()
+    profile = _profile_from_row(row)
+    if profile is None:  # pragma: no cover
+        raise RuntimeError("profile_write_failed")
+    return profile
+
+
+def require_member_directory(
+    guild_id: int,
+    user_id: int,
+    *,
+    prompted: bool = False,
+) -> tuple[MemberProfile, bool]:
+    """Require the directory card after a real admission event.
+
+    Callers intentionally invoke this only when the Senator role is newly
+    granted.  There is no startup sweep, so existing members are not made
+    retroactively subject to the requirement.
+    """
+
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        existing = con.execute(
+            "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+        _ensure_profile(con, guild_id, user_id, now=now)
+        newly_required = existing is None or not bool(existing["directory_required"])
+        if newly_required:
+            con.execute(
+                """
+                UPDATE member_profiles
+                SET directory_required = 1,
+                    onboarding_prompted_at = ?,
+                    updated_at = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (
+                    now if prompted else None,
+                    now,
+                    int(guild_id),
+                    int(user_id),
+                ),
+            )
+        elif prompted and existing["onboarding_prompted_at"] is None:
+            con.execute(
+                """
+                UPDATE member_profiles
+                SET onboarding_prompted_at = ?, updated_at = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (now, now, int(guild_id), int(user_id)),
+            )
+        row = con.execute(
+            "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+        con.commit()
+    profile = _profile_from_row(row)
+    if profile is None:  # pragma: no cover
+        raise RuntimeError("profile_write_failed")
+    return profile, newly_required
+
+
 _PREFERENCE_UNSET = object()
 
 
@@ -231,6 +388,7 @@ def update_member_profile_preferences(
     show_position: bool | None = None,
     show_characters: bool | None = None,
     show_join_date: bool | None = None,
+    show_directory: bool | None = None,
     theme: str | None = None,
     primary_character_id: int | None | object = _PREFERENCE_UNSET,
     dm_notifications: bool | None = None,
@@ -257,6 +415,7 @@ def update_member_profile_preferences(
         "show_position": show_position,
         "show_characters": show_characters,
         "show_join_date": show_join_date,
+        "show_directory": show_directory,
         "dm_notifications": dm_notifications,
         "dm_market": dm_market,
         "dm_craft": dm_craft,
@@ -585,15 +744,21 @@ __all__ = [
     "PROFILE_MAX_CHARACTERS",
     "PROFILE_NICKNAME_MAX_LENGTH",
     "PROFILE_STATUS_NOTE_MAX_LENGTH",
+    "PROFILE_BIOGRAPHY_MAX_LENGTH",
+    "PROFILE_CONTRIBUTION_MAX_LENGTH",
+    "PROFILE_RESPONSIBILITIES_MAX_LENGTH",
     "normalize_profile_nickname",
     "normalize_profile_static",
     "normalize_profile_status",
     "normalize_profile_status_note",
+    "normalize_membership_since",
     "get_member_profile",
     "get_profile_character",
     "list_profile_characters",
     "get_profile_snapshot",
     "set_member_profile_status",
+    "update_member_directory",
+    "require_member_directory",
     "update_member_profile_preferences",
     "add_profile_character",
     "update_profile_character",

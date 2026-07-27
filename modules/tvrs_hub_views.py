@@ -19,7 +19,6 @@ from modules.consensus_v3 import resolve_consensus_access
 from modules.delivery_runtime import wake_delivery_worker
 from modules.hub_runtime import open_hub_section
 from modules.tvrs_config import (
-    TVRS_DEFAULT_NEXT_BILL_NUMBER,
     TVRS_EMBED_COLOR,
     TVRS_MATERIALS_CHANNEL_ID,
 )
@@ -34,6 +33,7 @@ from modules.tvrs_delivery import (
     TVRS_BILL_PUBLICATION_TOPIC,
 )
 from modules.technical_log import log_technical_event
+from modules.tvrs_bill_editor import start_bill_workspace
 
 from modules.tvrs_presentation import (
     build_live_vote_embed,
@@ -384,8 +384,7 @@ class TVRSStickyView(TVRSBaseView):
         if active and not active.finished:
             await interaction.response.send_message("Сейчас идет пленарный консенсус. Подача новых законопроектов будет снова доступна после завершения.", ephemeral=True)
             return
-        next_number = storage.tvrs_next_bill_number(interaction.guild.id, TVRS_DEFAULT_NEXT_BILL_NUMBER)
-        await interaction.response.send_modal(TVRSBillModal(next_number))
+        await start_bill_workspace(interaction)
 
 
 class TVRSBillModal(discord.ui.Modal):

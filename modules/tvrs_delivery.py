@@ -28,6 +28,7 @@ TVRS_RETRY_BILL_TOPIC = "tvrs.consensus.retry-bill.v1"
 TVRS_BILL_PUBLICATION_TOPIC = "tvrs.bill.publication.v1"
 TVRS_CONTROL_DM_TOPIC = "tvrs.consensus.control-dm.v1"
 TVRS_CONTROL_NOTICE_TOPIC = "tvrs.consensus.control-notice.v1"
+TVRS_NOTICE_DELETE_TOPIC = "tvrs.consensus.notice-delete.v1"
 TVRS_PHASE_ANNOUNCEMENT_TOPIC = "tvrs.consensus.phase-announcement.v1"
 TVRS_DISCUSSION_INVITE_TOPIC = "tvrs.consensus.discussion-invite.v1"
 TVRS_SESSION_SUMMARY_TOPIC = "tvrs.consensus.session-summary.v1"
@@ -43,6 +44,12 @@ def _result_payload(result: LiveResult) -> dict[str, Any]:
         "overall_percent": float(result.overall_percent),
         "internal_active": bool(result.internal_active),
         "votes": {str(user_id): str(vote) for user_id, vote in result.votes.items()},
+        "source_channel_id": result.source_channel_id,
+        "source_message_id": result.source_message_id,
+        "decision_category": str(result.decision_category),
+        "required_percent": float(result.required_percent),
+        "opposed_percent": float(result.opposed_percent),
+        "block_votes": dict(result.block_votes),
         "veto_by_id": int(result.veto_by_id) if result.veto_by_id else None,
         "retry_bill_number": int(result.retry_bill_number) if result.retry_bill_number else None,
         "resolution_method": str(result.resolution_method),
@@ -62,6 +69,7 @@ def _participant_payload(participant: LiveParticipant) -> dict[str, Any]:
         "confirmed": bool(participant.confirmed),
         "vote_message_id": int(participant.vote_message_id) if participant.vote_message_id else None,
         "vote_bill_id": int(participant.vote_bill_id) if participant.vote_bill_id else None,
+        "voting_block": participant.voting_block,
     }
 
 
@@ -75,6 +83,14 @@ def _rules_payload(rules: ConsensusRules) -> dict[str, Any]:
         "chair_yes_weight": float(rules.chair_yes_weight),
         "internal_consensus_weight": float(rules.internal_consensus_weight),
         "acceptance_percent": float(rules.acceptance_percent),
+        "minimum_participants": int(rules.minimum_participants),
+        "internal_quorum_strictly_above": float(
+            rules.internal_quorum_strictly_above
+        ),
+        "heavy_acceptance_percent": float(rules.heavy_acceptance_percent),
+        "unanimous_acceptance_percent": float(
+            rules.unanimous_acceptance_percent
+        ),
     }
 
 
@@ -331,6 +347,7 @@ def build_discussion_invite_deliveries(
 
 
 def build_session_summary_deliveries(session: LiveConsensusSession) -> list[dict[str, Any]]:
+    result_payloads = [_result_payload(item) for item in session.results]
     common = {
         "payload_version": 1,
         "guild_id": int(session.guild_id),
@@ -342,17 +359,53 @@ def build_session_summary_deliveries(session: LiveConsensusSession) -> list[dict
         "plenary_number": int(session.plenary_number),
         "participants": [_participant_payload(item) for item in session.confirmed_participants()],
         "rules": _rules_payload(session.rules),
-        "results": [_result_payload(item) for item in session.results],
+        "result_bill_ids": [int(item.bill_id) for item in session.results],
+        "summary_counts": {
+            "total": len(session.results),
+            "accepted": sum(item.status == "accepted" for item in session.results),
+            "rejected": sum(item.status == "rejected" for item in session.results),
+            "vetoed": sum(item.status == "vetoed" for item in session.results),
+        },
     }
     prefix = f"consensus:{session.session_key}:summary"
-    deliveries = [
-        {
+    pages: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_size = 0
+    for item in result_payloads:
+        estimated = (
+            len(str(item.get("title") or "")[:140])
+            + len(str(item.get("source_channel_id") or ""))
+            + len(str(item.get("source_message_id") or ""))
+            + 100
+        )
+        if current and (current_size + estimated > 3200 or len(current) >= 20):
+            pages.append(current)
+            current = []
+            current_size = 0
+        current.append(item)
+        current_size += estimated
+    if current or not pages:
+        pages.append(current)
+
+    page_count = len(pages)
+    deliveries: list[dict[str, Any]] = []
+    for page_number, page_results in enumerate(pages, start=1):
+        deliveries.append({
             "topic": TVRS_SESSION_SUMMARY_TOPIC,
-            "dedupe_key": f"{prefix}:public",
-            "payload": {**common, "destination": "public"},
+            "dedupe_key": (
+                f"{prefix}:public"
+                if page_number == 1
+                else f"{prefix}:public:{page_number}"
+            ),
+            "payload": {
+                **common,
+                "destination": "public",
+                "results": page_results,
+                "page_number": page_number,
+                "page_count": page_count,
+            },
             "max_attempts": 12,
-        }
-    ]
+        })
     for participant in session.confirmed_participants():
         if participant.user_id == session.leader_id:
             continue
@@ -363,6 +416,8 @@ def build_session_summary_deliveries(session: LiveConsensusSession) -> list[dict
                 "payload": {
                     **common,
                     "destination": "participant_dm",
+                    "results": [],
+                    "compact": True,
                     "destination_user_id": int(participant.user_id),
                     "content": "Пленарный консенсус завершён.",
                 },
@@ -390,6 +445,10 @@ def build_retry_bill_delivery(
             "title",
             "summary",
             "materials",
+            "decision_category",
+            "implementation_plan",
+            "leadership_actions",
+            "editor_workspace_id",
             "status",
             "original_bill_id",
             "attempt",
@@ -426,6 +485,11 @@ def _render_objects(payload: dict[str, Any]) -> tuple[LiveConsensusSession, Live
             confirmed=bool(item.get("confirmed", True)),
             vote_message_id=(int(item["vote_message_id"]) if item.get("vote_message_id") else None),
             vote_bill_id=(int(item["vote_bill_id"]) if item.get("vote_bill_id") else None),
+            voting_block=(
+                str(item["voting_block"])
+                if item.get("voting_block") in {"first", "second", "third"}
+                else None
+            ),  # type: ignore[arg-type]
         )
         participants[participant.user_id] = participant
     session = LiveConsensusSession(
@@ -451,6 +515,23 @@ def _render_objects(payload: dict[str, Any]) -> tuple[LiveConsensusSession, Live
         overall_percent=float(raw_result.get("overall_percent") or 0.0),
         internal_active=bool(raw_result.get("internal_active")),
         votes={int(user_id): str(vote) for user_id, vote in dict(raw_result.get("votes") or {}).items()},
+        source_channel_id=(
+            int(raw_result["source_channel_id"])
+            if raw_result.get("source_channel_id")
+            else None
+        ),
+        source_message_id=(
+            int(raw_result["source_message_id"])
+            if raw_result.get("source_message_id")
+            else None
+        ),
+        decision_category=str(raw_result.get("decision_category") or "ordinary"),
+        required_percent=float(raw_result.get("required_percent") or 50.0),
+        opposed_percent=float(raw_result.get("opposed_percent") or 0.0),
+        block_votes={
+            str(key): str(value)
+            for key, value in dict(raw_result.get("block_votes") or {}).items()
+        },
         veto_by_id=(int(raw_result["veto_by_id"]) if raw_result.get("veto_by_id") else None),
         retry_bill_number=(
             int(raw_result["retry_bill_number"]) if raw_result.get("retry_bill_number") else None
@@ -688,6 +769,11 @@ def _render_summary_session(payload: dict[str, Any]) -> LiveConsensusSession:
             confirmed=bool(item.get("confirmed", True)),
             vote_message_id=(int(item["vote_message_id"]) if item.get("vote_message_id") else None),
             vote_bill_id=(int(item["vote_bill_id"]) if item.get("vote_bill_id") else None),
+            voting_block=(
+                str(item["voting_block"])
+                if item.get("voting_block") in {"first", "second", "third"}
+                else None
+            ),  # type: ignore[arg-type]
         )
         participants[participant.user_id] = participant
     session = LiveConsensusSession(
@@ -715,6 +801,23 @@ def _render_summary_session(payload: dict[str, Any]) -> LiveConsensusSession:
                 overall_percent=float(item.get("overall_percent") or 0.0),
                 internal_active=bool(item.get("internal_active")),
                 votes={int(key): str(value) for key, value in dict(item.get("votes") or {}).items()},
+                source_channel_id=(
+                    int(item["source_channel_id"])
+                    if item.get("source_channel_id")
+                    else None
+                ),
+                source_message_id=(
+                    int(item["source_message_id"])
+                    if item.get("source_message_id")
+                    else None
+                ),
+                decision_category=str(item.get("decision_category") or "ordinary"),
+                required_percent=float(item.get("required_percent") or 50.0),
+                opposed_percent=float(item.get("opposed_percent") or 0.0),
+                block_votes={
+                    str(key): str(value)
+                    for key, value in dict(item.get("block_votes") or {}).items()
+                },
                 veto_by_id=(int(item["veto_by_id"]) if item.get("veto_by_id") else None),
                 retry_bill_number=(
                     int(item["retry_bill_number"]) if item.get("retry_bill_number") else None
@@ -734,15 +837,31 @@ def make_session_summary_delivery_handler(bot: Any):
     async def deliver(message: OutboxMessage) -> DeliveryReceipt:
         payload = message.payload
         session = _render_summary_session(payload)
-        for result in session.results:
+        result_bill_ids = [
+            int(item)
+            for item in payload.get("result_bill_ids") or []
+            if int(item) > 0
+        ]
+        if not result_bill_ids:
+            result_bill_ids = [int(result.bill_id) for result in session.results]
+        for result_bill_id in result_bill_ids:
             persisted = await asyncio.to_thread(
                 storage.tvrs_live_result_for_bill,
                 session.session_key,
-                result.bill_id,
+                result_bill_id,
             )
             if persisted is None:
                 return DeliveryReceipt()
-        embed = build_final_summary_embed(session)
+        embed = build_final_summary_embed(
+            session,
+            page_number=int(payload.get("page_number") or 1),
+            page_count=int(payload.get("page_count") or 1),
+            compact=bool(payload.get("compact")),
+            summary_counts={
+                str(key): int(value)
+                for key, value in dict(payload.get("summary_counts") or {}).items()
+            },
+        )
         marker = delivery_marker(message.dedupe_key)
         embed.set_footer(text=marker)
         guild = bot.get_guild(session.guild_id)

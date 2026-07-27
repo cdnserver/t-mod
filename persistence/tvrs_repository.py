@@ -39,6 +39,10 @@ def tvrs_create_bill(
     title: str,
     summary: str,
     materials: str | None,
+    decision_category: str = "ordinary",
+    implementation_plan: str | None = None,
+    leadership_actions: str | None = None,
+    editor_workspace_id: int | None = None,
 ) -> TVRSBill:
     now = utc_now_iso()
     meta_key = f"tvrs_next_bill_number:{guild_id}"
@@ -53,10 +57,30 @@ def tvrs_create_bill(
             number = max(9, int(row["n"] or 0) + 1)
         cur = con.execute(
             """
-            INSERT INTO tvrs_bills(guild_id, bill_number, channel_id, message_id, author_id, author_display, title, summary, materials, status, created_at, updated_at)
-            VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, 'draft', ?, ?)
+            INSERT INTO tvrs_bills(
+                guild_id, bill_number, channel_id, message_id, author_id,
+                author_display, title, summary, materials, decision_category,
+                implementation_plan, leadership_actions, editor_workspace_id,
+                status, created_at, updated_at
+            )
+            VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
             """,
-            (guild_id, number, channel_id, author_id, author_display, title, summary, materials, now, now),
+            (
+                guild_id,
+                number,
+                channel_id,
+                author_id,
+                author_display,
+                title,
+                summary,
+                materials,
+                str(decision_category or "ordinary"),
+                implementation_plan,
+                leadership_actions,
+                editor_workspace_id,
+                now,
+                now,
+            ),
         )
         set_meta(con, meta_key, str(number + 1))
         row = con.execute("SELECT * FROM tvrs_bills WHERE id = ?", (int(cur.lastrowid),)).fetchone()
@@ -78,6 +102,10 @@ def tvrs_create_bill_with_publication(
     materials: str | None,
     delivery_topic: str,
     max_attempts: int = 12,
+    decision_category: str = "ordinary",
+    implementation_plan: str | None = None,
+    leadership_actions: str | None = None,
+    editor_workspace_id: int | None = None,
 ) -> tuple[TVRSBill, dict[str, Any], bool]:
     """Atomically create a bill and its durable public-card intent.
 
@@ -104,24 +132,39 @@ def tvrs_create_bill_with_publication(
         if active is not None:
             con.rollback()
             raise ValueError("bill_submission_locked_by_active_consensus")
-        row = con.execute(
-            """
-            SELECT * FROM tvrs_bills
-            WHERE guild_id = ? AND author_id = ? AND title = ? AND summary = ?
-              AND COALESCE(materials, '') = COALESCE(?, '')
-              AND status IN ('publishing', 'draft', 'queued', 'requeued')
-              AND created_at >= ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (
-                int(guild_id),
-                int(author_id),
-                str(title),
-                str(summary),
-                materials,
-                duplicate_after,
-            ),
-        ).fetchone()
+        if editor_workspace_id is not None:
+            # A workspace is a durable idempotency key.  This remains safe even
+            # after an interaction retry or a restart much later than 30 minutes.
+            row = con.execute(
+                """
+                SELECT * FROM tvrs_bills
+                WHERE guild_id = ? AND author_id = ? AND editor_workspace_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (int(guild_id), int(author_id), int(editor_workspace_id)),
+            ).fetchone()
+        else:
+            row = con.execute(
+                """
+                SELECT * FROM tvrs_bills
+                WHERE guild_id = ? AND author_id = ? AND title = ? AND summary = ?
+                  AND COALESCE(materials, '') = COALESCE(?, '')
+                  AND decision_category = ?
+                  AND editor_workspace_id IS NULL
+                  AND status IN ('publishing', 'draft', 'queued', 'requeued')
+                  AND created_at >= ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (
+                    int(guild_id),
+                    int(author_id),
+                    str(title),
+                    str(summary),
+                    materials,
+                    str(decision_category or "ordinary"),
+                    duplicate_after,
+                ),
+            ).fetchone()
         created = row is None
         if row is None:
             meta_row = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
@@ -138,8 +181,10 @@ def tvrs_create_bill_with_publication(
                 """
                 INSERT INTO tvrs_bills(
                     guild_id, bill_number, channel_id, message_id, author_id,
-                    author_display, title, summary, materials, status, created_at, updated_at
-                ) VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, 'publishing', ?, ?)
+                    author_display, title, summary, materials, decision_category,
+                    implementation_plan, leadership_actions, editor_workspace_id,
+                    status, created_at, updated_at
+                ) VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'publishing', ?, ?)
                 """,
                 (
                     int(guild_id),
@@ -150,6 +195,10 @@ def tvrs_create_bill_with_publication(
                     str(title),
                     str(summary),
                     materials,
+                    str(decision_category or "ordinary"),
+                    implementation_plan,
+                    leadership_actions,
+                    editor_workspace_id,
                     now,
                     now,
                 ),
@@ -185,6 +234,10 @@ def tvrs_create_bill_with_publication(
                         "title",
                         "summary",
                         "materials",
+                        "decision_category",
+                        "implementation_plan",
+                        "leadership_actions",
+                        "editor_workspace_id",
                         "status",
                     )
                 },
@@ -634,10 +687,19 @@ def tvrs_consensus_commit_finalization(
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("consensus_result_votes_invalid") from exc
+    try:
+        normalized_blocks_json = json.dumps(
+            json.loads(str(result.get("block_votes_json") or "{}")),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("consensus_result_blocks_invalid") from exc
 
     def result_conflicts(row: sqlite3.Row, expected_values: dict[str, Any]) -> bool:
         for key, value in expected_values.items():
-            if key == "votes_json":
+            if key in {"votes_json", "block_votes_json"}:
                 try:
                     persisted_votes = json.loads(str(row[key] or "{}"))
                     expected_votes = json.loads(str(value or "{}"))
@@ -678,6 +740,26 @@ def tvrs_consensus_commit_finalization(
                 "overall_percent": float(result.get("overall_percent") or 0.0),
                 "internal_active": 1 if bool(result.get("internal_active")) else 0,
                 "votes_json": normalized_votes_json,
+                "source_channel_id": (
+                    int(result["source_channel_id"])
+                    if result.get("source_channel_id")
+                    else None
+                ),
+                "source_message_id": (
+                    int(result["source_message_id"])
+                    if result.get("source_message_id")
+                    else None
+                ),
+                "decision_category": str(
+                    result.get("decision_category") or "ordinary"
+                ),
+                "required_percent": float(
+                    result.get("required_percent") or 50.0
+                ),
+                "opposed_percent": float(
+                    result.get("opposed_percent") or 0.0
+                ),
+                "block_votes_json": normalized_blocks_json,
                 "veto_by_id": int(result["veto_by_id"]) if result.get("veto_by_id") else None,
                 "veto_by_display": result.get("veto_by_display"),
                 "resolution_method": (
@@ -742,6 +824,20 @@ def tvrs_consensus_commit_finalization(
             float(result.get("overall_percent") or 0.0),
             1 if bool(result.get("internal_active")) else 0,
             normalized_votes_json,
+            (
+                int(result["source_channel_id"])
+                if result.get("source_channel_id")
+                else None
+            ),
+            (
+                int(result["source_message_id"])
+                if result.get("source_message_id")
+                else None
+            ),
+            str(result.get("decision_category") or "ordinary"),
+            float(result.get("required_percent") or 50.0),
+            float(result.get("opposed_percent") or 0.0),
+            normalized_blocks_json,
             int(result["veto_by_id"]) if result.get("veto_by_id") else None,
             result.get("veto_by_display"),
             result_kind,
@@ -756,10 +852,15 @@ def tvrs_consensus_commit_finalization(
                 INSERT INTO tvrs_live_results(
                     guild_id, session_key, plenary_number, bill_id, bill_number,
                     bill_title, status, internal_percent, overall_percent,
-                    internal_active, votes_json, veto_by_id, veto_by_display,
+                    internal_active, votes_json, source_channel_id,
+                    source_message_id, decision_category, required_percent,
+                    opposed_percent, block_votes_json, veto_by_id, veto_by_display,
                     resolution_method, resolution_note, resolved_by_id,
                     resolved_by_display, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
                 """,
                 result_values,
             )
@@ -774,6 +875,26 @@ def tvrs_consensus_commit_finalization(
                 "overall_percent": float(result.get("overall_percent") or 0.0),
                 "internal_active": 1 if bool(result.get("internal_active")) else 0,
                 "votes_json": normalized_votes_json,
+                "source_channel_id": (
+                    int(result["source_channel_id"])
+                    if result.get("source_channel_id")
+                    else None
+                ),
+                "source_message_id": (
+                    int(result["source_message_id"])
+                    if result.get("source_message_id")
+                    else None
+                ),
+                "decision_category": str(
+                    result.get("decision_category") or "ordinary"
+                ),
+                "required_percent": float(
+                    result.get("required_percent") or 50.0
+                ),
+                "opposed_percent": float(
+                    result.get("opposed_percent") or 0.0
+                ),
+                "block_votes_json": normalized_blocks_json,
                 "veto_by_id": int(result["veto_by_id"]) if result.get("veto_by_id") else None,
                 "veto_by_display": result.get("veto_by_display"),
                 "resolution_method": result_kind,
@@ -1236,8 +1357,16 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
         retry_note = f"\n\nПовторная попытка консенсуса: {next_attempt}/3. Законопроект возвращён на рассмотрение после применения права вето."
         cur = con.execute(
             """
-            INSERT INTO tvrs_bills(guild_id, bill_number, channel_id, message_id, author_id, author_display, title, summary, materials, status, created_at, updated_at, original_bill_id, attempt)
-            VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, 'pending_veto', ?, ?, ?, ?)
+            INSERT INTO tvrs_bills(
+                guild_id, bill_number, channel_id, message_id, author_id,
+                author_display, title, summary, materials, decision_category,
+                implementation_plan, leadership_actions, editor_workspace_id,
+                status, created_at, updated_at, original_bill_id, attempt
+            )
+            VALUES(
+                ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                'pending_veto', ?, ?, ?, ?
+            )
             """,
             (
                 guild_id,
@@ -1248,6 +1377,10 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
                 title,
                 summary + retry_note,
                 original_dict.get("materials"),
+                original_dict.get("decision_category") or "ordinary",
+                original_dict.get("implementation_plan"),
+                original_dict.get("leadership_actions"),
+                original_dict.get("editor_workspace_id"),
                 now,
                 now,
                 root_bill_id,
@@ -1284,6 +1417,12 @@ def tvrs_save_live_result(
     overall_percent: float,
     internal_active: bool,
     votes_json: str,
+    source_channel_id: int | None = None,
+    source_message_id: int | None = None,
+    decision_category: str = "ordinary",
+    required_percent: float = 50.0,
+    opposed_percent: float = 0.0,
+    block_votes_json: str | None = None,
     veto_by_id: int | None = None,
     veto_by_display: str | None = None,
     resolution_method: str = "vote",
@@ -1297,8 +1436,19 @@ def tvrs_save_live_result(
     with _db_lock, connect() as con:
         cur = con.execute(
             """
-            INSERT INTO tvrs_live_results(guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, internal_active, votes_json, veto_by_id, veto_by_display, resolution_method, resolution_note, resolved_by_id, resolved_by_display, created_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tvrs_live_results(
+                guild_id, session_key, plenary_number, bill_id, bill_number,
+                bill_title, status, internal_percent, overall_percent,
+                internal_active, votes_json, source_channel_id,
+                source_message_id, decision_category, required_percent,
+                opposed_percent, block_votes_json, veto_by_id, veto_by_display,
+                resolution_method, resolution_note, resolved_by_id,
+                resolved_by_display, created_at
+            )
+            VALUES(
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(session_key, bill_id) DO UPDATE SET
                 plenary_number = excluded.plenary_number,
                 bill_number = excluded.bill_number,
@@ -1308,6 +1458,12 @@ def tvrs_save_live_result(
                 overall_percent = excluded.overall_percent,
                 internal_active = excluded.internal_active,
                 votes_json = excluded.votes_json,
+                source_channel_id = excluded.source_channel_id,
+                source_message_id = excluded.source_message_id,
+                decision_category = excluded.decision_category,
+                required_percent = excluded.required_percent,
+                opposed_percent = excluded.opposed_percent,
+                block_votes_json = excluded.block_votes_json,
                 veto_by_id = excluded.veto_by_id,
                 veto_by_display = excluded.veto_by_display,
                 resolution_method = excluded.resolution_method,
@@ -1315,7 +1471,32 @@ def tvrs_save_live_result(
                 resolved_by_id = excluded.resolved_by_id,
                 resolved_by_display = excluded.resolved_by_display
             """,
-            (guild_id, session_key, plenary_number, bill_id, bill_number, bill_title, status, internal_percent, overall_percent, 1 if internal_active else 0, votes_json, veto_by_id, veto_by_display, resolution_method, resolution_note, resolved_by_id, resolved_by_display, now),
+            (
+                guild_id,
+                session_key,
+                plenary_number,
+                bill_id,
+                bill_number,
+                bill_title,
+                status,
+                internal_percent,
+                overall_percent,
+                1 if internal_active else 0,
+                votes_json,
+                source_channel_id,
+                source_message_id,
+                str(decision_category or "ordinary"),
+                float(required_percent),
+                float(opposed_percent),
+                block_votes_json,
+                veto_by_id,
+                veto_by_display,
+                resolution_method,
+                resolution_note,
+                resolved_by_id,
+                resolved_by_display,
+                now,
+            ),
         )
         row = con.execute(
             "SELECT id FROM tvrs_live_results WHERE session_key = ? AND bill_id = ?",

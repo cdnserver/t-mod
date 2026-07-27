@@ -64,6 +64,7 @@ _SAFE_REPAIR_CODES = frozenset(
         "stale_votes",
         "stale_discussion_state",
         "orphan_pending_action",
+        "stale_pause_state",
     }
 )
 

@@ -138,7 +138,7 @@ class ConsensusV3UiTests(unittest.TestCase):
         registry.sessions.clear()
         registry._locks.clear()
 
-    def test_administrator_is_a_chair_in_the_consensus_roster(self) -> None:
+    def test_administrator_can_lead_without_automatic_voting_block(self) -> None:
         member = SimpleNamespace(
             id=99,
             guild_permissions=SimpleNamespace(administrator=True),

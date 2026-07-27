@@ -51,23 +51,41 @@ class ConsensusStateError(ValueError):
 
 @dataclass(frozen=True)
 class ConsensusRules:
-    version: int = 1
-    minimum_chairs: int = 2
-    minimum_senators: int = 1
-    senators_must_be_odd: bool = True
-    internal_activation_strictly_above: float = 51.0
-    chair_yes_weight: float = 49.0
-    internal_consensus_weight: float = 2.0
-    acceptance_percent: float = 51.0
+    version: int = 3
+    minimum_chairs: int = 0
+    minimum_senators: int = 0
+    senators_must_be_odd: bool = False
+    internal_activation_strictly_above: float = 50.0
+    chair_yes_weight: float = 25.0
+    internal_consensus_weight: float = 25.0
+    acceptance_percent: float = 50.0
+    minimum_participants: int = 3
+    internal_quorum_strictly_above: float = 50.0
+    heavy_acceptance_percent: float = 75.0
+    unanimous_acceptance_percent: float = 100.0
 
     def __post_init__(self) -> None:
-        if self.version < 1 or self.minimum_chairs < 0 or self.minimum_senators < 0:
+        if (
+            self.version < 1
+            or self.minimum_chairs < 0
+            or self.minimum_senators < 0
+            or self.minimum_participants < 0
+        ):
             raise ConsensusStateError("Некорректная версия или состав кворума.")
         if not 0.0 <= self.internal_activation_strictly_above <= 100.0:
             raise ConsensusStateError("Некорректный порог внутреннего консенсуса.")
+        if not 0.0 <= self.internal_quorum_strictly_above <= 100.0:
+            raise ConsensusStateError("Некорректный порог кворума.")
         if self.chair_yes_weight < 0.0 or self.internal_consensus_weight < 0.0:
             raise ConsensusStateError("Вес голоса не может быть отрицательным.")
-        if not 0.0 <= self.acceptance_percent <= 100.0:
+        if any(
+            not 0.0 <= value <= 100.0
+            for value in (
+                self.acceptance_percent,
+                self.heavy_acceptance_percent,
+                self.unanimous_acceptance_percent,
+            )
+        ):
             raise ConsensusStateError("Некорректный порог принятия решения.")
 
 
@@ -87,6 +105,7 @@ class LiveParticipant:
     vote_message_id: int | None = None
     vote_bill_id: int | None = None
     discussion_message_id: int | None = None
+    voting_block: Literal["first", "second", "third"] | None = None
 
 
 @dataclass
@@ -99,6 +118,12 @@ class LiveResult:
     overall_percent: float
     internal_active: bool
     votes: dict[int, str]
+    source_channel_id: int | None = None
+    source_message_id: int | None = None
+    decision_category: str = "ordinary"
+    required_percent: float = 0.0
+    opposed_percent: float = 0.0
+    block_votes: dict[str, str] = field(default_factory=dict)
     veto_by_id: int | None = None
     retry_bill_number: int | None = None
     resolution_method: Literal["vote", "veto", "oral"] = "vote"
@@ -150,6 +175,15 @@ class LiveConsensusSession:
         return [participant for participant in self.confirmed_participants() if participant.kind == "senator"]
 
     def quorum_ready(self) -> bool:
+        if self.rules.version >= 3:
+            invited = len(self.participants)
+            confirmed = len(self.confirmed_participants())
+            if invited <= 0 or confirmed < self.rules.minimum_participants:
+                return False
+            return (
+                confirmed / invited * 100.0
+                > self.rules.internal_quorum_strictly_above
+            )
         chairs = len(self.confirmed_chairs())
         senators = len(self.confirmed_senators())
         enough_chairs = chairs >= self.rules.minimum_chairs
@@ -200,6 +234,96 @@ def transition_session(session: LiveConsensusSession, target_stage: str) -> tupl
 
 
 def calculate_consensus(session: LiveConsensusSession) -> dict[str, Any]:
+    if session.rules.version >= 3:
+        participants = session.confirmed_participants()
+        valid_internal_votes = [
+            session.votes[participant.user_id]
+            for participant in participants
+            if session.votes.get(participant.user_id) in {"yes", "no"}
+        ]
+        internal_yes = sum(vote == "yes" for vote in valid_internal_votes)
+        internal_no = sum(vote == "no" for vote in valid_internal_votes)
+        internal_percent = (
+            internal_yes / len(valid_internal_votes) * 100.0
+            if valid_internal_votes
+            else 0.0
+        )
+        internal_position: str | None = None
+        if valid_internal_votes:
+            if internal_percent > session.rules.internal_activation_strictly_above:
+                internal_position = "yes"
+            elif (
+                internal_no / len(valid_internal_votes) * 100.0
+                > session.rules.internal_activation_strictly_above
+            ):
+                internal_position = "no"
+
+        explicit_blocks = {
+            participant.voting_block: participant
+            for participant in participants
+            if participant.voting_block in {"first", "second", "third"}
+        }
+
+        block_votes: dict[str, str] = {}
+        for block_name in ("first", "second", "third"):
+            holder = explicit_blocks.get(block_name)
+            vote = session.votes.get(holder.user_id) if holder is not None else None
+            block_votes[block_name] = (
+                vote if vote in {"yes", "no", "abstain"} else "inactive"
+            )
+        block_votes["consensus"] = internal_position or "inactive"
+
+        yes_blocks = sum(value == "yes" for value in block_votes.values())
+        no_blocks = sum(value == "no" for value in block_votes.values())
+        category = str(
+            (session.current_bill or {}).get("decision_category") or "ordinary"
+        ).strip().lower()
+        if category not in {"ordinary", "heavy", "unanimous"}:
+            category = "ordinary"
+        required_percent = {
+            "ordinary": session.rules.acceptance_percent,
+            "heavy": session.rules.heavy_acceptance_percent,
+            "unanimous": session.rules.unanimous_acceptance_percent,
+        }[category]
+        required_blocks = max(1, int(round(required_percent / 25.0)))
+        accepted = yes_blocks >= required_blocks
+        # Article 30 explicitly rejects a 50/50 ordinary split.
+        if category == "ordinary" and yes_blocks == no_blocks:
+            accepted = False
+        return {
+            "senators": participants,
+            "chairs": list(explicit_blocks.values()),
+            "senator_votes": valid_internal_votes,
+            "senator_yes": internal_yes,
+            "internal_percent": round(internal_percent, 2),
+            "internal_active": internal_position is not None,
+            "internal_position": internal_position,
+            "internal_valid_votes": len(valid_internal_votes),
+            "internal_abstentions": sum(
+                session.votes.get(participant.user_id) == "abstain"
+                for participant in participants
+            ),
+            "chair_yes": sum(
+                value == "yes"
+                for key, value in block_votes.items()
+                if key != "consensus"
+            ),
+            "overall_percent": float(yes_blocks * 25),
+            "opposed_percent": float(no_blocks * 25),
+            "inactive_percent": float(
+                sum(value == "inactive" for value in block_votes.values()) * 25
+            ),
+            "abstained_percent": float(
+                sum(value == "abstain" for value in block_votes.values()) * 25
+            ),
+            "accepted": accepted,
+            "rules_version": session.rules.version,
+            "acceptance_percent": required_percent,
+            "required_percent": required_percent,
+            "decision_category": category,
+            "block_votes": block_votes,
+        }
+
     senators = [participant for participant in session.confirmed_participants() if participant.kind == "senator"]
     chairs = [participant for participant in session.confirmed_participants() if participant.kind == "chair"]
     senator_votes = [session.votes[participant.user_id] for participant in senators if participant.user_id in session.votes]
@@ -240,6 +364,7 @@ def _participant_payload(participant: LiveParticipant) -> dict[str, Any]:
         "vote_message_id": participant.vote_message_id,
         "vote_bill_id": participant.vote_bill_id,
         "discussion_message_id": participant.discussion_message_id,
+        "voting_block": participant.voting_block,
     }
 
 
@@ -253,6 +378,12 @@ def _result_payload(result: LiveResult) -> dict[str, Any]:
         "overall_percent": float(result.overall_percent),
         "internal_active": bool(result.internal_active),
         "votes": {str(user_id): str(vote) for user_id, vote in result.votes.items()},
+        "source_channel_id": result.source_channel_id,
+        "source_message_id": result.source_message_id,
+        "decision_category": str(result.decision_category),
+        "required_percent": float(result.required_percent),
+        "opposed_percent": float(result.opposed_percent),
+        "block_votes": dict(result.block_votes),
         "veto_by_id": result.veto_by_id,
         "retry_bill_number": result.retry_bill_number,
         "resolution_method": str(result.resolution_method),
@@ -300,6 +431,16 @@ def session_to_snapshot(session: LiveConsensusSession) -> dict[str, Any]:
             "chair_yes_weight": float(session.rules.chair_yes_weight),
             "internal_consensus_weight": float(session.rules.internal_consensus_weight),
             "acceptance_percent": float(session.rules.acceptance_percent),
+            "minimum_participants": int(session.rules.minimum_participants),
+            "internal_quorum_strictly_above": float(
+                session.rules.internal_quorum_strictly_above
+            ),
+            "heavy_acceptance_percent": float(
+                session.rules.heavy_acceptance_percent
+            ),
+            "unanimous_acceptance_percent": float(
+                session.rules.unanimous_acceptance_percent
+            ),
         },
         "participants": [_participant_payload(participant) for participant in session.participants.values()],
     }
@@ -319,6 +460,19 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
     stages_requiring_bill = {"voting", "finalizing", "discussion_type", "discussion"}
     if stage in stages_requiring_bill and not isinstance(current_bill, dict):
         raise ConsensusStateError(f"Для этапа {stage} отсутствует текущий законопроект.")
+    if isinstance(current_bill, dict):
+        try:
+            current_bill_id = int(current_bill.get("id") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConsensusStateError("Текущий законопроект содержит некорректный идентификатор.") from exc
+        if current_bill_id <= 0:
+            raise ConsensusStateError("Текущий законопроект не содержит идентификатор.")
+        try:
+            current_bill_number = int(current_bill.get("bill_number") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConsensusStateError("Текущий законопроект содержит некорректный номер.") from exc
+        if current_bill_number <= 0:
+            raise ConsensusStateError("Текущий законопроект не содержит номер.")
     pending_action = snapshot.get("pending_action")
     if stage == "finalizing" and (
         not isinstance(pending_action, dict) or pending_action.get("kind") not in {"vote", "veto", "oral"}
@@ -327,6 +481,8 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
     participants: dict[int, LiveParticipant] = {}
     for raw in snapshot.get("participants") or []:
         user_id = int(raw["user_id"])
+        if user_id in participants:
+            raise ConsensusStateError(f"Участник {user_id} повторяется в составе консенсуса.")
         kind = str(raw.get("kind") or "")
         if kind not in {"chair", "senator"}:
             raise ConsensusStateError(f"Неизвестная роль участника: {kind}")
@@ -342,6 +498,11 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             vote_message_id=int(raw["vote_message_id"]) if raw.get("vote_message_id") else None,
             vote_bill_id=int(raw["vote_bill_id"]) if raw.get("vote_bill_id") else None,
             discussion_message_id=int(raw["discussion_message_id"]) if raw.get("discussion_message_id") else None,
+            voting_block=(
+                str(raw["voting_block"])
+                if raw.get("voting_block") in {"first", "second", "third"}
+                else None
+            ),  # type: ignore[arg-type]
         )
     results = [
         LiveResult(
@@ -353,6 +514,25 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             overall_percent=float(raw.get("overall_percent") or 0.0),
             internal_active=bool(raw.get("internal_active")),
             votes={int(user_id): str(vote) for user_id, vote in (raw.get("votes") or {}).items()},
+            source_channel_id=(
+                int(raw["source_channel_id"]) if raw.get("source_channel_id") else None
+            ),
+            source_message_id=(
+                int(raw["source_message_id"]) if raw.get("source_message_id") else None
+            ),
+            decision_category=str(raw.get("decision_category") or "ordinary"),
+            required_percent=float(
+                raw.get("required_percent")
+                or dict(snapshot.get("rules") or {}).get(
+                    "acceptance_percent",
+                    DEFAULT_CONSENSUS_RULES.acceptance_percent,
+                )
+            ),
+            opposed_percent=float(raw.get("opposed_percent") or 0.0),
+            block_votes={
+                str(key): str(value)
+                for key, value in dict(raw.get("block_votes") or {}).items()
+            },
             veto_by_id=int(raw["veto_by_id"]) if raw.get("veto_by_id") else None,
             retry_bill_number=int(raw["retry_bill_number"]) if raw.get("retry_bill_number") else None,
             resolution_method=(
@@ -384,6 +564,30 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             raw_rules.get("internal_consensus_weight", DEFAULT_CONSENSUS_RULES.internal_consensus_weight)
         ),
         acceptance_percent=float(raw_rules.get("acceptance_percent", DEFAULT_CONSENSUS_RULES.acceptance_percent)),
+        minimum_participants=int(
+            raw_rules.get(
+                "minimum_participants",
+                0 if int(raw_rules.get("version", 1)) < 3 else DEFAULT_CONSENSUS_RULES.minimum_participants,
+            )
+        ),
+        internal_quorum_strictly_above=float(
+            raw_rules.get(
+                "internal_quorum_strictly_above",
+                DEFAULT_CONSENSUS_RULES.internal_quorum_strictly_above,
+            )
+        ),
+        heavy_acceptance_percent=float(
+            raw_rules.get(
+                "heavy_acceptance_percent",
+                DEFAULT_CONSENSUS_RULES.heavy_acceptance_percent,
+            )
+        ),
+        unanimous_acceptance_percent=float(
+            raw_rules.get(
+                "unanimous_acceptance_percent",
+                DEFAULT_CONSENSUS_RULES.unanimous_acceptance_percent,
+            )
+        ),
     )
     engine_version = int(
         snapshot.get("engine_version") or LEGACY_CONSENSUS_ENGINE_VERSION

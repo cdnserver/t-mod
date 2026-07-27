@@ -506,9 +506,27 @@ def session_voice_quorum_ready(guild: discord.Guild, session: LiveConsensusSessi
     if int(session.leader_id) not in voice_ids:
         return False, "Ведущий отсутствует в голосовом канале. Консенсус приостановлен."
     confirmed = [p for p in session.confirmed_participants() if p.user_id in voice_ids]
+    rules = session.rules
+    if rules.version >= 3:
+        invited = len(session.participants)
+        ok = (
+            len(confirmed) >= rules.minimum_participants
+            and invited > 0
+            and len(confirmed) / invited * 100.0
+            > rules.internal_quorum_strictly_above
+        )
+        if ok:
+            return True, (
+                f"Кворум сохранён: в войсе `{len(confirmed)}` из `{invited}` участников."
+            )
+        return False, (
+            f"Кворум утрачен: в войсе `{len(confirmed)}` из `{invited}`, "
+            f"требуется больше половины и не менее `{rules.minimum_participants}`. "
+            "Консенсус приостановлен."
+        )
+
     chairs = [p for p in confirmed if p.kind == "chair"]
     senators = [p for p in confirmed if p.kind == "senator"]
-    rules = session.rules
     ok = (
         len(chairs) >= rules.minimum_chairs
         and len(senators) >= rules.minimum_senators
@@ -526,7 +544,10 @@ async def check_realtime_quorum(bot: commands.Bot | discord.Client, guild: disco
     if not ok and session.stage != "paused":
         await pause_session(bot, guild, session, reason, automatic=True)
     elif ok and session.stage == "paused" and session.pause_is_automatic:
-        await resume_session(bot, guild, session)
+        from modules.consensus_health import assess_consensus_health
+
+        if not assess_consensus_health(session).critical:
+            await resume_session(bot, guild, session)
 
 
 async def resume_session(

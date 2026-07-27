@@ -27,10 +27,11 @@ from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_te
 
 SIMULATION_COLOR = 0x9B59B6
 SIMULATION_FAKE_SPECS = (
-    (-101, "Фейк-председатель Марта", "chair"),
-    (-201, "Фейк-сенатор Алекс", "senator"),
-    (-202, "Фейк-сенатор Ника", "senator"),
-    (-203, "Фейк-сенатор Роман", "senator"),
+    (-101, "Фейк-сопредседатель Марта", "chair", "second"),
+    (-102, "Фейк-сопредседатель Лев", "chair", "third"),
+    (-201, "Фейк-сенатор Алекс", "senator", None),
+    (-202, "Фейк-сенатор Ника", "senator", None),
+    (-203, "Фейк-сенатор Роман", "senator", None),
 )
 SIMULATION_SCENARIOS = {
     "accepted": "Поддержка",
@@ -57,14 +58,16 @@ class ConsensusSimulation:
                 kind="chair",
                 permanent=True,
                 confirmed=True,
+                voting_block="first",
             )
         }
-        for user_id, display_name, kind in SIMULATION_FAKE_SPECS:
+        for user_id, display_name, kind, voting_block in SIMULATION_FAKE_SPECS:
             participants[user_id] = LiveParticipant(
                 user_id=user_id,
                 display_name=display_name,
                 mention=display_name,
                 kind=kind,  # type: ignore[arg-type]
+                voting_block=voting_block,  # type: ignore[arg-type]
             )
         self.session = LiveConsensusSession(
             session_key=f"simulation:{self.guild_id}:{self.leader_id}",
@@ -100,6 +103,7 @@ class ConsensusSimulation:
                 "паузы и фиксации результата."
             ),
             "materials": "Учебные материалы отсутствуют.",
+            "decision_category": "ordinary",
         }
 
     def confirm_next(self) -> None:
@@ -172,8 +176,10 @@ class ConsensusSimulation:
                 vote = "yes"
             elif scenario == "rejected":
                 vote = "no"
-            elif participant.kind == "chair":
+            elif participant.voting_block == "second":
                 vote = "no"
+            elif participant.voting_block == "third":
+                vote = "yes"
             else:
                 vote = "no" if senators.index(participant) == 1 else "yes"
             self.session.votes[participant.user_id] = vote
@@ -229,6 +235,10 @@ class ConsensusSimulation:
             overall_percent=float(calculation["overall_percent"]),
             internal_active=bool(calculation["internal_active"]),
             votes=dict(self.session.votes),
+            decision_category=str(calculation["decision_category"]),
+            required_percent=float(calculation["required_percent"]),
+            opposed_percent=float(calculation["opposed_percent"]),
+            block_votes=dict(calculation["block_votes"]),
         )
         self.session.results.append(result)
         self.session.current_bill = None

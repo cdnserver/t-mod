@@ -93,6 +93,27 @@ async def finalize_current_vote(
             overall_percent=float(calc["overall_percent"]),
             internal_active=bool(calc["internal_active"]),
             votes=dict(session.votes),
+            source_channel_id=(
+                int(bill["channel_id"]) if bill.get("channel_id") else None
+            ),
+            source_message_id=(
+                int(bill["message_id"]) if bill.get("message_id") else None
+            ),
+            decision_category=str(
+                calc.get("decision_category")
+                or bill.get("decision_category")
+                or "ordinary"
+            ),
+            required_percent=float(
+                calc.get("required_percent")
+                or calc.get("acceptance_percent")
+                or session.rules.acceptance_percent
+            ),
+            opposed_percent=float(calc.get("opposed_percent") or 0.0),
+            block_votes={
+                str(key): str(value)
+                for key, value in dict(calc.get("block_votes") or {}).items()
+            },
         )
         deliveries = build_result_deliveries(
             session,
@@ -200,6 +221,25 @@ async def apply_veto_for_actor(
             overall_percent=0.0,
             internal_active=False,
             votes=dict(session.votes),
+            source_channel_id=(
+                int(bill["channel_id"]) if bill.get("channel_id") else None
+            ),
+            source_message_id=(
+                int(bill["message_id"]) if bill.get("message_id") else None
+            ),
+            decision_category=str(
+                bill.get("decision_category") or "ordinary"
+            ),
+            required_percent=float(
+                {
+                    "ordinary": session.rules.acceptance_percent,
+                    "heavy": session.rules.heavy_acceptance_percent,
+                    "unanimous": session.rules.unanimous_acceptance_percent,
+                }.get(
+                    str(bill.get("decision_category") or "ordinary"),
+                    session.rules.acceptance_percent,
+                )
+            ),
             veto_by_id=actor.user_id,
             retry_bill_number=(int(retry["bill_number"]) if retry else None),
             resolution_method="veto",
@@ -303,6 +343,25 @@ async def record_oral_result(
             overall_percent=0.0,
             internal_active=False,
             votes=dict(session.votes),
+            source_channel_id=(
+                int(bill["channel_id"]) if bill.get("channel_id") else None
+            ),
+            source_message_id=(
+                int(bill["message_id"]) if bill.get("message_id") else None
+            ),
+            decision_category=str(
+                bill.get("decision_category") or "ordinary"
+            ),
+            required_percent=float(
+                {
+                    "ordinary": session.rules.acceptance_percent,
+                    "heavy": session.rules.heavy_acceptance_percent,
+                    "unanimous": session.rules.unanimous_acceptance_percent,
+                }.get(
+                    str(bill.get("decision_category") or "ordinary"),
+                    session.rules.acceptance_percent,
+                )
+            ),
             resolution_method="oral",
             resolution_note=clean_note,
             resolved_by_id=int(pending.get("actor_id") or actor.user_id),

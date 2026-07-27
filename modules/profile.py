@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import discord
@@ -17,6 +17,7 @@ from modules.technical_log import log_technical_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
 from modules.voice_control_service import VoiceDiagnosticResult, get_voice_control
 from modules.profile_voice import ProfileMicrophoneView, profile_microphone_embed
+from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
 
 
 PROFILE_COLOR = 0x5865F2
@@ -70,6 +71,10 @@ PROFILE_ERROR_MESSAGES = {
     "profile_theme_invalid": "Не удалось распознать оформление профиля.",
     "profile_primary_character_invalid": "Выбранный персонаж больше не находится в вашем профиле.",
     "profile_boolean_preference_invalid": "Не удалось изменить персональную настройку.",
+    "profile_biography_invalid": "Расскажите о себе в 3–500 символах.",
+    "profile_contribution_invalid": "Опишите свою деятельность в 3–500 символах.",
+    "profile_responsibilities_invalid": "Укажите зону ответственности или интересов в 3–700 символах.",
+    "profile_membership_since_invalid": "Укажите дату вступления в формате ГГГГ-ММ-ДД.",
     "profile_quiet_hours_invalid": (
         "Проверьте время тихих часов: используйте ЧЧ:ММ, начало и конец должны отличаться."
     ),
@@ -179,6 +184,56 @@ def profile_embed(
         embed.add_field(
             name="Положение в Товариществе",
             value=member_position_text(member)[:1024],
+            inline=False,
+        )
+
+    show_directory = editable or bool(getattr(profile, "show_directory", True))
+    biography = getattr(profile, "biography", None)
+    contribution = getattr(profile, "contribution", None)
+    responsibilities = getattr(profile, "responsibilities", None)
+    membership_since = getattr(profile, "membership_since", None)
+    if show_directory and any((biography, contribution, responsibilities, membership_since)):
+        if biography:
+            embed.add_field(
+                name="Справочник · о себе",
+                value=_clean_display(biography)[:1024],
+                inline=False,
+            )
+        if contribution:
+            embed.add_field(
+                name="Справочник · деятельность",
+                value=_clean_display(contribution)[:1024],
+                inline=False,
+            )
+        if membership_since:
+            try:
+                joined_stamp = int(
+                    datetime.fromisoformat(str(membership_since))
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                )
+                embed.add_field(
+                    name="В Товариществе",
+                    value=f"<t:{joined_stamp}:D>",
+                    inline=True,
+                )
+            except ValueError:
+                pass
+        if responsibilities:
+            embed.add_field(
+                name="Ответственность и интересы",
+                value=_clean_display(responsibilities)[:1024],
+                inline=False,
+            )
+    elif editable:
+        required = bool(getattr(profile, "directory_required", False))
+        embed.add_field(
+            name="Справочник участников",
+            value=(
+                "🔴 Карточку необходимо заполнить как часть процедуры вступления."
+                if required
+                else "Карточка пока не заполнена. Для действующих участников это рекомендуется."
+            ),
             inline=False,
         )
 
@@ -302,6 +357,7 @@ def profile_settings_embed(
         ("show_characters", "персонажи"),
         ("show_join_date", "дата вступления"),
         ("show_activity", "активность"),
+        ("show_directory", "справочник"),
     )
     hidden_fields = [
         label for field, label in privacy_fields if not bool(getattr(profile, field, True))
@@ -396,6 +452,7 @@ def profile_privacy_embed(member: discord.Member, profile: Any | None) -> discor
         ("show_characters", "Персонажи"),
         ("show_join_date", "Дата вступления"),
         ("show_activity", "Последняя активность"),
+        ("show_directory", "Карточка справочника"),
     )
     lines = [
         f"{'👁️' if bool(getattr(profile, field, True)) else '🙈'} **{name}**"
@@ -802,6 +859,79 @@ class StatusNoteModal(ProfileModal, title="Подпись доступности
         await _edit_profile_home(interaction, self.requester_id, self.member)
 
 
+class MemberDirectoryModal(ProfileModal, title="Карточка участника"):
+    biography = discord.ui.TextInput(
+        label="Кто вы",
+        placeholder="Коротко представьтесь",
+        style=discord.TextStyle.paragraph,
+        min_length=3,
+        max_length=storage.PROFILE_BIOGRAPHY_MAX_LENGTH,
+    )
+    contribution = discord.ui.TextInput(
+        label="Чем занимаетесь в Товариществе",
+        placeholder="Роль, проекты и текущая деятельность",
+        style=discord.TextStyle.paragraph,
+        min_length=3,
+        max_length=storage.PROFILE_CONTRIBUTION_MAX_LENGTH,
+    )
+    responsibilities = discord.ui.TextInput(
+        label="Ответственность и интересы",
+        placeholder="За что отвечаете или чем хотите заниматься",
+        style=discord.TextStyle.paragraph,
+        min_length=3,
+        max_length=storage.PROFILE_RESPONSIBILITIES_MAX_LENGTH,
+    )
+    membership_since = discord.ui.TextInput(
+        label="В Товариществе с",
+        placeholder="ГГГГ-ММ-ДД",
+        min_length=10,
+        max_length=10,
+    )
+
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        profile: Any | None,
+    ) -> None:
+        super().__init__(timeout=600)
+        self.requester_id = int(requester_id)
+        self.member = member
+        self.biography.default = str(getattr(profile, "biography", None) or "")
+        self.contribution.default = str(getattr(profile, "contribution", None) or "")
+        self.responsibilities.default = str(
+            getattr(profile, "responsibilities", None) or ""
+        )
+        joined_at = getattr(member, "joined_at", None)
+        self.membership_since.default = str(
+            getattr(profile, "membership_since", None)
+            or (joined_at.date().isoformat() if joined_at else "")
+        )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Нельзя изменить чужую карточку.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        try:
+            await asyncio.to_thread(
+                storage.update_member_directory,
+                self.member.guild.id,
+                self.member.id,
+                biography=str(self.biography.value),
+                contribution=str(self.contribution.value),
+                responsibilities=str(self.responsibilities.value),
+                membership_since=str(self.membership_since.value),
+            )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await _edit_profile_home(interaction, self.requester_id, self.member)
+
+
 class ProfileStatusSelect(discord.ui.Select):
     def __init__(
         self,
@@ -1001,6 +1131,7 @@ class ProfilePrivacyView(ProfileBaseView):
             ("show_characters", "Персонажи", "🎭", 1),
             ("show_join_date", "Дата вступления", "📅", 2),
             ("show_activity", "Активность", "📊", 2),
+            ("show_directory", "Справочник", "📇", 2),
         ):
             self.add_item(
                 ProfilePreferenceToggle(
@@ -1233,6 +1364,7 @@ class ProfileSettingsView(ProfileBaseView):
             show_position=True,
             show_characters=True,
             show_join_date=True,
+            show_directory=True,
             theme="indigo",
             primary_character_id=(self.characters[0].id if self.characters else None),
             dm_notifications=True,
@@ -1415,6 +1547,7 @@ class ProfileHomeView(ProfileBaseView):
             self.remove_item(self.manage)
             self.remove_item(self.status)
             self.remove_item(self.settings)
+            self.remove_item(self.directory)
 
     @discord.ui.button(label="Добавить", emoji="➕", style=discord.ButtonStyle.primary, row=0)
     async def add(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1455,6 +1588,17 @@ class ProfileHomeView(ProfileBaseView):
     async def settings(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _edit_profile_settings(interaction, self.requester_id, self.member)
 
+    @discord.ui.button(label="О себе", emoji="📇", style=discord.ButtonStyle.secondary, row=1)
+    async def directory(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        profile = await asyncio.to_thread(
+            storage.get_member_profile,
+            self.member.guild.id,
+            self.member.id,
+        )
+        await interaction.response.send_modal(
+            MemberDirectoryModal(self.requester_id, self.member, profile)
+        )
+
     @discord.ui.button(label="Обновить", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
     async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _edit_profile_home(interaction, self.requester_id, self.member)
@@ -1484,6 +1628,61 @@ def setup_profile(
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    @bot.listen("on_member_update")
+    async def profile_member_admission_listener(
+        before: discord.Member,
+        after: discord.Member,
+    ) -> None:
+        before_roles = {int(role.id) for role in before.roles}
+        after_roles = {int(role.id) for role in after.roles}
+        if (
+            TVRS_SENATOR_ROLE_ID <= 0
+            or TVRS_SENATOR_ROLE_ID in before_roles
+            or TVRS_SENATOR_ROLE_ID not in after_roles
+            or after.bot
+        ):
+            return
+        _, newly_required = await asyncio.to_thread(
+            storage.require_member_directory,
+            after.guild.id,
+            after.id,
+            prompted=True,
+        )
+        if not newly_required:
+            return
+        onboarding = discord.Embed(
+            title="Добро пожаловать в Товарищество",
+            description=(
+                "Ваш профиль стал частью общего справочника участников. "
+                "Откройте `/profile`, нажмите **«О себе»** и заполните единую карточку: "
+                "кто вы, чем занимаетесь, как давно состоите и ваша зона ответственности."
+            ),
+            color=PROFILE_COLOR,
+        )
+        onboarding.add_field(
+            name="Обязательно для новых участников",
+            value=(
+                "После сохранения требование будет выполнено автоматически. "
+                "Видимость карточки можно отдельно настроить в разделе приватности."
+            ),
+            inline=False,
+        )
+        try:
+            await after.send(embed=onboarding)
+        except discord.DiscordException as exc:
+            await log_technical_event(
+                bot,
+                after.guild,
+                title="Не доставлено приглашение заполнить профиль",
+                details=(
+                    f"Участник: <@{after.id}> (`{after.id}`)\n"
+                    f"Карточка всё равно отмечена обязательной.\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:500]}`"
+                ),
+                dedupe_key=f"profile-onboarding-dm:{after.id}",
+                cooldown_seconds=3600,
+            )
+
 
 __all__ = [
     "CharacterDeleteView",
@@ -1493,6 +1692,7 @@ __all__ = [
     "ProfileBaseView",
     "ProfileHomeView",
     "ProfileMicrophoneView",
+    "MemberDirectoryModal",
     "ProfileSettingsView",
     "ProfileStatusView",
     "StatusNoteModal",

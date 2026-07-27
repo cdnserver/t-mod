@@ -93,6 +93,9 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
         author = bill.get("author_display") or str(bill.get("author_id"))
         author_id = int(bill.get("author_id") or 0)
         attempt = bill_attempt_text(bill)
+        decision_category = str(bill.get("decision_category") or "ordinary")
+        implementation_plan = bill.get("implementation_plan")
+        leadership_actions = bill.get("leadership_actions")
     else:
         number = format_bill_number(bill.bill_number)
         title = bill.title
@@ -101,6 +104,11 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
         author = bill.author_display or str(bill.author_id)
         author_id = bill.author_id
         attempt = "Первичное рассмотрение"
+        decision_category = str(
+            getattr(bill, "decision_category", "ordinary") or "ordinary"
+        )
+        implementation_plan = getattr(bill, "implementation_plan", None)
+        leadership_actions = getattr(bill, "leadership_actions", None)
     embed = discord.Embed(
         title=f"В процессе консенсуса {number}",
         description=(
@@ -111,7 +119,25 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
     )
     embed.add_field(name="Законопроект", value=title[:1024], inline=False)
     embed.add_field(name="Материалы", value=materials_text(materials), inline=False)
+    category_label = {
+        "ordinary": "Обычное · 50%",
+        "heavy": "Тяжёлое · 75%",
+        "unanimous": "Единогласное · 100%",
+    }.get(decision_category, "Обычное · 50%")
+    embed.add_field(name="Категория решения", value=category_label, inline=True)
     embed.add_field(name="Рассмотрение", value=attempt, inline=True)
+    if implementation_plan:
+        embed.add_field(
+            name="После принятия",
+            value=clip_text(implementation_plan, 1000),
+            inline=False,
+        )
+    if leadership_actions:
+        embed.add_field(
+            name="Действия руководства",
+            value=clip_text(leadership_actions, 1000),
+            inline=False,
+        )
     embed.set_footer(text=f"Автор: {author} ({author_id}) • {format_dt()}")
     return embed
 
@@ -119,6 +145,11 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
 def build_result_embed(result: LiveResult, session: LiveConsensusSession) -> discord.Embed:
     color = 0x7FD17F if result.status == "accepted" else (0xD6B46A if result.status == "vetoed" else 0xD67F7F)
     icon = "✅" if result.status == "accepted" else ("🟨" if result.status == "vetoed" else "❌")
+    required_percent = (
+        float(result.required_percent)
+        if float(result.required_percent or 0.0) > 0
+        else float(session.rules.acceptance_percent)
+    )
     embed = discord.Embed(
         title=(
             f"{icon} Итог устного решения • №{format_bill_number(result.bill_number)}"
@@ -155,10 +186,44 @@ def build_result_embed(result: LiveResult, session: LiveConsensusSession) -> dis
             name="🌐 Общий консенсус",
             value=(
                 f"`{result.overall_percent}%` {progress_bar(result.overall_percent, 10)}\n"
-                f"порог принятия `{session.rules.acceptance_percent}%`"
+                f"против `{result.opposed_percent}%` • "
+                f"порог принятия `{required_percent}%`"
             ),
             inline=True,
         )
+        category_label = {
+            "ordinary": "Обычное решение",
+            "heavy": "Тяжёлое решение",
+            "unanimous": "Единогласное решение",
+        }.get(result.decision_category, "Обычное решение")
+        embed.add_field(
+            name="📐 Категория",
+            value=f"**{category_label}** · требуется `{required_percent}%`",
+            inline=False,
+        )
+        if result.block_votes:
+            block_labels = {
+                "first": "Первый сопредседатель",
+                "second": "Второй сопредседатель",
+                "third": "Третий сопредседатель",
+                "consensus": "Консенсус Товарищества",
+            }
+            block_states = {
+                "yes": "✅ за",
+                "no": "❌ против",
+                "abstain": "⚪ воздержался",
+                "inactive": "➖ неактивен",
+            }
+            block_lines = [
+                f"**{block_labels[key]} · 25%** — "
+                f"{block_states.get(result.block_votes.get(key), '➖ неактивен')}"
+                for key in ("first", "second", "third", "consensus")
+            ]
+            embed.add_field(
+                name="🧩 Четыре блока",
+                value="\n".join(block_lines),
+                inline=False,
+            )
     if result.veto_by_id:
         value = f"<@{result.veto_by_id}>"
         if result.retry_bill_number:
@@ -186,14 +251,88 @@ def build_result_embed(result: LiveResult, session: LiveConsensusSession) -> dis
     return embed
 
 
-def build_final_summary_embed(session: LiveConsensusSession) -> discord.Embed:
-    accepted = sum(result.status == "accepted" for result in session.results)
-    rejected = sum(result.status == "rejected" for result in session.results)
-    vetoed = sum(result.status == "vetoed" for result in session.results)
+def _result_source_url(result: LiveResult, guild_id: int) -> str | None:
+    if not result.source_channel_id or not result.source_message_id:
+        return None
+    return (
+        f"https://discord.com/channels/{int(guild_id)}/"
+        f"{int(result.source_channel_id)}/{int(result.source_message_id)}"
+    )
+
+
+def _summary_result_line(result: LiveResult, guild_id: int) -> str:
+    mark = "✅" if result.status == "accepted" else ("🟨" if result.status == "vetoed" else "❌")
+    suffix = (
+        "устное решение"
+        if result.resolution_method == "oral"
+        else f"общий `{result.overall_percent}%`"
+    )
+    title = discord.utils.escape_markdown(clip_text(result.title, 140))
+    source_url = _result_source_url(result, guild_id)
+    rendered_title = f"[{title}]({source_url})" if source_url else f"**{title}**"
+    return (
+        f"{mark} №`{format_bill_number(result.bill_number)}` • "
+        f"{rendered_title} — {result_status_text(result.status)} • {suffix}"
+    )
+
+
+def _summary_result_fields(session: LiveConsensusSession) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+    for result in session.results:
+        line = _summary_result_line(result, session.guild_id)
+        extra = len(line) + (1 if current else 0)
+        if current and current_size + extra > 1000:
+            chunks.append("\n".join(current))
+            current = []
+            current_size = 0
+        current.append(line)
+        current_size += len(line) + (1 if len(current) > 1 else 0)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def build_final_summary_embed(
+    session: LiveConsensusSession,
+    *,
+    page_number: int = 1,
+    page_count: int = 1,
+    compact: bool = False,
+    summary_counts: dict[str, int] | None = None,
+) -> discord.Embed:
+    counts = dict(summary_counts or {})
+    total = int(counts.get("total", len(session.results)))
+    accepted = int(
+        counts.get(
+            "accepted",
+            sum(result.status == "accepted" for result in session.results),
+        )
+    )
+    rejected = int(
+        counts.get(
+            "rejected",
+            sum(result.status == "rejected" for result in session.results),
+        )
+    )
+    vetoed = int(
+        counts.get(
+            "vetoed",
+            sum(result.status == "vetoed" for result in session.results),
+        )
+    )
     embed = discord.Embed(
-        title=f"🏛️ Проведен {ru_ordinal(session.plenary_number)} пленарный консенсус Товарищества",
+        title=(
+            f"🏛️ Проведен {ru_ordinal(session.plenary_number)} пленарный консенсус Товарищества"
+            if page_number <= 1
+            else (
+                f"🏛️ Итоги {ru_ordinal(session.plenary_number)} пленарного консенсуса "
+                f"· продолжение"
+            )
+        ),
         description=(
-            f"Рассмотрено проектов: **{len(session.results)}** • принято: **{accepted}** • "
+            f"Рассмотрено проектов: **{total}** • принято: **{accepted}** • "
             f"не принято: **{rejected}** • вето: **{vetoed}**"
         ),
         color=TVRS_EMBED_COLOR,
@@ -207,29 +346,38 @@ def build_final_summary_embed(session: LiveConsensusSession) -> discord.Embed:
         inline=True,
     )
     embed.add_field(name="👤 Ведущий", value=f"<@{session.leader_id}>", inline=True)
-    participants = [
-        f"{participant.mention} — `{role_label(participant)}`"
-        for participant in sorted(
-            session.confirmed_participants(),
-            key=lambda item: (item.kind != "chair", item.display_name.lower()),
+    if page_number <= 1:
+        participants = [
+            f"{participant.mention} — `{role_label(participant)}`"
+            for participant in sorted(
+                session.confirmed_participants(),
+                key=lambda item: (item.kind != "chair", item.display_name.lower()),
+            )
+        ]
+        embed.add_field(
+            name="Состав",
+            value=clip_text("\n".join(participants), 1000, "Нет участников."),
+            inline=False,
         )
-    ]
-    embed.add_field(name="Состав", value=clip_text("\n".join(participants), 1000, "Нет участников."), inline=False)
-    if session.results:
-        lines = []
-        for result in session.results:
-            mark = "✅" if result.status == "accepted" else ("🟨" if result.status == "vetoed" else "❌")
-            suffix = (
-                "устное решение"
-                if result.resolution_method == "oral"
-                else f"общий `{result.overall_percent}%`"
+    if compact:
+        embed.add_field(
+            name="Официальный протокол",
+            value="Полный перечень законопроектов опубликован в канале заседания.",
+            inline=False,
+        )
+    elif session.results:
+        for index, value in enumerate(_summary_result_fields(session), start=1):
+            embed.add_field(
+                name=(
+                    "Рассмотренные законопроекты"
+                    if index == 1
+                    else "Рассмотренные законопроекты · продолжение"
+                ),
+                value=value,
+                inline=False,
             )
-            lines.append(
-                f"{mark} №`{format_bill_number(result.bill_number)}` • "
-                f"**{clip_text(result.title, 80)}** — {result_status_text(result.status)} • {suffix}"
-            )
-        embed.add_field(name="Рассмотренные законопроекты", value=clip_text("\n".join(lines), 1000), inline=False)
     else:
         embed.add_field(name="Рассмотренные законопроекты", value="Законопроекты не рассматривались.", inline=False)
-    embed.set_footer(text="TVRS • официальный итог пленарного консенсуса")
+    page_text = f" • страница {page_number}/{page_count}" if page_count > 1 else ""
+    embed.set_footer(text=f"TVRS • официальный итог пленарного консенсуса{page_text}")
     return embed

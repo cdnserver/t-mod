@@ -47,6 +47,12 @@ class ConsensusHealthReport:
 def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthReport:
     issues: list[ConsensusHealthIssue] = []
 
+    def as_int(value: object) -> int | None:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     def add(code: str, severity: HealthSeverity, message: str, recovery: str) -> None:
         issues.append(ConsensusHealthIssue(code, severity, message, recovery))
 
@@ -96,6 +102,20 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Текущий этап требует законопроект, но он отсутствует.",
             "Восстановить снимок из SQLite; при повреждении закрыть сессию без изменения проекта.",
         )
+    current_bill_id = as_int((session.current_bill or {}).get("id"))
+    current_bill_number = as_int((session.current_bill or {}).get("bill_number"))
+    if session.current_bill is not None and (
+        current_bill_id is None
+        or current_bill_id <= 0
+        or current_bill_number is None
+        or current_bill_number <= 0
+    ):
+        add(
+            "bill_identity_missing",
+            "critical",
+            "Текущий законопроект не содержит устойчивого идентификатора или номера.",
+            "Не создавать доставки и результат; сверить проект с очередью SQLite.",
+        )
     if session.stage in {"registration", "after_result"} and session.current_bill is not None:
         add(
             "bill_leaked_between_stages",
@@ -104,9 +124,38 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Не продолжать автоматически; сверить статус проекта и журнал транзакций.",
         )
 
+    if session.stage == "paused":
+        resumable_stages = {"voting", "discussion_type", "discussion", "after_result"}
+        if session.previous_stage not in resumable_stages:
+            add(
+                "pause_target_invalid",
+                "critical",
+                "Пауза не содержит корректного этапа для продолжения.",
+                "Председателю выбрать безопасное завершение либо сверить последний переход в журнале.",
+            )
+        paused_needs_bill = session.previous_stage in {"voting", "discussion_type", "discussion"}
+        if paused_needs_bill and session.current_bill is None:
+            add(
+                "paused_bill_missing",
+                "critical",
+                "Пауза голосования потеряла текущий законопроект.",
+                "Не возобновлять автоматически; сверить проект и журнал переходов.",
+            )
+        if session.previous_stage == "after_result" and session.current_bill is not None:
+            add(
+                "paused_bill_leaked",
+                "critical",
+                "Межпроектная пауза ошибочно содержит активный законопроект.",
+                "Не строить панели голосования; сверить статус проекта в очереди.",
+            )
+
     confirmed_ids = {item.user_id for item in session.confirmed_participants()}
     unknown_votes = set(session.votes) - confirmed_ids
-    invalid_votes = {user_id for user_id, vote in session.votes.items() if vote not in {"yes", "no"}}
+    invalid_votes = {
+        user_id
+        for user_id, vote in session.votes.items()
+        if vote not in {"yes", "no", "abstain"}
+    }
     if unknown_votes:
         add(
             "votes_outside_roster",
@@ -129,8 +178,9 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Очистить голоса через безопасное восстановление состояния.",
         )
 
-    result_ids = [int(item.bill_id) for item in session.results]
-    if len(result_ids) != len(set(result_ids)):
+    result_ids = [as_int(item.bill_id) for item in session.results]
+    valid_result_ids = [item for item in result_ids if item is not None]
+    if len(valid_result_ids) != len(set(valid_result_ids)):
         add(
             "duplicate_results",
             "critical",
@@ -138,6 +188,27 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Не публиковать сводку; сверить идемпотентную транзакцию результата.",
         )
     for result in session.results:
+        result_bill_id = as_int(result.bill_id)
+        result_bill_number = as_int(result.bill_number)
+        if (
+            result_bill_id is None
+            or result_bill_id <= 0
+            or result_bill_number is None
+            or result_bill_number <= 0
+        ):
+            add(
+                "result_identity_invalid",
+                "critical",
+                "Один из результатов не содержит корректный номер или идентификатор проекта.",
+                "Не публиковать сводку; сверить результат с законопроектом в SQLite.",
+            )
+        if result.status not in {"accepted", "rejected", "vetoed"}:
+            add(
+                "result_status_invalid",
+                "critical",
+                "Один из результатов содержит неизвестный статус.",
+                "Не продолжать автоматически; сверить атомарную запись результата.",
+            )
         if result.resolution_method not in {"vote", "veto", "oral"}:
             add(
                 "unknown_resolution_method",
@@ -167,7 +238,7 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
                 "Фиксация результата не содержит тип операции.",
                 "Не создавать новый итог; восстановить сохранённую операцию или отправить снимок в карантин.",
             )
-        if int(pending.get("bill_id") or 0) != int((session.current_bill or {}).get("id") or 0):
+        if as_int(pending.get("bill_id")) != current_bill_id:
             add(
                 "finalization_bill_mismatch",
                 "critical",
@@ -207,6 +278,16 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Пересоздать или очистить таймер одной атомарной операцией.",
         )
 
+    if session.stage != "paused" and (
+        session.paused_reason is not None or session.pause_is_automatic
+    ):
+        add(
+            "stale_pause_state",
+            "warning",
+            "После возобновления остались параметры старой паузы.",
+            "Очистить служебные параметры одной журналируемой операцией.",
+        )
+
     discussion_fields = bool(
         session.discussion_channel_id
         or session.discussion_initiator_id
@@ -221,6 +302,21 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "critical",
             "Активная дискуссия не имеет типа.",
             "Вернуть этап к выбору типа или завершить дискуссию административно.",
+        )
+    if session.stage == "discussion" and not session.discussion_initiator_id:
+        add(
+            "discussion_initiator_missing",
+            "critical",
+            "Активная дискуссия не содержит инициатора.",
+            "Завершить дискуссию административно и заново проверить кворум.",
+        )
+    unknown_discussion_users = set(session.discussion_allowed_user_ids) - set(session.participants)
+    if unknown_discussion_users:
+        add(
+            "discussion_users_outside_roster",
+            "critical",
+            "В дискуссии найдены получатели вне замороженного состава.",
+            "Не отправлять приглашения посторонним; завершить или восстановить дискуссию.",
         )
     if session.stage not in {"discussion", "discussion_type", "paused", "finalizing"} and discussion_fields:
         add(

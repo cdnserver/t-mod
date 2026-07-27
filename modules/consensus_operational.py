@@ -65,7 +65,11 @@ async def collect_consensus_operational_state(
             and not item.confirmed
             and (not item.dm_message_id or item.dm_failed)
         ]
-    elif session.stage in {"voting", "paused", "discussion_type", "discussion"}:
+    elif (
+        session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        and session.current_bill is not None
+        and bill_id > 0
+    ):
         missing_controls = [
             int(item.user_id)
             for item in session.confirmed_participants()

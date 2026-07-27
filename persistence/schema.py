@@ -156,6 +156,7 @@ def init_db() -> None:
                 show_position INTEGER NOT NULL DEFAULT 1,
                 show_characters INTEGER NOT NULL DEFAULT 1,
                 show_join_date INTEGER NOT NULL DEFAULT 1,
+                show_directory INTEGER NOT NULL DEFAULT 1,
                 theme TEXT NOT NULL DEFAULT 'indigo'
                     CHECK(theme IN ('indigo', 'emerald', 'gold', 'rose')),
                 primary_character_id INTEGER,
@@ -168,6 +169,13 @@ def init_db() -> None:
                 quiet_hours_enabled INTEGER NOT NULL DEFAULT 0,
                 quiet_start_minute INTEGER NOT NULL DEFAULT 0,
                 quiet_end_minute INTEGER NOT NULL DEFAULT 480,
+                biography TEXT,
+                contribution TEXT,
+                responsibilities TEXT,
+                membership_since TEXT,
+                directory_completed_at TEXT,
+                directory_required INTEGER NOT NULL DEFAULT 0,
+                onboarding_prompted_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
@@ -468,6 +476,10 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 materials TEXT,
+                decision_category TEXT NOT NULL DEFAULT 'ordinary',
+                implementation_plan TEXT,
+                leadership_actions TEXT,
+                editor_workspace_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'draft',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -500,6 +512,12 @@ def init_db() -> None:
                 overall_percent REAL NOT NULL DEFAULT 0,
                 internal_active INTEGER NOT NULL DEFAULT 0,
                 votes_json TEXT,
+                source_channel_id INTEGER,
+                source_message_id INTEGER,
+                decision_category TEXT NOT NULL DEFAULT 'ordinary',
+                required_percent REAL NOT NULL DEFAULT 50,
+                opposed_percent REAL NOT NULL DEFAULT 0,
+                block_votes_json TEXT,
                 veto_by_id INTEGER,
                 veto_by_display TEXT,
                 resolution_method TEXT NOT NULL DEFAULT 'vote',
@@ -508,6 +526,39 @@ def init_db() -> None:
                 resolved_by_display TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS tvrs_bill_workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_display TEXT,
+                parent_channel_id INTEGER,
+                thread_id INTEGER,
+                panel_message_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'draft',
+                idea TEXT,
+                desired_outcome TEXT,
+                constraints_text TEXT,
+                title TEXT,
+                summary TEXT,
+                materials TEXT,
+                decision_category TEXT NOT NULL DEFAULT 'ordinary',
+                implementation_plan TEXT,
+                leadership_actions TEXT,
+                ai_model TEXT,
+                ai_revision INTEGER NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 1,
+                submitted_bill_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_workspaces_author
+            ON tvrs_bill_workspaces(guild_id, author_id, status, updated_at DESC);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_bill_workspaces_one_open
+            ON tvrs_bill_workspaces(guild_id, author_id)
+            WHERE status IN ('draft', 'review');
 
             CREATE TABLE IF NOT EXISTS tvrs_consensus_sessions (
                 session_key TEXT PRIMARY KEY,
@@ -954,6 +1005,19 @@ def init_db() -> None:
             "quiet_end_minute": "INTEGER NOT NULL DEFAULT 480",
         }.items():
             _add_column_if_missing(con, "member_profiles", column, definition)
+
+        _add_column_if_missing(
+            con,
+            "tvrs_bill_workspaces",
+            "revision",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        _add_column_if_missing(
+            con,
+            "tvrs_bill_workspaces",
+            "panel_message_id",
+            "INTEGER",
+        )
         _add_column_if_missing(
             con,
             "profile_characters",
@@ -1092,8 +1156,19 @@ def init_db() -> None:
             "author_display": "TEXT",
             "materials": "TEXT",
             "status": "TEXT NOT NULL DEFAULT 'draft'",
+            "decision_category": "TEXT NOT NULL DEFAULT 'ordinary'",
+            "implementation_plan": "TEXT",
+            "leadership_actions": "TEXT",
+            "editor_workspace_id": "INTEGER",
         }.items():
             _add_column_if_missing(con, "tvrs_bills", column, definition)
+        con.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_bills_editor_workspace
+            ON tvrs_bills(editor_workspace_id)
+            WHERE editor_workspace_id IS NOT NULL
+            """
+        )
 
         for column, definition in {
             "voter_display": "TEXT",
@@ -1105,12 +1180,30 @@ def init_db() -> None:
             "resolution_note": "TEXT",
             "resolved_by_id": "INTEGER",
             "resolved_by_display": "TEXT",
+            "source_channel_id": "INTEGER",
+            "source_message_id": "INTEGER",
+            "decision_category": "TEXT NOT NULL DEFAULT 'ordinary'",
+            "required_percent": "REAL NOT NULL DEFAULT 50",
+            "opposed_percent": "REAL NOT NULL DEFAULT 0",
+            "block_votes_json": "TEXT",
         }.items():
             _add_column_if_missing(con, "tvrs_live_results", column, definition)
         con.execute(
             "UPDATE tvrs_live_results SET resolution_method = 'veto' "
             "WHERE status = 'vetoed' AND resolution_method = 'vote'"
         )
+
+        for column, definition in {
+            "biography": "TEXT",
+            "contribution": "TEXT",
+            "responsibilities": "TEXT",
+            "membership_since": "TEXT",
+            "directory_completed_at": "TEXT",
+            "directory_required": "INTEGER NOT NULL DEFAULT 0",
+            "onboarding_prompted_at": "TEXT",
+            "show_directory": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            _add_column_if_missing(con, "member_profiles", column, definition)
 
 
         for column, definition in {

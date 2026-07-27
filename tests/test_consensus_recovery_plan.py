@@ -162,6 +162,36 @@ class ConsensusRecoveryPlanTests(unittest.TestCase):
 
 
 class ConsensusOperationalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pause_between_bills_has_no_missing_vote_controls(self) -> None:
+        current = session(stage="paused")
+        current.current_bill = None
+        current.previous_stage = "after_result"
+
+        class FakeVoiceChannel:
+            members = [
+                SimpleNamespace(id=1, bot=False),
+                SimpleNamespace(id=2, bot=False),
+                SimpleNamespace(id=3, bot=False),
+            ]
+
+        guild = SimpleNamespace(
+            get_channel=lambda channel_id: (
+                SimpleNamespace(id=100) if channel_id == 100 else FakeVoiceChannel()
+            ),
+            get_member=lambda user_id: SimpleNamespace(id=user_id),
+        )
+        with (
+            patch("modules.consensus_operational.discord.VoiceChannel", FakeVoiceChannel),
+            patch("modules.tvrs_discussion.discord.VoiceChannel", FakeVoiceChannel),
+            patch(
+                "modules.consensus_operational._outbox_storage.delivery_outbox_consensus_status",
+                return_value={"counts": {}},
+            ),
+        ):
+            operational = await collect_consensus_operational_state(guild, current)  # type: ignore[arg-type]
+
+        self.assertEqual(operational.missing_control_user_ids, ())
+
     async def test_live_diagnostics_report_quorum_controls_members_and_deliveries(self) -> None:
         current = session()
 

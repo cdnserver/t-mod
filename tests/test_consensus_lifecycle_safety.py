@@ -83,6 +83,83 @@ def make_session(*, stage: str = "voting") -> LiveConsensusSession:
 
 
 class ConsensusLifecycleSafetyTests(unittest.TestCase):
+    def test_health_distinguishes_valid_between_bill_pause_from_broken_vote_pause(self) -> None:
+        between = make_session(stage="paused")
+        between.current_bill = None
+        between.previous_stage = "after_result"
+        broken = make_session(stage="paused")
+        broken.current_bill = None
+        broken.previous_stage = "voting"
+
+        between_codes = {item.code for item in assess_consensus_health(between).critical}
+        broken_codes = {item.code for item in assess_consensus_health(broken).critical}
+
+        self.assertNotIn("paused_bill_missing", between_codes)
+        self.assertIn("paused_bill_missing", broken_codes)
+
+    def test_health_reports_non_numeric_bill_identity_without_crashing(self) -> None:
+        session = make_session(stage="voting")
+        session.current_bill = {"id": "not-a-number", "bill_number": 7, "title": "Проект"}
+
+        report = assess_consensus_health(session)
+
+        self.assertIn("bill_identity_missing", {item.code for item in report.critical})
+
+    def test_health_blocks_corrupt_discussion_recipients_and_result_status(self) -> None:
+        discussion = make_session(stage="discussion")
+        discussion.discussion_type = "Правовая"
+        discussion.discussion_initiator_id = 3
+        discussion.discussion_allowed_user_ids = {3, 999}
+        result_session = make_session(stage="after_result")
+        result_session.results.append(
+            LiveResult(10, 7, "Проект", "unknown", 0, 0, False, {})
+        )
+
+        discussion_codes = {
+            item.code for item in assess_consensus_health(discussion).critical
+        }
+        result_codes = {
+            item.code for item in assess_consensus_health(result_session).critical
+        }
+
+        self.assertIn("discussion_users_outside_roster", discussion_codes)
+        self.assertIn("result_status_invalid", result_codes)
+
+    def test_snapshot_rejects_duplicate_participant_and_invalid_bill_identity(self) -> None:
+        session = make_session(stage="voting")
+        snapshot = session_to_snapshot(session)
+        snapshot["participants"].append(dict(snapshot["participants"][0]))
+        with self.assertRaisesRegex(ConsensusStateError, "повторяется"):
+            session_from_snapshot(snapshot)
+
+        snapshot = session_to_snapshot(session)
+        snapshot["current_bill"]["id"] = "broken"
+        with self.assertRaisesRegex(ConsensusStateError, "идентификатор"):
+            session_from_snapshot(snapshot)
+
+    def test_resume_refuses_to_guess_missing_previous_stage(self) -> None:
+        coordinator = ConsensusCoordinator(MemoryRepository())
+        session = make_session(stage="paused")
+        session.previous_stage = None
+
+        with self.assertRaisesRegex(ConsensusStateError, "аварийное восстановление"):
+            coordinator.resume(session, actor=ConsensusActor(1, "Первый"))
+
+        self.assertEqual(session.stage, "paused")
+
+    def test_safe_repair_clears_stale_pause_flags_outside_pause(self) -> None:
+        repository = MemoryRepository()
+        coordinator = ConsensusCoordinator(repository)
+        session = make_session(stage="voting")
+        session.paused_reason = "Старая причина"
+        session.pause_is_automatic = True
+
+        repaired = coordinator.repair_safe_invariants(session)
+
+        self.assertIn("stale_pause_state", repaired)
+        self.assertIsNone(session.paused_reason)
+        self.assertFalse(session.pause_is_automatic)
+
     def test_zero_second_timer_survives_restart_snapshot(self) -> None:
         session = make_session(stage="voting")
         session.timer_seconds = 0
@@ -291,6 +368,8 @@ class ConsensusLifecycleSafetyTests(unittest.TestCase):
         session.previous_stage = "discussion"
         session.discussion_type = "Правовая"
         session.discussion_channel_id = 500
+        session.discussion_note_message_id = 600
+        session.participants[2].discussion_message_id = 700
 
         pending = coordinator.claim_finalization(
             session,
@@ -308,6 +387,8 @@ class ConsensusLifecycleSafetyTests(unittest.TestCase):
         self.assertEqual(pending["oral_status"], "accepted")
         self.assertIsNone(session.discussion_channel_id)
         self.assertIsNone(session.discussion_type)
+        self.assertIsNone(session.discussion_note_message_id)
+        self.assertIsNone(session.participants[2].discussion_message_id)
 
         another = make_session(stage="voting")
         with self.assertRaises(ConsensusStateError):

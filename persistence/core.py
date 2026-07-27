@@ -61,6 +61,7 @@ class MemberProfile:
     show_position: bool
     show_characters: bool
     show_join_date: bool
+    show_directory: bool
     theme: str
     primary_character_id: int | None
     dm_notifications: bool
@@ -72,6 +73,13 @@ class MemberProfile:
     quiet_hours_enabled: bool
     quiet_start_minute: int
     quiet_end_minute: int
+    biography: str | None
+    contribution: str | None
+    responsibilities: str | None
+    membership_since: str | None
+    directory_completed_at: str | None
+    directory_required: bool
+    onboarding_prompted_at: str | None
     created_at: str
     updated_at: str
 
@@ -270,6 +278,10 @@ class TVRSBill:
     title: str
     summary: str
     materials: str | None
+    decision_category: str
+    implementation_plan: str | None
+    leadership_actions: str | None
+    editor_workspace_id: int | None
     status: str
     created_at: str
     updated_at: str
@@ -340,6 +352,27 @@ def _tvrs_bill_from_row(row: sqlite3.Row | None) -> TVRSBill | None:
         title=str(row["title"] or ""),
         summary=str(row["summary"] or ""),
         materials=row["materials"],
+        decision_category=str(
+            row["decision_category"]
+            if "decision_category" in row.keys()
+            else "ordinary"
+        ),
+        implementation_plan=(
+            row["implementation_plan"]
+            if "implementation_plan" in row.keys()
+            else None
+        ),
+        leadership_actions=(
+            row["leadership_actions"]
+            if "leadership_actions" in row.keys()
+            else None
+        ),
+        editor_workspace_id=(
+            int(row["editor_workspace_id"])
+            if "editor_workspace_id" in row.keys()
+            and row["editor_workspace_id"] is not None
+            else None
+        ),
         status=str(row["status"] or "draft"),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

@@ -103,6 +103,7 @@ class ConsensusLifecycleFaultTests(unittest.IsolatedAsyncioTestCase):
         session.stage = "paused"
         session.previous_stage = "voting"
         session.pause_is_automatic = True
+        session.revision = 1
 
         with (
             patch(

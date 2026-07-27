@@ -35,9 +35,9 @@ from modules.tvrs_presentation import (
     build_live_vote_embed,
     consensus_bill_id,
     consensus_generation_matches,
-    consensus_result_bill_id,
 )
 from modules.tvrs_hub_views import TVRSBaseView
+from modules.tvrs_result_views import TVRSAfterResultView, TVRSVetoConfirmView
 from modules.tvrs_registration_gate import (
     TVRSStartCurrentRosterConfirmView,
     build_incomplete_roster_warning,
@@ -354,8 +354,14 @@ class TVRSVoteView(TVRSBaseView):
             controls = [
                 ("За", discord.ButtonStyle.success, "tvrs_vote_yes", self._yes_callback),
                 ("Против", discord.ButtonStyle.danger, "tvrs_vote_no", self._no_callback),
+                (
+                    "Воздержаться",
+                    discord.ButtonStyle.secondary,
+                    "tvrs_vote_abstain",
+                    self._abstain_callback,
+                ),
             ]
-            if participant.kind == "senator" and not session.discussion_initiator_id:
+            if not session.discussion_initiator_id:
                 controls.append(
                     ("Дискуссия", discord.ButtonStyle.secondary, "tvrs_discussion", self._discussion_callback)
                 )
@@ -396,6 +402,9 @@ class TVRSVoteView(TVRSBaseView):
 
     async def _no_callback(self, interaction: discord.Interaction) -> None:
         await self._cast(interaction, "no")
+
+    async def _abstain_callback(self, interaction: discord.Interaction) -> None:
+        await self._cast(interaction, "abstain")
 
     async def _legacy_callback(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != self.user_id:
@@ -438,8 +447,11 @@ class TVRSVoteView(TVRSBaseView):
             await interaction.response.send_message("Эта кнопка не для вас.", ephemeral=True)
             return
         p = session.participants.get(self.user_id)
-        if p is None or p.kind != "senator":
-            await interaction.response.send_message("Дискуссию может инициировать только сенатор.", ephemeral=True)
+        if p is None or not p.confirmed:
+            await interaction.response.send_message(
+                "Дискуссию может инициировать только зарегистрированный участник.",
+                ephemeral=True,
+            )
             return
         if session.discussion_initiator_id:
             await interaction.response.send_message("Дискуссия по этому законопроекту уже инициирована.", ephemeral=True)
@@ -647,6 +659,12 @@ class TVRSHostVoteView(TVRSBaseView):
             return
         self._add_button("За", discord.ButtonStyle.success, self.host_yes, row=0)
         self._add_button("Против", discord.ButtonStyle.danger, self.host_no, row=0)
+        self._add_button(
+            "Воздержаться",
+            discord.ButtonStyle.secondary,
+            self.host_abstain,
+            row=0,
+        )
         self._add_button("Завершить голосование", discord.ButtonStyle.secondary, self.finish, row=0)
         for label, seconds in TVRS_TIMER_OPTIONS:
             self._add_button(f"Таймер {label}", discord.ButtonStyle.secondary, self._timer_callback(seconds), row=1)
@@ -744,6 +762,66 @@ class TVRSHostVoteView(TVRSBaseView):
             return
         try:
             await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        except discord.DiscordException:
+            pass
+
+    async def host_abstain(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        session = self.session(interaction.guild.id)
+        if session is None:
+            await interaction.response.send_message("Сессия не найдена.", ephemeral=True)
+            return
+        if not consensus_generation_matches(
+            session,
+            stage="voting",
+            bill_id=self.bill_id,
+        ):
+            await interaction.response.send_message(
+                "Сейчас голосование недоступно.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        async with consensus_session_lock(session.guild_id):
+            if not consensus_generation_matches(
+                session,
+                stage="voting",
+                bill_id=self.bill_id,
+            ):
+                await interaction.followup.send(
+                    "Эта панель относится к уже завершённому проекту.",
+                    ephemeral=True,
+                )
+                return
+            should_finalize = await run_blocking_cancellation_safe(
+                _consensus.cast_vote,
+                session,
+                session.leader_id,
+                "abstain",
+                actor=ConsensusActor(
+                    interaction.user.id,
+                    getattr(interaction.user, "display_name", str(interaction.user)),
+                ),
+            )
+        if should_finalize:
+            await finalize_current_vote(
+                interaction.client,
+                interaction.guild,
+                session,
+                forced=False,
+                expected_bill_id=self.bill_id,
+            )
+            return
+        try:
+            await interaction.edit_original_response(
+                embed=build_live_vote_embed(session),
+                view=TVRSHostVoteView(session.session_key),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
         except discord.DiscordException:
             pass
 
@@ -892,101 +970,5 @@ class TVRSHostVoteView(TVRSBaseView):
             return
         await interaction.response.send_message("Подтвердите применение права вето.", ephemeral=True, view=TVRSVetoConfirmView(session.session_key, interaction.user.id, bill_id=self.bill_id))
 
-
-class TVRSVetoConfirmView(TVRSBaseView):
-    def __init__(self, session_key: str, user_id: int, *, bill_id: int) -> None:
-        super().__init__(timeout=120)
-        self.session_key = session_key
-        self.user_id = user_id
-        self.bill_id = int(bill_id)
-
-    @discord.ui.button(label="Подтвердить вето", style=discord.ButtonStyle.danger)
-    async def confirm_veto(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Это подтверждение не для вас.", ephemeral=True)
-            return
-        session = next((s for s in _active_sessions.values() if s.session_key == self.session_key), None)
-        if session is None or not consensus_generation_matches(session, stage="voting", bill_id=self.bill_id):
-            await interaction.response.send_message("Сессия не найдена.", ephemeral=True)
-            return
-        guild = interaction.client.get_guild(session.guild_id)
-        if guild is None:
-            await interaction.response.send_message("Сервер не найден.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        try:
-            await apply_veto(
-                interaction.client,
-                guild,
-                session,
-                interaction.user,
-                expected_bill_id=self.bill_id,
-            )
-        except ConsensusStateError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
-            return
-        await interaction.followup.send("Право вето применено.", ephemeral=True)
-
-
-class TVRSAfterResultView(TVRSBaseView):
-    def __init__(self, session_key: str) -> None:
-        super().__init__(timeout=None)
-        self.session_key = session_key
-        session = next((s for s in _active_sessions.values() if s.session_key == self.session_key), None)
-        self.result_bill_id = consensus_result_bill_id(session) if session else 0
-
-    def session(self, guild_id: int) -> LiveConsensusSession | None:
-        s = _active_sessions.get(guild_id)
-        return s if s and s.session_key == self.session_key else None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.guild is None:
-            await interaction.response.send_message("Команда работает только на сервере Discord.", ephemeral=True)
-            return False
-        session = self.session(interaction.guild.id)
-        if session is None:
-            await interaction.response.send_message("Сессия не найдена.", ephemeral=True)
-            return False
-        if interaction.user.id != session.leader_id:
-            await interaction.response.send_message("Управлять этим консенсусом может только ведущий.", ephemeral=True)
-            return False
-        if not consensus_generation_matches(
-            session,
-            stage="after_result",
-            result_bill_id=self.result_bill_id,
-        ):
-            await interaction.response.send_message("Эта панель относится к уже завершённому этапу.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Следующий проект", style=discord.ButtonStyle.success)
-    async def next_bill(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None
-        session = self.session(interaction.guild.id)
-        if session:
-            await interaction.response.defer()
-            await begin_next_bill_vote(
-                interaction.client,
-                interaction.guild,
-                session,
-                interaction.channel,
-                expected_stage="after_result",
-                expected_result_bill_id=self.result_bill_id,
-            )
-
-    @discord.ui.button(label="Завершить консенсус", style=discord.ButtonStyle.secondary)
-    async def finish_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None
-        session = self.session(interaction.guild.id)
-        if session:
-            await interaction.response.defer()
-            await finish_session(
-                interaction.client,
-                interaction.guild,
-                session,
-                interaction.channel,
-                expected_stage="after_result",
-                expected_result_bill_id=self.result_bill_id,
-            )
 
 __all__ = ['TVRSRegistrationView', 'TVRSStartCurrentRosterConfirmView', 'TVRSConfirmView', 'confirm_consensus_participant', 'TVRSVoteView', 'TVRSPermanentVoteView', 'TVRSRestoredVoteView', 'TVRSDiscussionTypeView', 'TVRSHostVoteView', 'TVRSVetoConfirmView', 'TVRSAfterResultView']

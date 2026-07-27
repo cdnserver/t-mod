@@ -101,6 +101,11 @@ class ConsensusPreflight:
 
     @property
     def quorum_ready(self) -> bool:
+        if self.rules.version >= 3:
+            return (
+                self.chair_count + self.senator_count
+                >= self.rules.minimum_participants
+            )
         enough_chairs = self.chair_count >= self.rules.minimum_chairs
         enough_senators = self.senator_count >= self.rules.minimum_senators
         valid_parity = (

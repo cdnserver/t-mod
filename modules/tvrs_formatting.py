@@ -54,7 +54,7 @@ def ru_ordinal(number: int) -> str:
 def role_label(participant: LiveParticipant) -> str:
     if participant.permanent:
         return "ППС"
-    return "Председатель" if participant.kind == "chair" else "Сенатор"
+    return "Сопредседатель" if participant.voting_block else "Сенатор"
 
 
 def status_icon(confirmed: bool) -> str:
@@ -95,9 +95,10 @@ def clean_stage_name(stage: str) -> str:
     return clean_consensus_stage_name(stage)
 
 
-def vote_split_lines(session: LiveConsensusSession) -> tuple[str, str, str]:
+def vote_split_lines(session: LiveConsensusSession) -> tuple[str, str, str, str]:
     yes: list[str] = []
     no: list[str] = []
+    abstain: list[str] = []
     waiting: list[str] = []
     participants = sorted(
         session.confirmed_participants(),
@@ -110,11 +111,14 @@ def vote_split_lines(session: LiveConsensusSession) -> tuple[str, str, str]:
             yes.append(line)
         elif vote == "no":
             no.append(line)
+        elif vote == "abstain":
+            abstain.append(line)
         else:
             waiting.append(line)
     return (
         "\n".join(yes)[:1000] or "—",
         "\n".join(no)[:1000] or "—",
+        "\n".join(abstain)[:1000] or "—",
         "\n".join(waiting)[:1000] or "—",
     )
 
@@ -143,6 +147,8 @@ def vote_label(vote: str | None) -> str:
         return "✅ За"
     if vote == "no":
         return "❌ Против"
+    if vote == "abstain":
+        return "⚪ Воздержался"
     return "⏳ ожидается"
 
 

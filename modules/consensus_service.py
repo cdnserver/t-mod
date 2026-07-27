@@ -18,7 +18,7 @@ from modules.consensus_core import (
 )
 
 
-VALID_VOTES = frozenset({"yes", "no"})
+VALID_VOTES = frozenset({"yes", "no", "abstain"})
 
 
 @dataclass(frozen=True)
@@ -307,6 +307,13 @@ class ConsensusCoordinator:
                 session.pending_action = None
                 repaired.append("orphan_pending_action")
 
+            if session.stage != "paused" and (
+                session.paused_reason is not None or session.pause_is_automatic
+            ):
+                session.paused_reason = None
+                session.pause_is_automatic = False
+                repaired.append("stale_pause_state")
+
             if repaired:
                 self.save(
                     session,
@@ -490,6 +497,9 @@ class ConsensusCoordinator:
                 session.discussion_initiator_id = None
                 session.discussion_type = None
                 session.discussion_allowed_user_ids.clear()
+                session.discussion_note_message_id = None
+                for participant in session.participants.values():
+                    participant.discussion_message_id = None
             # A timer only belongs to the active voting stage.  Clear its
             # durable representation in the same transaction as the stage
             # transition; the asyncio task is cancelled by the runtime only
@@ -596,8 +606,10 @@ class ConsensusCoordinator:
     def request_discussion(self, session: LiveConsensusSession, initiator: LiveParticipant) -> None:
         if session.stage != "voting" or session.current_bill is None:
             raise ConsensusStateError("Дискуссию можно начать только во время голосования.")
-        if initiator.kind != "senator" or not initiator.confirmed:
-            raise ConsensusStateError("Дискуссию может инициировать только зарегистрированный сенатор.")
+        if not initiator.confirmed:
+            raise ConsensusStateError(
+                "Дискуссию может инициировать только зарегистрированный участник."
+            )
         if session.discussion_initiator_id is not None:
             raise ConsensusStateError("Дискуссия по этому проекту уже инициирована.")
         with self.mutation(session):
@@ -697,9 +709,20 @@ class ConsensusCoordinator:
     def resume(self, session: LiveConsensusSession, *, actor: ConsensusActor) -> str:
         if session.stage != "paused":
             raise ConsensusStateError("Консенсус не находится на паузе.")
-        target = session.previous_stage or ("voting" if session.current_bill else "after_result")
-        if target == "paused" or target == "finalizing":
-            target = "voting" if session.current_bill else "after_result"
+        target = str(session.previous_stage or "")
+        allowed_targets = {"voting", "discussion_type", "discussion", "after_result"}
+        if target not in allowed_targets:
+            raise ConsensusStateError(
+                "Не удалось определить этап для продолжения. Откройте аварийное восстановление."
+            )
+        if target in {"voting", "discussion_type", "discussion"} and session.current_bill is None:
+            raise ConsensusStateError(
+                "Нельзя возобновить голосование: текущий законопроект отсутствует."
+            )
+        if target == "after_result" and session.current_bill is not None:
+            raise ConsensusStateError(
+                "Нельзя возобновить межпроектный этап: найден незавершённый законопроект."
+            )
         with self.mutation(session):
             session.paused_reason = None
             session.pause_is_automatic = False

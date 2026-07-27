@@ -78,6 +78,9 @@ from modules.tvrs_control_cleanup import (
     _prune_duplicate_control_panels,
     _schedule_control_cleanup,
 )
+from modules.tvrs_transient_notices import (
+    enqueue_notice_deletion as _enqueue_notice_deletion,
+)
 
 async def apply_veto_for_actor(*args, **kwargs):
     from modules.tvrs_decision import apply_veto_for_actor as _implementation
@@ -450,6 +453,14 @@ async def deliver_consensus_control_notice(
         if message.attempts > 1 or bool(payload.get("recover_marker")):
             previous = await find_delivery_marker(dm_channel, marker)
             if previous is not None:
+                await _enqueue_notice_deletion(
+                    message,
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    channel_id=int(dm_channel.id),
+                    message_id=int(previous.id),
+                    marker=marker,
+                )
                 return DeliveryReceipt(message_id=int(previous.id))
         bill = session.current_bill or {}
         jump_url = (
@@ -467,6 +478,14 @@ async def deliver_consensus_control_notice(
         )
         embed.set_footer(text=marker)
         sent = await member.send(embed=embed)
+        await _enqueue_notice_deletion(
+            message,
+            guild_id=guild_id,
+            user_id=user_id,
+            channel_id=int(dm_channel.id),
+            message_id=int(sent.id),
+            marker=marker,
+        )
         return DeliveryReceipt(message_id=int(sent.id))
     except DeliveryDeferred:
         raise

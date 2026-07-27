@@ -34,6 +34,7 @@ from modules.tvrs import (
     TVRSVoteView,
     _consensus,
     _consensus_recovery_tasks,
+    _consensus_restore_locks,
     _consensus_registry,
     _finalization_retry_tasks,
     _restored_consensus_guilds,
@@ -1133,6 +1134,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         _consensus_registry._locks.clear()
         _restored_consensus_guilds.clear()
         _consensus_recovery_tasks.clear()
+        _consensus_restore_locks.clear()
 
     async def asyncTearDown(self) -> None:
         for task in list(_finalization_retry_tasks.values()):
@@ -1145,6 +1147,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         if _consensus_recovery_tasks:
             await asyncio.gather(*_consensus_recovery_tasks.values(), return_exceptions=True)
         _consensus_recovery_tasks.clear()
+        _consensus_restore_locks.clear()
         _consensus_registry.sessions.clear()
         _consensus_registry._locks.clear()
         _restored_consensus_guilds.clear()
@@ -1170,6 +1173,31 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored, 1)
         self.assertIsNotNone(_consensus_registry.get(77))
         self.assertEqual([message_id for _, message_id in added_views], [9002])
+
+    async def test_concurrent_ready_events_reconcile_one_guild_only_once(self) -> None:
+        current = session()
+        StorageConsensusRepository().save(
+            current,
+            "session_created",
+            actor=ConsensusActor(1, "Ведущий"),
+        )
+        guild = SimpleNamespace(id=77)
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+
+        async def delayed_reconcile(*_args) -> None:
+            await asyncio.sleep(0.02)
+
+        with patch(
+            "modules.tvrs_recovery.reconcile_restored_consensus_session",
+            new=AsyncMock(side_effect=delayed_reconcile),
+        ) as reconcile:
+            results = await asyncio.gather(
+                restore_tvrs_consensus_sessions(bot),  # type: ignore[arg-type]
+                restore_tvrs_consensus_sessions(bot),  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(sum(results), 1)
+        reconcile.assert_awaited_once()
 
     async def test_vote_recovery_accepts_legacy_and_v2_wire_ids(self) -> None:
         current = session()

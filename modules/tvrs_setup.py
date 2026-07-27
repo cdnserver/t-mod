@@ -34,6 +34,7 @@ from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     TVRS_CONTROL_NOTICE_TOPIC,
+    TVRS_NOTICE_DELETE_TOPIC,
     TVRS_DISCUSSION_INVITE_TOPIC,
     TVRS_PHASE_ANNOUNCEMENT_TOPIC,
     TVRS_BILL_PUBLICATION_TOPIC,
@@ -59,6 +60,7 @@ from modules.tvrs_control import (
     deliver_consensus_discussion_invite,
     deliver_consensus_phase_announcement,
 )
+from modules.tvrs_transient_notices import deliver_consensus_notice_deletion
 from modules.tvrs_recovery import ensure_sticky_message, schedule_sticky_refresh
 
 def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.Interaction, str, str], None]) -> None:
@@ -74,6 +76,10 @@ def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.I
     register_delivery_handler(
         TVRS_CONTROL_NOTICE_TOPIC,
         lambda message: deliver_consensus_control_notice(message, bot),
+    )
+    register_delivery_handler(
+        TVRS_NOTICE_DELETE_TOPIC,
+        lambda message: deliver_consensus_notice_deletion(message, bot),
     )
     register_delivery_handler(
         TVRS_PHASE_ANNOUNCEMENT_TOPIC,

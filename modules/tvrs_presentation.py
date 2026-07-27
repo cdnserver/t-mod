@@ -22,6 +22,7 @@ from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_te
 from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID
 from modules.tvrs_config import (
     TVRS_CHAIR_ROLE_ID,
+    TVRS_COCHAIR_IDS,
     TVRS_CONSENSUS_VOICE_CHANNEL_ID,
     TVRS_DEFAULT_NEXT_BILL_NUMBER,
     TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
@@ -67,11 +68,19 @@ def TVRSVoteView(*args, **kwargs):
     return _implementation(*args, **kwargs)
 
 def consensus_bill_id(session: LiveConsensusSession) -> int:
-    return int((session.current_bill or {}).get("id") or 0)
+    try:
+        return int((session.current_bill or {}).get("id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def consensus_result_bill_id(session: LiveConsensusSession) -> int:
-    return int(session.results[-1].bill_id) if session.results else 0
+    if not session.results:
+        return 0
+    try:
+        return int(session.results[-1].bill_id)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def consensus_generation_matches(
@@ -97,7 +106,7 @@ def consensus_generation_matches(
 def is_chair(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
-    if member.id == TVRS_PERMANENT_CHAIR_ID:
+    if member.id in TVRS_COCHAIR_IDS:
         return True
     return bool(TVRS_CHAIR_ROLE_ID and any(role.id == TVRS_CHAIR_ROLE_ID for role in member.roles))
 
@@ -105,15 +114,17 @@ def is_chair(member: discord.Member) -> bool:
 def is_senator(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
-    if member.id == TVRS_PERMANENT_CHAIR_ID:
+    if member.id in TVRS_COCHAIR_IDS:
         return True
     return any(role.id == TVRS_SENATOR_ROLE_ID for role in member.roles)
 
 
 def participant_kind(member: discord.Member) -> str | None:
-    if member.guild_permissions.administrator:
+    if member.id in TVRS_COCHAIR_IDS:
         return "chair"
-    if member.id == TVRS_PERMANENT_CHAIR_ID:
+    # Administrative/chair access permits leading the procedure. A personal
+    # 25% block is assigned separately and only to the three configured IDs.
+    if member.guild_permissions.administrator:
         return "chair"
     if TVRS_CHAIR_ROLE_ID and any(role.id == TVRS_CHAIR_ROLE_ID for role in member.roles):
         return "chair"
@@ -390,12 +401,10 @@ def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
     embed.add_field(name="🎙️ Войс", value=f"<#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>", inline=True)
     embed.add_field(name="👥 Участники", value=participant_lines(session), inline=False)
     embed.add_field(name="📚 Очередь к рассмотрению", value=queue_short_lines(session.guild_id, limit=8), inline=False)
-    parity = "нечётное количество" if session.rules.senators_must_be_odd else "любое количество"
     embed.set_footer(
         text=(
             f"Consensus V{session.engine_version} • правила v{session.rules.version} • "
-            f"минимум {session.rules.minimum_chairs} председателя "
-            f"и {parity} сенаторов"
+            f"кворум больше половины состава, минимум {session.rules.minimum_participants} участника"
         )
     )
     return embed
@@ -447,18 +456,33 @@ def build_live_vote_embed(session: LiveConsensusSession) -> discord.Embed:
     embed.add_field(name="⏱️ Таймер", value=remaining_timer_text(session), inline=True)
     embed.add_field(name="📊 Прогресс голосования", value=f"`{voted}/{total}` {progress_bar(vote_pct, 10)} `{vote_pct}%`", inline=True)
     embed.add_field(name="⚖️ Прогноз", value=("✅ **проект проходит**" if calc["accepted"] else "❌ **проект пока не проходит**"), inline=True)
-    embed.add_field(name="🏛️ Внутренний консенсус сенаторов", value=f"`{calc['internal_percent']}%` {progress_bar(float(calc['internal_percent']), 10)}\n{'✅ активирован' if calc['internal_active'] else '❌ не активирован'}", inline=True)
+    internal_position = {
+        "yes": "✅ блок поддерживает",
+        "no": "❌ блок не поддерживает",
+        None: "⚪ блок не активирован",
+    }.get(calc.get("internal_position"), "⚪ блок не активирован")
+    embed.add_field(
+        name="🏛️ Консенсус Товарищества · 25%",
+        value=(
+            f"`{calc['internal_percent']}%` "
+            f"{progress_bar(float(calc['internal_percent']), 10)}\n"
+            f"{internal_position}"
+        ),
+        inline=True,
+    )
     embed.add_field(
         name="🌐 Общий консенсус",
         value=(
             f"`{calc['overall_percent']}%` {progress_bar(float(calc['overall_percent']), 10)}\n"
-            f"порог принятия: `{calc['acceptance_percent']}%`"
+            f"против: `{calc.get('opposed_percent', 0.0)}%` • "
+            f"порог: `{calc['acceptance_percent']}%`"
         ),
         inline=True,
     )
-    yes, no, wait = vote_split_lines(session)
+    yes, no, abstain, wait = vote_split_lines(session)
     embed.add_field(name="✅ За", value=yes, inline=True)
     embed.add_field(name="❌ Против", value=no, inline=True)
+    embed.add_field(name="⚪ Воздержались", value=abstain, inline=True)
     embed.add_field(name="⏳ Ожидаются", value=wait, inline=True)
     embed.add_field(name="📚 Далее в очереди", value=queue_short_lines(session.guild_id, limit=5, skip_bill_id=int(bill.get("id") or 0)), inline=False)
     embed.set_footer(text="Панель ведущего • кнопки ниже управляют только текущим голосованием")
@@ -600,19 +624,18 @@ def voice_participants(guild: discord.Guild) -> tuple[list[LiveParticipant], str
             mention=member.mention,
             kind=kind,  # type: ignore[arg-type]
             permanent=(member.id == TVRS_PERMANENT_CHAIR_ID),
+            voting_block=(
+                ("first", "second", "third")[TVRS_COCHAIR_IDS.index(member.id)]
+                if member.id in TVRS_COCHAIR_IDS[:3]
+                else None
+            ),
         )
     items = list(participants.values())
-    chairs = [p for p in items if p.kind == "chair"]
-    senators = [p for p in items if p.kind == "senator"]
-    if len(chairs) < DEFAULT_CONSENSUS_RULES.minimum_chairs:
+    if len(items) < DEFAULT_CONSENSUS_RULES.minimum_participants:
         return items, (
             "Минимальный кворум не набран: нужно минимум "
-            f"{DEFAULT_CONSENSUS_RULES.minimum_chairs} председателя, сейчас `{len(chairs)}`."
+            f"{DEFAULT_CONSENSUS_RULES.minimum_participants} участника, сейчас `{len(items)}`."
         )
-    if len(senators) < DEFAULT_CONSENSUS_RULES.minimum_senators or (
-        DEFAULT_CONSENSUS_RULES.senators_must_be_odd and len(senators) % 2 == 0
-    ):
-        return items, f"Минимальный кворум не набран: нужно нечетное количество сенаторов, сейчас `{len(senators)}`."
     return items, None
 
 __all__ = ['consensus_bill_id', 'consensus_result_bill_id', 'consensus_generation_matches', 'is_chair', 'is_senator', 'participant_kind', 'queue_short_lines', 'queue_lines', 'build_queue_embed', 'build_sticky_embed', 'build_main_panel_embed', '_hub_money', 'build_universality_embed', 'build_public_universality_embed', 'build_universality_help_embed', '_open_tvrs_hub_impl', 'participant_lines', 'build_registration_embed', 'calculate_consensus', 'vote_lines', 'build_live_vote_embed', 'build_dm_vote_embed', 'delete_sticky_message', 'edit_session_host_message', 'edit_or_send_vote_dm', 'edit_vote_dm_to_result', 'voice_participants']

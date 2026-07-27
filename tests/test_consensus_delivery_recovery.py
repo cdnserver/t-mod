@@ -120,6 +120,97 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repair["payload"]["user_id"], 2)
         wake.assert_called_once()
 
+    async def test_pause_between_bills_never_builds_a_vote_delivery_without_bill(self) -> None:
+        current = _session(stage="paused")
+        current.current_bill = None
+        current.previous_stage = "after_result"
+        current.paused_reason = "Кворум нужен перед следующим проектом"
+        bot = SimpleNamespace(add_view=lambda *args, **kwargs: None)
+        guild = SimpleNamespace(id=77)
+
+        with patch("modules.tvrs_recovery.build_control_dm_deliveries") as build_controls:
+            queued = await reconcile_current_consensus_deliveries(
+                bot,  # type: ignore[arg-type]
+                guild,  # type: ignore[arg-type]
+                current,
+                verify_discord_messages=True,
+                retry_permanent_failures=True,
+            )
+
+        self.assertEqual(queued, 0)
+        build_controls.assert_not_called()
+
+    async def test_every_restorable_stage_has_a_safe_delivery_projection(self) -> None:
+        cases: list[LiveConsensusSession] = []
+        registration = _session(stage="registration")
+        cases.append(registration)
+        voting = _session(stage="voting")
+        cases.append(voting)
+        paused_vote = _session(stage="paused")
+        paused_vote.previous_stage = "voting"
+        cases.append(paused_vote)
+        paused_between = _session(stage="paused")
+        paused_between.current_bill = None
+        paused_between.previous_stage = "after_result"
+        cases.append(paused_between)
+        discussion_type = _session(stage="discussion_type")
+        discussion_type.discussion_initiator_id = 2
+        cases.append(discussion_type)
+        discussion = _session(stage="discussion")
+        discussion.discussion_initiator_id = 2
+        discussion.discussion_type = "Правовая"
+        discussion.discussion_channel_id = 501
+        discussion.discussion_allowed_user_ids = {2}
+        cases.append(discussion)
+        after_result = _session(stage="after_result")
+        after_result.current_bill = None
+        cases.append(after_result)
+        finalizing = _session(stage="finalizing")
+        finalizing.pending_action = {"kind": "vote", "bill_id": 10}
+        cases.append(finalizing)
+
+        with (
+            patch(
+                "modules.tvrs_recovery._outbox_storage.delivery_outbox_ensure_current",
+                return_value=({"status": "pending"}, True),
+            ),
+            patch(
+                "modules.tvrs_recovery._enqueue_semantic_delivery",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            for current in cases:
+                with self.subTest(stage=current.stage, previous=current.previous_stage):
+                    await reconcile_current_consensus_deliveries(
+                        SimpleNamespace(add_view=lambda *args, **kwargs: None),  # type: ignore[arg-type]
+                        SimpleNamespace(id=77),  # type: ignore[arg-type]
+                        current,
+                        verify_discord_messages=False,
+                        retry_permanent_failures=True,
+                    )
+
+    async def test_corrupt_discussion_projection_is_blocked_without_builder_exception(self) -> None:
+        current = _session(stage="discussion")
+        current.current_bill = {"id": 0, "bill_number": 9, "title": "Повреждённый проект"}
+        current.discussion_channel_id = 501
+        current.discussion_type = None
+
+        with (
+            patch("modules.tvrs_recovery.build_control_dm_deliveries") as controls,
+            patch("modules.tvrs_recovery.build_discussion_invite_deliveries") as invites,
+        ):
+            queued = await reconcile_current_consensus_deliveries(
+                SimpleNamespace(add_view=lambda *args, **kwargs: None),  # type: ignore[arg-type]
+                SimpleNamespace(id=77),  # type: ignore[arg-type]
+                current,
+                verify_discord_messages=False,
+                retry_permanent_failures=True,
+            )
+
+        self.assertEqual(queued, 0)
+        controls.assert_not_called()
+        invites.assert_not_called()
+
     async def test_recovery_checks_quorum_before_resuming_liveness(self) -> None:
         current = _session(stage="voting")
         order: list[str] = []
