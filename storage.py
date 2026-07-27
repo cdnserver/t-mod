@@ -19,6 +19,7 @@ from persistence import market_repository as _market_repository
 from persistence import profile_repository as _profile_repository
 from persistence import voice_control_repository as _voice_control_repository
 from persistence import bill_workspace_repository as _bill_workspace_repository
+from persistence import broadcast_repository as _broadcast_repository
 from persistence import schema as _schema
 
 _PERSISTENCE_MODULES = (
@@ -36,6 +37,7 @@ _PERSISTENCE_MODULES = (
     _profile_repository,
     _voice_control_repository,
     _bill_workspace_repository,
+    _broadcast_repository,
     _schema,
 )
 

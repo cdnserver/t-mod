@@ -334,6 +334,11 @@ def settings_embed(channels: dict[str, discord.TextChannel | None]) -> discord.E
         value="Команда открывает личный интерфейс → бот публикует исходное сообщение в профильном отсеке → активные задачи дают только ссылку.",
         inline=False,
     )
+    embed.add_field(
+        name="Уведомления сенаторам",
+        value="Администратор может подготовить общее сообщение или уведомление о консенсусе с предпросмотром и отчётом доставки.",
+        inline=False,
+    )
     embed.set_footer(text=f"T-Mod • панель администратора • {PANEL_MARKERS['settings']}")
     return embed
 
@@ -488,6 +493,21 @@ class SettingsPanelView(discord.ui.View):
         await ensure_control_center(interaction.client, interaction.guild)
         await refresh_operations_dashboard(interaction.client, interaction.guild)
         await interaction.followup.send("Публичные панели обновлены.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Уведомления",
+        emoji="📨",
+        style=discord.ButtonStyle.primary,
+        custom_id="tmod_settings_broadcasts",
+    )
+    async def broadcasts(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        from modules.admin_broadcast import open_broadcast_admin_panel
+
+        await open_broadcast_admin_panel(interaction)
 
 
 class BotTestView(discord.ui.View):
@@ -659,7 +679,10 @@ async def log_technical_event(
 
 
 def setup_control_center(bot: commands.Bot) -> None:
+    from modules.admin_broadcast import setup_admin_broadcast
+
     register_channel_resolver(resolve_control_channel)
+    setup_admin_broadcast(bot)
 
     async def control_center_ready_listener() -> None:
         global _persistent_views_registered

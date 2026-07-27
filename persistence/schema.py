@@ -560,6 +560,44 @@ def init_db() -> None:
             ON tvrs_bill_workspaces(guild_id, author_id)
             WHERE status IN ('draft', 'review');
 
+            CREATE TABLE IF NOT EXISTS admin_broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_display TEXT,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                link_url TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                recipient_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                queued_at TEXT,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_guild
+            ON admin_broadcasts(guild_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS admin_broadcast_recipients (
+                broadcast_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_display TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                reason TEXT,
+                outbox_id INTEGER,
+                dm_message_id INTEGER,
+                available_at TEXT,
+                delivered_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (broadcast_id, user_id),
+                FOREIGN KEY (broadcast_id) REFERENCES admin_broadcasts(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_broadcast_recipients_status
+            ON admin_broadcast_recipients(broadcast_id, status);
+
             CREATE TABLE IF NOT EXISTS tvrs_consensus_sessions (
                 session_key TEXT PRIMARY KEY,
                 guild_id INTEGER NOT NULL,
