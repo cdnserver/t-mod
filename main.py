@@ -27,6 +27,7 @@ from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.delivery_runtime import setup_delivery
+from modules.consensus_web import setup_consensus_web
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -961,6 +962,8 @@ boot_module("Durable Delivery")
 setup_delivery(bot)
 boot_module("TVRS Control Center")
 setup_control_center(bot)
+boot_module("Consensus LAN Panel")
+setup_consensus_web(bot)
 boot_module("Operations Center")
 setup_operations(bot)
 boot_module("TVRS Consensus")

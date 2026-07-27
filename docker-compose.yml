@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     env_file:
       - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+    ports:
+      - "8787:8787"
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
       - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"

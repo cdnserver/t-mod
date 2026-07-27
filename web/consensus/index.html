@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>T·Consensus — оперативная панель</title>
+    <meta
+      name="description"
+      content="Локальная административная панель пленарного консенсуса Товарищества."
+    >
+    <link rel="stylesheet" href="/assets/style.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="T Consensus">
+          <span class="brand-mark">T</span>
+          <span>
+            <strong>CONSENSUS</strong>
+            <small>оперативная панель</small>
+          </span>
+        </a>
+        <div class="connection">
+          <span id="connection-dot" class="connection-dot"></span>
+          <span id="connection-text">подключение</span>
+          <time id="clock">--:--:--</time>
+        </div>
+      </header>
+
+      <section id="login" class="login-card" aria-labelledby="login-title">
+        <div class="eyebrow">ЗАЩИЩЁННЫЙ ЛОКАЛЬНЫЙ КОНТУР</div>
+        <h1 id="login-title">Вход в панель</h1>
+        <p>
+          Введите ключ из Discord: «Настройки бота» → «Веб-панель».
+          Ключ хранится только до закрытия вкладки.
+        </p>
+        <form id="login-form">
+          <label for="token">Ключ доступа</label>
+          <div class="login-row">
+            <input
+              id="token"
+              name="token"
+              type="password"
+              autocomplete="current-password"
+              minlength="16"
+              required
+              placeholder="Вставьте ключ"
+            >
+            <button type="submit">Открыть</button>
+          </div>
+          <output id="login-error" class="form-error"></output>
+        </form>
+      </section>
+
+      <div id="dashboard" class="dashboard" hidden>
+        <section class="hero">
+          <div>
+            <div id="session-eyebrow" class="eyebrow">ТЕКУЩЕЕ ЗАСЕДАНИЕ</div>
+            <h1 id="session-title">Консенсус не проводится</h1>
+            <p id="session-subtitle">
+              Панель ожидает начало следующего пленарного заседания.
+            </p>
+          </div>
+          <div id="stage-badge" class="stage-badge idle">Ожидание</div>
+        </section>
+
+        <section class="metrics" aria-label="Ключевые показатели">
+          <article class="metric">
+            <span>Кворум</span>
+            <strong id="quorum-value">—</strong>
+            <small id="quorum-detail">нет активной сессии</small>
+          </article>
+          <article class="metric">
+            <span>Голоса получены</span>
+            <strong id="votes-value">—</strong>
+            <small id="votes-detail">направления скрыты</small>
+          </article>
+          <article class="metric">
+            <span>До завершения этапа</span>
+            <strong id="timer-value">—</strong>
+            <small id="timer-detail">таймер не запущен</small>
+          </article>
+          <article class="metric">
+            <span>Очередь проектов</span>
+            <strong id="queue-value">0</strong>
+            <small>готовы к рассмотрению</small>
+          </article>
+        </section>
+
+        <section class="layout-main">
+          <article class="panel current-bill">
+            <div class="panel-heading">
+              <div>
+                <div class="eyebrow">НА РАССМОТРЕНИИ</div>
+                <h2 id="bill-title">Проект не выбран</h2>
+              </div>
+              <a id="bill-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+                Оригинал ↗
+              </a>
+            </div>
+            <div id="bill-number" class="bill-number">—</div>
+
+            <div class="blocks" aria-label="Четыре блока консенсуса">
+              <div class="block-card" data-block="first">
+                <span>01</span>
+                <strong>Первый сопредседатель</strong>
+                <em>25%</em>
+                <b class="block-state">ожидание</b>
+              </div>
+              <div class="block-card" data-block="second">
+                <span>02</span>
+                <strong>Второй сопредседатель</strong>
+                <em>25%</em>
+                <b class="block-state">ожидание</b>
+              </div>
+              <div class="block-card" data-block="third">
+                <span>03</span>
+                <strong>Третий сопредседатель</strong>
+                <em>25%</em>
+                <b class="block-state">ожидание</b>
+              </div>
+              <div class="block-card accent" data-block="consensus">
+                <span>04</span>
+                <strong>Консенсус Товарищества</strong>
+                <em>25%</em>
+                <b class="block-state">ожидание</b>
+              </div>
+            </div>
+
+            <div class="privacy-note">
+              <span>◉</span>
+              Направления голосов скрываются до фиксации результата.
+            </div>
+          </article>
+
+          <aside class="panel participants-panel">
+            <div class="panel-heading">
+              <div>
+                <div class="eyebrow">СОСТАВ</div>
+                <h2>Участники</h2>
+              </div>
+              <span id="participants-count" class="counter">0</span>
+            </div>
+            <div id="participants" class="participants empty-state">
+              Нет активной регистрации
+            </div>
+          </aside>
+        </section>
+
+        <section class="layout-secondary">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <div class="eyebrow">СЛЕДУЮЩИЕ</div>
+                <h2>Очередь законопроектов</h2>
+              </div>
+            </div>
+            <div id="queue-list" class="stack-list empty-state">Очередь пуста</div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <div class="eyebrow">ПРОТОКОЛ</div>
+                <h2>Последние решения</h2>
+              </div>
+            </div>
+            <div id="results-list" class="stack-list empty-state">Решений пока нет</div>
+          </article>
+        </section>
+
+        <footer>
+          <span>T-Mod · локальный защищённый контур</span>
+          <span id="updated-at">данные ещё не получены</span>
+        </footer>
+      </div>
+    </main>
+  </body>
+</html>

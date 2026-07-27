@@ -509,6 +509,21 @@ class SettingsPanelView(discord.ui.View):
 
         await open_broadcast_admin_panel(interaction)
 
+    @discord.ui.button(
+        label="Веб-панель",
+        emoji="🖥️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="tmod_settings_consensus_web",
+    )
+    async def consensus_web(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        from modules.consensus_web import open_consensus_web_info
+
+        await open_consensus_web_info(interaction)
+
 
 class BotTestView(discord.ui.View):
     def __init__(self) -> None:

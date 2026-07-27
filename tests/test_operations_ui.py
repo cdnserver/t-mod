@@ -156,6 +156,7 @@ class OperationsCenterTests(unittest.TestCase):
             self.assertIn("tmod_consensus_simulation", test_ids)
             settings_ids = {item.custom_id for item in SettingsPanelView().children}
             self.assertIn("tmod_settings_broadcasts", settings_ids)
+            self.assertIn("tmod_settings_consensus_web", settings_ids)
 
         asyncio.run(inspect_views())
 
