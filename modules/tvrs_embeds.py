@@ -93,7 +93,6 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
         author = bill.get("author_display") or str(bill.get("author_id"))
         author_id = int(bill.get("author_id") or 0)
         attempt = bill_attempt_text(bill)
-        decision_category = str(bill.get("decision_category") or "ordinary")
         implementation_plan = bill.get("implementation_plan")
         leadership_actions = bill.get("leadership_actions")
     else:
@@ -104,9 +103,6 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
         author = bill.author_display or str(bill.author_id)
         author_id = bill.author_id
         attempt = "Первичное рассмотрение"
-        decision_category = str(
-            getattr(bill, "decision_category", "ordinary") or "ordinary"
-        )
         implementation_plan = getattr(bill, "implementation_plan", None)
         leadership_actions = getattr(bill, "leadership_actions", None)
     embed = discord.Embed(
@@ -119,12 +115,6 @@ def build_bill_embed(guild: discord.Guild, bill: Any) -> discord.Embed:
     )
     embed.add_field(name="Законопроект", value=title[:1024], inline=False)
     embed.add_field(name="Материалы", value=materials_text(materials), inline=False)
-    category_label = {
-        "ordinary": "Обычное · 50%",
-        "heavy": "Тяжёлое · 75%",
-        "unanimous": "Единогласное · 100%",
-    }.get(decision_category, "Обычное · 50%")
-    embed.add_field(name="Категория решения", value=category_label, inline=True)
     embed.add_field(name="Рассмотрение", value=attempt, inline=True)
     if implementation_plan:
         embed.add_field(
@@ -190,16 +180,6 @@ def build_result_embed(result: LiveResult, session: LiveConsensusSession) -> dis
                 f"порог принятия `{required_percent}%`"
             ),
             inline=True,
-        )
-        category_label = {
-            "ordinary": "Обычное решение",
-            "heavy": "Тяжёлое решение",
-            "unanimous": "Единогласное решение",
-        }.get(result.decision_category, "Обычное решение")
-        embed.add_field(
-            name="📐 Категория",
-            value=f"**{category_label}** · требуется `{required_percent}%`",
-            inline=False,
         )
         if result.block_votes:
             block_labels = {

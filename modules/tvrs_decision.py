@@ -227,19 +227,8 @@ async def apply_veto_for_actor(
             source_message_id=(
                 int(bill["message_id"]) if bill.get("message_id") else None
             ),
-            decision_category=str(
-                bill.get("decision_category") or "ordinary"
-            ),
-            required_percent=float(
-                {
-                    "ordinary": session.rules.acceptance_percent,
-                    "heavy": session.rules.heavy_acceptance_percent,
-                    "unanimous": session.rules.unanimous_acceptance_percent,
-                }.get(
-                    str(bill.get("decision_category") or "ordinary"),
-                    session.rules.acceptance_percent,
-                )
-            ),
+            decision_category="ordinary",
+            required_percent=float(session.rules.acceptance_percent),
             veto_by_id=actor.user_id,
             retry_bill_number=(int(retry["bill_number"]) if retry else None),
             resolution_method="veto",
@@ -349,19 +338,8 @@ async def record_oral_result(
             source_message_id=(
                 int(bill["message_id"]) if bill.get("message_id") else None
             ),
-            decision_category=str(
-                bill.get("decision_category") or "ordinary"
-            ),
-            required_percent=float(
-                {
-                    "ordinary": session.rules.acceptance_percent,
-                    "heavy": session.rules.heavy_acceptance_percent,
-                    "unanimous": session.rules.unanimous_acceptance_percent,
-                }.get(
-                    str(bill.get("decision_category") or "ordinary"),
-                    session.rules.acceptance_percent,
-                )
-            ),
+            decision_category="ordinary",
+            required_percent=float(session.rules.acceptance_percent),
             resolution_method="oral",
             resolution_note=clean_note,
             resolved_by_id=int(pending.get("actor_id") or actor.user_id),

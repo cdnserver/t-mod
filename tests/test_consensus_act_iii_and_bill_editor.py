@@ -16,6 +16,7 @@ from modules.consensus_core import (
     calculate_consensus,
 )
 from modules.tvrs_delivery import build_session_summary_deliveries
+from modules.tvrs_bill_editor import bill_workspace_embed
 from modules.tvrs_embeds import build_final_summary_embed
 
 
@@ -125,7 +126,7 @@ class ConsensusActIIITests(unittest.TestCase):
         self.assertEqual(result["internal_percent"], 75.0)
         self.assertEqual(result["block_votes"]["second"], "abstain")
 
-    def test_heavy_decision_needs_three_blocks(self) -> None:
+    def test_every_submitted_bill_uses_the_same_ordinary_threshold(self) -> None:
         session = act_iii_session("heavy")
         session.votes = {
             1: "yes",
@@ -137,9 +138,11 @@ class ConsensusActIIITests(unittest.TestCase):
         }
 
         self.assertTrue(calculate_consensus(session)["accepted"])
-        session.votes[4] = "no"
         session.votes[5] = "no"
-        self.assertFalse(calculate_consensus(session)["accepted"])
+        result = calculate_consensus(session)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["decision_category"], "ordinary")
+        self.assertEqual(result["required_percent"], 50.0)
 
     def test_administrative_leader_never_fills_an_absent_cochair_block(self) -> None:
         session = act_iii_session()
@@ -245,7 +248,7 @@ class BillEditorAiTests(unittest.TestCase):
               "title": "О едином справочнике участников",
               "summary": "Предлагается вести единые карточки участников в профиле T-Mod.",
               "materials": "",
-              "decision_category": "ordinary",
+              "decision_category": "heavy",
               "implementation_plan": "Добавить форму и открыть просмотр через команду profile.",
               "leadership_actions": "Сообщить новым участникам и контролировать заполнение.",
               "clarification": "Уточнить ответственного за контроль."
@@ -264,9 +267,34 @@ class BillEditorAiTests(unittest.TestCase):
             constraints_text="Без отдельного канала",
         )
 
-        self.assertIn("четыре равных блока по 25%", prompt)
+        self.assertIn("единой обычной процедуре", prompt)
         self.assertIn("Не добавляй фактов", prompt)
+        self.assertIn("не упоминай JSON", prompt)
         self.assertIn("Без отдельного канала", prompt)
+
+    def test_workspace_preview_never_exposes_internal_identifiers(self) -> None:
+        embed = bill_workspace_embed(
+            {
+                "id": 1,
+                "status": "review",
+                "title": "О справочнике участников",
+                "summary": "Предлагается создать единый справочник участников.",
+                "implementation_plan": "Организовать заполнение профилей.",
+                "leadership_actions": "Оповестить новых участников.",
+                "idea": "Нужен справочник",
+                "revision": 7,
+                "ai_revision": 3,
+            }
+        )
+
+        rendered = "\n".join(
+            [str(embed.title or ""), str(embed.description or "")]
+            + [f"{field.name}\n{field.value}" for field in embed.fields]
+        )
+        self.assertNotIn("#0001", rendered)
+        self.assertNotIn("v7", rendered)
+        self.assertNotIn("ИИ-правок", rendered)
+        self.assertNotIn("ordinary", rendered)
 
 
 class BillWorkspaceStorageTests(unittest.TestCase):
@@ -346,6 +374,33 @@ class BillWorkspaceStorageTests(unittest.TestCase):
         )
         self.assertEqual(closed["status"], "submitted")
         self.assertEqual(closed["submitted_bill_id"], first.id)
+
+    def test_stale_number_metadata_never_restarts_existing_bill_numbers(self) -> None:
+        first = storage.tvrs_create_bill(
+            guild_id=77,
+            channel_id=88,
+            author_id=5,
+            author_display="Автор",
+            title="Первый существующий проект",
+            summary="Существующий законопроект с сохранённым порядковым номером.",
+            materials=None,
+        )
+        self.assertEqual(first.bill_number, 9)
+        storage.tvrs_set_next_bill_number(77, 1)
+
+        second = storage.tvrs_create_bill(
+            guild_id=77,
+            channel_id=88,
+            author_id=6,
+            author_display="Второй автор",
+            title="Следующий проект",
+            summary="Новый законопроект должен продолжить существующую нумерацию.",
+            materials=None,
+            decision_category="unanimous",
+        )
+
+        self.assertEqual(second.bill_number, 10)
+        self.assertEqual(second.decision_category, "ordinary")
 
 
 class MemberDirectoryStorageTests(unittest.TestCase):

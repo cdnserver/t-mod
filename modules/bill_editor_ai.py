@@ -36,14 +36,6 @@ OPENROUTER_API_URL = os.getenv(
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "").strip()
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "T-Mod").strip()
 
-VALID_CATEGORIES = frozenset({"ordinary", "heavy", "unanimous"})
-CATEGORY_LABELS = {
-    "ordinary": "Обычное решение · 50%",
-    "heavy": "Усиленное решение · 75%",
-    "unanimous": "Единогласное решение · 100%",
-}
-
-
 @dataclass(frozen=True, slots=True)
 class BillEditorDraft:
     title: str
@@ -85,16 +77,15 @@ def extract_json_object(value: str) -> dict[str, Any]:
 
 def parse_bill_editor_draft(value: str | dict[str, Any]) -> BillEditorDraft:
     payload = extract_json_object(value) if isinstance(value, str) else dict(value)
-    category = str(payload.get("decision_category") or "ordinary").strip().lower()
-    if category not in VALID_CATEGORIES:
-        raise ValueError("bill_editor_ai_category_invalid")
     materials = _clean(payload.get("materials"), maximum=1000) or None
     clarification = _clean(payload.get("clarification"), maximum=600) or None
     return BillEditorDraft(
         title=_clean(payload.get("title"), minimum=5, maximum=180),
         summary=_clean(payload.get("summary"), minimum=20, maximum=3000),
         materials=materials,
-        decision_category=category,
+        # The category is deliberately not delegated to AI. All bills submitted
+        # through this editor use the ordinary procedure.
+        decision_category="ordinary",
         implementation_plan=_clean(
             payload.get("implementation_plan"),
             minimum=5,
@@ -127,7 +118,6 @@ def build_bill_editor_prompt(
                         "title",
                         "summary",
                         "materials",
-                        "decision_category",
                         "implementation_plan",
                         "leadership_actions",
                     )
@@ -142,15 +132,21 @@ def build_bill_editor_prompt(
 решение автора. Если критически важной информации не хватает, кратко укажи
 это в clarification, но всё равно подготовь полезный черновик.
 
-Действующая модель решений Верховного акта, редакция III:
-- ordinary: нужно 50%, то есть любые два из четырёх блоков;
-- heavy: нужно 75%, любые три блока;
-- unanimous: нужно 100%, все четыре блока;
-- четыре равных блока по 25%: три сопредседателя и внутренний консенсус;
-- блок внутреннего консенсуса активируется только при более чем 50% валидных
-  голосов внутри; воздержавшиеся входят в кворум, но не в yes/no;
-- поправка к Верховному акту и роспуск требуют unanimous.
+Законопроект будет рассмотрен по единой обычной процедуре. Не определяй
+категорию, вес или порог решения и не объясняй механику голосования.
 Не заявляй, что проект уже принят.
+
+Требования к чистоте текста:
+- текст законопроекта должен быть понятен человеку без технических знаний;
+- не упоминай JSON, названия полей, модель ИИ, промпт, базу данных, внутренние
+  идентификаторы, модули или устройство бота;
+- не придумывай API, команды, таблицы, алгоритмы и другие детали реализации,
+  если автор сам прямо их не указал;
+- в summary помести только публикуемый текст предложения;
+- организационные действия после принятия держи отдельно в
+  implementation_plan и leadership_actions;
+- не добавляй в текст заголовки вида «технические данные», «метаданные»,
+  «категория решения» или «сгенерировано ИИ».
 
 Идея автора:
 {idea.strip()}
@@ -167,7 +163,6 @@ def build_bill_editor_prompt(
   "title": "5–180 символов",
   "summary": "полный нормативный текст/суть до 3000 символов",
   "materials": "ссылки или исходные материалы до 1000 символов либо пусто",
-  "decision_category": "ordinary|heavy|unanimous",
   "implementation_plan": "что должно произойти после принятия",
   "leadership_actions": "конкретный чек-лист для руководства",
   "clarification": "что стоит уточнить автору либо пусто"
@@ -241,8 +236,6 @@ def generate_bill_editor_draft(
 __all__ = [
     "BILL_EDITOR_MODEL",
     "BillEditorDraft",
-    "CATEGORY_LABELS",
-    "VALID_CATEGORIES",
     "build_bill_editor_prompt",
     "extract_json_object",
     "generate_bill_editor_draft",

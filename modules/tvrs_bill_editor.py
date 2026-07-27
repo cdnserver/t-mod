@@ -11,7 +11,6 @@ import discord
 
 from modules.bill_editor_ai import (
     BILL_EDITOR_MODEL,
-    CATEGORY_LABELS,
     generate_bill_editor_draft,
 )
 from modules.consensus_runtime import (
@@ -32,7 +31,6 @@ WORKSPACE_ERROR_MESSAGES = {
         "Черновик уже изменился в другом окне. Панель обновлена — повторите действие."
     ),
     "bill_workspace_not_editable": "Эта редакционная комната уже закрыта.",
-    "bill_workspace_category_invalid": "Категория решения не распознана.",
     "bill_editor_ai_not_configured": (
         "ИИ-редактор не настроен. Ручной редактор продолжает работать."
     ),
@@ -41,19 +39,6 @@ WORKSPACE_ERROR_MESSAGES = {
     ),
     "bill_editor_ai_category_invalid": "ИИ предложил неизвестную категорию решения.",
 }
-CATEGORY_ALIASES = {
-    "ordinary": "ordinary",
-    "обычное": "ordinary",
-    "50": "ordinary",
-    "heavy": "heavy",
-    "усиленное": "heavy",
-    "75": "heavy",
-    "unanimous": "unanimous",
-    "единогласное": "unanimous",
-    "100": "unanimous",
-}
-
-
 def _safe(value: Any, *, fallback: str = "Не заполнено") -> str:
     text = str(value or "").strip()
     return discord.utils.escape_markdown(text) if text else fallback
@@ -86,7 +71,7 @@ def bill_workspace_embed(workspace: dict[str, Any]) -> discord.Embed:
             "отредактируйте всё вручную. Публикация произойдёт только после подтверждения."
         )
     embed = discord.Embed(
-        title=f"Редактор законопроекта · #{int(workspace['id']):04d}",
+        title="Редактор законопроекта",
         description=description,
         color=0x3BA55D if ready else TVRS_EMBED_COLOR,
     )
@@ -96,20 +81,6 @@ def bill_workspace_embed(workspace: dict[str, Any]) -> discord.Embed:
             f"**{_safe(title)}**\n{_truncate(_safe(workspace.get('summary')), 850)}"
         )[:1024],
         inline=False,
-    )
-    category = str(workspace.get("decision_category") or "ordinary")
-    embed.add_field(
-        name="Категория решения",
-        value=CATEGORY_LABELS.get(category, CATEGORY_LABELS["ordinary"]),
-        inline=True,
-    )
-    embed.add_field(
-        name="Редакция",
-        value=(
-            f"Черновик **v{int(workspace.get('revision') or 1)}** · "
-            f"ИИ-правок: **{int(workspace.get('ai_revision') or 0)}**"
-        ),
-        inline=True,
     )
     embed.add_field(
         name="После принятия",
@@ -288,7 +259,7 @@ class BillIdeaModal(BillWorkspaceModal, title="Идея законопроект
                 title=draft.title,
                 summary=draft.summary,
                 materials=draft.materials or "",
-                decision_category=draft.decision_category,
+                decision_category="ordinary",
                 implementation_plan=draft.implementation_plan,
                 leadership_actions=draft.leadership_actions,
                 ai_model=BILL_EDITOR_MODEL,
@@ -302,14 +273,6 @@ class BillIdeaModal(BillWorkspaceModal, title="Идея законопроект
         except Exception as exc:
             await refresh_bill_workspace_panel(interaction.client, updated)
             await _report_editor_error(interaction, exc)
-
-
-def _normalize_category(value: str) -> str:
-    raw = str(value or "").strip().lower().replace("%", "")
-    category = CATEGORY_ALIASES.get(raw)
-    if category is None:
-        raise ValueError("bill_workspace_category_invalid")
-    return category
 
 
 class BillTextModal(BillWorkspaceModal, title="Текст законопроекта"):
@@ -331,20 +294,12 @@ class BillTextModal(BillWorkspaceModal, title="Текст законопроек
         required=False,
         max_length=1000,
     )
-    category = discord.ui.TextInput(
-        label="Категория: ordinary / heavy / unanimous",
-        placeholder="ordinary",
-        min_length=2,
-        max_length=20,
-    )
-
     def __init__(self, workspace: dict[str, Any]) -> None:
         super().__init__(timeout=600)
         self.workspace = workspace
         self.heading.default = str(workspace.get("title") or "")
         self.summary.default = str(workspace.get("summary") or "")
         self.materials.default = str(workspace.get("materials") or "")
-        self.category.default = str(workspace.get("decision_category") or "ordinary")
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if interaction.user.id != int(self.workspace["author_id"]):
@@ -358,7 +313,7 @@ class BillTextModal(BillWorkspaceModal, title="Текст законопроек
             title=str(self.heading.value),
             summary=str(self.summary.value),
             materials=str(self.materials.value),
-            decision_category=_normalize_category(str(self.category.value)),
+            decision_category="ordinary",
             status="review",
         )
         await refresh_bill_workspace_panel(interaction.client, updated)
@@ -516,7 +471,7 @@ class BillWorkspaceView(discord.ui.View):
                 title=draft.title,
                 summary=draft.summary,
                 materials=draft.materials or "",
-                decision_category=draft.decision_category,
+                decision_category="ordinary",
                 implementation_plan=draft.implementation_plan,
                 leadership_actions=draft.leadership_actions,
                 ai_model=BILL_EDITOR_MODEL,
@@ -634,7 +589,7 @@ class BillSubmitConfirmView(discord.ui.View):
                 title=str(workspace["title"]),
                 summary=str(workspace["summary"]),
                 materials=str(workspace.get("materials") or "") or None,
-                decision_category=str(workspace.get("decision_category") or "ordinary"),
+                decision_category="ordinary",
                 implementation_plan=str(workspace.get("implementation_plan") or ""),
                 leadership_actions=str(workspace.get("leadership_actions") or ""),
                 editor_workspace_id=int(workspace["id"]),
@@ -704,8 +659,9 @@ async def start_bill_workspace(interaction: discord.Interaction) -> None:
     try:
         if thread is None:
             clean_name = re.sub(r"[^\wа-яА-ЯёЁ-]+", "-", interaction.user.display_name)
+            thread_name = f"законопроект-{clean_name}"[:100]
             thread = await interaction.channel.create_thread(
-                name=f"редактор-{int(workspace['id']):04d}-{clean_name}"[:100],
+                name=thread_name,
                 type=discord.ChannelType.private_thread,
                 invitable=False,
                 auto_archive_duration=1440,
@@ -719,6 +675,9 @@ async def start_bill_workspace(interaction: discord.Interaction) -> None:
             )
         elif thread.archived:
             await thread.edit(archived=False)
+        if re.match(r"^редактор-\d{4}-", thread.name):
+            clean_name = re.sub(r"[^\wа-яА-ЯёЁ-]+", "-", interaction.user.display_name)
+            await thread.edit(name=f"законопроект-{clean_name}"[:100])
         if not workspace.get("panel_message_id"):
             await refresh_bill_workspace_panel(interaction.client, workspace)
             workspace = await asyncio.to_thread(

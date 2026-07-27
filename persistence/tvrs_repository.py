@@ -9,15 +9,37 @@ from persistence.core import TVRSBill, _db_lock, _tvrs_bill_from_row, connect, u
 from persistence.activity_repository import _record_bot_action, get_meta, set_meta, set_meta_value
 from persistence.outbox_repository import delivery_outbox_enqueue_in_connection
 
+
+def _next_bill_number_in_connection(
+    con: sqlite3.Connection,
+    guild_id: int,
+    *,
+    default_next: int = 9,
+) -> int:
+    """Return a collision-safe number even when legacy metadata is stale."""
+
+    meta_key = f"tvrs_next_bill_number:{int(guild_id)}"
+    meta_row = con.execute(
+        "SELECT value FROM meta WHERE key = ?",
+        (meta_key,),
+    ).fetchone()
+    raw = str(meta_row["value"]) if meta_row else ""
+    configured_next = int(raw) if raw.isdigit() else 1
+    latest = con.execute(
+        "SELECT MAX(bill_number) AS n FROM tvrs_bills WHERE guild_id = ?",
+        (int(guild_id),),
+    ).fetchone()
+    after_existing = int(latest["n"] or 0) + 1 if latest else 1
+    return max(1, int(default_next), configured_next, after_existing)
+
+
 def tvrs_next_bill_number(guild_id: int, default_next: int = 9) -> int:
-    meta_key = f"tvrs_next_bill_number:{guild_id}"
-    raw = get_meta(meta_key)
-    if raw and str(raw).isdigit():
-        return max(1, int(raw))
     with _db_lock, connect() as con:
-        row = con.execute("SELECT MAX(bill_number) AS n FROM tvrs_bills WHERE guild_id = ?", (guild_id,)).fetchone()
-    max_num = int(row["n"] or 0) if row else 0
-    return max(default_next, max_num + 1)
+        return _next_bill_number_in_connection(
+            con,
+            int(guild_id),
+            default_next=int(default_next),
+        )
 
 
 def tvrs_set_next_bill_number(guild_id: int, next_number: int) -> None:
@@ -48,13 +70,7 @@ def tvrs_create_bill(
     meta_key = f"tvrs_next_bill_number:{guild_id}"
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
-        meta_row = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
-        raw = str(meta_row["value"]) if meta_row else None
-        if raw and raw.isdigit():
-            number = max(1, int(raw))
-        else:
-            row = con.execute("SELECT MAX(bill_number) AS n FROM tvrs_bills WHERE guild_id = ?", (guild_id,)).fetchone()
-            number = max(9, int(row["n"] or 0) + 1)
+        number = _next_bill_number_in_connection(con, int(guild_id))
         cur = con.execute(
             """
             INSERT INTO tvrs_bills(
@@ -74,7 +90,7 @@ def tvrs_create_bill(
                 title,
                 summary,
                 materials,
-                str(decision_category or "ordinary"),
+                "ordinary",
                 implementation_plan,
                 leadership_actions,
                 editor_workspace_id,
@@ -161,22 +177,13 @@ def tvrs_create_bill_with_publication(
                     str(title),
                     str(summary),
                     materials,
-                    str(decision_category or "ordinary"),
+                    "ordinary",
                     duplicate_after,
                 ),
             ).fetchone()
         created = row is None
         if row is None:
-            meta_row = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
-            raw = str(meta_row["value"]) if meta_row else None
-            if raw and raw.isdigit():
-                number = max(1, int(raw))
-            else:
-                latest = con.execute(
-                    "SELECT MAX(bill_number) AS n FROM tvrs_bills WHERE guild_id = ?",
-                    (int(guild_id),),
-                ).fetchone()
-                number = max(9, int(latest["n"] or 0) + 1)
+            number = _next_bill_number_in_connection(con, int(guild_id))
             inserted = con.execute(
                 """
                 INSERT INTO tvrs_bills(
@@ -195,7 +202,7 @@ def tvrs_create_bill_with_publication(
                     str(title),
                     str(summary),
                     materials,
-                    str(decision_category or "ordinary"),
+                    "ordinary",
                     implementation_plan,
                     leadership_actions,
                     editor_workspace_id,
@@ -1345,13 +1352,7 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
             con.commit()
             return dict(existing_retry)
         meta_key = f"tvrs_next_bill_number:{guild_id}"
-        meta_row = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
-        raw = str(meta_row["value"]) if meta_row else None
-        if raw and raw.isdigit():
-            number = max(1, int(raw))
-        else:
-            row = con.execute("SELECT MAX(bill_number) AS n FROM tvrs_bills WHERE guild_id = ?", (guild_id,)).fetchone()
-            number = max(9, int(row["n"] or 0) + 1)
+        number = _next_bill_number_in_connection(con, guild_id)
         title = str(original_dict.get("title") or "")
         summary = str(original_dict.get("summary") or "")
         retry_note = f"\n\nПовторная попытка консенсуса: {next_attempt}/3. Законопроект возвращён на рассмотрение после применения права вето."
@@ -1377,7 +1378,7 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
                 title,
                 summary + retry_note,
                 original_dict.get("materials"),
-                original_dict.get("decision_category") or "ordinary",
+                "ordinary",
                 original_dict.get("implementation_plan"),
                 original_dict.get("leadership_actions"),
                 original_dict.get("editor_workspace_id"),

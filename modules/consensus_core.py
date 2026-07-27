@@ -275,16 +275,10 @@ def calculate_consensus(session: LiveConsensusSession) -> dict[str, Any]:
 
         yes_blocks = sum(value == "yes" for value in block_votes.values())
         no_blocks = sum(value == "no" for value in block_votes.values())
-        category = str(
-            (session.current_bill or {}).get("decision_category") or "ordinary"
-        ).strip().lower()
-        if category not in {"ordinary", "heavy", "unanimous"}:
-            category = "ordinary"
-        required_percent = {
-            "ordinary": session.rules.acceptance_percent,
-            "heavy": session.rules.heavy_acceptance_percent,
-            "unanimous": session.rules.unanimous_acceptance_percent,
-        }[category]
+        # All submitted bills use one ordinary decision procedure. The
+        # persisted category field remains only for backwards compatibility.
+        category = "ordinary"
+        required_percent = session.rules.acceptance_percent
         required_blocks = max(1, int(round(required_percent / 25.0)))
         accepted = yes_blocks >= required_blocks
         # Article 30 explicitly rejects a 50/50 ordinary split.
