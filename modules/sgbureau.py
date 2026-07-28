@@ -1878,6 +1878,315 @@ async def show_registry_page(interaction: discord.Interaction, requester_id: int
     else:
         await interaction.response.edit_message(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
+
+def build_case_creation_embed(
+    guild: discord.Guild,
+    *,
+    client_id: int,
+    lawyer_id: int,
+    secretary_id: int | None,
+) -> discord.Embed:
+    client = guild.get_member(int(client_id))
+    lawyer = guild.get_member(int(lawyer_id))
+    secretary = (
+        guild.get_member(int(secretary_id))
+        if secretary_id is not None
+        else None
+    )
+    embed = base_embed(
+        "Создание кейса SGL",
+        (
+            "Проверьте состав приватного кейса. Ведущего адвоката и "
+            "секретаря можно выбрать ниже до создания канала."
+        ),
+    )
+    embed.add_field(
+        name=t("sgbureau.case.client_field"),
+        value=client.mention if client else f"<@{int(client_id)}>",
+        inline=False,
+    )
+    embed.add_field(
+        name=t("sgbureau.case.lawyer_field"),
+        value=lawyer.mention if lawyer else f"<@{int(lawyer_id)}>",
+        inline=True,
+    )
+    embed.add_field(
+        name=t("sgbureau.case.secretary_field"),
+        value=(
+            secretary.mention
+            if secretary is not None
+            else t("sgbureau.case.no_secretary")
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Доступ",
+        value=(
+            "Клиент, ведущий адвокат и выбранный секретарь получат доступ "
+            "к каналу сразу после создания."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text="SGL Bureau • параметры можно изменить до подтверждения"
+    )
+    return embed
+
+
+class SGLCaseMemberUnavailableError(RuntimeError):
+    pass
+
+
+async def create_sgl_case_from_selection(
+    *,
+    bot: commands.Bot,
+    guild: discord.Guild,
+    created_by: discord.Member,
+    client_id: int,
+    lawyer_id: int,
+    secretary_id: int | None,
+) -> tuple[storage.SGLCase, discord.TextChannel]:
+    client, lawyer, secretary = await asyncio.gather(
+        fetch_member_safe(guild, int(client_id)),
+        fetch_member_safe(guild, int(lawyer_id)),
+        (
+            fetch_member_safe(guild, int(secretary_id))
+            if secretary_id is not None
+            else asyncio.sleep(0, result=None)
+        ),
+    )
+    if client is None or lawyer is None or (
+        secretary_id is not None and secretary is None
+    ):
+        raise SGLCaseMemberUnavailableError("sgl_case_member_unavailable")
+    return await create_sgl_case_channel(
+        bot=bot,
+        guild=guild,
+        created_by=created_by,
+        client=client,
+        lawyer=lawyer,
+        secretary=secretary,
+    )
+
+
+class CaseCreationMemberSelect(discord.ui.UserSelect):
+    def __init__(
+        self,
+        parent_view: "SGCaseCreationView",
+        *,
+        kind: str,
+    ) -> None:
+        self.parent_view = parent_view
+        self.kind = kind
+        super().__init__(
+            placeholder=(
+                "Выберите ведущего адвоката"
+                if kind == "lawyer"
+                else "Выберите секретаря"
+            ),
+            min_values=0,
+            max_values=1,
+            row=0 if kind == "lawyer" else 1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_id = int(self.values[0].id) if self.values else None
+        if self.kind == "lawyer":
+            self.parent_view.lawyer_id = (
+                selected_id or SGBUREAU_DEFAULT_LAWYER_ID
+            )
+        else:
+            self.parent_view.secretary_id = selected_id
+        assert interaction.guild is not None
+        await interaction.response.edit_message(
+            embed=self.parent_view.build_embed(interaction.guild),
+            view=self.parent_view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
+class SGCaseCreationView(SGRequesterView):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        requester_id: int,
+        client_id: int,
+    ) -> None:
+        super().__init__(requester_id, timeout=300)
+        self.bot = bot
+        self.client_id = int(client_id)
+        self.lawyer_id = int(SGBUREAU_DEFAULT_LAWYER_ID)
+        self.secretary_id: int | None = None
+        self.creating = False
+        self.add_item(CaseCreationMemberSelect(self, kind="lawyer"))
+        self.add_item(CaseCreationMemberSelect(self, kind="secretary"))
+
+    def build_embed(self, guild: discord.Guild) -> discord.Embed:
+        return build_case_creation_embed(
+            guild,
+            client_id=self.client_id,
+            lawyer_id=self.lawyer_id,
+            secretary_id=self.secretary_id,
+        )
+
+    def set_disabled(self, disabled: bool) -> None:
+        for item in self.children:
+            item.disabled = bool(disabled)
+
+    @discord.ui.button(
+        label="Создать кейс",
+        style=discord.ButtonStyle.success,
+        row=2,
+    )
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        assert (
+            interaction.guild is not None
+            and isinstance(interaction.user, discord.Member)
+        )
+        if self.creating:
+            await interaction.response.send_message(
+                "Кейс уже создаётся. Подождите завершения операции.",
+                ephemeral=True,
+            )
+            return
+        self.creating = True
+        self.set_disabled(True)
+        await interaction.response.defer(ephemeral=True)
+        await interaction.edit_original_response(
+            embed=self.build_embed(interaction.guild),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+        try:
+            case, channel = await create_sgl_case_from_selection(
+                bot=self.bot,
+                guild=interaction.guild,
+                created_by=interaction.user,
+                client_id=self.client_id,
+                lawyer_id=self.lawyer_id,
+                secretary_id=self.secretary_id,
+            )
+        except SGLCaseMemberUnavailableError:
+            self.creating = False
+            self.set_disabled(False)
+            await interaction.edit_original_response(
+                embed=self.build_embed(interaction.guild),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await interaction.followup.send(
+                "Один из выбранных участников больше не доступен на сервере. "
+                "Обновите выбор и повторите.",
+                ephemeral=True,
+            )
+            return
+        except Exception as exc:
+            self.creating = False
+            self.set_disabled(False)
+            await interaction.edit_original_response(
+                embed=self.build_embed(interaction.guild),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await interaction.followup.send(
+                t(
+                    "sgbureau.sg.create_case_failed",
+                    error=str(exc)[:180],
+                ),
+                ephemeral=True,
+            )
+            return
+
+        self.stop()
+        await interaction.edit_original_response(
+            content=t(
+                "sgbureau.sg.create_case_success",
+                case_number=format_case_number(case.case_number),
+                channel_id=channel.id,
+            ),
+            embed=None,
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(
+        label="Без секретаря",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+    )
+    async def clear_secretary(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        assert interaction.guild is not None
+        self.secretary_id = None
+        await interaction.response.edit_message(
+            embed=self.build_embed(interaction.guild),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(
+        label="Адвокат по умолчанию",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+    )
+    async def reset_lawyer(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        assert interaction.guild is not None
+        self.lawyer_id = int(SGBUREAU_DEFAULT_LAWYER_ID)
+        await interaction.response.edit_message(
+            embed=self.build_embed(interaction.guild),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @discord.ui.button(
+        label="Назад",
+        style=discord.ButtonStyle.secondary,
+        row=2,
+    )
+    async def back(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        assert interaction.guild is not None
+        target = await fetch_member_safe(interaction.guild, self.client_id)
+        if target is None:
+            await interaction.response.send_message(
+                t(
+                    "sgbureau.sg.user_not_found",
+                    user_id=self.client_id,
+                ),
+                ephemeral=True,
+            )
+            return
+        cases = storage.list_sgl_cases_for_client(
+            interaction.guild.id,
+            target.id,
+            limit=25,
+        )
+        await interaction.response.edit_message(
+            embed=build_user_overview_embed(target, cases),
+            view=SGUserOverviewView(
+                self.bot,
+                self.requester_id,
+                self.client_id,
+            ),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
 class SGUserOverviewView(discord.ui.View):
     def __init__(self, bot: commands.Bot, requester_id: int, target_user_id: int) -> None:
         super().__init__(timeout=300)
@@ -1903,17 +2212,20 @@ class SGUserOverviewView(discord.ui.View):
     @discord.ui.button(label=t("sgbureau.sg.create_case_button"), style=discord.ButtonStyle.secondary)
     async def create_case(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        await interaction.response.defer(ephemeral=True)
         target = await self._target_member(interaction.guild)
         if target is None:
-            await interaction.followup.send(t("sgbureau.sg.user_not_found", user_id=self.target_user_id), ephemeral=True)
+            await interaction.response.send_message(t("sgbureau.sg.user_not_found", user_id=self.target_user_id), ephemeral=True)
             return
-        try:
-            case, channel = await create_sgl_case_channel(bot=self.bot, guild=interaction.guild, created_by=interaction.user, client=target)
-        except Exception as exc:
-            await interaction.followup.send(t("sgbureau.sg.create_case_failed", error=str(exc)[:180]), ephemeral=True)
-            return
-        await interaction.followup.send(t("sgbureau.sg.create_case_success", case_number=format_case_number(case.case_number), channel_id=channel.id), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        view = SGCaseCreationView(
+            self.bot,
+            interaction.user.id,
+            target.id,
+        )
+        await interaction.response.edit_message(
+            embed=view.build_embed(interaction.guild),
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @discord.ui.button(label=t("sgbureau.sg.refresh_user_button"), style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

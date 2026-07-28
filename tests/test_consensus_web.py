@@ -10,6 +10,7 @@ import storage
 from modules.consensus_core import (
     LiveConsensusSession,
     LiveParticipant,
+    LiveResult,
 )
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import (
@@ -18,6 +19,7 @@ from modules.consensus_simulator import (
     register_consensus_simulation,
 )
 from modules.consensus_web import (
+    _result_payload,
     build_consensus_web_state,
     consensus_web_url,
     create_consensus_web_app,
@@ -54,14 +56,14 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         storage.DATA_DIR = Path(self.temp_dir.name)
         storage.DATABASE_FILE = storage.DATA_DIR / "consensus-web-test.db"
         storage.init_db()
-        storage.tvrs_create_bill(
+        self.bill = storage.tvrs_create_bill(
             guild_id=77,
             channel_id=88,
             author_id=5,
             author_display="Автор",
             title="Следующий проект",
             summary="Проект находится в очереди для следующего рассмотрения.",
-            materials=None,
+            materials="https://example.com/material",
         )
         self.session = LiveConsensusSession(
             session_key="web-test",
@@ -77,11 +79,17 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 4: _participant(4),
             },
             current_bill={
-                "id": 20,
-                "bill_number": 20,
+                "id": self.bill.id,
+                "bill_number": self.bill.bill_number,
                 "title": "Текущий проект",
                 "channel_id": 88,
                 "message_id": 99,
+                "author_id": 5,
+                "author_display": "Автор проекта",
+                "summary": "Полный публичный текст текущего законопроекта.",
+                "materials": "https://example.com/source",
+                "decision_category": "ordinary",
+                "created_at": "2026-07-28T12:00:00+00:00",
             },
             stage="voting",
         )
@@ -129,6 +137,81 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("'vote':", rendered)
         self.assertNotIn("'yes'", rendered)
         self.assertNotIn("'no'", rendered)
+
+    async def test_state_exposes_public_bill_details_to_observers(self) -> None:
+        state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
+
+        bill = state["session"]["current_bill"]
+        self.assertEqual(bill["author"]["name"], "Автор проекта")
+        self.assertEqual(
+            bill["summary"],
+            "Полный публичный текст текущего законопроекта.",
+        )
+        self.assertEqual(bill["materials"], "https://example.com/source")
+        self.assertEqual(bill["decision_category"], "ordinary")
+        self.assertIsNone(state["session"]["current_result"])
+
+    async def test_fixed_result_exposes_exact_percentages_and_restores_bill_text(self) -> None:
+        self.session.current_bill = None
+        self.session.stage = "after_result"
+        self.session.results.append(
+            LiveResult(
+                bill_id=self.bill.id,
+                bill_number=self.bill.bill_number,
+                title=self.bill.title,
+                status="accepted",
+                internal_percent=66.7,
+                overall_percent=75.0,
+                internal_active=True,
+                votes={1: "yes", 2: "yes", 3: "no", 4: "yes"},
+                source_channel_id=88,
+                source_message_id=99,
+                required_percent=50.0,
+                opposed_percent=25.0,
+                block_votes={
+                    "first": "yes",
+                    "second": "yes",
+                    "third": "no",
+                    "consensus": "yes",
+                },
+            )
+        )
+
+        state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
+
+        result = state["session"]["current_result"]
+        self.assertEqual(result["overall_percent"], 75.0)
+        self.assertEqual(result["internal_percent"], 66.7)
+        self.assertEqual(result["opposed_percent"], 25.0)
+        self.assertEqual(result["required_percent"], 50.0)
+        self.assertEqual(state["session"]["blocks"]["third"], "no")
+        self.assertEqual(
+            state["session"]["current_bill"]["summary"],
+            self.bill.summary,
+        )
+        self.assertEqual(
+            state["session"]["current_bill"]["author"]["name"],
+            "Автор",
+        )
+
+    def test_persisted_result_payload_reads_database_column_names(self) -> None:
+        payload = _result_payload(
+            {
+                "bill_id": 4,
+                "bill_number": 12,
+                "bill_title": "Название из протокола",
+                "status": "accepted",
+                "overall_percent": 75,
+                "block_votes_json": (
+                    '{"first":"yes","second":"yes",'
+                    '"third":"no","consensus":"yes"}'
+                ),
+            },
+            77,
+        )
+
+        self.assertEqual(payload["title"], "Название из протокола")
+        self.assertEqual(payload["block_votes"]["third"], "no")
 
     async def test_personal_leader_state_exposes_only_stage_capabilities(self) -> None:
         state = await build_consensus_web_state(  # type: ignore[arg-type]
@@ -211,7 +294,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         try:
             index = await client.get("/")
             self.assertEqual(index.status, 200)
-            self.assertIn("T·Consensus", await index.text())
+            index_text = await index.text()
+            self.assertIn("T·Consensus", index_text)
+            self.assertIn('id="observer-screen"', index_text)
+            self.assertIn('id="bill-dialog"', index_text)
+            self.assertIn('id="bill-library-dialog"', index_text)
 
             denied = await client.get("/api/state")
             self.assertEqual(denied.status, 401)
@@ -225,6 +312,51 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
+        finally:
+            await client.close()
+
+    async def test_bill_catalog_and_detail_expose_only_guild_public_record(self) -> None:
+        foreign_bill = storage.tvrs_create_bill(
+            guild_id=78,
+            channel_id=90,
+            author_id=8,
+            author_display="Другой сервер",
+            title="Чужой проект",
+            summary="Этот текст не должен быть доступен серверу 77.",
+            materials=None,
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        headers = {"Authorization": "Bearer test-access-token-123456"}
+        try:
+            with patch(
+                "modules.consensus_web._runtime_token",
+                "test-access-token-123456",
+            ):
+                catalog = await client.get("/api/bills", headers=headers)
+                detail = await client.get(
+                    f"/api/bills/{self.bill.id}",
+                    headers=headers,
+                )
+                foreign = await client.get(
+                    f"/api/bills/{foreign_bill.id}",
+                    headers=headers,
+                )
+
+            self.assertEqual(catalog.status, 200)
+            items = (await catalog.json())["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["author"]["name"], "Автор")
+            self.assertEqual(detail.status, 200)
+            payload = await detail.json()
+            self.assertEqual(payload["bill"]["summary"], self.bill.summary)
+            self.assertEqual(
+                payload["bill"]["materials"],
+                "https://example.com/material",
+            )
+            self.assertIsNone(payload["result"])
+            self.assertEqual(foreign.status, 404)
         finally:
             await client.close()
 
@@ -346,6 +478,43 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await response.json()
             self.assertEqual(payload["mode"], "simulation")
             self.assertEqual(payload["session"]["stage"], "registration")
+        finally:
+            await client.close()
+
+    async def test_simulation_bill_library_has_openable_full_text(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Учебный ведущий",
+        )
+        register_consensus_simulation(simulation)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        headers = {"Authorization": "Bearer test-access-token-123456"}
+        try:
+            with patch(
+                "modules.consensus_web._runtime_token",
+                "test-access-token-123456",
+            ):
+                catalog = await client.get(
+                    "/api/bills?mode=simulation",
+                    headers=headers,
+                )
+                detail = await client.get(
+                    f"/api/bills/{900_000 + simulation.bill_number}?mode=simulation",
+                    headers=headers,
+                )
+
+            self.assertEqual(catalog.status, 200)
+            items = (await catalog.json())["items"]
+            self.assertTrue(items)
+            self.assertTrue(all(item["id"] > 900_000 for item in items))
+            self.assertEqual(detail.status, 200)
+            self.assertIn(
+                "Тестовый проект",
+                (await detail.json())["bill"]["summary"],
+            )
         finally:
             await client.close()
 

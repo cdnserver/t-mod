@@ -151,6 +151,106 @@ def consensus_web_entry_url(
     )
 
 
+def _discord_message_url(
+    guild_id: int,
+    channel_id: Any,
+    message_id: Any,
+) -> str | None:
+    selected_channel_id = int(channel_id or 0)
+    selected_message_id = int(message_id or 0)
+    if selected_channel_id <= 0 or selected_message_id <= 0:
+        return None
+    return (
+        f"https://discord.com/channels/{int(guild_id)}/"
+        f"{selected_channel_id}/{selected_message_id}"
+    )
+
+
+def _bill_payload(
+    bill: dict[str, Any],
+    guild_id: int,
+    *,
+    fallback_result: Any | None = None,
+) -> dict[str, Any] | None:
+    if not bill and fallback_result is None:
+        return None
+
+    def result_value(key: str, default: Any = None) -> Any:
+        if fallback_result is None:
+            return default
+        if isinstance(fallback_result, dict):
+            return fallback_result.get(key, default)
+        return getattr(fallback_result, key, default)
+
+    author_id = int(
+        bill.get("author_id")
+        or bill.get("bill_author_id")
+        or 0
+    )
+    author_display = str(
+        bill.get("author_display")
+        or bill.get("bill_author_display")
+        or ""
+    ).strip()
+    return {
+        "id": int(bill.get("id") or result_value("bill_id") or 0),
+        "bill_number": int(
+            bill.get("bill_number")
+            or result_value("bill_number")
+            or 0
+        ),
+        "title": str(
+            bill.get("title")
+            or bill.get("bill_title")
+            or result_value("title")
+            or ""
+        ),
+        "summary": str(
+            bill.get("summary")
+            or bill.get("bill_summary")
+            or ""
+        ).strip(),
+        "materials": str(
+            bill.get("materials")
+            or bill.get("bill_materials")
+            or ""
+        ).strip(),
+        "author": {
+            "id": author_id or None,
+            "name": author_display or (
+                f"Участник {author_id}" if author_id else "Автор не указан"
+            ),
+        },
+        "decision_category": str(
+            bill.get("decision_category")
+            or bill.get("bill_decision_category")
+            or result_value("decision_category")
+            or "ordinary"
+        ),
+        "created_at": (
+            str(
+                bill.get("created_at")
+                or bill.get("bill_created_at")
+                or ""
+            )
+            or None
+        ),
+        "source_url": (
+            _discord_message_url(
+                guild_id,
+                bill.get("channel_id"),
+                bill.get("message_id"),
+            )
+            or _discord_message_url(
+                guild_id,
+                result_value("source_channel_id"),
+                result_value("source_message_id"),
+            )
+            or bill.get("source_url")
+        ),
+    }
+
+
 def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
     if isinstance(result, dict):
         get = result.get
@@ -159,29 +259,128 @@ def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
             return getattr(result, key, default)
     source_channel_id = int(get("source_channel_id") or 0)
     source_message_id = int(get("source_message_id") or 0)
-    block_votes = get("block_votes") or {}
+    block_votes = get("block_votes") or get("block_votes_json") or {}
     if isinstance(block_votes, str):
         try:
             block_votes = json.loads(block_votes)
         except (TypeError, ValueError, json.JSONDecodeError):
             block_votes = {}
     return {
+        "bill_id": int(get("bill_id") or 0),
         "bill_number": int(get("bill_number") or 0),
-        "title": str(get("title") or ""),
+        "title": str(get("title") or get("bill_title") or ""),
         "status": str(get("status") or ""),
         "internal_percent": float(get("internal_percent") or 0.0),
         "overall_percent": float(get("overall_percent") or 0.0),
         "opposed_percent": float(get("opposed_percent") or 0.0),
+        "required_percent": float(get("required_percent") or 0.0),
+        "decision_category": str(get("decision_category") or "ordinary"),
+        "resolution_method": str(get("resolution_method") or "vote"),
+        "resolution_note": str(get("resolution_note") or "").strip() or None,
         "block_votes": {
             str(key): str(value)
             for key, value in dict(block_votes).items()
         },
-        "source_url": (
-            f"https://discord.com/channels/{guild_id}/"
-            f"{source_channel_id}/{source_message_id}"
-            if source_channel_id and source_message_id
+        "source_url": _discord_message_url(
+            guild_id,
+            source_channel_id,
+            source_message_id,
+        ),
+        "bill": _bill_payload(
+            {
+                "id": get("bill_id"),
+                "bill_number": get("bill_number"),
+                "bill_title": get("bill_title") or get("title"),
+                "bill_author_id": get("bill_author_id"),
+                "bill_author_display": get("bill_author_display"),
+                "bill_summary": get("bill_summary"),
+                "bill_materials": get("bill_materials"),
+                "bill_decision_category": get("bill_decision_category"),
+                "bill_created_at": get("bill_created_at"),
+                "source_url": _discord_message_url(
+                    guild_id,
+                    source_channel_id,
+                    source_message_id,
+                ),
+            },
+            guild_id,
+            fallback_result=result,
+        ),
+    }
+
+
+def _catalog_bill_payload(
+    row: dict[str, Any],
+    guild_id: int,
+) -> dict[str, Any]:
+    author_id = int(row.get("author_id") or 0)
+    result_status = str(row.get("result_status") or "").strip()
+    return {
+        "id": int(row.get("id") or 0),
+        "bill_number": int(row.get("bill_number") or 0),
+        "title": str(row.get("title") or ""),
+        "author": {
+            "id": author_id or None,
+            "name": str(row.get("author_display") or "").strip()
+            or (f"Участник {author_id}" if author_id else "Автор не указан"),
+        },
+        "created_at": str(row.get("created_at") or "") or None,
+        "decision_category": str(
+            row.get("decision_category") or "ordinary"
+        ),
+        "status": str(row.get("status") or ""),
+        "source_url": _discord_message_url(
+            guild_id,
+            row.get("channel_id"),
+            row.get("message_id"),
+        ),
+        "result": (
+            {
+                "status": result_status,
+                "internal_percent": float(
+                    row.get("result_internal_percent") or 0.0
+                ),
+                "overall_percent": float(
+                    row.get("result_overall_percent") or 0.0
+                ),
+                "opposed_percent": float(
+                    row.get("result_opposed_percent") or 0.0
+                ),
+                "required_percent": float(
+                    row.get("result_required_percent") or 0.0
+                ),
+                "resolution_method": str(
+                    row.get("result_resolution_method") or "vote"
+                ),
+                "created_at": (
+                    str(row.get("result_created_at") or "") or None
+                ),
+            }
+            if result_status
             else None
         ),
+    }
+
+
+def _simulation_bill_payload(
+    simulation: Any,
+    bill_number: int,
+) -> dict[str, Any]:
+    clean_number = max(1, int(bill_number))
+    return {
+        "id": 900_000 + clean_number,
+        "bill_number": clean_number,
+        "title": f"Учебный законопроект №{clean_number}",
+        "summary": (
+            "Тестовый проект для проверки регистрации, голосования, "
+            "дискуссии, паузы и фиксации результата."
+        ),
+        "materials": "Учебные материалы отсутствуют.",
+        "author_id": int(simulation.leader_id),
+        "author_display": "Симулятор T-Mod",
+        "decision_category": "ordinary",
+        "created_at": None,
+        "status": "queued",
     }
 
 
@@ -190,6 +389,7 @@ def _session_payload(
     guild_id: int,
     *,
     simulation: bool,
+    current_bill_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     participants = sorted(
         session.participants.values(),
@@ -199,7 +399,7 @@ def _session_payload(
         ),
     )
     confirmed = session.confirmed_participants()
-    current_bill = dict(session.current_bill or {})
+    current_bill = dict(current_bill_details or session.current_bill or {})
     reveal_blocks = (
         session.stage in {"after_result", "finished"}
         and bool(session.results)
@@ -243,38 +443,15 @@ def _session_payload(
             "id": int(session.leader_id),
             "name": str(session.leader_display),
         },
-        "current_bill": (
-            {
-                "id": int(current_bill.get("id") or 0),
-                "bill_number": int(current_bill.get("bill_number") or 0),
-                "title": str(current_bill.get("title") or ""),
-                "source_url": (
-                    f"https://discord.com/channels/{guild_id}/"
-                    f"{int(current_bill.get('channel_id') or 0)}/"
-                    f"{int(current_bill.get('message_id') or 0)}"
-                    if current_bill.get("channel_id")
-                    and current_bill.get("message_id")
-                    else None
-                ),
-            }
-            if current_bill
-            else (
-                {
-                    "id": int(latest_result.bill_id),
-                    "bill_number": int(latest_result.bill_number),
-                    "title": str(latest_result.title),
-                    "source_url": (
-                        f"https://discord.com/channels/{guild_id}/"
-                        f"{int(latest_result.source_channel_id or 0)}/"
-                        f"{int(latest_result.source_message_id or 0)}"
-                        if latest_result.source_channel_id
-                        and latest_result.source_message_id
-                        else None
-                    ),
-                }
-                if latest_result is not None
-                else None
-            )
+        "current_bill": _bill_payload(
+            current_bill,
+            guild_id,
+            fallback_result=latest_result,
+        ),
+        "current_result": (
+            _result_payload(latest_result, guild_id)
+            if latest_result is not None
+            else None
         ),
         "timer_deadline": (
             session.timer_deadline.isoformat()
@@ -309,6 +486,16 @@ def _session_payload(
             ),
             "expected": len(confirmed),
             "directions_hidden": session.stage in {"voting", "finalizing"},
+        },
+        "rules": {
+            "acceptance_percent": float(
+                getattr(session.rules, "acceptance_percent", 50.0)
+                or 50.0
+            ),
+            "quorum_percent": float(
+                getattr(session.rules, "quorum_percent", 50.0)
+                or 50.0
+            ),
         },
         "blocks": blocks,
         "participants": [
@@ -392,9 +579,19 @@ async def build_consensus_web_state(
         "session": None,
         "queue": [
             {
+                "id": int(row.get("id") or 0),
                 "bill_number": int(row.get("bill_number") or 0),
                 "title": str(row.get("title") or ""),
                 "status": str(row.get("status") or ""),
+                "author": {
+                    "id": int(row.get("author_id") or 0) or None,
+                    "name": str(row.get("author_display") or "").strip()
+                    or "Автор не указан",
+                },
+                "created_at": str(row.get("created_at") or "") or None,
+                "decision_category": str(
+                    row.get("decision_category") or "ordinary"
+                ),
                 "source_url": (
                     f"https://discord.com/channels/{guild_id}/"
                     f"{int(row.get('channel_id') or 0)}/"
@@ -436,12 +633,65 @@ async def build_consensus_web_state(
     if session is None:
         return state
 
+    current_bill_details = dict(session.current_bill or {})
+    if not current_bill_details and session.results:
+        latest_bill_id = int(session.results[-1].bill_id or 0)
+        if selected_simulation:
+            current_bill_details = {
+                "id": latest_bill_id,
+                "bill_number": int(session.results[-1].bill_number),
+                "title": str(session.results[-1].title),
+                "summary": (
+                    "Тестовый проект для проверки регистрации, голосования, "
+                    "дискуссии, паузы и фиксации результата."
+                ),
+                "materials": "Учебные материалы отсутствуют.",
+                "author_id": int(session.leader_id),
+                "author_display": "Симулятор T-Mod",
+                "decision_category": "ordinary",
+            }
+        elif latest_bill_id > 0:
+            current_bill_details = dict(
+                await asyncio.to_thread(
+                    tvrs_storage.tvrs_get_bill_dict_by_id,
+                    latest_bill_id,
+                )
+                or {}
+            )
+
     state["active"] = not session.finished
-    state["session"] = _session_payload(
+    session_payload = _session_payload(
         session,
         guild_id,
         simulation=selected_simulation,
+        current_bill_details=current_bill_details,
     )
+    if not selected_simulation:
+        recent_bill_rows = {
+            int(row.get("bill_id") or 0): row
+            for row in recent_rows
+            if isinstance(row, dict) and int(row.get("bill_id") or 0) > 0
+        }
+        for result in session_payload["results"]:
+            bill_row = recent_bill_rows.get(int(result.get("bill_id") or 0))
+            if bill_row is not None:
+                result["bill"] = _bill_payload(
+                    bill_row,
+                    guild_id,
+                    fallback_result=bill_row,
+                )
+        current_result = session_payload.get("current_result")
+        if isinstance(current_result, dict):
+            bill_row = recent_bill_rows.get(
+                int(current_result.get("bill_id") or 0)
+            )
+            if bill_row is not None:
+                current_result["bill"] = _bill_payload(
+                    bill_row,
+                    guild_id,
+                    fallback_result=bill_row,
+                )
+    state["session"] = session_payload
     return state
 
 
@@ -598,6 +848,136 @@ def create_consensus_web_app(
             ),
         )
 
+    async def bills(request: web.Request) -> web.Response:
+        await authenticated_request(request)
+        requested_mode = (
+            "simulation"
+            if request.query.get("mode") == "simulation"
+            else "live"
+        )
+        if requested_mode == "simulation":
+            simulation = get_consensus_simulation(int(guild_id))
+            if simulation is None:
+                return web.json_response(
+                    {"mode": "simulation", "items": []},
+                )
+            numbers = {
+                int(simulation.bill_number),
+                *range(
+                    int(simulation.bill_number) + 1,
+                    int(simulation.bill_number) + 4,
+                ),
+            }
+            numbers.update(
+                int(result.bill_number)
+                for result in simulation.session.results
+            )
+            results = {
+                int(result.bill_number): _result_payload(
+                    result,
+                    int(guild_id),
+                )
+                for result in simulation.session.results
+            }
+            items = []
+            for number in sorted(numbers, reverse=True):
+                bill = _simulation_bill_payload(simulation, number)
+                catalog_item = _catalog_bill_payload(
+                    bill,
+                    int(guild_id),
+                )
+                catalog_item["result"] = results.get(number)
+                items.append(catalog_item)
+            return web.json_response(
+                {"mode": "simulation", "items": items},
+            )
+
+        rows = await asyncio.to_thread(
+            tvrs_storage.tvrs_public_bill_catalog,
+            int(guild_id),
+            200,
+        )
+        return web.json_response(
+            {
+                "mode": "live",
+                "items": [
+                    _catalog_bill_payload(row, int(guild_id))
+                    for row in rows
+                ],
+            },
+        )
+
+    async def bill_detail(request: web.Request) -> web.Response:
+        await authenticated_request(request)
+        try:
+            bill_id = int(request.match_info["bill_id"])
+        except (TypeError, ValueError):
+            raise web.HTTPNotFound()
+        if bill_id <= 0:
+            raise web.HTTPNotFound()
+
+        requested_mode = (
+            "simulation"
+            if request.query.get("mode") == "simulation"
+            else "live"
+        )
+        if requested_mode == "simulation":
+            simulation = get_consensus_simulation(int(guild_id))
+            bill_number = bill_id - 900_000
+            if (
+                simulation is None
+                or bill_number <= 0
+                or bill_number > int(simulation.bill_number) + 3
+            ):
+                raise web.HTTPNotFound()
+            raw_bill = _simulation_bill_payload(
+                simulation,
+                bill_number,
+            )
+            result = next(
+                (
+                    item
+                    for item in simulation.session.results
+                    if int(item.bill_number) == bill_number
+                ),
+                None,
+            )
+            return web.json_response(
+                {
+                    "bill": _bill_payload(raw_bill, int(guild_id)),
+                    "result": (
+                        _result_payload(result, int(guild_id))
+                        if result is not None
+                        else None
+                    ),
+                },
+            )
+
+        raw_bill = await asyncio.to_thread(
+            tvrs_storage.tvrs_get_bill_dict_by_id,
+            bill_id,
+        )
+        if (
+            raw_bill is None
+            or int(raw_bill.get("guild_id") or 0) != int(guild_id)
+        ):
+            raise web.HTTPNotFound()
+        result = await asyncio.to_thread(
+            tvrs_storage.tvrs_latest_live_result_for_bill,
+            int(guild_id),
+            bill_id,
+        )
+        return web.json_response(
+            {
+                "bill": _bill_payload(raw_bill, int(guild_id)),
+                "result": (
+                    _result_payload(result, int(guild_id))
+                    if result is not None
+                    else None
+                ),
+            },
+        )
+
     async def command(request: web.Request) -> web.Response:
         principal, legacy_read_only = await authenticated_request(request)
         if legacy_read_only or principal is None:
@@ -736,6 +1116,8 @@ def create_consensus_web_app(
     app.router.add_get("/auth/logout", logout)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/state", state)
+    app.router.add_get("/api/bills", bills)
+    app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_post("/api/command", command)
     return app
 

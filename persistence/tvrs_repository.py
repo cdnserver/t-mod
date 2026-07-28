@@ -1829,8 +1829,89 @@ def tvrs_update_bill_field(
 
 def tvrs_recent_live_results(guild_id: int, limit: int = 10) -> list[dict[str, Any]]:
     with _db_lock, connect() as con:
-        rows = con.execute("SELECT * FROM tvrs_live_results WHERE guild_id = ? ORDER BY id DESC LIMIT ?", (guild_id, limit)).fetchall()
+        rows = con.execute(
+            """
+            SELECT
+                result.*,
+                bill.author_id AS bill_author_id,
+                bill.author_display AS bill_author_display,
+                bill.summary AS bill_summary,
+                bill.materials AS bill_materials,
+                bill.decision_category AS bill_decision_category,
+                bill.created_at AS bill_created_at
+            FROM tvrs_live_results AS result
+            LEFT JOIN tvrs_bills AS bill ON bill.id = result.bill_id
+            WHERE result.guild_id = ?
+            ORDER BY result.id DESC
+            LIMIT ?
+            """,
+            (guild_id, limit),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
-__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results']
+def tvrs_public_bill_catalog(
+    guild_id: int,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Return public bill metadata with the latest fixed result, if any."""
+    clean_limit = max(1, min(500, int(limit)))
+    with _db_lock, connect() as con:
+        rows = con.execute(
+            """
+            SELECT
+                bill.id,
+                bill.guild_id,
+                bill.bill_number,
+                bill.channel_id,
+                bill.message_id,
+                bill.author_id,
+                bill.author_display,
+                bill.title,
+                bill.decision_category,
+                bill.status,
+                bill.created_at,
+                result.status AS result_status,
+                result.internal_percent AS result_internal_percent,
+                result.overall_percent AS result_overall_percent,
+                result.opposed_percent AS result_opposed_percent,
+                result.required_percent AS result_required_percent,
+                result.resolution_method AS result_resolution_method,
+                result.created_at AS result_created_at
+            FROM tvrs_bills AS bill
+            LEFT JOIN tvrs_live_results AS result
+                ON result.id = (
+                    SELECT latest.id
+                    FROM tvrs_live_results AS latest
+                    WHERE latest.guild_id = bill.guild_id
+                      AND latest.bill_id = bill.id
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                )
+            WHERE bill.guild_id = ?
+            ORDER BY bill.bill_number DESC
+            LIMIT ?
+            """,
+            (int(guild_id), clean_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def tvrs_latest_live_result_for_bill(
+    guild_id: int,
+    bill_id: int,
+) -> dict[str, Any] | None:
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT * FROM tvrs_live_results
+            WHERE guild_id = ? AND bill_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(guild_id), int(bill_id)),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results', 'tvrs_public_bill_catalog', 'tvrs_latest_live_result_for_bill']

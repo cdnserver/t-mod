@@ -16,6 +16,17 @@ const BLOCK_STATES = {
   hidden: ["скрыто", "hidden"],
   pending: ["ожидание", "pending"],
 };
+const RESULT_LABELS = {
+  accepted: "принят",
+  rejected: "отклонён",
+  vetoed: "вето",
+  oral: "устное решение",
+};
+const CATEGORY_LABELS = {
+  ordinary: "Обычное",
+  significant: "Значимое",
+  supreme: "Верховное",
+};
 
 let token = sessionStorage.getItem("t-consensus-token") || "";
 let selectedMode = new URLSearchParams(window.location.search).get("mode")
@@ -26,6 +37,12 @@ let pollTimer = null;
 let fetching = false;
 let commanding = false;
 let messageTimer = null;
+let observerTab = sessionStorage.getItem("t-consensus-observer-tab") || "participants";
+let dialogBill = null;
+let dialogResult = null;
+let libraryItems = [];
+let libraryFilter = "all";
+let libraryLoading = false;
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -42,6 +59,30 @@ function clearNode(node) {
 
 function formatNumber(value) {
   return String(Number(value || 0)).padStart(3, "0");
+}
+
+function formatPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  return `${numeric.toLocaleString("ru-RU", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })}%`;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function categoryLabel(value) {
+  return CATEGORY_LABELS[String(value || "ordinary")] || "Обычное";
 }
 
 function formatTimer(deadline) {
@@ -125,25 +166,433 @@ function renderList(containerId, items, kind) {
     const number = document.createElement("span");
     number.className = "list-number";
     number.textContent = `№${formatNumber(item.bill_number)}`;
-    const title = item.source_url
-      ? document.createElement("a")
-      : document.createElement("span");
-    title.className = "list-title";
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "list-title list-title-button";
     title.textContent = item.title || "Без названия";
-    if (item.source_url) {
-      title.href = item.source_url;
-      title.target = "_blank";
-      title.rel = "noreferrer";
-    }
+    title.addEventListener("click", () => openBillRecord(item));
     const meta = document.createElement("span");
     const status = String(item.status || "");
     meta.className = `list-meta ${status}`;
     meta.textContent = kind === "queue"
       ? "в очереди"
-      : ({ accepted: "принят", rejected: "отклонён", vetoed: "вето" }[status] || status);
+      : `${RESULT_LABELS[status] || status || "решение"} · ${formatPercent(item.overall_percent)}`;
     row.append(number, title, meta);
     container.append(row);
   });
+}
+
+function currentResult(session, bill) {
+  if (!session || !bill) return null;
+  if (
+    session.current_result
+    && Number(session.current_result.bill_number) === Number(bill.bill_number)
+  ) {
+    return session.current_result;
+  }
+  return [...(session.results || [])]
+    .reverse()
+    .find((item) => Number(item.bill_number) === Number(bill.bill_number)) || null;
+}
+
+function renderObserverBlocks(blocks = {}) {
+  document.querySelectorAll("#observer-blocks [data-block]").forEach((node) => {
+    const stateName = blocks[node.dataset.block] || "pending";
+    const [label, className] = BLOCK_STATES[stateName] || BLOCK_STATES.pending;
+    node.className = className;
+    node.querySelector("em").textContent = label;
+  });
+}
+
+function observerFeedRow(title, meta, options = {}) {
+  const node = options.button
+    ? document.createElement("button")
+    : options.href
+      ? document.createElement("a")
+      : document.createElement("div");
+  node.className = "observer-feed-row";
+  if (options.button) node.type = "button";
+  if (options.href) {
+    node.href = options.href;
+    node.target = "_blank";
+    node.rel = "noreferrer";
+  }
+  const heading = document.createElement("strong");
+  const detail = document.createElement("span");
+  heading.textContent = title;
+  detail.textContent = meta;
+  node.append(heading, detail);
+  return node;
+}
+
+function renderObserverFeed(data) {
+  const feed = byId("observer-feed");
+  clearNode(feed);
+  const session = data.session;
+  const participants = session?.participants || [];
+  const results = session?.results?.length
+    ? session.results
+    : data.recent_results || [];
+  text("observer-participants-count", participants.length);
+  text("observer-tab-queue-count", (data.queue || []).length);
+  text("observer-results-count", results.length);
+
+  if (!["participants", "queue", "results"].includes(observerTab)) {
+    observerTab = "participants";
+  }
+  document.querySelectorAll("#observer-tabs [data-tab]").forEach((button) => {
+    const active = button.dataset.tab === observerTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+
+  let items = [];
+  if (observerTab === "participants") {
+    items = participants;
+    participants.forEach((participant) => {
+      const meta = participant.confirmed
+        ? `${participant.kind} · ${participant.voted ? "голос принят" : "ожидается голос"}`
+        : `${participant.kind} · ожидается подтверждение`;
+      const row = observerFeedRow(participant.name, meta);
+      row.classList.add(participant.confirmed ? "ready" : "waiting");
+      feed.append(row);
+    });
+  } else if (observerTab === "queue") {
+    items = data.queue || [];
+    items.forEach((item) => {
+      const row = observerFeedRow(
+        `№${formatNumber(item.bill_number)} · ${item.title || "Без названия"}`,
+        "готов к рассмотрению · открыть текст",
+        { button: true },
+      );
+      row.addEventListener("click", () => openBillRecord(item));
+      feed.append(row);
+    });
+  } else {
+    items = results;
+    results.forEach((item) => {
+      const row = observerFeedRow(
+        `№${formatNumber(item.bill_number)} · ${item.title || "Без названия"}`,
+        `${RESULT_LABELS[item.status] || item.status || "решение"} · общий ${formatPercent(item.overall_percent)}`,
+        { button: Boolean(item.bill || item.bill_id) },
+      );
+      row.classList.add(item.status || "waiting");
+      if (item.bill || item.bill_id) {
+        row.addEventListener(
+          "click",
+          () => openBillRecord(item),
+        );
+      }
+      feed.append(row);
+    });
+  }
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "observer-feed-empty";
+    empty.textContent = observerTab === "participants"
+      ? "Состав ещё не зарегистрирован"
+      : observerTab === "queue"
+        ? "Очередь законопроектов пуста"
+        : "Зафиксированных решений пока нет";
+    feed.append(empty);
+  }
+}
+
+function renderObserver(data) {
+  const session = data.session;
+  const bill = session?.current_bill || null;
+  const result = currentResult(session, bill);
+  const active = Boolean(data.active && session);
+  const resultStatus = byId("observer-result-status");
+
+  text(
+    "observer-eyebrow",
+    session
+      ? `${selectedMode === "simulation" ? "УЧЕБНЫЙ" : "ПЛЕНАРНЫЙ"} КОНСЕНСУС · ${session.plenary_number}`
+      : "ТЕКУЩЕЕ ЗАСЕДАНИЕ",
+  );
+  text(
+    "observer-session-title",
+    session
+      ? active ? "Заседание в процессе" : "Заседание завершено"
+      : "Консенсус не проводится",
+  );
+  text(
+    "observer-session-detail",
+    session
+      ? `Ведущий: ${session.leader.name} · ${session.stage_label.toLowerCase()}`
+      : "Экран ожидает начало следующего пленарного заседания.",
+  );
+  text("observer-stage", session?.stage_label || "Ожидание");
+  byId("observer-stage").className = `stage-badge${active ? "" : " idle"}`;
+
+  text(
+    "observer-bill-number",
+    bill ? `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}` : "ПРОЕКТ НЕ ВЫБРАН",
+  );
+  text("observer-bill-title", bill?.title || "Между законопроектами");
+  text("observer-bill-author", bill?.author?.name || "—");
+  text("observer-bill-date", formatDate(bill?.created_at));
+  text("observer-bill-category", categoryLabel(bill?.decision_category));
+  text(
+    "observer-bill-summary",
+    bill?.summary || "Полный текст появится после выбора законопроекта.",
+  );
+  const openBill = byId("open-bill-dialog");
+  openBill.disabled = !bill;
+  dialogBill = bill;
+  dialogResult = result;
+  const sourceLink = byId("observer-bill-link");
+  sourceLink.hidden = !bill?.source_url;
+  if (bill?.source_url) sourceLink.href = bill.source_url;
+
+  const requiredPercent = Number(
+    result?.required_percent
+    || session?.rules?.acceptance_percent
+    || 50,
+  );
+  text("observer-required-percent", formatPercent(requiredPercent));
+  byId("observer-threshold-mark").style.left = `${Math.max(0, Math.min(100, requiredPercent))}%`;
+
+  if (result) {
+    const status = String(result.status || "");
+    resultStatus.className = `result-status ${status}`;
+    resultStatus.textContent = RESULT_LABELS[status] || status || "зафиксирован";
+    text("observer-overall-percent", formatPercent(result.overall_percent));
+    text(
+      "observer-result-detail",
+      `${RESULT_LABELS[status] || "Результат зафиксирован"} · точный итог голосования`,
+    );
+    text("observer-internal-percent", formatPercent(result.internal_percent));
+    text("observer-opposed-percent", formatPercent(result.opposed_percent));
+    byId("observer-result-bar").style.width = `${Math.max(0, Math.min(100, Number(result.overall_percent) || 0))}%`;
+  } else {
+    const status = session?.stage === "voting" || session?.stage === "finalizing"
+      ? "голосование"
+      : session?.stage_label?.toLowerCase() || "ожидание";
+    resultStatus.className = "result-status waiting";
+    resultStatus.textContent = status;
+    text("observer-overall-percent", "скрыт");
+    text(
+      "observer-result-detail",
+      "Точный процент появится после фиксации — текущие направления не раскрываются",
+    );
+    text("observer-internal-percent", "—");
+    text("observer-opposed-percent", "—");
+    byId("observer-result-bar").style.width = "0%";
+  }
+
+  text(
+    "observer-quorum",
+    session ? `${session.quorum.confirmed}/${session.quorum.invited}` : "—",
+  );
+  text(
+    "observer-quorum-detail",
+    session
+      ? `${formatPercent(session.quorum.percent)} · ${session.quorum.ready ? "собран" : "ожидание"}`
+      : "нет сессии",
+  );
+  text(
+    "observer-votes",
+    session ? `${session.voting.received}/${session.voting.expected}` : "—",
+  );
+  text("observer-timer", formatTimer(session?.timer_deadline));
+  text("observer-queue-count", (data.queue || []).length);
+  renderObserverBlocks(session?.blocks || {});
+  renderObserverFeed(data);
+}
+
+function showBillDialog(bill, result = null) {
+  if (!bill) return;
+  dialogBill = bill;
+  dialogResult = result;
+  text("bill-dialog-number", `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
+  text("bill-dialog-title", bill.title || "Без названия");
+  text("bill-dialog-author", bill.author?.name || "Автор не указан");
+  text("bill-dialog-date", formatDate(bill.created_at));
+  text("bill-dialog-category", categoryLabel(bill.decision_category));
+  text("bill-dialog-summary", bill.summary || "Текст предложения не сохранён.");
+  const materials = String(bill.materials || "").trim();
+  byId("bill-dialog-materials-wrap").hidden = !materials;
+  text("bill-dialog-materials", materials || "Материалы не приложены.");
+  const link = byId("bill-dialog-link");
+  link.hidden = !bill.source_url;
+  if (bill.source_url) link.href = bill.source_url;
+  const resultPanel = byId("bill-dialog-result");
+  resultPanel.hidden = !result;
+  if (result) {
+    const status = String(result.status || "");
+    text(
+      "bill-dialog-result-status",
+      RESULT_LABELS[status] || status || "зафиксировано",
+    );
+    byId("bill-dialog-result-status").className = status;
+    text("bill-dialog-overall", formatPercent(result.overall_percent));
+    text("bill-dialog-internal", formatPercent(result.internal_percent));
+    text("bill-dialog-opposed", formatPercent(result.opposed_percent));
+    text("bill-dialog-required", formatPercent(result.required_percent));
+  }
+  const dialog = byId("bill-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeBillDialog() {
+  const dialog = byId("bill-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+async function openBillRecord(item) {
+  const knownBill = item?.summary !== undefined
+    ? item
+    : item?.bill?.summary !== undefined
+      ? item.bill
+      : null;
+  const knownResult = item?.result || (
+    item?.overall_percent !== undefined ? item : null
+  );
+  if (knownBill && String(knownBill.summary || "").trim()) {
+    showBillDialog(knownBill, knownResult);
+    return;
+  }
+  const billId = Number(item?.id || item?.bill_id || item?.bill?.id || 0);
+  if (!Number.isInteger(billId) || billId <= 0) {
+    showCommandMessage("Полный текст этого проекта ещё не сохранён.", "error");
+    return;
+  }
+  setConnection("", "загрузка проекта");
+  try {
+    const response = await fetch(
+      `/api/bills/${billId}?mode=${encodeURIComponent(selectedMode)}`,
+      {
+        headers: authHeaders(),
+        credentials: "same-origin",
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    showBillDialog(payload.bill, payload.result);
+    setConnection("online", "обновляется");
+  } catch (error) {
+    showCommandMessage(
+      "Не удалось открыть законопроект. Обновите панель и повторите.",
+      "error",
+    );
+    setConnection("offline", "ошибка загрузки");
+  }
+}
+
+function catalogStatus(item) {
+  if (item.result) {
+    const status = String(item.result.status || "");
+    return `${RESULT_LABELS[status] || status || "решение"} · ${formatPercent(item.result.overall_percent)}`;
+  }
+  return {
+    draft: "готовится",
+    queued: "в очереди",
+    requeued: "повторное рассмотрение",
+    under_consideration: "рассматривается",
+  }[String(item.status || "")] || String(item.status || "законопроект");
+}
+
+function renderBillLibrary() {
+  const list = byId("bill-library-list");
+  clearNode(list);
+  const query = byId("bill-library-search").value.trim().toLocaleLowerCase("ru-RU");
+  const filtered = libraryItems.filter((item) => {
+    const matchesFilter = libraryFilter === "all"
+      || (libraryFilter === "decided" && Boolean(item.result))
+      || (
+        libraryFilter === "queue"
+        && ["draft", "queued", "requeued", "under_consideration"].includes(
+          String(item.status || ""),
+        )
+        && !item.result
+      );
+    if (!matchesFilter) return false;
+    if (!query) return true;
+    return [
+      formatNumber(item.bill_number),
+      item.title,
+      item.author?.name,
+    ].some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(query));
+  });
+  text(
+    "bill-library-count",
+    `${filtered.length} из ${libraryItems.length}`,
+  );
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "library-empty";
+    empty.textContent = libraryLoading
+      ? "Загружаем законопроекты…"
+      : "По этому запросу законопроектов нет";
+    list.append(empty);
+    return;
+  }
+  filtered.forEach((item) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "library-row";
+    const number = document.createElement("span");
+    number.className = "library-number";
+    number.textContent = `№${formatNumber(item.bill_number)}`;
+    const content = document.createElement("span");
+    content.className = "library-content";
+    const title = document.createElement("strong");
+    const author = document.createElement("small");
+    title.textContent = item.title || "Без названия";
+    author.textContent = `${item.author?.name || "Автор не указан"} · ${formatDate(item.created_at)}`;
+    content.append(title, author);
+    const status = document.createElement("span");
+    status.className = `library-status ${item.result?.status || item.status || ""}`;
+    status.textContent = catalogStatus(item);
+    row.append(number, content, status);
+    row.addEventListener("click", async () => {
+      closeBillLibrary();
+      await openBillRecord(item);
+    });
+    list.append(row);
+  });
+}
+
+async function openBillLibrary() {
+  const dialog = byId("bill-library-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  if (libraryLoading) return;
+  libraryLoading = true;
+  libraryItems = [];
+  text("bill-library-status", "обновление каталога");
+  renderBillLibrary();
+  try {
+    const response = await fetch(
+      `/api/bills?mode=${encodeURIComponent(selectedMode)}`,
+      {
+        headers: authHeaders(),
+        credentials: "same-origin",
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    libraryItems = Array.isArray(payload.items) ? payload.items : [];
+    text("bill-library-status", `контур: ${selectedMode === "simulation" ? "симуляция" : "рабочий"}`);
+  } catch (error) {
+    text("bill-library-status", "каталог временно недоступен");
+  } finally {
+    libraryLoading = false;
+    renderBillLibrary();
+  }
+}
+
+function closeBillLibrary() {
+  const dialog = byId("bill-library-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
 }
 
 function renderMode(data) {
@@ -233,23 +682,8 @@ function renderControls(data) {
   const capabilities = new Set(data.capabilities || []);
   const viewer = data.viewer || {};
   const session = data.session;
-  panel.hidden = !viewer.authenticated && capabilities.size === 0;
+  panel.hidden = capabilities.size === 0;
   if (panel.hidden) return;
-
-  if (!capabilities.size) {
-    text("operator-eyebrow", "РЕЖИМ НАБЛЮДЕНИЯ");
-    text("operator-title", "Прямой экран заседания");
-    text(
-      "operator-description",
-      "Панель показывает актуальный этап, законопроект и ход заседания. Управляющие действия доступны только текущему ведущему.",
-    );
-    text("operator-lock", "без права изменения");
-    const note = document.createElement("div");
-    note.className = "observer-note";
-    note.textContent = "Данные обновляются каждую секунду. Голоса не раскрываются до фиксации результата.";
-    container.append(note);
-    return;
-  }
 
   text("operator-eyebrow", selectedMode === "simulation" ? "УЧЕБНЫЙ ПУЛЬТ" : "ПУЛЬТ ВЕДУЩЕГО");
   text("operator-title", session ? `Этап: ${session.stage_label}` : "Подготовка заседания");
@@ -402,6 +836,9 @@ function render(data) {
   state = data;
   renderMode(data);
   renderViewer(data);
+  const observerMode = !(data.capabilities || []).length;
+  document.body.classList.toggle("observer-screen-mode", observerMode);
+  byId("observer-screen").hidden = !observerMode;
   renderControls(data);
   const session = data.session;
   const active = Boolean(data.active && session);
@@ -433,9 +870,11 @@ function render(data) {
     text("bill-title", "Проект не выбран");
     text("bill-number", "—");
     byId("bill-link").hidden = true;
+    byId("admin-open-current-bill").disabled = true;
     byId("discussion-link").hidden = true;
     renderBlocks({});
     renderParticipants([]);
+    renderObserver(data);
     return;
   }
 
@@ -472,8 +911,14 @@ function render(data) {
   text("timer-detail", session.timer_deadline ? "до автоматической фиксации" : "таймер не запущен");
 
   const bill = session.current_bill;
+  const result = currentResult(session, bill);
   text("bill-title", bill?.title || "Между законопроектами");
   text("bill-number", bill ? `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}` : "ПРОЕКТ НЕ ВЫБРАН");
+  const adminOpenBill = byId("admin-open-current-bill");
+  adminOpenBill.disabled = !bill;
+  adminOpenBill.onclick = bill
+    ? () => showBillDialog(bill, result)
+    : null;
   const billLink = byId("bill-link");
   billLink.hidden = !bill?.source_url;
   if (bill?.source_url) billLink.href = bill.source_url;
@@ -484,6 +929,7 @@ function render(data) {
   }
   renderBlocks(session.blocks);
   renderParticipants(session.participants);
+  renderObserver(data);
 }
 
 function authHeaders() {
@@ -582,13 +1028,51 @@ document.querySelectorAll("#mode-switch button").forEach((button) => {
     if (button.disabled || button.dataset.mode === selectedMode) return;
     selectedMode = button.dataset.mode || "live";
     sessionStorage.setItem("t-consensus-mode", selectedMode);
+    libraryItems = [];
     await fetchState();
+  });
+});
+
+document.querySelectorAll("#observer-tabs [data-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    observerTab = button.dataset.tab || "participants";
+    sessionStorage.setItem("t-consensus-observer-tab", observerTab);
+    if (state) renderObserverFeed(state);
+  });
+});
+
+byId("open-bill-dialog").addEventListener(
+  "click",
+  () => showBillDialog(dialogBill, dialogResult),
+);
+byId("close-bill-dialog").addEventListener("click", closeBillDialog);
+byId("bill-dialog-done").addEventListener("click", closeBillDialog);
+byId("bill-dialog").addEventListener("click", (event) => {
+  if (event.target === byId("bill-dialog")) closeBillDialog();
+});
+byId("open-bill-library").addEventListener("click", openBillLibrary);
+byId("close-bill-library").addEventListener("click", closeBillLibrary);
+byId("bill-library-dialog").addEventListener("click", (event) => {
+  if (event.target === byId("bill-library-dialog")) closeBillLibrary();
+});
+byId("bill-library-search").addEventListener("input", renderBillLibrary);
+document.querySelectorAll("#bill-library-filters [data-filter]").forEach((button) => {
+  button.addEventListener("click", () => {
+    libraryFilter = button.dataset.filter || "all";
+    document.querySelectorAll("#bill-library-filters [data-filter]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+    });
+    renderBillLibrary();
   });
 });
 
 setInterval(() => {
   text("clock", new Date().toLocaleTimeString("ru-RU"));
-  if (state?.session) text("timer-value", formatTimer(state.session.timer_deadline));
+  if (state?.session) {
+    const timer = formatTimer(state.session.timer_deadline);
+    text("timer-value", timer);
+    text("observer-timer", timer);
+  }
 }, 250);
 
 fetchState({ first: true });

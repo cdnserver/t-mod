@@ -78,9 +78,14 @@
             <span>Контур отображения</span>
             <small>Рабочий консенсус и симуляция никогда не смешиваются</small>
           </div>
-          <div id="mode-switch" class="mode-switch">
-            <button type="button" data-mode="live">Рабочий</button>
-            <button type="button" data-mode="simulation">Симуляция</button>
+          <div class="mode-actions">
+            <button id="open-bill-library" class="library-button" type="button">
+              Законопроекты
+            </button>
+            <div id="mode-switch" class="mode-switch">
+              <button type="button" data-mode="live">Рабочий</button>
+              <button type="button" data-mode="simulation">Симуляция</button>
+            </div>
           </div>
         </section>
 
@@ -91,6 +96,124 @@
             но не меняет базу, очередь и реальные голоса.
           </span>
         </aside>
+
+        <section id="observer-screen" class="observer-screen" aria-label="Экран наблюдения" hidden>
+          <header class="observer-session">
+            <div>
+              <div id="observer-eyebrow" class="eyebrow">ТЕКУЩЕЕ ЗАСЕДАНИЕ</div>
+              <div class="observer-session-line">
+                <h1 id="observer-session-title">Консенсус не проводится</h1>
+                <span id="observer-stage" class="stage-badge idle">Ожидание</span>
+              </div>
+              <p id="observer-session-detail">
+                Экран ожидает начало следующего пленарного заседания.
+              </p>
+            </div>
+            <div class="observer-live">
+              <span class="pulse" aria-hidden="true"></span>
+              <span>прямой эфир</span>
+            </div>
+          </header>
+
+          <div class="observer-grid">
+            <article class="observer-card observer-bill">
+              <div class="observer-card-head">
+                <div>
+                  <div id="observer-bill-number" class="eyebrow">ПРОЕКТ НЕ ВЫБРАН</div>
+                  <h2 id="observer-bill-title">Между законопроектами</h2>
+                </div>
+                <span id="observer-result-status" class="result-status waiting">ожидание</span>
+              </div>
+
+              <div class="bill-meta">
+                <span>
+                  <small>Автор</small>
+                  <strong id="observer-bill-author">—</strong>
+                </span>
+                <span>
+                  <small>Подан</small>
+                  <strong id="observer-bill-date">—</strong>
+                </span>
+                <span>
+                  <small>Решение</small>
+                  <strong id="observer-bill-category">Обычное</strong>
+                </span>
+              </div>
+
+              <div class="bill-reading">
+                <small>Полный текст предложения</small>
+                <p id="observer-bill-summary">Законопроект ещё не выбран.</p>
+              </div>
+
+              <div class="bill-actions">
+                <button id="open-bill-dialog" class="subtle-button" type="button" disabled>
+                  Читать полностью
+                </button>
+                <a id="observer-bill-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+                  Оригинал в Discord ↗
+                </a>
+              </div>
+
+              <div class="consensus-result">
+                <div class="consensus-result-main">
+                  <span>Общий консенсус</span>
+                  <strong id="observer-overall-percent">скрыт</strong>
+                  <small id="observer-result-detail">
+                    Точный процент появится после фиксации результата
+                  </small>
+                </div>
+                <div class="result-track" aria-hidden="true">
+                  <span id="observer-result-bar"></span>
+                  <i id="observer-threshold-mark"></i>
+                </div>
+                <div class="result-numbers">
+                  <span>Товарищество <b id="observer-internal-percent">—</b></span>
+                  <span>Против <b id="observer-opposed-percent">—</b></span>
+                  <span>Порог <b id="observer-required-percent">50%</b></span>
+                </div>
+              </div>
+
+              <div id="observer-blocks" class="observer-blocks" aria-label="Четыре блока консенсуса">
+                <span data-block="first"><i>01</i><b>Председатель I</b><em>ожидание</em></span>
+                <span data-block="second"><i>02</i><b>Председатель II</b><em>ожидание</em></span>
+                <span data-block="third"><i>03</i><b>Председатель III</b><em>ожидание</em></span>
+                <span data-block="consensus"><i>04</i><b>Товарищество</b><em>ожидание</em></span>
+              </div>
+            </article>
+
+            <aside class="observer-card observer-rail">
+              <div class="observer-metrics">
+                <div>
+                  <small>Кворум</small>
+                  <strong id="observer-quorum">—</strong>
+                  <span id="observer-quorum-detail">нет сессии</span>
+                </div>
+                <div>
+                  <small>Голоса</small>
+                  <strong id="observer-votes">—</strong>
+                  <span>получено</span>
+                </div>
+                <div>
+                  <small>Таймер</small>
+                  <strong id="observer-timer">—</strong>
+                  <span>до фиксации</span>
+                </div>
+                <div>
+                  <small>Очередь</small>
+                  <strong id="observer-queue-count">0</strong>
+                  <span>проектов</span>
+                </div>
+              </div>
+
+              <nav id="observer-tabs" class="observer-tabs" aria-label="Сводка заседания">
+                <button type="button" data-tab="participants" class="active">Состав <span id="observer-participants-count">0</span></button>
+                <button type="button" data-tab="queue">Очередь <span id="observer-tab-queue-count">0</span></button>
+                <button type="button" data-tab="results">Протокол <span id="observer-results-count">0</span></button>
+              </nav>
+              <div id="observer-feed" class="observer-feed" aria-live="polite"></div>
+            </aside>
+          </div>
+        </section>
 
         <section id="operator-panel" class="panel operator-panel" hidden>
           <div class="operator-heading">
@@ -149,6 +272,9 @@
                 <h2 id="bill-title">Проект не выбран</h2>
               </div>
               <div class="panel-links">
+                <button id="admin-open-current-bill" class="subtle-button" type="button" disabled>
+                  Читать проект
+                </button>
                 <a id="discussion-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
                   Дискуссия ↗
                 </a>
@@ -234,5 +360,87 @@
         </footer>
       </div>
     </main>
+
+    <dialog id="bill-dialog" class="bill-dialog" aria-labelledby="bill-dialog-title">
+      <article>
+        <header>
+          <div>
+            <div id="bill-dialog-number" class="eyebrow">ЗАКОНОПРОЕКТ</div>
+            <h2 id="bill-dialog-title">Полный текст</h2>
+          </div>
+          <button id="close-bill-dialog" class="dialog-close" type="button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="dialog-meta">
+          <span><small>Автор</small><strong id="bill-dialog-author">—</strong></span>
+          <span><small>Подан</small><strong id="bill-dialog-date">—</strong></span>
+          <span><small>Тип решения</small><strong id="bill-dialog-category">Обычное</strong></span>
+        </div>
+        <section>
+          <h3>Текст предложения</h3>
+          <p id="bill-dialog-summary">—</p>
+        </section>
+        <section id="bill-dialog-materials-wrap">
+          <h3>Материалы</h3>
+          <p id="bill-dialog-materials">—</p>
+        </section>
+        <section id="bill-dialog-result" class="dialog-result" hidden>
+          <div>
+            <small>Решение</small>
+            <strong id="bill-dialog-result-status">—</strong>
+          </div>
+          <div>
+            <small>Общий консенсус</small>
+            <strong id="bill-dialog-overall">—</strong>
+          </div>
+          <div>
+            <small>Товарищество</small>
+            <strong id="bill-dialog-internal">—</strong>
+          </div>
+          <div>
+            <small>Против</small>
+            <strong id="bill-dialog-opposed">—</strong>
+          </div>
+          <div>
+            <small>Порог</small>
+            <strong id="bill-dialog-required">—</strong>
+          </div>
+        </section>
+        <footer>
+          <a id="bill-dialog-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+            Открыть оригинал в Discord ↗
+          </a>
+          <button id="bill-dialog-done" class="subtle-button" type="button">Готово</button>
+        </footer>
+      </article>
+    </dialog>
+
+    <dialog id="bill-library-dialog" class="bill-library-dialog" aria-labelledby="bill-library-title">
+      <article>
+        <header>
+          <div>
+            <div class="eyebrow">БИБЛИОТЕКА КОНСЕНСУСА</div>
+            <h2 id="bill-library-title">Законопроекты</h2>
+            <p>Очередь, рассмотренные решения и полные тексты в одном месте.</p>
+          </div>
+          <button id="close-bill-library" class="dialog-close" type="button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="library-tools">
+          <label class="library-search">
+            <span>Поиск</span>
+            <input id="bill-library-search" type="search" placeholder="Номер, название или автор">
+          </label>
+          <div id="bill-library-filters" class="library-filters" aria-label="Фильтр законопроектов">
+            <button type="button" data-filter="all" class="active">Все</button>
+            <button type="button" data-filter="queue">В очереди</button>
+            <button type="button" data-filter="decided">Решения</button>
+          </div>
+        </div>
+        <div class="library-summary">
+          <span id="bill-library-count">0 законопроектов</span>
+          <span id="bill-library-status">данные ещё не загружены</span>
+        </div>
+        <div id="bill-library-list" class="bill-library-list"></div>
+      </article>
+    </dialog>
   </body>
 </html>

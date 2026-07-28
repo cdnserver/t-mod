@@ -299,9 +299,14 @@ class ConsensusSimulation:
         )
         return [
             {
+                "id": 900_000 + number,
                 "bill_number": number,
                 "title": f"Учебный законопроект №{number}",
                 "status": "queued",
+                "author_id": self.leader_id,
+                "author_display": "Симулятор T-Mod",
+                "decision_category": "ordinary",
+                "created_at": None,
                 "source_url": None,
             }
             for number in range(start, start + max(0, int(limit)))
