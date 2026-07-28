@@ -14,6 +14,7 @@ from modules.consensus_core import (
 from modules.consensus_runtime import active_sessions
 from modules.consensus_web import (
     build_consensus_web_state,
+    consensus_web_url,
     create_consensus_web_app,
 )
 
@@ -121,6 +122,16 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
         finally:
             await client.close()
+
+    def test_public_https_url_replaces_local_display_address(self) -> None:
+        with patch(
+            "modules.consensus_web.CONSENSUS_WEB_PUBLIC_URL",
+            "https://consensus.example.com",
+        ):
+            self.assertEqual(
+                consensus_web_url(),
+                "https://consensus.example.com",
+            )
 
 
 if __name__ == "__main__":

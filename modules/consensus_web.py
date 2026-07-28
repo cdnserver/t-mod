@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import discord
 from aiohttp import web
@@ -37,6 +38,31 @@ CONSENSUS_WEB_PUBLIC_NAME = (
     os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip()
     or "t.consensus"
 )
+
+
+def _configured_public_url() -> str:
+    value = os.getenv("CONSENSUS_WEB_PUBLIC_URL", "").strip().rstrip("/")
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        print(
+            "CONSENSUS_WEB_PUBLIC_URL ignored: use a plain HTTPS URL "
+            "without credentials, query or fragment.",
+            flush=True,
+        )
+        return ""
+    return value
+
+
+CONSENSUS_WEB_PUBLIC_URL = _configured_public_url()
 
 
 def _configured_guild_id() -> int:
@@ -75,14 +101,16 @@ def _access_token() -> str:
     meta_storage.set_meta_value(_TOKEN_META_KEY, generated)
     _runtime_token = generated
     print(
-        "Consensus web access key generated. "
-        f"Open the private Discord settings panel to view it: {generated}",
+        "Consensus web access key generated and stored. "
+        "Open the private Discord settings panel to view it.",
         flush=True,
     )
     return generated
 
 
 def consensus_web_url() -> str:
+    if CONSENSUS_WEB_PUBLIC_URL:
+        return CONSENSUS_WEB_PUBLIC_URL
     return f"http://{CONSENSUS_WEB_PUBLIC_NAME}:{CONSENSUS_WEB_PORT}"
 
 
@@ -306,13 +334,21 @@ def _request_token(request: web.Request) -> str:
     return ""
 
 
+def _request_remote(request: web.Request) -> str:
+    if CONSENSUS_WEB_PUBLIC_URL:
+        cloudflare_address = request.headers.get("CF-Connecting-IP", "").strip()
+        if cloudflare_address:
+            return cloudflare_address[:64]
+    return str(request.remote or "unknown")
+
+
 @web.middleware
 async def _security_middleware(
     request: web.Request,
     handler: Any,
 ) -> web.StreamResponse:
     if request.path.startswith("/api/") and request.path != "/api/health":
-        remote = str(request.remote or "unknown")
+        remote = _request_remote(request)
         loop = asyncio.get_running_loop()
         now = loop.time()
         failures = _failed_auth[remote]
@@ -425,22 +461,42 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         )
         return
     token = _access_token()
+    public = bool(CONSENSUS_WEB_PUBLIC_URL)
     embed = discord.Embed(
-        title="🖥️ Локальная панель консенсуса",
+        title=(
+            "🖥️ Панель консенсуса"
+            if public
+            else "🖥️ Локальная панель консенсуса"
+        ),
         description=(
             f"Адрес: **{consensus_web_url()}**\n"
             f"Ключ доступа: ||`{token}`||\n\n"
             "Панель работает только пока запущен контейнер T-Mod. "
-            "Не публикуйте порт в интернете и не передавайте ключ участникам."
+            + (
+                "Доступ проходит через Cloudflare Tunnel."
+                if public
+                else "Не публикуйте порт в интернете."
+            )
+            + " Не передавайте ключ участникам."
         ),
         color=0xD9D9D9,
     )
     embed.add_field(
-        name="Если имя не открывается",
+        name=(
+            "Cloudflare Tunnel"
+            if public
+            else "Если имя не открывается"
+        ),
         value=(
-            "На другом компьютере добавьте в файл hosts строку "
-            f"`IP_СЕРВЕРА t.consensus`, затем откройте адрес с портом "
-            f"`{CONSENSUS_WEB_PORT}`."
+            "Публичный HTTPS-адрес направлен через Cloudflare Tunnel. "
+            "Для второго контура защиты включите Cloudflare Access "
+            "только для администраторов."
+            if public
+            else (
+                "На другом компьютере добавьте в файл hosts строку "
+                f"`IP_СЕРВЕРА t.consensus`, затем откройте адрес с портом "
+                f"`{CONSENSUS_WEB_PORT}`."
+            )
         ),
         inline=False,
     )
@@ -466,6 +522,7 @@ __all__ = [
     "CONSENSUS_WEB_HOST",
     "CONSENSUS_WEB_PORT",
     "CONSENSUS_WEB_PUBLIC_NAME",
+    "CONSENSUS_WEB_PUBLIC_URL",
     "build_consensus_web_state",
     "consensus_web_url",
     "create_consensus_web_app",
