@@ -18,6 +18,7 @@ from aiohttp import web
 from discord.ext import commands
 
 from modules.consensus_runtime import active_sessions
+from modules.consensus_simulator import get_consensus_simulation
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 
@@ -148,47 +149,12 @@ def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
     }
 
 
-async def build_consensus_web_state(
-    bot: discord.Client,
+def _session_payload(
+    session: Any,
     guild_id: int,
+    *,
+    simulation: bool,
 ) -> dict[str, Any]:
-    guild = bot.get_guild(int(guild_id))
-    queue_rows, recent_rows = await asyncio.gather(
-        asyncio.to_thread(tvrs_storage.tvrs_queue_bills, int(guild_id), 20),
-        asyncio.to_thread(tvrs_storage.tvrs_recent_live_results, int(guild_id), 12),
-    )
-    session = active_sessions.get(int(guild_id))
-    state: dict[str, Any] = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "guild": {
-            "id": int(guild_id),
-            "name": str(getattr(guild, "name", "") or "Товарищество"),
-        },
-        "active": session is not None and not session.finished,
-        "session": None,
-        "queue": [
-            {
-                "bill_number": int(row.get("bill_number") or 0),
-                "title": str(row.get("title") or ""),
-                "status": str(row.get("status") or ""),
-                "source_url": (
-                    f"https://discord.com/channels/{guild_id}/"
-                    f"{int(row.get('channel_id') or 0)}/"
-                    f"{int(row.get('message_id') or 0)}"
-                    if row.get("channel_id") and row.get("message_id")
-                    else None
-                ),
-            }
-            for row in queue_rows
-        ],
-        "recent_results": [
-            _result_payload(row, int(guild_id))
-            for row in recent_rows
-        ],
-    }
-    if session is None:
-        return state
-
     participants = sorted(
         session.participants.values(),
         key=lambda item: (
@@ -221,8 +187,7 @@ async def build_consensus_web_state(
         )
         for key in ("first", "second", "third", "consensus")
     }
-    state["active"] = not session.finished
-    state["session"] = {
+    return {
         "key": session.session_key,
         "revision": int(session.revision),
         "plenary_number": int(session.plenary_number),
@@ -311,11 +276,15 @@ async def build_consensus_web_state(
                 ),
                 "confirmed": bool(participant.confirmed),
                 "voted": participant.user_id in voted_ids,
-                "dm_ready": bool(
-                    participant.dm_message_id
-                    or participant.vote_message_id
-                )
-                and not participant.dm_failed,
+                "dm_ready": (
+                    True
+                    if simulation
+                    else bool(
+                        participant.dm_message_id
+                        or participant.vote_message_id
+                    )
+                    and not participant.dm_failed
+                ),
             }
             for participant in participants
         ],
@@ -324,6 +293,82 @@ async def build_consensus_web_state(
             for result in session.results
         ],
     }
+
+
+async def build_consensus_web_state(
+    bot: discord.Client,
+    guild_id: int,
+    *,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    guild_id = int(guild_id)
+    guild = bot.get_guild(guild_id)
+    live_session = active_sessions.get(guild_id)
+    simulation = get_consensus_simulation(guild_id)
+    requested_mode = str(mode or "").strip().lower()
+    if requested_mode not in {"live", "simulation"}:
+        requested_mode = "live" if live_session is not None else (
+            "simulation" if simulation is not None else "live"
+        )
+    elif requested_mode == "simulation" and simulation is None:
+        requested_mode = "live"
+    selected_simulation = requested_mode == "simulation"
+    session = simulation.session if selected_simulation and simulation else (
+        live_session if not selected_simulation else None
+    )
+
+    if selected_simulation:
+        queue_rows = simulation.queue_bills(3) if simulation else []
+        recent_rows = list(session.results[-12:]) if session is not None else []
+    else:
+        queue_rows, recent_rows = await asyncio.gather(
+            asyncio.to_thread(tvrs_storage.tvrs_queue_bills, guild_id, 20),
+            asyncio.to_thread(tvrs_storage.tvrs_recent_live_results, guild_id, 12),
+        )
+
+    available_modes = ["live"]
+    if simulation is not None:
+        available_modes.append("simulation")
+    state: dict[str, Any] = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "guild": {
+            "id": guild_id,
+            "name": str(getattr(guild, "name", "") or "Товарищество"),
+        },
+        "mode": requested_mode,
+        "mode_label": "Симуляция" if selected_simulation else "Рабочий контур",
+        "available_modes": available_modes,
+        "active": session is not None and not session.finished,
+        "session": None,
+        "queue": [
+            {
+                "bill_number": int(row.get("bill_number") or 0),
+                "title": str(row.get("title") or ""),
+                "status": str(row.get("status") or ""),
+                "source_url": (
+                    f"https://discord.com/channels/{guild_id}/"
+                    f"{int(row.get('channel_id') or 0)}/"
+                    f"{int(row.get('message_id') or 0)}"
+                    if row.get("channel_id") and row.get("message_id")
+                    else row.get("source_url")
+                ),
+            }
+            for row in queue_rows
+        ],
+        "recent_results": [
+            _result_payload(row, guild_id)
+            for row in recent_rows
+        ],
+    }
+    if session is None:
+        return state
+
+    state["active"] = not session.finished
+    state["session"] = _session_payload(
+        session,
+        guild_id,
+        simulation=selected_simulation,
+    )
     return state
 
 
@@ -395,9 +440,13 @@ def create_consensus_web_app(
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
-    async def state(_: web.Request) -> web.Response:
+    async def state(request: web.Request) -> web.Response:
         return web.json_response(
-            await build_consensus_web_state(bot, int(guild_id)),
+            await build_consensus_web_state(
+                bot,
+                int(guild_id),
+                mode=request.query.get("mode"),
+            ),
             dumps=lambda value: json.dumps(
                 value,
                 ensure_ascii=False,

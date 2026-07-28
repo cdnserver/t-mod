@@ -3,13 +3,14 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from modules.consensus_core import calculate_consensus
 from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION
 from modules.consensus_simulator import (
     ConsensusSimulation,
     ConsensusSimulationView,
+    InMemoryConsensusRepository,
     consensus_simulation_embed,
 )
+from modules.consensus_service import ConsensusCoordinator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,18 +30,21 @@ class ConsensusSimulationTests(unittest.TestCase):
         simulation.confirm_all()
         self.assertTrue(simulation.session.quorum_ready())
         simulation.begin_voting()
+        simulation.set_timer(300)
+        self.assertEqual(simulation.session.timer_seconds, 300)
         simulation.cast_leader_vote("yes")
         simulation.apply_fake_scenario("mixed")
 
-        calculation = calculate_consensus(simulation.session)
-        self.assertEqual(calculation["internal_percent"], 66.67)
-        self.assertEqual(calculation["overall_percent"], 75.0)
-        result = simulation.finalize()
+        result = simulation.session.results[-1]
+        self.assertEqual(result.internal_percent, 66.67)
+        self.assertEqual(result.overall_percent, 75.0)
         self.assertEqual(result.status, "accepted")
         self.assertEqual(simulation.session.stage, "after_result")
+        self.assertEqual(simulation.queue_bills(1)[0]["bill_number"], 901)
 
         simulation.next_bill()
         self.assertEqual(simulation.bill_number, 901)
+        self.assertEqual(simulation.queue_bills(1)[0]["bill_number"], 902)
         simulation.pause()
         simulation.resume()
         simulation.request_discussion()
@@ -48,6 +52,38 @@ class ConsensusSimulationTests(unittest.TestCase):
         simulation.end_discussion()
         simulation.finish()
         self.assertTrue(simulation.finished)
+
+    def test_simulator_uses_production_coordinator_and_memory_only_repository(self) -> None:
+        simulation = self.simulation()
+
+        self.assertIsInstance(simulation.coordinator, ConsensusCoordinator)
+        self.assertIsInstance(simulation.repository, InMemoryConsensusRepository)
+        initial_revision = simulation.session.revision
+
+        simulation.confirm_next()
+
+        self.assertGreater(simulation.session.revision, initial_revision)
+        snapshot = simulation.repository.snapshots[simulation.session.session_key]
+        self.assertEqual(snapshot["revision"], simulation.session.revision)
+        self.assertEqual(
+            simulation.repository.events[-1]["event_type"],
+            "participant_confirmed",
+        )
+
+    def test_oral_result_follows_finalization_pipeline(self) -> None:
+        simulation = self.simulation()
+        simulation.confirm_all()
+        simulation.begin_voting()
+        simulation.request_discussion()
+        simulation.choose_discussion("Правовая")
+
+        result = simulation.oral_result("accepted")
+
+        self.assertEqual(result.resolution_method, "oral")
+        self.assertEqual(simulation.session.stage, "after_result")
+        event_types = [event["event_type"] for event in simulation.repository.events]
+        self.assertIn("veto_claimed", event_types)
+        self.assertIn("oral_result_recorded", event_types)
 
     def test_veto_is_isolated_and_terminal_for_only_current_fake_bill(self) -> None:
         simulation = self.simulation()

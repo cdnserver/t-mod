@@ -57,6 +57,25 @@
       </section>
 
       <div id="dashboard" class="dashboard" hidden>
+        <section class="mode-toolbar" aria-label="Источник данных панели">
+          <div>
+            <span>Контур отображения</span>
+            <small>Рабочий консенсус и симуляция никогда не смешиваются</small>
+          </div>
+          <div id="mode-switch" class="mode-switch">
+            <button type="button" data-mode="live">Рабочий</button>
+            <button type="button" data-mode="simulation">Симуляция</button>
+          </div>
+        </section>
+
+        <aside id="simulation-banner" class="simulation-banner" hidden>
+          <strong>🧪 Учебный контур</strong>
+          <span>
+            Здесь показана симуляция из Discord. Она использует рабочие правила,
+            но не меняет базу, очередь и реальные голоса.
+          </span>
+        </aside>
+
         <section class="hero">
           <div>
             <div id="session-eyebrow" class="eyebrow">ТЕКУЩЕЕ ЗАСЕДАНИЕ</div>

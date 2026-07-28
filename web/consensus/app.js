@@ -18,6 +18,7 @@ const BLOCK_STATES = {
 };
 
 let token = sessionStorage.getItem("t-consensus-token") || "";
+let selectedMode = sessionStorage.getItem("t-consensus-mode") || "";
 let state = null;
 let timer = null;
 let fetching = false;
@@ -125,8 +126,24 @@ function renderList(containerId, items, kind) {
   });
 }
 
+function renderMode(data) {
+  const available = new Set(data.available_modes || ["live"]);
+  selectedMode = data.mode || "live";
+  sessionStorage.setItem("t-consensus-mode", selectedMode);
+  document.querySelectorAll("#mode-switch button").forEach((button) => {
+    const mode = button.dataset.mode;
+    button.disabled = !available.has(mode);
+    button.classList.toggle("active", mode === selectedMode);
+    button.setAttribute("aria-pressed", String(mode === selectedMode));
+  });
+  const simulated = selectedMode === "simulation";
+  byId("simulation-banner").hidden = !simulated;
+  dashboard.classList.toggle("simulation-mode", simulated);
+}
+
 function render(data) {
   state = data;
+  renderMode(data);
   const session = data.session;
   const active = Boolean(data.active && session);
   text("queue-value", data.queue.length);
@@ -135,9 +152,20 @@ function render(data) {
   text("updated-at", `обновлено ${new Date(data.updated_at).toLocaleTimeString("ru-RU")}`);
 
   if (!session) {
-    text("session-eyebrow", "СИСТЕМА ГОТОВА");
-    text("session-title", "Консенсус не проводится");
-    text("session-subtitle", "Панель ожидает начало следующего пленарного заседания.");
+    text(
+      "session-eyebrow",
+      selectedMode === "simulation" ? "СИМУЛЯТОР ГОТОВ" : "СИСТЕМА ГОТОВА",
+    );
+    text(
+      "session-title",
+      selectedMode === "simulation" ? "Симуляция не запущена" : "Консенсус не проводится",
+    );
+    text(
+      "session-subtitle",
+      selectedMode === "simulation"
+        ? "Запустите симулятор в панели администрирования Discord."
+        : "Панель ожидает начало следующего пленарного заседания.",
+    );
     text("stage-badge", "Ожидание");
     byId("stage-badge").className = "stage-badge idle";
     text("quorum-value", "—");
@@ -153,9 +181,22 @@ function render(data) {
     return;
   }
 
-  text("session-eyebrow", `ПЛЕНАРНЫЙ КОНСЕНСУС · ${session.plenary_number}`);
-  text("session-title", active ? "Заседание в процессе" : "Заседание завершено");
-  text("session-subtitle", `Ведущий: ${session.leader.name} · обновление в реальном времени`);
+  text(
+    "session-eyebrow",
+    selectedMode === "simulation"
+      ? "УЧЕБНЫЙ КОНСЕНСУС · СИНХРОНИЗИРОВАН С DISCORD"
+      : `ПЛЕНАРНЫЙ КОНСЕНСУС · ${session.plenary_number}`,
+  );
+  text(
+    "session-title",
+    active
+      ? selectedMode === "simulation" ? "Симуляция в процессе" : "Заседание в процессе"
+      : selectedMode === "simulation" ? "Симуляция завершена" : "Заседание завершено",
+  );
+  text(
+    "session-subtitle",
+    `Ведущий: ${session.leader.name} · обновление в реальном времени`,
+  );
   text("stage-badge", session.stage_label);
   byId("stage-badge").className = `stage-badge${active ? "" : " idle"}`;
   text("quorum-value", `${session.quorum.confirmed}/${session.quorum.invited}`);
@@ -184,7 +225,8 @@ async function fetchState({ first = false } = {}) {
   if (!token || fetching) return;
   fetching = true;
   try {
-    const response = await fetch("/api/state", {
+    const query = selectedMode ? `?mode=${encodeURIComponent(selectedMode)}` : "";
+    const response = await fetch(`/api/state${query}`, {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
@@ -216,6 +258,15 @@ loginForm.addEventListener("submit", async (event) => {
   token = tokenInput.value.trim();
   sessionStorage.setItem("t-consensus-token", token);
   await fetchState({ first: true });
+});
+
+document.querySelectorAll("#mode-switch button").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (button.disabled || button.dataset.mode === selectedMode) return;
+    selectedMode = button.dataset.mode || "live";
+    sessionStorage.setItem("t-consensus-mode", selectedMode);
+    await fetchState();
+  });
 });
 
 setInterval(() => {

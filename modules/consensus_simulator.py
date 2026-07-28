@@ -1,15 +1,16 @@
-"""Isolated Discord simulator for the current consensus lifecycle.
+"""Isolated Discord simulator driven by the production consensus coordinator.
 
-The simulator deliberately has no storage or consensus-runtime imports. It
-exercises the production rules and stage machine entirely in memory, so a
-training session cannot touch real bills, plenary numbers, votes or outbox
-deliveries.
+The simulator uses the same state mutations, guards and result calculation as
+the live workflow.  Its repository and registry are deliberately in-memory, so
+training can never alter real bills, plenary numbers, votes or DM deliveries.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterable
+from uuid import uuid4
 
 import discord
 
@@ -20,8 +21,9 @@ from modules.consensus_core import (
     LiveResult,
     calculate_consensus,
     clean_stage_name,
-    transition_session,
+    session_to_snapshot,
 )
+from modules.consensus_service import ConsensusActor, ConsensusCoordinator
 from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_text
 
 
@@ -40,6 +42,166 @@ SIMULATION_SCENARIOS = {
 }
 
 
+class InMemoryConsensusRepository:
+    """Small production-protocol adapter with no database or outbox access."""
+
+    def __init__(self) -> None:
+        self.snapshots: dict[str, dict[str, Any]] = {}
+        self.events: list[dict[str, Any]] = []
+
+    def _persist(
+        self,
+        session: LiveConsensusSession,
+        event_type: str,
+        *,
+        expected_revision: int | None = None,
+        actor: ConsensusActor | None = None,
+        stage_from: str | None = None,
+        details: dict[str, Any] | None = None,
+        deliveries: Iterable[dict[str, Any]] = (),
+    ) -> dict[str, Any]:
+        current = self.snapshots.get(session.session_key)
+        current_revision = int((current or {}).get("revision") or 0)
+        if expected_revision is not None and current_revision != int(expected_revision):
+            raise ConsensusStateError(
+                "Симуляция изменилась в другой операции. Обновите учебную панель."
+            )
+        revision = current_revision + 1
+        snapshot = session_to_snapshot(session)
+        snapshot["revision"] = revision
+        self.snapshots[session.session_key] = snapshot
+        self.events.append(
+            {
+                "event_type": str(event_type),
+                "revision": revision,
+                "stage_from": stage_from,
+                "stage_to": str(session.stage),
+                "actor_id": actor.user_id if actor else None,
+                "details": dict(details or {}),
+                "delivery_count": len(tuple(deliveries)),
+            }
+        )
+        return snapshot
+
+    def save(
+        self,
+        session: LiveConsensusSession,
+        event_type: str,
+        *,
+        actor: ConsensusActor | None = None,
+        stage_from: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._persist(
+            session,
+            event_type,
+            actor=actor,
+            stage_from=stage_from,
+            details=details,
+        )
+
+    def active_snapshots(self, guild_id: int | None = None) -> list[dict[str, Any]]:
+        return [
+            dict(snapshot)
+            for snapshot in self.snapshots.values()
+            if guild_id is None or int(snapshot.get("guild_id") or 0) == int(guild_id)
+        ]
+
+    def save_with_deliveries(
+        self,
+        session: LiveConsensusSession,
+        event_type: str,
+        *,
+        actor: ConsensusActor | None,
+        stage_from: str | None,
+        details: dict[str, Any] | None,
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._persist(
+            session,
+            event_type,
+            actor=actor,
+            stage_from=stage_from,
+            details=details,
+            deliveries=deliveries,
+        )
+
+    def commit_begin_bill(
+        self,
+        session: LiveConsensusSession,
+        *,
+        expected_revision: int,
+        bill_id: int,
+        event_type: str,
+        actor: ConsensusActor,
+        details: dict[str, Any],
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        snapshot = self._persist(
+            session,
+            event_type,
+            expected_revision=expected_revision,
+            actor=actor,
+            details={**details, "bill_id": int(bill_id)},
+            deliveries=deliveries,
+        )
+        return {"session": snapshot}
+
+    def commit_finalization(
+        self,
+        session: LiveConsensusSession,
+        result: LiveResult,
+        *,
+        expected_revision: int,
+        bill_status: str,
+        result_summary: str,
+        event_type: str,
+        actor: ConsensusActor | None,
+        details: dict[str, Any],
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        snapshot = self._persist(
+            session,
+            event_type,
+            expected_revision=expected_revision,
+            actor=actor,
+            details={
+                **details,
+                "bill_id": int(result.bill_id),
+                "bill_status": str(bill_status),
+                "result_summary": str(result_summary),
+            },
+            deliveries=deliveries,
+        )
+        return {"session": snapshot}
+
+    def commit_finish(
+        self,
+        session: LiveConsensusSession,
+        *,
+        expected_revision: int,
+        current_bill_id: int | None,
+        advance_plenary: bool,
+        event_type: str,
+        actor: ConsensusActor,
+        details: dict[str, Any],
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        snapshot = self._persist(
+            session,
+            event_type,
+            expected_revision=expected_revision,
+            actor=actor,
+            details={
+                **details,
+                "current_bill_id": current_bill_id,
+                "advance_plenary": bool(advance_plenary),
+            },
+            deliveries=deliveries,
+        )
+        return {"session": snapshot}
+
+
 @dataclass(slots=True)
 class ConsensusSimulation:
     guild_id: int
@@ -48,6 +210,11 @@ class ConsensusSimulation:
     bill_number: int = 900
     session: LiveConsensusSession = field(init=False)
     events: list[str] = field(default_factory=list)
+    repository: InMemoryConsensusRepository = field(
+        default_factory=InMemoryConsensusRepository,
+        init=False,
+    )
+    coordinator: ConsensusCoordinator = field(init=False)
 
     def __post_init__(self) -> None:
         participants = {
@@ -69,8 +236,12 @@ class ConsensusSimulation:
                 kind=kind,  # type: ignore[arg-type]
                 voting_block=voting_block,  # type: ignore[arg-type]
             )
+        self.coordinator = ConsensusCoordinator(self.repository)
         self.session = LiveConsensusSession(
-            session_key=f"simulation:{self.guild_id}:{self.leader_id}",
+            session_key=(
+                f"simulation:{self.guild_id}:{self.leader_id}:"
+                f"{uuid4().hex[:10]}"
+            ),
             guild_id=self.guild_id,
             channel_id=0,
             leader_id=self.leader_id,
@@ -79,11 +250,20 @@ class ConsensusSimulation:
             participants=participants,
             engine_version=CONSENSUS_ENGINE_VERSION,
         )
+        self.coordinator.save(
+            self.session,
+            "simulation_opened",
+            actor=self.actor,
+        )
         self._record("Симуляция открыта; ведущий подтверждён автоматически")
 
     @property
     def finished(self) -> bool:
         return self.session.finished
+
+    @property
+    def actor(self) -> ConsensusActor:
+        return ConsensusActor(self.leader_id, self.leader_display)
 
     def _record(self, text: str) -> None:
         self.events.append(str(text))
@@ -106,6 +286,22 @@ class ConsensusSimulation:
             "decision_category": "ordinary",
         }
 
+    def queue_bills(self, limit: int = 3) -> list[dict[str, object]]:
+        if self.finished:
+            return []
+        start = self.bill_number + (
+            0 if self.session.stage == "registration" else 1
+        )
+        return [
+            {
+                "bill_number": number,
+                "title": f"Учебный законопроект №{number}",
+                "status": "queued",
+                "source_url": None,
+            }
+            for number in range(start, start + max(0, int(limit)))
+        ]
+
     def confirm_next(self) -> None:
         self._require_stage("registration")
         participant = next(
@@ -118,30 +314,47 @@ class ConsensusSimulation:
         )
         if participant is None:
             raise ConsensusStateError("Все фейковые участники уже подтвердились.")
-        participant.confirmed = True
+        self.coordinator.confirm_participant(
+            self.session,
+            participant.user_id,
+            actor=ConsensusActor(participant.user_id, participant.display_name),
+        )
         self._record(f"{participant.display_name} подтвердил участие")
 
     def confirm_all(self) -> None:
         self._require_stage("registration")
         for participant in self.session.participants.values():
-            participant.confirmed = True
+            self.coordinator.confirm_participant(
+                self.session,
+                participant.user_id,
+                actor=ConsensusActor(participant.user_id, participant.display_name),
+            )
         self._record("Все фейковые участники подтвердили участие")
 
     def begin_voting(self) -> None:
-        self._require_stage("registration")
-        if not self.session.quorum_ready():
-            raise ConsensusStateError("Сначала соберите учебный кворум.")
-        self.session.current_bill = self._bill()
-        self.session.votes.clear()
-        transition_session(self.session, "voting")
+        self.coordinator.begin_bill_atomically(
+            self.session,
+            self._bill(),
+            actor=self.actor,
+            deliveries=(),
+        )
         self._record(f"Начато голосование по проекту №{self.bill_number}")
 
     def cast_leader_vote(self, vote: str) -> None:
-        self._require_stage("voting")
-        if vote not in {"yes", "no"}:
-            raise ConsensusStateError("Неизвестный вариант голоса.")
-        self.session.votes[self.leader_id] = vote
-        self._record(f"Ведущий проголосовал: {'За' if vote == 'yes' else 'Против'}")
+        should_finalize = self.coordinator.cast_vote(
+            self.session,
+            self.leader_id,
+            vote,
+            actor=self.actor,
+        )
+        vote_label = {
+            "yes": "За",
+            "no": "Против",
+            "abstain": "Воздержался",
+        }.get(vote, vote)
+        self._record(f"Ведущий проголосовал: {vote_label}")
+        if should_finalize:
+            self.finalize(forced=False)
 
     def cast_next_fake_vote(self) -> None:
         self._require_stage("voting")
@@ -155,10 +368,17 @@ class ConsensusSimulation:
             raise ConsensusStateError("Все подтверждённые фейковые участники уже проголосовали.")
         participant = candidates[0]
         vote = "no" if participant.kind == "chair" else "yes"
-        self.session.votes[participant.user_id] = vote
+        should_finalize = self.coordinator.cast_vote(
+            self.session,
+            participant.user_id,
+            vote,
+            actor=ConsensusActor(participant.user_id, participant.display_name),
+        )
         self._record(
             f"{participant.display_name}: {'За' if vote == 'yes' else 'Против'}"
         )
+        if should_finalize:
+            self.finalize(forced=False)
 
     def apply_fake_scenario(self, scenario: str) -> None:
         self._require_stage("voting")
@@ -169,6 +389,7 @@ class ConsensusSimulation:
             for participant in self.session.confirmed_participants()
             if participant.kind == "senator"
         ]
+        should_finalize = False
         for participant in self.session.confirmed_participants():
             if participant.user_id == self.leader_id:
                 continue
@@ -182,49 +403,70 @@ class ConsensusSimulation:
                 vote = "yes"
             else:
                 vote = "no" if senators.index(participant) == 1 else "yes"
-            self.session.votes[participant.user_id] = vote
+            should_finalize = self.coordinator.cast_vote(
+                self.session,
+                participant.user_id,
+                vote,
+                actor=ConsensusActor(participant.user_id, participant.display_name),
+            )
         self._record(f"Применён сценарий «{SIMULATION_SCENARIOS[scenario]}»")
+        if should_finalize:
+            self.finalize(forced=False)
 
     def request_discussion(self) -> None:
-        self._require_stage("voting")
-        self.session.previous_stage = "voting"
-        transition_session(self.session, "discussion_type")
+        initiator = self.session.participants[self.leader_id]
+        self.coordinator.request_discussion(self.session, initiator)
         self._record("Запрошена учебная дискуссия")
 
     def choose_discussion(self, discussion_type: str) -> None:
-        self._require_stage("discussion_type")
-        self.session.discussion_type = str(discussion_type)
-        transition_session(self.session, "discussion")
+        self.coordinator.begin_discussion(
+            self.session,
+            discussion_type,
+            channel_id=None,
+            allowed_user_ids=(
+                participant.user_id
+                for participant in self.session.confirmed_participants()
+            ),
+        )
         self._record(f"Начата дискуссия: {discussion_type.lower()}")
 
     def end_discussion(self) -> None:
-        self._require_stage("discussion")
-        transition_session(self.session, "voting")
-        self.session.discussion_type = None
+        self.coordinator.end_discussion(self.session, actor=self.actor)
         self._record("Дискуссия завершена; прежние голоса сохранены")
 
     def pause(self) -> None:
-        self._require_stage("voting", "discussion_type", "discussion", "after_result")
-        self.session.previous_stage = self.session.stage
-        self.session.paused_reason = "Учебная пауза ведущего"
-        transition_session(self.session, "paused")
+        self.coordinator.pause(
+            self.session,
+            "Учебная пауза ведущего",
+            automatic=False,
+            actor=self.actor,
+        )
         self._record("Симуляция поставлена на паузу")
 
     def resume(self) -> None:
-        self._require_stage("paused")
-        target = self.session.previous_stage or "voting"
-        if target not in {"voting", "discussion_type", "discussion", "after_result"}:
-            target = "voting"
-        transition_session(self.session, target)
-        self.session.paused_reason = None
+        self.coordinator.resume(self.session, actor=self.actor)
         self._record("Симуляция продолжена без проверки голосового канала")
 
-    def finalize(self) -> LiveResult:
-        self._require_stage("voting")
+    def set_timer(self, seconds: int = 300) -> None:
+        clean_seconds = max(0, int(seconds))
+        self.coordinator.set_timer(
+            self.session,
+            seconds=clean_seconds,
+            deadline=datetime.now(timezone.utc) + timedelta(seconds=clean_seconds),
+            actor=self.actor,
+        )
+        self._record(f"Учебный таймер установлен на {clean_seconds // 60} мин.")
+
+    def finalize(self, *, forced: bool = True) -> LiveResult:
         bill = dict(self.session.current_bill or {})
         if not bill:
             raise ConsensusStateError("В симуляции нет текущего проекта.")
-        transition_session(self.session, "finalizing")
+        self.coordinator.claim_finalization(
+            self.session,
+            kind="vote",
+            actor=self.actor if forced else None,
+            forced=forced,
+        )
         calculation = calculate_consensus(self.session)
         result = LiveResult(
             bill_id=int(bill["id"]),
@@ -240,22 +482,36 @@ class ConsensusSimulation:
             opposed_percent=float(calculation["opposed_percent"]),
             block_votes=dict(calculation["block_votes"]),
         )
-        self.session.results.append(result)
-        self.session.current_bill = None
-        self.session.votes.clear()
-        transition_session(self.session, "after_result")
+        self.coordinator.complete_result_atomically(
+            self.session,
+            result,
+            bill_status=result.status,
+            result_summary=(
+                f"{result.status} • общий консенсус {result.overall_percent}%"
+            ),
+            event_type="vote_finalized_manually" if forced else "vote_finalized",
+            actor=self.actor if forced else None,
+            deliveries=(),
+        )
         self._record(
             f"Результат: {'принят' if result.status == 'accepted' else 'отклонён'} "
             f"({result.overall_percent}%)"
         )
         return result
 
+    def timer_expired(self) -> LiveResult:
+        return self.finalize(forced=False)
+
     def veto(self) -> LiveResult:
-        self._require_stage("voting")
         bill = dict(self.session.current_bill or {})
         if not bill:
             raise ConsensusStateError("В симуляции нет текущего проекта.")
-        transition_session(self.session, "finalizing")
+        self.coordinator.claim_finalization(
+            self.session,
+            kind="veto",
+            actor=self.actor,
+            veto_authorized=True,
+        )
         result = LiveResult(
             bill_id=int(bill["id"]),
             bill_number=int(bill["bill_number"]),
@@ -267,32 +523,112 @@ class ConsensusSimulation:
             resolution_method="veto",
             votes=dict(self.session.votes),
             veto_by_id=self.leader_id,
+            resolved_by_id=self.leader_id,
+            resolved_by_display=self.leader_display,
         )
-        self.session.results.append(result)
-        self.session.current_bill = None
-        self.session.votes.clear()
-        transition_session(self.session, "after_result")
+        self.coordinator.complete_result_atomically(
+            self.session,
+            result,
+            bill_status="vetoed",
+            result_summary="Применено учебное право вето",
+            event_type="veto_applied",
+            actor=self.actor,
+            deliveries=(),
+        )
         self._record("Учебное вето применено")
         return result
 
+    def oral_result(self, status: str) -> LiveResult:
+        clean_status = str(status).strip().lower()
+        if clean_status not in {"accepted", "rejected"}:
+            raise ConsensusStateError("Неизвестный устный итог.")
+        bill = dict(self.session.current_bill or {})
+        if not bill:
+            raise ConsensusStateError("В симуляции нет текущего проекта.")
+        note = "Учебное устное решение ведущего"
+        self.coordinator.claim_finalization(
+            self.session,
+            kind="oral",
+            actor=self.actor,
+            oral_authorized=True,
+            action_details={"oral_status": clean_status, "oral_note": note},
+        )
+        result = LiveResult(
+            bill_id=int(bill["id"]),
+            bill_number=int(bill["bill_number"]),
+            title=str(bill["title"]),
+            status=clean_status,
+            internal_percent=0.0,
+            overall_percent=0.0,
+            internal_active=False,
+            votes=dict(self.session.votes),
+            resolution_method="oral",
+            resolution_note=note,
+            resolved_by_id=self.leader_id,
+            resolved_by_display=self.leader_display,
+        )
+        self.coordinator.complete_result_atomically(
+            self.session,
+            result,
+            bill_status=clean_status,
+            result_summary=f"Учебное устное решение: {clean_status}",
+            event_type="oral_result_recorded",
+            actor=self.actor,
+            deliveries=(),
+        )
+        self._record(
+            "Устно зафиксировано: "
+            f"{'принято' if clean_status == 'accepted' else 'отклонено'}"
+        )
+        return result
+
     def next_bill(self) -> None:
-        self._require_stage("after_result")
         self.bill_number += 1
-        self.session.current_bill = self._bill()
-        self.session.votes.clear()
-        self.session.pending_action = None
-        transition_session(self.session, "voting")
+        self.coordinator.begin_bill_atomically(
+            self.session,
+            self._bill(),
+            actor=self.actor,
+            deliveries=(),
+        )
         self._record(f"Открыт следующий учебный проект №{self.bill_number}")
 
     def finish(self) -> None:
         if self.session.finished:
             return
-        if self.session.stage == "finalizing":
-            raise ConsensusStateError("Сначала завершите фиксацию учебного результата.")
-        self.session.current_bill = None
-        self.session.votes.clear()
-        transition_session(self.session, "finished")
+        self.coordinator.finish_atomically(
+            self.session,
+            actor=self.actor,
+            deliveries=(),
+        )
         self._record("Учебное заседание завершено")
+
+
+_simulations: dict[int, ConsensusSimulation] = {}
+
+
+def register_consensus_simulation(
+    simulation: ConsensusSimulation,
+) -> ConsensusSimulation | None:
+    previous = _simulations.get(int(simulation.guild_id))
+    _simulations[int(simulation.guild_id)] = simulation
+    return previous
+
+
+def get_consensus_simulation(guild_id: int) -> ConsensusSimulation | None:
+    return _simulations.get(int(guild_id))
+
+
+def clear_consensus_simulation(
+    guild_id: int,
+    *,
+    session_key: str | None = None,
+) -> ConsensusSimulation | None:
+    simulation = _simulations.get(int(guild_id))
+    if simulation is None:
+        return None
+    if session_key is not None and simulation.session.session_key != str(session_key):
+        return None
+    return _simulations.pop(int(guild_id), None)
 
 
 def _participant_lines(simulation: ConsensusSimulation) -> str:
@@ -301,7 +637,11 @@ def _participant_lines(simulation: ConsensusSimulation) -> str:
         confirmed = "✅" if participant.confirmed else "⏳"
         role = "председатель" if participant.kind == "chair" else "сенатор"
         vote = simulation.session.votes.get(participant.user_id)
-        vote_text = "За" if vote == "yes" else "Против" if vote == "no" else "—"
+        vote_text = {
+            "yes": "За",
+            "no": "Против",
+            "abstain": "Воздержался",
+        }.get(vote, "—")
         display = (
             f"<@{participant.user_id}>"
             if participant.user_id == simulation.leader_id
@@ -316,8 +656,9 @@ def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed
     embed = discord.Embed(
         title=f"🧪 Симулятор Consensus V{simulation.session.engine_version}",
         description=(
-            "Полностью изолированный учебный контур. Фейковые участники, голоса и проекты "
-            "существуют только в этой карточке и никогда не попадают в рабочую базу."
+            "Тот же координатор, переходы и расчёт, что в рабочем консенсусе, "
+            "но с отдельной памятью и без реальных ЛС, базы и проверки войса. "
+            "Ход симуляции доступен в веб-панели."
         ),
         color=SIMULATION_COLOR,
     )
@@ -339,6 +680,11 @@ def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed
     embed.add_field(
         name="Проверка войса",
         value="🚫 отключена",
+        inline=True,
+    )
+    embed.add_field(
+        name="Веб-панель",
+        value="🟣 режим **«Симуляция»**",
         inline=True,
     )
     embed.add_field(name="Участники", value=_participant_lines(simulation)[:1024], inline=False)
@@ -393,6 +739,13 @@ async def _apply_simulation_action(
     simulation: ConsensusSimulation,
     action: Callable[[], object],
 ) -> None:
+    current = get_consensus_simulation(simulation.guild_id)
+    if current is not None and current is not simulation:
+        await interaction.response.send_message(
+            "Эта учебная панель заменена новой симуляцией.",
+            ephemeral=True,
+        )
+        return
     try:
         action()
     except ConsensusStateError as exc:
@@ -451,13 +804,20 @@ class ConsensusSimulationView(discord.ui.View):
         elif stage == "voting":
             self._add("За", "✅", discord.ButtonStyle.success, lambda: simulation.cast_leader_vote("yes"))
             self._add("Против", "❌", discord.ButtonStyle.danger, lambda: simulation.cast_leader_vote("no"))
+            self._add(
+                "Воздержаться",
+                "➖",
+                discord.ButtonStyle.secondary,
+                lambda: simulation.cast_leader_vote("abstain"),
+            )
             self._add("Ход фейка", "🤖", discord.ButtonStyle.secondary, simulation.cast_next_fake_vote)
             self.add_item(SimulationScenarioSelect(simulation))
             self._add("Дискуссия", "💬", discord.ButtonStyle.secondary, simulation.request_discussion, row=2)
             self._add("Пауза", "⏸️", discord.ButtonStyle.secondary, simulation.pause, row=2)
-            self._add("Таймер истёк", "⏱️", discord.ButtonStyle.secondary, simulation.finalize, row=2)
+            self._add("Таймер 5 мин", "⏱️", discord.ButtonStyle.secondary, simulation.set_timer, row=2)
+            self._add("Таймер истёк", "⌛", discord.ButtonStyle.secondary, simulation.timer_expired, row=2)
             self._add("Завершить сейчас", "📌", discord.ButtonStyle.primary, simulation.finalize, row=2)
-            self._add("Учебное вето", "🛑", discord.ButtonStyle.danger, simulation.veto, row=2)
+            self._add("Учебное вето", "🛑", discord.ButtonStyle.danger, simulation.veto, row=3)
         elif stage == "discussion_type":
             for label in ("Правовая", "Фактическая", "Процедурная", "Иная"):
                 self._add(
@@ -468,13 +828,56 @@ class ConsensusSimulationView(discord.ui.View):
                 )
             self._add("Пауза", "⏸️", discord.ButtonStyle.secondary, simulation.pause, row=1)
             self._add("Завершить", "⏹️", discord.ButtonStyle.danger, simulation.finish, row=1)
+            self._add(
+                "Устно: принято",
+                "📜",
+                discord.ButtonStyle.success,
+                lambda: simulation.oral_result("accepted"),
+                row=2,
+            )
+            self._add(
+                "Устно: отклонено",
+                "📜",
+                discord.ButtonStyle.danger,
+                lambda: simulation.oral_result("rejected"),
+                row=2,
+            )
         elif stage == "discussion":
             self._add("Завершить дискуссию", "✅", discord.ButtonStyle.success, simulation.end_discussion)
             self._add("Пауза", "⏸️", discord.ButtonStyle.secondary, simulation.pause)
             self._add("Завершить", "⏹️", discord.ButtonStyle.danger, simulation.finish)
+            self._add(
+                "Устно: принято",
+                "📜",
+                discord.ButtonStyle.success,
+                lambda: simulation.oral_result("accepted"),
+                row=1,
+            )
+            self._add(
+                "Устно: отклонено",
+                "📜",
+                discord.ButtonStyle.danger,
+                lambda: simulation.oral_result("rejected"),
+                row=1,
+            )
         elif stage == "paused":
             self._add("Продолжить", "▶️", discord.ButtonStyle.success, simulation.resume)
             self._add("Завершить", "⏹️", discord.ButtonStyle.danger, simulation.finish)
+            if simulation.session.current_bill is not None:
+                self._add(
+                    "Устно: принято",
+                    "📜",
+                    discord.ButtonStyle.success,
+                    lambda: simulation.oral_result("accepted"),
+                    row=1,
+                )
+                self._add(
+                    "Устно: отклонено",
+                    "📜",
+                    discord.ButtonStyle.danger,
+                    lambda: simulation.oral_result("rejected"),
+                    row=1,
+                )
         elif stage == "after_result":
             self._add("Следующий проект", "➡️", discord.ButtonStyle.success, simulation.next_bill)
             self._add("Завершить заседание", "🏁", discord.ButtonStyle.secondary, simulation.finish)
@@ -532,6 +935,7 @@ async def start_consensus_simulation(interaction: discord.Interaction) -> None:
         leader_id=interaction.user.id,
         leader_display=getattr(interaction.user, "display_name", str(interaction.user)),
     )
+    register_consensus_simulation(simulation)
     await interaction.response.send_message(
         embed=consensus_simulation_embed(simulation),
         view=ConsensusSimulationView(simulation),
@@ -542,7 +946,11 @@ async def start_consensus_simulation(interaction: discord.Interaction) -> None:
 __all__ = [
     "ConsensusSimulation",
     "ConsensusSimulationView",
+    "InMemoryConsensusRepository",
     "SimulationScenarioSelect",
+    "clear_consensus_simulation",
     "consensus_simulation_embed",
+    "get_consensus_simulation",
+    "register_consensus_simulation",
     "start_consensus_simulation",
 ]

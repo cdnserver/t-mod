@@ -12,6 +12,11 @@ from modules.consensus_core import (
     LiveParticipant,
 )
 from modules.consensus_runtime import active_sessions
+from modules.consensus_simulator import (
+    ConsensusSimulation,
+    clear_consensus_simulation,
+    register_consensus_simulation,
+)
 from modules.consensus_web import (
     build_consensus_web_state,
     consensus_web_url,
@@ -82,6 +87,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         active_sessions.pop(77, None)
+        clear_consensus_simulation(77)
         storage.DATA_DIR = self.old_data_dir
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
@@ -120,6 +126,61 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
+        finally:
+            await client.close()
+
+    async def test_simulation_is_selectable_without_masking_live_consensus(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Учебный ведущий",
+        )
+        simulation.confirm_all()
+        simulation.begin_voting()
+        simulation.cast_leader_vote("yes")
+        register_consensus_simulation(simulation)
+
+        default_state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
+        simulation_state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            mode="simulation",
+        )
+
+        self.assertEqual(default_state["mode"], "live")
+        self.assertEqual(default_state["session"]["key"], "web-test")
+        self.assertEqual(simulation_state["mode"], "simulation")
+        self.assertTrue(simulation_state["active"])
+        self.assertTrue(
+            simulation_state["session"]["key"].startswith("simulation:")
+        )
+        self.assertEqual(simulation_state["session"]["voting"]["received"], 1)
+        self.assertEqual(len(simulation_state["queue"]), 3)
+        self.assertEqual(
+            simulation_state["available_modes"],
+            ["live", "simulation"],
+        )
+
+    async def test_http_mode_query_returns_simulation_snapshot(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Учебный ведущий",
+        )
+        register_consensus_simulation(simulation)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("modules.consensus_web._runtime_token", "test-access-token-123456"):
+                response = await client.get(
+                    "/api/state?mode=simulation",
+                    headers={"Authorization": "Bearer test-access-token-123456"},
+                )
+            self.assertEqual(response.status, 200)
+            payload = await response.json()
+            self.assertEqual(payload["mode"], "simulation")
+            self.assertEqual(payload["session"]["stage"], "registration")
         finally:
             await client.close()
 

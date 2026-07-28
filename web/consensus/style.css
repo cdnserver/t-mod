@@ -10,6 +10,8 @@
   --accent-soft: rgba(200, 255, 115, 0.12);
   --gold: #e7c979;
   --red: #ff867d;
+  --simulation: #c59aff;
+  --simulation-soft: rgba(197, 154, 255, 0.12);
   --radius: 22px;
   --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
   --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -216,6 +218,102 @@ button {
 .dashboard {
   display: grid;
   gap: 20px;
+}
+
+.mode-toolbar {
+  display: flex;
+  min-height: 66px;
+  padding: 10px 12px 10px 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(16, 21, 22, 0.78);
+}
+
+.mode-toolbar span,
+.mode-toolbar small {
+  display: block;
+}
+
+.mode-toolbar span {
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.mode-toolbar small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #090d0e;
+}
+
+.mode-switch button {
+  min-height: 36px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.74rem;
+}
+
+.mode-switch button.active {
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.mode-switch button[data-mode="simulation"].active {
+  background: var(--simulation);
+}
+
+.mode-switch button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.simulation-banner {
+  display: flex;
+  padding: 15px 18px;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid rgba(197, 154, 255, 0.28);
+  border-radius: 16px;
+  color: #eadcff;
+  background: var(--simulation-soft);
+  font-size: 0.78rem;
+}
+
+.simulation-banner strong {
+  flex: 0 0 auto;
+  color: var(--simulation);
+}
+
+.simulation-mode .eyebrow,
+.simulation-mode .text-link,
+.simulation-mode .privacy-note span,
+.simulation-mode .counter,
+.simulation-mode .vote-state.done {
+  color: var(--simulation);
+}
+
+.simulation-mode .stage-badge {
+  border-color: rgba(197, 154, 255, 0.28);
+  color: var(--simulation);
+  background: var(--simulation-soft);
+}
+
+.simulation-mode .participant-dot.ready {
+  background: var(--simulation);
 }
 
 .hero {
@@ -589,9 +687,19 @@ footer {
   }
 
   .hero,
+  .mode-toolbar,
+  .simulation-banner,
   footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .mode-switch {
+    width: 100%;
+  }
+
+  .mode-switch button {
+    flex: 1;
   }
 
   .metrics,
