@@ -7,6 +7,7 @@ chcp 65001 >nul
 set PERSISTENT_DIR=C:\Users\Admin\Documents\SGLDiscordBot
 set DATA_DIR=%PERSISTENT_DIR%\data
 set BACKUP_DIR=%PERSISTENT_DIR%\backups
+set CONSENSUS_IP_FILE=%PERSISTENT_DIR%\consensus_server_ip.txt
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
 
 call :banner
@@ -36,7 +37,7 @@ if errorlevel 1 (
 call :ok ".env synchronized"
 
 call :stage "03" "Consensus network"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_consensus_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_consensus_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env" -AddressOutputPath "%CONSENSUS_IP_FILE%"
 if errorlevel 1 (
   call :fail "Failed to configure the consensus network"
   call :warn "Approve the Windows administrator prompt and run this file again."
@@ -118,7 +119,13 @@ echo   Database: %PERSISTENT_DIR%\data\tmod.db
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
 echo   Panel:    http://t.consensus:8787
-echo   Remote:   http://SERVER_LAN_IP:8787 through WireGuard
+set "CONSENSUS_SERVER_IP="
+if exist "%CONSENSUS_IP_FILE%" set /p CONSENSUS_SERVER_IP=<"%CONSENSUS_IP_FILE%"
+if defined CONSENSUS_SERVER_IP (
+  echo   Remote:   http://!CONSENSUS_SERVER_IP!:8787 through WireGuard
+) else (
+  echo   Remote:   use the IPv4 address shown above on port 8787
+)
 echo ============================================================
 echo.
 echo Recent bot logs:

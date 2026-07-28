@@ -5,7 +5,8 @@ param(
 
     [string]$WireGuardSubnet = "10.8.0.0/24",
     [int]$Port = 8787,
-    [string]$ConsensusHostName = "t.consensus"
+    [string]$ConsensusHostName = "t.consensus",
+    [string]$AddressOutputPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -194,6 +195,9 @@ if (!$alreadyConfigured -and !(Test-IsAdministrator)) {
         "-Port $Port " +
         "-ConsensusHostName `"$ConsensusHostName`""
     )
+    if ($AddressOutputPath) {
+        $arguments += " -AddressOutputPath `"$AddressOutputPath`""
+    }
     try {
         $process = Start-Process `
             -FilePath "powershell.exe" `
@@ -229,6 +233,17 @@ else {
 $lanAddress = Get-PrimaryLanAddress
 Write-Host "  [OK] Server address: http://${ConsensusHostName}:$Port"
 if ($lanAddress) {
+    if ($AddressOutputPath) {
+        $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText(
+            $AddressOutputPath,
+            [string]$lanAddress,
+            $utf8WithoutBom
+        )
+    }
     Write-Host "  [OK] LAN/WireGuard address: http://${lanAddress}:$Port"
+}
+elseif ($AddressOutputPath -and (Test-Path -LiteralPath $AddressOutputPath)) {
+    Remove-Item -LiteralPath $AddressOutputPath -Force
 }
 Write-Host "  [OK] WireGuard clients allowed: $WireGuardSubnet"
