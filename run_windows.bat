@@ -35,7 +35,17 @@ if errorlevel 1 (
 )
 call :ok ".env synchronized"
 
-call :stage "03" "Localization"
+call :stage "03" "Consensus network"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_consensus_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env"
+if errorlevel 1 (
+  call :fail "Failed to configure the consensus network"
+  call :warn "Approve the Windows administrator prompt and run this file again."
+  pause
+  exit /b 1
+)
+call :ok "WireGuard and local firewall access ready"
+
+call :stage "04" "Localization"
 if not exist "%PERSISTENT_DIR%\localization.json" (
   copy "localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
   call :ok "localization.json created"
@@ -49,7 +59,7 @@ if not exist "%PERSISTENT_DIR%\localization.json" (
   call :ok "localization.json synchronized"
 )
 
-call :stage "04" "Modules"
+call :stage "05" "Modules"
 call :module "T-Mod Core"
 call :module "TVRS Consensus"
 call :module "SGL Bureau"
@@ -60,21 +70,21 @@ call :module "Zigmund AI"
 call :module "SGL Contracts"
 call :module "SQLite Migrator"
 
-call :stage "05" "Docker engine"
+call :stage "06" "Docker engine"
 call :ensure_docker_engine
 if errorlevel 1 (
   pause
   exit /b 1
 )
 
-call :stage "06" "Stopping old containers"
+call :stage "07" "Stopping old containers"
 docker stop sgl-discord-bot >nul 2>nul
 docker rm sgl-discord-bot >nul 2>nul
 docker stop tmod-discord-bot >nul 2>nul
 docker rm tmod-discord-bot >nul 2>nul
 call :ok "Old containers stopped"
 
-call :stage "07" "Docker build"
+call :stage "08" "Docker build"
 set COMPOSE_BAKE=true
 docker compose build
 if errorlevel 1 (
@@ -85,8 +95,8 @@ if errorlevel 1 (
 )
 call :ok "Docker image ready"
 
-call :stage "08" "Starting T-Mod"
-docker compose up -d
+call :stage "09" "Starting T-Mod"
+docker compose up -d --force-recreate
 if errorlevel 1 (
   call :fail "Docker startup failed"
   call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
@@ -95,7 +105,10 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
-call :stage "09" "Status"
+call :stage "10" "Consensus health check"
+call :check_consensus_health
+
+call :stage "11" "Status"
 docker ps --filter "name=tmod-discord-bot" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
 
 echo.
@@ -104,6 +117,8 @@ echo   T-Mod startup finished.
 echo   Database: %PERSISTENT_DIR%\data\tmod.db
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
+echo   Panel:    http://t.consensus:8787
+echo   Remote:   http://SERVER_LAN_IP:8787 through WireGuard
 echo ============================================================
 echo.
 echo Recent bot logs:
@@ -114,6 +129,21 @@ echo.
 echo Live logs: docker logs -f tmod-discord-bot
 echo.
 pause
+exit /b 0
+
+:check_consensus_health
+for /l %%i in (1,1,24) do (
+  powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health' -TimeoutSec 3; if ($r.status -eq 'ok') { exit 0 } } catch {}; exit 1" >nul 2>nul
+  if not errorlevel 1 (
+    call :ok "Consensus web panel is healthy"
+    exit /b 0
+  )
+  <nul set /p "=."
+  timeout /t 3 /nobreak >nul
+)
+echo.
+call :warn "The bot is running, but the web panel did not answer within 72 seconds."
+call :warn "Check: docker logs --tail 100 tmod-discord-bot"
 exit /b 0
 
 :ensure_docker_engine
@@ -156,7 +186,7 @@ exit /b 1
 :banner
 cls
 echo.
-echo  _______          __  __           _ 
+echo  _______          __  __           _
 echo ^|__   __^|        ^|  \/  ^|         ^| ^|
 echo    ^| ^| _________ ^| \  / ^| ___   __^| ^|
 echo    ^| ^|^|_  /_____^|^| ^|\/^| ^|/ _ \ / _` ^|
