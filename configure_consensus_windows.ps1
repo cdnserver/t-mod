@@ -67,7 +67,11 @@ function Test-FirewallConfiguration {
         $localRule = Get-NetFirewallRule `
             -DisplayName $localRuleName `
             -ErrorAction Stop |
-            Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" }
+            Where-Object {
+                $_.Enabled -eq "True" -and
+                $_.Direction -eq "Inbound" -and
+                $_.Profile -eq "Any"
+            }
         if (!$wireGuardRule -or !$localRule) {
             return $false
         }
@@ -222,7 +226,7 @@ if (!$alreadyConfigured) {
     Set-FirewallRule `
         -DisplayName $localRuleName `
         -RemoteAddress "LocalSubnet" `
-        -Profile "Private"
+        -Profile "Any"
     Set-HostsConfiguration
     Write-Host "  [OK] Consensus network access configured."
 }

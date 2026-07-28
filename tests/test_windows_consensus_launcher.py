@@ -24,7 +24,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
 
         self.assertIn('WireGuardSubnet = "10.8.0.0/24"', script)
         self.assertIn('RemoteAddress "LocalSubnet"', script)
-        self.assertIn('Profile "Private"', script)
+        self.assertGreaterEqual(script.count('Profile "Any"'), 2)
         self.assertIn('-EdgeTraversalPolicy Block', script)
         self.assertIn("Test-FirewallConfiguration", script)
         self.assertIn("Test-HostsConfiguration", script)
