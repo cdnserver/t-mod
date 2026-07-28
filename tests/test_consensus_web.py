@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -21,6 +21,16 @@ from modules.consensus_web import (
     build_consensus_web_state,
     consensus_web_url,
     create_consensus_web_app,
+)
+from modules.consensus_web_auth import (
+    ConsensusWebAuthError,
+    ConsensusWebPrincipal,
+    consume_entry_ticket,
+    create_entry_ticket,
+)
+from modules.consensus_web_control import (
+    consensus_web_capabilities,
+    execute_consensus_web_command,
 )
 
 
@@ -92,6 +102,21 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
 
+    def _principal(self, user_id: int = 1) -> ConsensusWebPrincipal:
+        member = SimpleNamespace(
+            id=user_id,
+            display_name=f"Участник {user_id}",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        return ConsensusWebPrincipal(
+            user_id=user_id,
+            guild_id=77,
+            display_name=member.display_name,
+            csrf_token="csrf-test-token",
+            member=member,  # type: ignore[arg-type]
+        )
+
     async def test_state_exposes_progress_but_not_live_vote_directions(self) -> None:
         state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
 
@@ -104,6 +129,80 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("'vote':", rendered)
         self.assertNotIn("'yes'", rendered)
         self.assertNotIn("'no'", rendered)
+
+    async def test_personal_leader_state_exposes_only_stage_capabilities(self) -> None:
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(),
+        )
+
+        self.assertTrue(state["viewer"]["authenticated"])
+        self.assertTrue(state["viewer"]["leader"])
+        self.assertIn("leader_vote", state["capabilities"])
+        self.assertIn("set_timer", state["capabilities"])
+        self.assertNotIn("open_registration", state["capabilities"])
+        self.assertNotIn("confirm_participant", state["capabilities"])
+
+    def test_leader_capability_matrix_covers_every_live_stage(self) -> None:
+        principal = self._principal()
+        expected = {
+            "registration": {"start_vote", "resend_invitations", "cancel_session"},
+            "voting": {
+                "leader_vote",
+                "set_timer",
+                "finalize_vote",
+                "pause",
+                "finish_session",
+            },
+            "finalizing": {"retry_finalization"},
+            "discussion_type": {
+                "choose_discussion",
+                "pause",
+                "finish_session",
+            },
+            "discussion": {"end_discussion", "pause", "finish_session"},
+            "paused": {"resume", "finish_session"},
+            "after_result": {"next_bill", "finish_session"},
+        }
+        for stage, actions in expected.items():
+            with self.subTest(stage=stage):
+                self.session.stage = stage  # type: ignore[assignment]
+                self.assertTrue(
+                    actions.issubset(
+                        set(
+                            consensus_web_capabilities(
+                                mode="live",
+                                session=self.session,
+                                principal=principal,
+                            )
+                        )
+                    )
+                )
+
+        observer = self._principal(user_id=4)
+        self.assertEqual(
+            consensus_web_capabilities(
+                mode="live",
+                session=self.session,
+                principal=observer,
+            ),
+            [],
+        )
+
+    def test_entry_ticket_is_single_use_and_guild_scoped(self) -> None:
+        ticket = create_entry_ticket(guild_id=77, user_id=1)
+
+        self.assertEqual(
+            consume_entry_ticket(ticket, expected_guild_id=77),
+            (77, 1),
+        )
+        with self.assertRaises(ConsensusWebAuthError):
+            consume_entry_ticket(ticket, expected_guild_id=77)
+
+        wrong_guild = create_entry_ticket(guild_id=77, user_id=1)
+        with self.assertRaises(ConsensusWebAuthError):
+            consume_entry_ticket(wrong_guild, expected_guild_id=78)
 
     async def test_http_api_requires_token_and_serves_dashboard(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
@@ -126,6 +225,72 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
+        finally:
+            await client.close()
+
+    async def test_legacy_key_cannot_execute_commands(self) -> None:
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("modules.consensus_web._runtime_token", "test-access-token-123456"):
+                response = await client.post(
+                    "/api/command",
+                    headers={
+                        "Authorization": "Bearer test-access-token-123456",
+                        "X-Idempotency-Key": "legacy-command-123456",
+                    },
+                    json={"action": "finalize_vote"},
+                )
+            self.assertEqual(response.status, 403)
+            self.assertEqual(
+                (await response.json())["error"],
+                "personal_login_required",
+            )
+        finally:
+            await client.close()
+
+    async def test_personal_command_requires_csrf_and_is_idempotent(self) -> None:
+        principal = self._principal()
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        execute = AsyncMock(return_value="Команда выполнена.")
+        try:
+            with (
+                patch(
+                    "modules.consensus_web.resolve_principal",
+                    AsyncMock(return_value=principal),
+                ),
+                patch(
+                    "modules.consensus_web.execute_consensus_web_command",
+                    execute,
+                ),
+            ):
+                denied = await client.post(
+                    "/api/command",
+                    headers={"X-Idempotency-Key": "personal-command-no-csrf"},
+                    json={},
+                )
+                self.assertEqual(denied.status, 403)
+
+                headers = {
+                    "X-CSRF-Token": "csrf-test-token",
+                    "X-Idempotency-Key": "personal-command-idempotent",
+                }
+                body = {
+                    "mode": "live",
+                    "action": "leader_vote",
+                    "session_key": "web-test",
+                    "revision": 0,
+                    "bill_id": 20,
+                    "payload": {"vote": "yes"},
+                }
+                first = await client.post("/api/command", headers=headers, json=body)
+                second = await client.post("/api/command", headers=headers, json=body)
+            self.assertEqual(first.status, 200)
+            self.assertEqual(second.status, 200)
+            self.assertEqual(execute.await_count, 1)
         finally:
             await client.close()
 
@@ -183,6 +348,36 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["session"]["stage"], "registration")
         finally:
             await client.close()
+
+    async def test_simulation_leader_command_uses_same_simulation_session(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=1,
+            leader_display="Ведущий",
+        )
+        register_consensus_simulation(simulation)
+        principal = self._principal()
+        capabilities = consensus_web_capabilities(
+            mode="simulation",
+            session=simulation.session,
+            principal=principal,
+        )
+        self.assertIn("confirm_all", capabilities)
+
+        message = await execute_consensus_web_command(  # type: ignore[arg-type]
+            self.bot,
+            self.bot.get_guild(77),
+            principal,
+            mode="simulation",
+            action="confirm_all",
+            session_key=simulation.session.session_key,
+            revision=simulation.session.revision,
+            bill_id=0,
+            payload={},
+        )
+
+        self.assertEqual(message, "Команда симулятора выполнена.")
+        self.assertTrue(simulation.session.quorum_ready())
 
     def test_public_https_url_replaces_local_display_address(self) -> None:
         with patch(

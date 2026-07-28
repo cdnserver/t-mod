@@ -11,6 +11,7 @@ from discord.ext import commands
 from persistence import outbox_repository as _outbox_storage
 from persistence import tvrs_repository as storage
 from modules.consensus_core import (
+    ConsensusStateError,
     LiveConsensusSession,
 )
 from modules.consensus_runtime import (
@@ -796,6 +797,7 @@ async def begin_next_bill_vote(
     *,
     expected_stage: str | None = None,
     expected_result_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     if session.finished or session.stage not in {"registration", "after_result"}:
         return
@@ -803,6 +805,13 @@ async def begin_next_bill_vote(
     paused_reason: str | None = None
     empty_queue_generation: tuple[str, int, int] | None = None
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние заседания уже изменилось. Обновите пульт."
+            )
         if session.finished or session.stage not in {"registration", "after_result"}:
             return
         if expected_stage is not None and not consensus_generation_matches(

@@ -87,9 +87,17 @@ async def set_vote_timer(
     seconds: int,
     *,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     clean_seconds = max(0, int(seconds))
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние голосования уже изменилось. Обновите пульт."
+            )
         if not consensus_generation_matches(
             session,
             stage="voting",
@@ -228,7 +236,15 @@ async def start_discussion_channel(
     discussion_type: str,
     *,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
+    if (
+        expected_revision is not None
+        and int(session.revision) != int(expected_revision)
+    ):
+        raise ConsensusStateError(
+            "Состояние консенсуса уже изменилось. Обновите пульт."
+        )
     if session.current_bill is None or not consensus_generation_matches(
         session,
         stage="discussion_type",
@@ -285,7 +301,12 @@ async def start_discussion_channel(
     activation_committed = False
     try:
         async with consensus_session_lock(session.guild_id):
-            if session.current_bill is None or not consensus_generation_matches(
+            if (
+                expected_revision is not None
+                and int(session.revision) != int(expected_revision)
+            ):
+                should_activate = False
+            elif session.current_bill is None or not consensus_generation_matches(
                 session,
                 stage="discussion_type",
                 bill_id=expected_bill_id,
@@ -406,6 +427,7 @@ async def end_discussion(
     actor: ConsensusActor | None = None,
     expected_stage: str | None = None,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     if expected_stage is not None and not consensus_generation_matches(
         session,
@@ -417,6 +439,13 @@ async def end_discussion(
         return
     closed_channel_id: int | None = None
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние дискуссии уже изменилось. Обновите пульт."
+            )
         if expected_stage is not None and not consensus_generation_matches(
             session,
             stage=expected_stage,
@@ -461,8 +490,16 @@ async def pause_session(
     *,
     expected_stage: str | None = None,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние заседания уже изменилось. Обновите пульт."
+            )
         if expected_stage is not None and not consensus_generation_matches(
             session,
             stage=expected_stage,
@@ -557,9 +594,17 @@ async def resume_session(
     *,
     expected_stage: str | None = None,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     quorum_failed = False
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние заседания уже изменилось. Обновите пульт."
+            )
         if expected_stage is not None and not consensus_generation_matches(
             session,
             stage=expected_stage,

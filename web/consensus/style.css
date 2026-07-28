@@ -109,6 +109,49 @@ body {
   font-size: 0.75rem;
 }
 
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.viewer-chip {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 9px;
+  align-items: center;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(16, 21, 22, 0.82);
+}
+
+.viewer-chip span {
+  grid-column: 1;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.viewer-chip strong {
+  grid-column: 1;
+  max-width: 180px;
+  overflow: hidden;
+  font-size: 0.73rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-chip a {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-decoration: none;
+}
+
 .connection time {
   margin-left: 14px;
   color: var(--text);
@@ -162,6 +205,52 @@ body {
   margin-top: 32px;
 }
 
+.login-card p strong {
+  color: var(--text);
+}
+
+.login-guide {
+  display: grid;
+  grid-template-columns: 34px 120px minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: center;
+  margin-top: 30px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(8, 11, 12, 0.5);
+}
+
+.login-guide span {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
+.login-guide b {
+  font-size: 0.78rem;
+}
+
+.login-guide i {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+.legacy-login {
+  margin-top: 22px;
+  color: var(--muted);
+}
+
+.legacy-login summary {
+  cursor: pointer;
+  font-size: 0.74rem;
+}
+
+.legacy-login form {
+  margin-top: 16px;
+}
+
 label {
   display: block;
   margin-bottom: 8px;
@@ -183,6 +272,11 @@ button {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   font: inherit;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: wait;
 }
 
 input {
@@ -312,6 +406,158 @@ button {
   background: var(--simulation-soft);
 }
 
+.operator-panel {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(200, 255, 115, 0.18);
+}
+
+.operator-panel::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  content: "";
+  background: var(--accent);
+}
+
+.simulation-mode .operator-panel {
+  border-color: rgba(197, 154, 255, 0.24);
+}
+
+.simulation-mode .operator-panel::before {
+  background: var(--simulation);
+}
+
+.operator-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.operator-heading h2 {
+  margin: 7px 0 5px;
+  font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+}
+
+.operator-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.operator-lock {
+  flex: 0 0 auto;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+}
+
+.operator-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.control-group {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(8, 11, 12, 0.42);
+}
+
+.control-group strong,
+.control-group small {
+  display: block;
+}
+
+.control-group strong {
+  font-size: 0.8rem;
+}
+
+.control-group small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+
+.control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.control-button {
+  min-height: 38px;
+  padding: 0 13px;
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--surface-2);
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.control-button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  filter: brightness(1.12);
+}
+
+.control-button.primary {
+  border-color: rgba(200, 255, 115, 0.34);
+  color: #10140d;
+  background: var(--accent);
+}
+
+.simulation-mode .control-button.primary {
+  border-color: rgba(197, 154, 255, 0.38);
+  background: var(--simulation);
+}
+
+.control-button.positive {
+  border-color: rgba(200, 255, 115, 0.32);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.control-button.danger {
+  border-color: rgba(255, 134, 125, 0.32);
+  color: var(--red);
+  background: rgba(255, 134, 125, 0.08);
+}
+
+.observer-note {
+  grid-column: 1 / -1;
+  padding: 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.command-message {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(200, 255, 115, 0.25);
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.76rem;
+}
+
+.command-message.error {
+  border-color: rgba(255, 134, 125, 0.28);
+  color: var(--red);
+  background: rgba(255, 134, 125, 0.08);
+}
+
 .simulation-mode .participant-dot.ready {
   background: var(--simulation);
 }
@@ -429,6 +675,13 @@ button {
   color: var(--accent);
   font-size: 0.8rem;
   text-decoration: none;
+}
+
+.panel-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 14px;
 }
 
 .bill-number {
@@ -682,6 +935,14 @@ footer {
     display: none;
   }
 
+  .topbar-tools {
+    gap: 8px;
+  }
+
+  .viewer-chip {
+    display: none;
+  }
+
   .connection time {
     margin-left: 5px;
   }
@@ -689,6 +950,7 @@ footer {
   .hero,
   .mode-toolbar,
   .simulation-banner,
+  .operator-heading,
   footer {
     align-items: flex-start;
     flex-direction: column;
@@ -703,6 +965,7 @@ footer {
   }
 
   .metrics,
+  .operator-controls,
   .layout-secondary {
     grid-template-columns: 1fr;
   }
@@ -713,6 +976,14 @@ footer {
 
   .login-row {
     flex-direction: column;
+  }
+
+  .login-guide {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .login-guide i {
+    display: none;
   }
 }
 

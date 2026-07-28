@@ -1,4 +1,4 @@
-"""Read-only, token-protected LAN dashboard for live consensus."""
+"""Authenticated observer dashboard and leader console for live consensus."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import hmac
 import json
 import os
 import secrets
+import time
+import traceback
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,8 +19,26 @@ import discord
 from aiohttp import web
 from discord.ext import commands
 
+from modules.consensus_core import ConsensusStateError
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import get_consensus_simulation
+from modules.consensus_web_auth import (
+    ConsensusWebAuthError,
+    ConsensusWebPrincipal,
+    clear_session_cookie,
+    consensus_web_entry_url as _authenticated_entry_url,
+    consume_entry_ticket,
+    create_session_token,
+    csrf_matches,
+    resolve_principal,
+    set_session_cookie,
+)
+from modules.consensus_web_control import (
+    ConsensusWebCommandError,
+    consensus_web_capabilities,
+    execute_consensus_web_command,
+)
+from modules.tvrs_presentation import is_chair
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 
@@ -82,6 +102,8 @@ _runner: web.AppRunner | None = None
 _start_lock = asyncio.Lock()
 _runtime_token: str | None = None
 _failed_auth: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+_command_rate: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=80))
+_command_receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 
 
 def _access_token() -> str:
@@ -113,6 +135,20 @@ def consensus_web_url() -> str:
     if CONSENSUS_WEB_PUBLIC_URL:
         return CONSENSUS_WEB_PUBLIC_URL
     return f"http://{CONSENSUS_WEB_PUBLIC_NAME}:{CONSENSUS_WEB_PORT}"
+
+
+def consensus_web_entry_url(
+    *,
+    guild_id: int,
+    user_id: int,
+    mode: str = "live",
+) -> str:
+    return _authenticated_entry_url(
+        consensus_web_url(),
+        guild_id=guild_id,
+        user_id=user_id,
+        mode=mode,
+    )
 
 
 def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
@@ -209,6 +245,7 @@ def _session_payload(
         },
         "current_bill": (
             {
+                "id": int(current_bill.get("id") or 0),
                 "bill_number": int(current_bill.get("bill_number") or 0),
                 "title": str(current_bill.get("title") or ""),
                 "source_url": (
@@ -223,6 +260,7 @@ def _session_payload(
             if current_bill
             else (
                 {
+                    "id": int(latest_result.bill_id),
                     "bill_number": int(latest_result.bill_number),
                     "title": str(latest_result.title),
                     "source_url": (
@@ -243,6 +281,16 @@ def _session_payload(
             if session.timer_deadline is not None
             else None
         ),
+        "pause_reason": str(getattr(session, "paused_reason", "") or ""),
+        "discussion": {
+            "type": str(getattr(session, "discussion_type", "") or ""),
+            "channel_url": (
+                f"https://discord.com/channels/{guild_id}/"
+                f"{int(session.discussion_channel_id)}"
+                if getattr(session, "discussion_channel_id", None)
+                else None
+            ),
+        },
         "quorum": {
             "confirmed": len(confirmed),
             "invited": len(participants),
@@ -300,6 +348,8 @@ async def build_consensus_web_state(
     guild_id: int,
     *,
     mode: str | None = None,
+    principal: ConsensusWebPrincipal | None = None,
+    legacy_read_only: bool = False,
 ) -> dict[str, Any]:
     guild_id = int(guild_id)
     guild = bot.get_guild(guild_id)
@@ -359,6 +409,29 @@ async def build_consensus_web_state(
             _result_payload(row, guild_id)
             for row in recent_rows
         ],
+        "viewer": {
+            "authenticated": principal is not None,
+            "legacy_read_only": bool(legacy_read_only),
+            "id": int(principal.user_id) if principal else None,
+            "name": (
+                str(principal.display_name)
+                if principal
+                else ("Совместимый просмотр" if legacy_read_only else "")
+            ),
+            "administrator": bool(principal and principal.administrator),
+            "chair": bool(principal and is_chair(principal.member)),
+            "leader": bool(
+                principal
+                and session is not None
+                and int(session.leader_id) == int(principal.user_id)
+            ),
+            "csrf_token": principal.csrf_token if principal else None,
+        },
+        "capabilities": consensus_web_capabilities(
+            mode=requested_mode,
+            session=session,
+            principal=principal,
+        ),
     }
     if session is None:
         return state
@@ -392,33 +465,25 @@ async def _security_middleware(
     request: web.Request,
     handler: Any,
 ) -> web.StreamResponse:
-    if request.path.startswith("/api/") and request.path != "/api/health":
-        remote = _request_remote(request)
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        failures = _failed_auth[remote]
-        while failures and now - failures[0] > 300:
-            failures.popleft()
-        if len(failures) >= 30:
-            return web.json_response(
-                {"error": "too_many_attempts"},
-                status=429,
-            )
-        supplied = _request_token(request)
-        if not supplied or not hmac.compare_digest(supplied, _access_token()):
-            failures.append(now)
-            return web.json_response({"error": "unauthorized"}, status=401)
-        failures.clear()
-    response = await handler(request)
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        _apply_security_headers(exc)
+        raise
+    _apply_security_headers(response)
+    return response
+
+
+def _apply_security_headers(response: web.StreamResponse) -> None:
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self'; "
-        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; object-src 'none'; form-action 'self'"
     )
-    return response
 
 
 def create_consensus_web_app(
@@ -440,12 +505,91 @@ def create_consensus_web_app(
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
+    async def authenticated_request(
+        request: web.Request,
+    ) -> tuple[ConsensusWebPrincipal | None, bool]:
+        principal = await resolve_principal(
+            request,
+            bot,
+            guild_id=int(guild_id),
+        )
+        if principal is not None:
+            _failed_auth[_request_remote(request)].clear()
+            return principal, False
+        supplied = _request_token(request)
+        if supplied and hmac.compare_digest(supplied, _access_token()):
+            return None, True
+        remote = _request_remote(request)
+        now = asyncio.get_running_loop().time()
+        failures = _failed_auth[remote]
+        while failures and now - failures[0] > 300:
+            failures.popleft()
+        if len(failures) >= 30:
+            raise web.HTTPTooManyRequests(
+                text=json.dumps({"error": "too_many_attempts"}),
+                content_type="application/json",
+            )
+        failures.append(now)
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"error": "unauthorized"}),
+            content_type="application/json",
+        )
+
+    async def ticket_login(request: web.Request) -> web.Response:
+        try:
+            _, user_id = consume_entry_ticket(
+                request.query.get("ticket", ""),
+                expected_guild_id=int(guild_id),
+            )
+        except ConsensusWebAuthError:
+            raise web.HTTPUnauthorized(
+                text="Ссылка недействительна или уже использована. Откройте новую из Discord."
+            )
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
+        member = guild.get_member(int(user_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(user_id))
+            except discord.DiscordException as exc:
+                raise web.HTTPForbidden(
+                    text="Участник больше не состоит на сервере."
+                ) from exc
+        token, _ = create_session_token(
+            guild_id=int(guild_id),
+            user_id=int(member.id),
+        )
+        mode = (
+            "simulation"
+            if request.query.get("mode") == "simulation"
+            else "live"
+        )
+        response = web.HTTPFound(location=f"/?mode={mode}")
+        set_session_cookie(
+            response,
+            token,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+        )
+        return response
+
+    async def logout(_: web.Request) -> web.Response:
+        response = web.HTTPFound(location="/")
+        clear_session_cookie(
+            response,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+        )
+        return response
+
     async def state(request: web.Request) -> web.Response:
+        principal, legacy_read_only = await authenticated_request(request)
         return web.json_response(
             await build_consensus_web_state(
                 bot,
                 int(guild_id),
                 mode=request.query.get("mode"),
+                principal=principal,
+                legacy_read_only=legacy_read_only,
             ),
             dumps=lambda value: json.dumps(
                 value,
@@ -454,10 +598,145 @@ def create_consensus_web_app(
             ),
         )
 
+    async def command(request: web.Request) -> web.Response:
+        principal, legacy_read_only = await authenticated_request(request)
+        if legacy_read_only or principal is None:
+            return web.json_response(
+                {
+                    "error": "personal_login_required",
+                    "message": "Для управления откройте персональную ссылку из Discord.",
+                },
+                status=403,
+            )
+        if not csrf_matches(request, principal):
+            return web.json_response(
+                {"error": "csrf_failed", "message": "Обновите панель и повторите действие."},
+                status=403,
+            )
+        rate_now = asyncio.get_running_loop().time()
+        recent_commands = _command_rate[int(principal.user_id)]
+        while recent_commands and rate_now - recent_commands[0] > 60:
+            recent_commands.popleft()
+        if len(recent_commands) >= 60:
+            return web.json_response(
+                {
+                    "error": "command_rate_limited",
+                    "message": "Слишком много команд. Подождите несколько секунд.",
+                },
+                status=429,
+            )
+        recent_commands.append(rate_now)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            return web.json_response(
+                {"error": "invalid_json", "message": "Некорректная команда."},
+                status=400,
+            )
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "invalid_payload", "message": "Некорректная команда."},
+                status=400,
+            )
+        idempotency_key = request.headers.get("X-Idempotency-Key", "").strip()
+        if len(idempotency_key) < 12 or len(idempotency_key) > 120:
+            return web.json_response(
+                {
+                    "error": "idempotency_key_required",
+                    "message": "Команда не имеет ключа защиты от повтора.",
+                },
+                status=400,
+            )
+        now = time.monotonic()
+        for key, (expires_at, _) in list(_command_receipts.items()):
+            if expires_at <= now:
+                _command_receipts.pop(key, None)
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = _command_receipts.get(receipt_key)
+        if cached is not None:
+            return web.json_response(cached[1])
+        try:
+            revision = int(body.get("revision") or 0)
+            bill_id = body.get("bill_id")
+            bill_id = int(bill_id) if bill_id is not None else None
+            payload = body.get("payload") or {}
+            if not isinstance(payload, dict):
+                raise ValueError("payload")
+            command_guild = bot.get_guild(int(guild_id))
+            if command_guild is None:
+                return web.json_response(
+                    {
+                        "error": "guild_unavailable",
+                        "message": "Связь бота с Discord временно недоступна.",
+                    },
+                    status=503,
+                )
+            message = await execute_consensus_web_command(
+                bot,
+                command_guild,
+                principal,
+                mode=str(body.get("mode") or "live"),
+                action=str(body.get("action") or ""),
+                session_key=str(body.get("session_key") or ""),
+                revision=revision,
+                bill_id=bill_id,
+                payload=payload,
+            )
+        except ConsensusWebCommandError as exc:
+            return web.json_response(
+                {
+                    "error": exc.code,
+                    "message": str(exc),
+                    "details": exc.details,
+                },
+                status=exc.status,
+            )
+        except ConsensusStateError as exc:
+            return web.json_response(
+                {
+                    "error": "state_conflict",
+                    "message": str(exc),
+                },
+                status=409,
+            )
+        except (ValueError, TypeError):
+            return web.json_response(
+                {"error": "invalid_payload", "message": "Некорректные параметры команды."},
+                status=400,
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            return web.json_response(
+                {
+                    "error": "command_failed",
+                    "message": (
+                        "Команда не выполнена. Состояние можно безопасно обновить "
+                        "и повторить действие."
+                    ),
+                    "type": type(exc).__name__,
+                },
+                status=500,
+            )
+        response_payload = {
+            "ok": True,
+            "message": message,
+            "state": await build_consensus_web_state(
+                bot,
+                int(guild_id),
+                mode=str(body.get("mode") or "live"),
+                principal=principal,
+            ),
+        }
+        _command_receipts[receipt_key] = (now + 300.0, response_payload)
+        return web.json_response(response_payload)
+
     app.router.add_get("/", index)
     app.router.add_get("/assets/{name}", asset)
+    app.router.add_get("/auth/ticket", ticket_login)
+    app.router.add_get("/auth/logout", logout)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/state", state)
+    app.router.add_post("/api/command", command)
     return app
 
 
@@ -511,6 +790,10 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         return
     token = _access_token()
     public = bool(CONSENSUS_WEB_PUBLIC_URL)
+    personal_url = consensus_web_entry_url(
+        guild_id=interaction.guild.id,
+        user_id=interaction.user.id,
+    )
     embed = discord.Embed(
         title=(
             "🖥️ Панель консенсуса"
@@ -519,16 +802,34 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         ),
         description=(
             f"Адрес: **{consensus_web_url()}**\n"
-            f"Ключ доступа: ||`{token}`||\n\n"
+            f"Резервный ключ просмотра: ||`{token}`||\n\n"
             "Панель работает только пока запущен контейнер T-Mod. "
             + (
                 "Доступ проходит через Cloudflare Tunnel."
                 if public
                 else "Не публикуйте порт в интернете."
             )
-            + " Не передавайте ключ участникам."
+            + " Управление доступно только после персонального входа из Discord."
         ),
         color=0xD9D9D9,
+    )
+    embed.add_field(
+        name="Режимы доступа",
+        value=(
+            "Кнопка ниже открывает персональную сессию и проверяет ваши роли "
+            "при каждом действии. Резервный ключ даёт только просмотр и не "
+            "позволяет управлять заседанием."
+        ),
+        inline=False,
+    )
+    view = discord.ui.View(timeout=600)
+    view.add_item(
+        discord.ui.Button(
+            label="Открыть персональный веб-пульт",
+            emoji="🖥️",
+            style=discord.ButtonStyle.link,
+            url=personal_url,
+        )
     )
     embed.add_field(
         name=(
@@ -549,7 +850,11 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(
+        embed=embed,
+        view=view,
+        ephemeral=True,
+    )
 
 
 def setup_consensus_web(bot: commands.Bot) -> None:
@@ -573,6 +878,7 @@ __all__ = [
     "CONSENSUS_WEB_PUBLIC_NAME",
     "CONSENSUS_WEB_PUBLIC_URL",
     "build_consensus_web_state",
+    "consensus_web_entry_url",
     "consensus_web_url",
     "create_consensus_web_app",
     "ensure_consensus_web_server",

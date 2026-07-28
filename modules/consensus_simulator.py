@@ -215,6 +215,11 @@ class ConsensusSimulation:
         init=False,
     )
     coordinator: ConsensusCoordinator = field(init=False)
+    control_message: discord.Message | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         participants = {
@@ -751,11 +756,36 @@ async def _apply_simulation_action(
     except ConsensusStateError as exc:
         await interaction.response.send_message(str(exc), ephemeral=True)
         return
+    interaction_message = getattr(interaction, "message", None)
+    if interaction_message is not None:
+        simulation.control_message = interaction_message
     await interaction.response.edit_message(
         embed=consensus_simulation_embed(simulation),
         view=None if simulation.finished else ConsensusSimulationView(simulation),
         allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
     )
+
+
+async def refresh_consensus_simulation_projection(
+    simulation: ConsensusSimulation,
+) -> None:
+    """Converge the original Discord simulator card after a web action."""
+
+    message = simulation.control_message
+    if message is None:
+        return
+    try:
+        await message.edit(
+            embed=consensus_simulation_embed(simulation),
+            view=None if simulation.finished else ConsensusSimulationView(simulation),
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+            ),
+        )
+    except discord.DiscordException:
+        return
 
 
 class SimulationScenarioSelect(discord.ui.Select):
@@ -941,6 +971,10 @@ async def start_consensus_simulation(interaction: discord.Interaction) -> None:
         view=ConsensusSimulationView(simulation),
         allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
     )
+    try:
+        simulation.control_message = await interaction.original_response()
+    except discord.DiscordException:
+        pass
 
 
 __all__ = [
@@ -952,5 +986,6 @@ __all__ = [
     "consensus_simulation_embed",
     "get_consensus_simulation",
     "register_consensus_simulation",
+    "refresh_consensus_simulation_projection",
     "start_consensus_simulation",
 ]

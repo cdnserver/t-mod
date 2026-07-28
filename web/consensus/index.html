@@ -24,10 +24,17 @@
             <small>оперативная панель</small>
           </span>
         </a>
-        <div class="connection">
-          <span id="connection-dot" class="connection-dot"></span>
-          <span id="connection-text">подключение</span>
-          <time id="clock">--:--:--</time>
+        <div class="topbar-tools">
+          <div id="viewer-chip" class="viewer-chip" hidden>
+            <span id="viewer-role">наблюдатель</span>
+            <strong id="viewer-name">—</strong>
+            <a href="/auth/logout">Выйти</a>
+          </div>
+          <div class="connection">
+            <span id="connection-dot" class="connection-dot"></span>
+            <span id="connection-text">подключение</span>
+            <time id="clock">--:--:--</time>
+          </div>
         </div>
       </header>
 
@@ -35,25 +42,34 @@
         <div class="eyebrow">ЗАЩИЩЁННЫЙ ЛОКАЛЬНЫЙ КОНТУР</div>
         <h1 id="login-title">Вход в панель</h1>
         <p>
-          Введите ключ из Discord: «Настройки бота» → «Веб-панель».
-          Ключ хранится только до закрытия вкладки.
+          Откройте личный пульт консенсуса в Discord и нажмите
+          <strong>«Веб-пульт»</strong>. Персональная ссылка автоматически
+          определит вас как ведущего или наблюдателя.
         </p>
-        <form id="login-form">
-          <label for="token">Ключ доступа</label>
-          <div class="login-row">
-            <input
-              id="token"
-              name="token"
-              type="password"
-              autocomplete="current-password"
-              minlength="16"
-              required
-              placeholder="Вставьте ключ"
-            >
-            <button type="submit">Открыть</button>
-          </div>
-          <output id="login-error" class="form-error"></output>
-        </form>
+        <div class="login-guide">
+          <span>01</span><b>/tvrs</b><i>Откройте текущий консенсус</i>
+          <span>02</span><b>Личный пульт</b><i>Выберите участие или обзор</i>
+          <span>03</span><b>Веб-пульт</b><i>Перейдите по персональной ссылке</i>
+        </div>
+        <details class="legacy-login">
+          <summary>Резервный вход только для просмотра</summary>
+          <form id="login-form">
+            <label for="token">Резервный ключ</label>
+            <div class="login-row">
+              <input
+                id="token"
+                name="token"
+                type="password"
+                autocomplete="current-password"
+                minlength="16"
+                required
+                placeholder="Ключ из настроек бота"
+              >
+              <button type="submit">Смотреть</button>
+            </div>
+          </form>
+        </details>
+        <output id="login-error" class="form-error"></output>
       </section>
 
       <div id="dashboard" class="dashboard" hidden>
@@ -75,6 +91,21 @@
             но не меняет базу, очередь и реальные голоса.
           </span>
         </aside>
+
+        <section id="operator-panel" class="panel operator-panel" hidden>
+          <div class="operator-heading">
+            <div>
+              <div id="operator-eyebrow" class="eyebrow">ПУЛЬТ ВЕДУЩЕГО</div>
+              <h2 id="operator-title">Управление заседанием</h2>
+              <p id="operator-description">
+                Команды синхронно меняют ту же сессию, которая работает в Discord.
+              </p>
+            </div>
+            <span id="operator-lock" class="operator-lock">персональный доступ</span>
+          </div>
+          <div id="command-message" class="command-message" role="status" hidden></div>
+          <div id="operator-controls" class="operator-controls"></div>
+        </section>
 
         <section class="hero">
           <div>
@@ -117,9 +148,14 @@
                 <div class="eyebrow">НА РАССМОТРЕНИИ</div>
                 <h2 id="bill-title">Проект не выбран</h2>
               </div>
-              <a id="bill-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
-                Оригинал ↗
-              </a>
+              <div class="panel-links">
+                <a id="discussion-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+                  Дискуссия ↗
+                </a>
+                <a id="bill-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+                  Оригинал ↗
+                </a>
+              </div>
             </div>
             <div id="bill-number" class="bill-number">—</div>
 

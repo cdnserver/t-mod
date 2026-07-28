@@ -11,6 +11,7 @@ import discord
 from persistence import activity_repository as _activity_storage
 from persistence import tvrs_repository as storage
 from modules.consensus_core import (
+    ConsensusStateError,
     DEFAULT_CONSENSUS_RULES,
     LiveConsensusSession,
     clean_stage_name,
@@ -134,6 +135,86 @@ def build_preparation_embed(
         )
     )
     return embed, report
+
+
+async def open_consensus_registration(
+    bot,
+    guild: discord.Guild,
+    leader: discord.Member,
+) -> LiveConsensusSession:
+    """Open registration through the canonical application workflow.
+
+    Discord buttons and the web leader console deliberately share this
+    function, so preflight, durable delivery, registry and public projection
+    cannot drift into two different implementations.
+    """
+
+    participants, report = _preflight(guild, leader.id)
+    if not report.can_open_registration:
+        reason = "; ".join(report.blockers) or "условия открытия не выполнены"
+        raise ConsensusStateError(f"Регистрация не открыта: {reason}")
+    async with consensus_session_lock(guild.id):
+        active = _active_sessions.get(guild.id)
+        if active is not None and not active.finished:
+            raise ConsensusStateError(
+                f"Заседание уже открыто ведущим {active.leader_display}."
+            )
+        participants, report = _preflight(guild, leader.id)
+        if not report.can_open_registration:
+            reason = "; ".join(report.blockers) or "условия изменились"
+            raise ConsensusStateError(f"Регистрация не открыта: {reason}")
+        plenary_number = await asyncio.to_thread(
+            storage.tvrs_get_next_plenary_number,
+            guild.id,
+            TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
+        )
+        session = LiveConsensusSession(
+            session_key=f"{guild.id}:v3:{uuid.uuid4().hex[:12]}",
+            guild_id=guild.id,
+            channel_id=TVRS_BILLS_CHANNEL_ID,
+            leader_id=leader.id,
+            leader_display=leader.display_name,
+            plenary_number=plenary_number,
+            participants={item.user_id: item for item in participants},
+            engine_version=CONSENSUS_ENGINE_VERSION,
+        )
+        session.participants[leader.id].confirmed = True
+        _consensus_registry.add(session)
+        try:
+            deliveries = build_control_dm_deliveries(
+                session,
+                phase="registration",
+            )
+            deliveries.append(
+                build_phase_announcement_delivery(
+                    session,
+                    phase="registration",
+                )
+            )
+            await run_blocking_cancellation_safe(
+                _consensus.save_with_deliveries,
+                session,
+                "v3_registration_opened",
+                actor=ConsensusActor(leader.id, leader.display_name),
+                details={
+                    "engine_version": CONSENSUS_ENGINE_VERSION,
+                    "participant_count": len(session.participants),
+                    "queue_count": report.queue_count,
+                },
+                deliveries=deliveries,
+            )
+        except Exception:
+            _consensus_registry.remove(
+                guild.id,
+                session_key=session.session_key,
+            )
+            raise
+
+    wake_delivery_worker()
+    await delete_sticky_message(bot, guild)
+    await ensure_public_consensus_card(bot, guild, session)
+    wake_operations_worker()
+    return session
 
 
 def build_observer_embed(session: LiveConsensusSession) -> discord.Embed:
@@ -412,7 +493,14 @@ class TVRSConsensusEntryView(TVRSBaseView):
             else:
                 embed = build_live_vote_embed(session)
                 view = TVRSHostVoteView(session.session_key)
+            from modules.consensus_web import consensus_web_entry_url
+
+            web_url = consensus_web_entry_url(
+                guild_id=session.guild_id,
+                user_id=user_id,
+            )
             await interaction.response.send_message(
+                content=f"🖥️ [Открыть персональный веб-пульт]({web_url})",
                 embed=embed,
                 view=view,
                 ephemeral=True,
@@ -505,6 +593,20 @@ class TVRSPreparationView(_RequesterPortalView):
         )
         back.callback = self.back
         self.add_item(back)
+        from modules.consensus_web import consensus_web_entry_url
+
+        self.add_item(
+            discord.ui.Button(
+                label="Веб-пульт",
+                emoji="🖥️",
+                style=discord.ButtonStyle.link,
+                url=consensus_web_entry_url(
+                    guild_id=self.guild_id,
+                    user_id=self.requester_id,
+                ),
+                row=1,
+            )
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not await super().interaction_check(interaction):
@@ -532,88 +634,19 @@ class TVRSPreparationView(_RequesterPortalView):
 
     async def open_registration(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        participants, report = _preflight(interaction.guild, interaction.user.id)
-        if not report.can_open_registration:
-            embed, refreshed = build_preparation_embed(interaction.guild, interaction.user.id)
-            await interaction.response.edit_message(
-                content=None,
-                embed=embed,
-                view=TVRSPreparationView(
-                    interaction.user.id,
-                    interaction.guild.id,
-                    refreshed,
-                ),
-            )
-            return
         await interaction.response.defer()
-        async with consensus_session_lock(interaction.guild.id):
-            active = _active_sessions.get(interaction.guild.id)
-            if active is not None and not active.finished:
-                await interaction.followup.send(
-                    f"Заседание уже открыто ведущим <@{active.leader_id}>.",
-                    ephemeral=True,
-                )
-                return
-            participants, report = _preflight(interaction.guild, interaction.user.id)
-            if not report.can_open_registration:
-                await interaction.followup.send(
-                    "Условия изменились. Нажмите **«Проверить снова»**.",
-                    ephemeral=True,
-                )
-                return
-            plenary_number = await asyncio.to_thread(
-                storage.tvrs_get_next_plenary_number,
-                interaction.guild.id,
-                TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
+        try:
+            session = await open_consensus_registration(
+                interaction.client,
+                interaction.guild,
+                interaction.user,
             )
-            session = LiveConsensusSession(
-                session_key=f"{interaction.guild.id}:v3:{uuid.uuid4().hex[:12]}",
-                guild_id=interaction.guild.id,
-                channel_id=TVRS_BILLS_CHANNEL_ID,
-                leader_id=interaction.user.id,
-                leader_display=interaction.user.display_name,
-                plenary_number=plenary_number,
-                participants={item.user_id: item for item in participants},
-                engine_version=CONSENSUS_ENGINE_VERSION,
-            )
-            session.participants[interaction.user.id].confirmed = True
-            _consensus_registry.add(session)
-            try:
-                deliveries = build_control_dm_deliveries(session, phase="registration")
-                deliveries.append(
-                    build_phase_announcement_delivery(
-                        session,
-                        phase="registration",
-                    )
-                )
-                await run_blocking_cancellation_safe(
-                    _consensus.save_with_deliveries,
-                    session,
-                    "v3_registration_opened",
-                    actor=ConsensusActor(
-                        interaction.user.id,
-                        interaction.user.display_name,
-                    ),
-                    details={
-                        "engine_version": CONSENSUS_ENGINE_VERSION,
-                        "participant_count": len(session.participants),
-                        "queue_count": report.queue_count,
-                    },
-                    deliveries=deliveries,
-                )
-            except Exception:
-                _consensus_registry.remove(
-                    interaction.guild.id,
-                    session_key=session.session_key,
-                )
-                raise
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
 
         from modules.tvrs_consensus_views import TVRSRegistrationView
 
-        # Invitations and the public fallback were committed with the session;
-        # wake their worker before any best-effort Discord projection below.
-        wake_delivery_worker()
-        await delete_sticky_message(interaction.client, interaction.guild)
         await interaction.edit_original_response(
             content=None,
             embed=build_registration_embed(session),
@@ -633,7 +666,6 @@ class TVRSPreparationView(_RequesterPortalView):
                     getattr(interaction.message, "id", None),
                     "v3_host_panel_bound",
                 )
-        wake_operations_worker()
 
 
 class TVRSParticipantPortalView(_RequesterPortalView):
@@ -655,6 +687,21 @@ class TVRSParticipantPortalView(_RequesterPortalView):
         self._add_action("Обновить", "🔄", discord.ButtonStyle.secondary, self.refresh, row=1)
         self._add_action("Обзор", "👁️", discord.ButtonStyle.secondary, self.observe, row=1)
         self._add_action("Назад", "⬅️", discord.ButtonStyle.secondary, self.back, row=1)
+        if session is not None:
+            from modules.consensus_web import consensus_web_entry_url
+
+            self.add_item(
+                discord.ui.Button(
+                    label="Веб-наблюдение",
+                    emoji="🖥️",
+                    style=discord.ButtonStyle.link,
+                    url=consensus_web_entry_url(
+                        guild_id=session.guild_id,
+                        user_id=self.user_id,
+                    ),
+                    row=2,
+                )
+            )
 
     def _add_action(self, label, emoji, style, callback, *, row: int) -> None:
         button = discord.ui.Button(label=label, emoji=emoji, style=style, row=row)
@@ -767,6 +814,21 @@ class TVRSObserverView(_RequesterPortalView):
         self.session_key = str(session_key)
         self._add("Обновить", "🔄", self.refresh)
         self._add("Назад", "⬅️", self.back)
+        session = self.session()
+        if session is not None:
+            from modules.consensus_web import consensus_web_entry_url
+
+            self.add_item(
+                discord.ui.Button(
+                    label="Открыть веб-экран",
+                    emoji="🖥️",
+                    style=discord.ButtonStyle.link,
+                    url=consensus_web_entry_url(
+                        guild_id=session.guild_id,
+                        user_id=self.requester_id,
+                    ),
+                )
+            )
 
     def _add(self, label: str, emoji: str, callback) -> None:
         button = discord.ui.Button(

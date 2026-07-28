@@ -59,9 +59,17 @@ async def finalize_current_vote(
     forced: bool,
     *,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     actor = ConsensusActor(session.leader_id, session.leader_display) if forced else None
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние голосования уже изменилось. Обновите пульт."
+            )
         if expected_bill_id is not None and consensus_bill_id(session) != int(expected_bill_id):
             return
         if session.stage == "voting":
@@ -178,10 +186,18 @@ async def apply_veto_for_actor(
     actor: ConsensusActor,
     *,
     expected_bill_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     if actor.user_id != TVRS_PERMANENT_CHAIR_ID:
         raise ConsensusStateError("Право вето доступно только постоянному председателю.")
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние голосования уже изменилось. Обновите пульт."
+            )
         if expected_bill_id is not None and consensus_bill_id(session) != int(expected_bill_id):
             raise ConsensusStateError("Это подтверждение вето относится к уже завершённому проекту.")
         if session.stage == "voting":
@@ -392,8 +408,16 @@ async def finish_session(
     actor: ConsensusActor | None = None,
     cancelled: bool = False,
     reason: str | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     async with consensus_session_lock(session.guild_id):
+        if (
+            expected_revision is not None
+            and int(session.revision) != int(expected_revision)
+        ):
+            raise ConsensusStateError(
+                "Состояние заседания уже изменилось. Обновите пульт."
+            )
         if expected_stage is not None and not consensus_generation_matches(
             session,
             stage=expected_stage,
