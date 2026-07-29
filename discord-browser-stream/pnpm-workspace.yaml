@@ -1,5 +1,6 @@
-onlyBuiltDependencies:
-  - "@lng2004/node-datachannel"
-  - node-av
-  - sharp
-  - zeromq
+allowBuilds:
+  "@lng2004/node-datachannel": true
+  node-av: true
+  puppeteer: true
+  sharp: true
+  zeromq: true

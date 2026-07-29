@@ -263,6 +263,25 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("timingSafeEqual", source)
         self.assertIn("BROWSER_STREAM_WIDTH", entrypoint)
 
+    def test_pnpm_build_scripts_use_an_explicit_reviewed_allowlist(
+        self,
+    ) -> None:
+        workspace = (
+            ROOT / "discord-browser-stream/pnpm-workspace.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("allowBuilds:", workspace)
+        for dependency in (
+            "@lng2004/node-datachannel",
+            "node-av",
+            "puppeteer",
+            "sharp",
+            "zeromq",
+        ):
+            self.assertIn(dependency, workspace)
+        self.assertNotIn("onlyBuiltDependencies", workspace)
+        self.assertNotIn("dangerouslyAllowAllBuilds", workspace)
+
     def test_secrets_and_browser_state_are_excluded_from_git_and_build(
         self,
     ) -> None:
