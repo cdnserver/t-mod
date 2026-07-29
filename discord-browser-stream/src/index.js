@@ -8,12 +8,15 @@ import {
 } from "@dank074/discord-video-stream";
 import { getStream, launch } from "puppeteer-stream";
 import { timingSafeEqual } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import {
   canReuseVoiceConnection,
   createLifecycleQueue,
   delay,
   isExpectedBrowserCloseError,
+  isRetryableBrowserLaunchError,
   waitForVoiceConnection,
 } from "./lifecycle.js";
 
@@ -82,6 +85,13 @@ const config = {
     0,
     5000,
   ),
+  browserLaunchAttempts: integer(
+    "BROWSER_STREAM_BROWSER_LAUNCH_ATTEMPTS",
+    2,
+    1,
+    3,
+  ),
+  chromiumLogs: boolean("BROWSER_STREAM_CHROMIUM_LOGS"),
   voiceConnectTimeout: integer(
     "BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS",
     20000,
@@ -207,6 +217,75 @@ async function ensureVoiceConnection(session) {
   }
 }
 
+async function clearStaleProfileLocks(profileDir) {
+  await Promise.all(
+    ["SingletonLock", "SingletonCookie", "SingletonSocket"].map((name) =>
+      rm(join(profileDir, name), { force: true }).catch(() => {}),
+    ),
+  );
+}
+
+function chromiumLaunchOptions(profileDir, diagnostic = false) {
+  return {
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
+    headless: false,
+    dumpio: config.chromiumLogs || diagnostic,
+    startDelay: config.captureStartupDelay,
+    defaultViewport: { width: config.width, height: config.height },
+    userDataDir: profileDir,
+    acceptInsecureCerts: config.ignoreHttpsErrors,
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--autoplay-policy=no-user-gesture-required",
+      `--allowlisted-extension-id=${CAPTURE_EXTENSION_ID}`,
+      "--window-position=0,0",
+      `--window-size=${config.width},${config.height}`,
+    ],
+  };
+}
+
+async function launchBrowser(session) {
+  let lastError;
+  for (
+    let attempt = 1;
+    attempt <= config.browserLaunchAttempts;
+    attempt += 1
+  ) {
+    session.controller.signal.throwIfAborted();
+    const recovery = attempt > 1;
+    const profileDir = recovery
+      ? join("/tmp", `tmod-chromium-recovery-${process.pid}`)
+      : config.profileDir;
+    if (recovery) {
+      await rm(profileDir, { recursive: true, force: true });
+      session.recoveryProfileDir = profileDir;
+      log("Retrying Chromium with an isolated recovery profile");
+    } else {
+      await clearStaleProfileLocks(profileDir);
+    }
+    try {
+      return await launch(chromiumLaunchOptions(profileDir, recovery));
+    } catch (error) {
+      lastError = error;
+      if (
+        !isRetryableBrowserLaunchError(error) ||
+        attempt >= config.browserLaunchAttempts
+      ) {
+        throw error;
+      }
+      log(
+        `Chromium exited during startup; retrying ` +
+          `(${attempt}/${config.browserLaunchAttempts})`,
+      );
+      await delay(750);
+    }
+  }
+  throw lastError;
+}
+
 async function closeSessionBrowser(session) {
   if (session.cleanupPromise) return session.cleanupPromise;
 
@@ -226,7 +305,15 @@ async function closeSessionBrowser(session) {
 
     const browser = session.browser;
     session.browser = null;
-    if (!browser) return;
+    if (!browser) {
+      if (session.recoveryProfileDir) {
+        await rm(session.recoveryProfileDir, {
+          recursive: true,
+          force: true,
+        }).catch(() => {});
+      }
+      return;
+    }
 
     browserCloseGraceUntil = Date.now() + 5000;
     try {
@@ -243,6 +330,12 @@ async function closeSessionBrowser(session) {
       browser.process()?.kill("SIGKILL");
     } finally {
       browserCloseGraceUntil = Date.now() + 2000;
+      if (session.recoveryProfileDir) {
+        await rm(session.recoveryProfileDir, {
+          recursive: true,
+          force: true,
+        }).catch(() => {});
+      }
     }
   })();
 
@@ -271,23 +364,7 @@ async function executeStream(session) {
     }
     session.controller.signal.throwIfAborted();
 
-    session.browser = await launch({
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
-      headless: false,
-      startDelay: config.captureStartupDelay,
-      defaultViewport: { width: config.width, height: config.height },
-      userDataDir: config.profileDir,
-      acceptInsecureCerts: config.ignoreHttpsErrors,
-      args: [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--autoplay-policy=no-user-gesture-required",
-        `--allowlisted-extension-id=${CAPTURE_EXTENSION_ID}`,
-        "--window-position=0,0",
-        `--window-size=${config.width},${config.height}`,
-      ],
-    });
+    session.browser = await launchBrowser(session);
 
     log(`Chromium ready: ${await session.browser.version()}`);
     session.controller.signal.throwIfAborted();
@@ -393,6 +470,7 @@ async function replaceStream(url, guildId, voiceChannelId) {
     controller,
     browser: null,
     browserMedia: null,
+    recoveryProfileDir: null,
     cleanupPromise: null,
     runPromise: null,
     url,

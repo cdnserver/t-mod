@@ -6,6 +6,7 @@ import {
   createLifecycleQueue,
   delay,
   isExpectedBrowserCloseError,
+  isRetryableBrowserLaunchError,
   waitForVoiceConnection,
 } from "../src/lifecycle.js";
 
@@ -97,4 +98,22 @@ test("only expected Chromium shutdown errors are classified as harmless", () => 
     true,
   );
   assert.equal(isExpectedBrowserCloseError(new Error("network failed")), false);
+});
+
+test("only browser process startup failures are retried", () => {
+  assert.equal(
+    isRetryableBrowserLaunchError(
+      Object.assign(new Error("Protocol error: Target closed"), {
+        name: "TargetCloseError",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    isRetryableBrowserLaunchError(
+      new Error("Failed to launch the browser process"),
+    ),
+    true,
+  );
+  assert.equal(isRetryableBrowserLaunchError(new Error("invalid URL")), false);
 });

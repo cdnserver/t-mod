@@ -125,11 +125,20 @@ docker compose logs -f
 - `BROWSER_STREAM_MAX_BITRATE_KBPS`;
 - `BROWSER_STREAM_PAGE_LOAD_TIMEOUT_MS`;
 - `BROWSER_STREAM_CAPTURE_STARTUP_DELAY_MS` — ожидание загрузки расширения
-  Chromium перед открытием трансляции, по умолчанию `1250`;
+Chromium перед открытием трансляции, по умолчанию `1250`;
 - `BROWSER_STREAM_CAPTURE_FOCUS_DELAY_MS` — пауза после активации вкладки,
   по умолчанию `250`;
+- `BROWSER_STREAM_BROWSER_LAUNCH_ATTEMPTS` — число попыток запуска Chromium
+  после аварийного завершения, по умолчанию `2`;
 - `BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS` — максимальное ожидание
-  voice-handshake, по умолчанию `20000`.
+  voice-handshake, по умолчанию `20000`;
+- `BROWSER_STREAM_CHROMIUM_LOGS` — подробный stderr Chromium для временной
+  диагностики, по умолчанию `false`.
+
+Перед каждым запуском сервис удаляет только устаревшие служебные блокировки
+профиля Chromium, не затрагивая cookies и настройки. Если основной профиль
+повреждён, повторная попытка использует одноразовый изолированный профиль и
+автоматически включает диагностический вывод Chromium.
 
 Профиль Chromium хранится в `BROWSER_STREAM_PROFILE_DIR` (`/data/chrome`
 внутри штатного контейнера). Cookies и токены не следует помещать в образ или

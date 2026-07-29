@@ -11,6 +11,15 @@ export function isExpectedBrowserCloseError(error) {
   );
 }
 
+export function isRetryableBrowserLaunchError(error) {
+  const message = String(error?.message || error);
+  return (
+    error?.name === "TargetCloseError" ||
+    message.includes("Target closed") ||
+    message.includes("Failed to launch the browser process")
+  );
+}
+
 export function createLifecycleQueue() {
   let tail = Promise.resolve();
   return (operation) => {
