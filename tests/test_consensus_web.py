@@ -339,25 +339,24 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             egg = await client.get("/egg")
             self.assertEqual(egg.status, 200)
             egg_text = await egg.text()
-            self.assertIn("T·MOD", egg_text)
+            self.assertIn("ЗИГМУНД ПРАВОСУДОВ", egg_text)
             self.assertIn("ЯЙЦА НА СТОЛ", egg_text)
             self.assertIn("БОТ ПОКАЗЫВАЕТ ДЕМКУ", egg_text)
-            self.assertNotIn("<script", egg_text)
+            self.assertIn('src="/assets/egg.js"', egg_text)
+            self.assertIn('src="/assets/zigmund-murchalki.mp3"', egg_text)
 
-            custom_egg = await client.get(
-                "/egg",
-                params={"text": "СБОРЩИК РИСА"},
-            )
-            self.assertEqual(custom_egg.status, 200)
-            self.assertIn("СБОРЩИК РИСА", await custom_egg.text())
+            egg_script = await client.get("/assets/egg.js")
+            self.assertEqual(egg_script.status, 200)
+            egg_script_text = await egg_script.text()
+            self.assertIn("createAnalyser", egg_script_text)
+            self.assertIn("--energy", egg_script_text)
 
-            escaped_egg = await client.get(
-                "/egg",
-                params={"text": "<script>alert(1)</script>"},
+            egg_audio = await client.get(
+                "/assets/zigmund-murchalki.mp3",
+                headers={"Range": "bytes=0-1023"},
             )
-            escaped_egg_text = await escaped_egg.text()
-            self.assertNotIn("<script>alert(1)</script>", escaped_egg_text)
-            self.assertIn("&lt;script&gt;", escaped_egg_text)
+            self.assertEqual(egg_audio.status, 206)
+            self.assertEqual(len(await egg_audio.read()), 1024)
 
             egg_stylesheet = await client.get("/assets/egg.css")
             self.assertEqual(egg_stylesheet.status, 200)

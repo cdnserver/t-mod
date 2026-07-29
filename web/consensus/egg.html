@@ -7,9 +7,9 @@
     <meta name="theme-color" content="#080a08">
     <meta
       name="description"
-      content="Специальный экран прямой демонстрации T-Mod."
+      content="Специальный музыкальный экран прямой демонстрации T-Mod."
     >
-    <title>T-Mod — демонстрация</title>
+    <title>Зигмунд Правосудов — специальная трансляция T-Mod</title>
     <link rel="stylesheet" href="/assets/egg.css">
   </head>
   <body>
@@ -17,6 +17,13 @@
       <div class="ambient ambient-left" aria-hidden="true"></div>
       <div class="ambient ambient-right" aria-hidden="true"></div>
       <div class="grid" aria-hidden="true"></div>
+      <div class="scanlines" aria-hidden="true"></div>
+      <div class="impact" aria-hidden="true"></div>
+      <div class="rings" aria-hidden="true"></div>
+      <div class="particles" aria-hidden="true">
+        <i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i>
+      </div>
 
       <header class="live-status">
         <span class="live-dot" aria-hidden="true"></span>
@@ -26,16 +33,37 @@
       <section class="announcement" aria-labelledby="egg-title">
         <p class="eyebrow">T·MOD SPECIAL BROADCAST</p>
         <h1 id="egg-title">
-          <span>{{EGG_NAME}}</span>
-          <span>ОФИЦИАЛЬНО ВЫВАЛИЛ</span>
-          <strong>ЯЙЦА НА СТОЛ</strong>
+          <span class="subject">ЗИГМУНД ПРАВОСУДОВ</span>
+          <span class="action">ОФИЦИАЛЬНО ВЫВАЛИЛ</span>
+          <strong class="verdict">ЯЙЦА НА СТОЛ</strong>
         </h1>
+        <div class="now-playing" aria-label="Сейчас играет: Зигмунд и Мурчалки">
+          <span class="equalizer" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span>ЗИГМУНД И МУРЧАЛКИ</span>
+        </div>
       </section>
 
       <footer>
         <span>TVRS NETWORK</span>
         <span class="signal">СИГНАЛ СТАБИЛЕН</span>
       </footer>
+
+      <button class="sound-gate" type="button" hidden>
+        <span aria-hidden="true">▶</span>
+        ВКЛЮЧИТЬ ЗВУК
+      </button>
+
+      <audio
+        id="egg-audio"
+        src="/assets/zigmund-murchalki.mp3"
+        preload="auto"
+        autoplay
+        loop
+        playsinline
+      ></audio>
     </main>
+    <script type="module" src="/assets/egg.js"></script>
   </body>
 </html>

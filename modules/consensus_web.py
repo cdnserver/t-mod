@@ -12,7 +12,6 @@ import time
 import traceback
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -759,18 +758,18 @@ def create_consensus_web_app(
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
 
-    async def egg(request: web.Request) -> web.Response:
-        raw_name = request.query.get("text") or request.query.get("name") or "T·MOD"
-        name = " ".join(str(raw_name).split())[:80] or "T·MOD"
-        template = (_ASSET_DIR / "egg.html").read_text(encoding="utf-8")
-        return web.Response(
-            text=template.replace("{{EGG_NAME}}", escape(name)),
-            content_type="text/html",
-        )
+    async def egg(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "egg.html")
 
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info["name"])
-        if name not in {"app.js", "style.css", "egg.css"}:
+        if name not in {
+            "app.js",
+            "style.css",
+            "egg.css",
+            "egg.js",
+            "zigmund-murchalki.mp3",
+        }:
             raise web.HTTPNotFound()
         return web.FileResponse(_ASSET_DIR / name)
 
