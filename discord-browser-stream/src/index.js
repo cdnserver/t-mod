@@ -10,6 +10,8 @@ import { getStream, launch } from "puppeteer-stream";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
+const CAPTURE_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
+
 function integer(name, fallback, minimum, maximum) {
   const raw = process.env[name];
   const value = raw === undefined || raw === "" ? fallback : Number(raw);
@@ -60,6 +62,18 @@ const config = {
     45000,
     1000,
     180000,
+  ),
+  captureStartupDelay: integer(
+    "BROWSER_STREAM_CAPTURE_STARTUP_DELAY_MS",
+    1250,
+    250,
+    10000,
+  ),
+  captureFocusDelay: integer(
+    "BROWSER_STREAM_CAPTURE_FOCUS_DELAY_MS",
+    250,
+    0,
+    5000,
   ),
   ignoreHttpsErrors: boolean("BROWSER_STREAM_IGNORE_HTTPS_ERRORS"),
   profileDir:
@@ -195,6 +209,7 @@ async function startStream(url, guildId, voiceChannelId) {
     session.browser = await launch({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
       headless: false,
+      startDelay: config.captureStartupDelay,
       defaultViewport: { width: config.width, height: config.height },
       userDataDir: config.profileDir,
       acceptInsecureCerts: config.ignoreHttpsErrors,
@@ -203,24 +218,51 @@ async function startStream(url, guildId, voiceChannelId) {
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--autoplay-policy=no-user-gesture-required",
+        `--allowlisted-extension-id=${CAPTURE_EXTENSION_ID}`,
         "--window-position=0,0",
         `--window-size=${config.width},${config.height}`,
       ],
     });
 
-    const pages = await session.browser.pages();
-    const page = pages[0] || (await session.browser.newPage());
+    log(`Chromium ready: ${await session.browser.version()}`);
+
+    // puppeteer-stream owns a separate extension page. Always create a fresh
+    // content page so the extension can never become the capture target.
+    const page = await session.browser.newPage();
     page.setDefaultNavigationTimeout(config.pageTimeout);
     await page.setViewport({ width: config.width, height: config.height });
     await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.bringToFront();
+    if (config.captureFocusDelay) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, config.captureFocusDelay),
+      );
+    }
 
-    const browserMedia = await getStream(page, {
-      audio: true,
-      video: true,
-      mimeType: "video/webm;codecs=vp8,opus",
-      videoBitsPerSecond: config.maxBitrate * 1000,
-      frameSize: Math.max(10, Math.round(1000 / config.fps)),
-    });
+    let browserMedia;
+    try {
+      browserMedia = await getStream(page, {
+        audio: true,
+        video: true,
+        mimeType: "video/webm;codecs=vp8,opus",
+        videoBitsPerSecond: config.maxBitrate * 1000,
+        frameSize: Math.max(10, Math.round(1000 / config.fps)),
+      });
+    } catch (error) {
+      if (
+        String(error?.message || error).includes(
+          "Extension has not been invoked for the current page",
+        )
+      ) {
+        throw new Error(
+          "Chromium rejected tab capture permission. Rebuild the " +
+            "discord-browser-stream image so the extension allowlist flag " +
+            "is applied.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
 
     const encoder = Encoders.software({ x264: { preset: "veryfast", tune: "zerolatency" } });
     const { command, output } = prepareStream(
