@@ -298,8 +298,28 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             index_text = await index.text()
             self.assertIn("T·Consensus", index_text)
             self.assertIn('id="observer-screen"', index_text)
+            self.assertIn('id="atmosphere"', index_text)
+            self.assertIn('id="result-announcer"', index_text)
             self.assertIn('id="bill-dialog"', index_text)
             self.assertIn('id="bill-library-dialog"', index_text)
+
+            script = await client.get("/assets/app.js")
+            self.assertEqual(script.status, 200)
+            self.assertIn(
+                "document.body.dataset.outcome",
+                await script.text(),
+            )
+            stylesheet = await client.get("/assets/style.css")
+            self.assertEqual(stylesheet.status, 200)
+            stylesheet_text = await stylesheet.text()
+            self.assertIn(
+                'body[data-outcome="accepted"]',
+                stylesheet_text,
+            )
+            self.assertIn(
+                "@media (prefers-reduced-motion: reduce)",
+                stylesheet_text,
+            )
 
             denied = await client.get("/api/state")
             self.assertEqual(denied.status, 401)

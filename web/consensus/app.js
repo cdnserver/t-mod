@@ -43,6 +43,13 @@ let dialogResult = null;
 let libraryItems = [];
 let libraryFilter = "all";
 let libraryLoading = false;
+let observerFeedSignature = "";
+let participantSignature = "";
+let controlsSignature = "";
+let visualOutcomeKey = "";
+let verdictAnimationTimer = null;
+let billDialogReturnFocus = null;
+let libraryDialogReturnFocus = null;
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -55,6 +62,14 @@ function setConnection(mode, label) {
 
 function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function stableSignature(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value);
+  }
 }
 
 function formatNumber(value) {
@@ -83,6 +98,57 @@ function formatDate(value) {
 
 function categoryLabel(value) {
   return CATEGORY_LABELS[String(value || "ordinary")] || "Обычное";
+}
+
+function visualStage(session) {
+  const stage = String(session?.stage || "idle");
+  return [
+    "registration",
+    "voting",
+    "finalizing",
+    "discussion_type",
+    "discussion",
+    "paused",
+    "after_result",
+  ].includes(stage)
+    ? stage.replace("_", "-")
+    : "idle";
+}
+
+function applyVisualState(data) {
+  const session = data.session;
+  const bill = session?.current_bill || null;
+  const result = currentResult(session, bill);
+  const active = Boolean(data.active && session);
+  const stage = visualStage(session);
+  const rawOutcome = String(result?.status || "");
+  const outcome = ["accepted", "rejected", "vetoed", "oral"].includes(rawOutcome)
+    ? rawOutcome
+    : active
+      ? "pending"
+      : "idle";
+
+  document.body.dataset.stage = stage;
+  document.body.dataset.outcome = outcome;
+  document.body.dataset.mode = data.mode === "simulation" ? "simulation" : "live";
+
+  const nextOutcomeKey = result
+    ? `${data.mode || "live"}:${result.bill_id || bill?.id || bill?.bill_number || "bill"}:${outcome}:${result.overall_percent ?? ""}`
+    : "";
+  if (nextOutcomeKey && nextOutcomeKey !== visualOutcomeKey) {
+    document.body.classList.remove("verdict-transition");
+    void document.body.offsetWidth;
+    document.body.classList.add("verdict-transition");
+    clearTimeout(verdictAnimationTimer);
+    verdictAnimationTimer = setTimeout(() => {
+      document.body.classList.remove("verdict-transition");
+    }, 1800);
+    text(
+      "result-announcer",
+      `${RESULT_LABELS[outcome] || "Результат зафиксирован"}. Общий консенсус ${formatPercent(result.overall_percent)}.`,
+    );
+  }
+  visualOutcomeKey = nextOutcomeKey;
 }
 
 function formatTimer(deadline) {
@@ -122,8 +188,19 @@ function renderBlocks(blocks = {}) {
 
 function renderParticipants(participants = []) {
   const container = byId("participants");
-  clearNode(container);
   text("participants-count", participants.length);
+  const nextSignature = stableSignature(
+    participants.map((participant) => [
+      participant.user_id,
+      participant.name,
+      participant.kind,
+      Boolean(participant.confirmed),
+      Boolean(participant.voted),
+    ]),
+  );
+  if (nextSignature === participantSignature) return;
+  participantSignature = nextSignature;
+  clearNode(container);
   if (!participants.length) {
     container.className = "participants empty-state";
     container.textContent = "Нет активной регистрации";
@@ -153,6 +230,17 @@ function renderParticipants(participants = []) {
 
 function renderList(containerId, items, kind) {
   const container = byId(containerId);
+  const nextSignature = stableSignature(
+    items.map((item) => [
+      item.id || item.bill_id,
+      item.bill_number,
+      item.title,
+      item.status,
+      item.overall_percent,
+    ]),
+  );
+  if (container.dataset.signature === nextSignature) return;
+  container.dataset.signature = nextSignature;
   clearNode(container);
   if (!items.length) {
     container.className = "stack-list empty-state";
@@ -227,7 +315,6 @@ function observerFeedRow(title, meta, options = {}) {
 
 function renderObserverFeed(data) {
   const feed = byId("observer-feed");
-  clearNode(feed);
   const session = data.session;
   const participants = session?.participants || [];
   const results = session?.results?.length
@@ -245,6 +332,35 @@ function renderObserverFeed(data) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+
+  const sourceItems = observerTab === "participants"
+    ? participants.map((item) => [
+      item.user_id,
+      item.name,
+      item.kind,
+      item.confirmed,
+      item.voted,
+    ])
+    : observerTab === "queue"
+      ? (data.queue || []).map((item) => [
+        item.id || item.bill_id,
+        item.bill_number,
+        item.title,
+        item.status,
+      ])
+      : results.map((item) => [
+        item.bill_id || item.id,
+        item.bill_number,
+        item.title,
+        item.status,
+        item.overall_percent,
+      ]);
+  const nextSignature = stableSignature([observerTab, sourceItems]);
+  if (nextSignature === observerFeedSignature) return;
+  const previousScrollTop = feed.scrollTop;
+  const wasNearBottom = feed.scrollHeight - feed.clientHeight - previousScrollTop < 24;
+  observerFeedSignature = nextSignature;
+  clearNode(feed);
 
   let items = [];
   if (observerTab === "participants") {
@@ -297,6 +413,9 @@ function renderObserverFeed(data) {
         : "Зафиксированных решений пока нет";
     feed.append(empty);
   }
+  feed.scrollTop = wasNearBottom
+    ? feed.scrollHeight
+    : Math.min(previousScrollTop, Math.max(0, feed.scrollHeight - feed.clientHeight));
 }
 
 function renderObserver(data) {
@@ -325,7 +444,7 @@ function renderObserver(data) {
       : "Экран ожидает начало следующего пленарного заседания.",
   );
   text("observer-stage", session?.stage_label || "Ожидание");
-  byId("observer-stage").className = `stage-badge${active ? "" : " idle"}`;
+  byId("observer-stage").className = `stage-badge stage-${visualStage(session)}${active ? "" : " idle"}`;
 
   text(
     "observer-bill-number",
@@ -405,6 +524,9 @@ function renderObserver(data) {
 
 function showBillDialog(bill, result = null) {
   if (!bill) return;
+  billDialogReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   dialogBill = bill;
   dialogResult = result;
   text("bill-dialog-number", `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
@@ -434,14 +556,19 @@ function showBillDialog(bill, result = null) {
     text("bill-dialog-required", formatPercent(result.required_percent));
   }
   const dialog = byId("bill-dialog");
+  const dialogArticle = dialog.querySelector("article");
+  if (dialogArticle) dialogArticle.scrollTop = 0;
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
+  byId("close-bill-dialog").focus({ preventScroll: true });
 }
 
 function closeBillDialog() {
   const dialog = byId("bill-dialog");
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
+  if (billDialogReturnFocus?.isConnected) billDialogReturnFocus.focus();
+  billDialogReturnFocus = null;
 }
 
 async function openBillRecord(item) {
@@ -561,6 +688,9 @@ function renderBillLibrary() {
 
 async function openBillLibrary() {
   const dialog = byId("bill-library-dialog");
+  libraryDialogReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   if (typeof dialog.showModal === "function") dialog.showModal();
   else dialog.setAttribute("open", "");
   if (libraryLoading) return;
@@ -593,6 +723,8 @@ function closeBillLibrary() {
   const dialog = byId("bill-library-dialog");
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
+  if (libraryDialogReturnFocus?.isConnected) libraryDialogReturnFocus.focus();
+  libraryDialogReturnFocus = null;
 }
 
 function renderMode(data) {
@@ -678,11 +810,23 @@ function controlGroup(title, description = "") {
 function renderControls(data) {
   const panel = byId("operator-panel");
   const container = byId("operator-controls");
-  clearNode(container);
   const capabilities = new Set(data.capabilities || []);
   const viewer = data.viewer || {};
   const session = data.session;
   panel.hidden = capabilities.size === 0;
+  const nextSignature = stableSignature({
+    mode: selectedMode,
+    capabilities: [...capabilities].sort(),
+    commanding,
+    session_key: session?.key || "",
+    stage: session?.stage || "",
+    stage_label: session?.stage_label || "",
+    bill_id: session?.current_bill?.id || null,
+    viewer: viewer.name || "",
+  });
+  if (nextSignature === controlsSignature) return;
+  controlsSignature = nextSignature;
+  clearNode(container);
   if (panel.hidden) return;
 
   text("operator-eyebrow", selectedMode === "simulation" ? "УЧЕБНЫЙ ПУЛЬТ" : "ПУЛЬТ ВЕДУЩЕГО");
@@ -836,6 +980,7 @@ function render(data) {
   state = data;
   renderMode(data);
   renderViewer(data);
+  applyVisualState(data);
   const observerMode = !(data.capabilities || []).length;
   document.body.classList.toggle("observer-screen-mode", observerMode);
   byId("observer-screen").hidden = !observerMode;
@@ -861,7 +1006,7 @@ function render(data) {
         : "Панель ожидает начало следующего пленарного заседания.",
     );
     text("stage-badge", "Ожидание");
-    byId("stage-badge").className = "stage-badge idle";
+    byId("stage-badge").className = "stage-badge stage-idle idle";
     text("quorum-value", "—");
     text("quorum-detail", "нет активной сессии");
     text("votes-value", "—");
@@ -897,7 +1042,7 @@ function render(data) {
       : "";
   text("session-subtitle", `Ведущий: ${session.leader.name} · обновление в реальном времени${stageContext}`);
   text("stage-badge", session.stage_label);
-  byId("stage-badge").className = `stage-badge${active ? "" : " idle"}`;
+  byId("stage-badge").className = `stage-badge stage-${visualStage(session)}${active ? "" : " idle"}`;
   text("quorum-value", `${session.quorum.confirmed}/${session.quorum.invited}`);
   text(
     "quorum-detail",
@@ -1073,7 +1218,7 @@ setInterval(() => {
     text("timer-value", timer);
     text("observer-timer", timer);
   }
-}, 250);
+}, 1000);
 
 fetchState({ first: true });
 pollTimer = setInterval(fetchState, 1000);

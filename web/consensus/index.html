@@ -13,7 +13,14 @@
     <script src="/assets/app.js" defer></script>
   </head>
   <body>
+    <div id="atmosphere" class="atmosphere" aria-hidden="true">
+      <span class="atmosphere-orb atmosphere-orb-primary"></span>
+      <span class="atmosphere-orb atmosphere-orb-secondary"></span>
+      <span class="atmosphere-ring"></span>
+      <span class="atmosphere-sweep"></span>
+    </div>
     <div class="noise" aria-hidden="true"></div>
+    <div id="result-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
     <main class="shell">
       <header class="topbar">
