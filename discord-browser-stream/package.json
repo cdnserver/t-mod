@@ -1,0 +1,20 @@
+{
+  "name": "discord-browser-stream",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.4.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "dependencies": {
+    "@dank074/discord-video-stream": "6.0.0",
+    "discord.js-selfbot-v13": "3.7.1",
+    "puppeteer": "24.31.0",
+    "puppeteer-stream": "3.0.22"
+  }
+}

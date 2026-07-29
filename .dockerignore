@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.ruff_cache
+**/__pycache__
+**/*.pyc
+
+.env
+.env.*
+data
+tests
+
+# The Node client is built from its own isolated Docker context.
+discord-browser-stream

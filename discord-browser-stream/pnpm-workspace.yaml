@@ -1,0 +1,5 @@
+onlyBuiltDependencies:
+  - "@lng2004/node-datachannel"
+  - node-av
+  - sharp
+  - zeromq
