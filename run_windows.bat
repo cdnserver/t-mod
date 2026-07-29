@@ -7,6 +7,9 @@ chcp 65001 >nul
 set PERSISTENT_DIR=C:\Users\Admin\Documents\SGLDiscordBot
 set DATA_DIR=%PERSISTENT_DIR%\data
 set BACKUP_DIR=%PERSISTENT_DIR%\backups
+set CADDY_DIR=%PERSISTENT_DIR%\caddy
+set CADDY_DATA_DIR=%CADDY_DIR%\data
+set CADDY_CONFIG_DIR=%CADDY_DIR%\config
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
 
 call :banner
@@ -15,6 +18,8 @@ call :stage "01" "Persistent storage"
 if not exist "%PERSISTENT_DIR%" mkdir "%PERSISTENT_DIR%"
 if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
+if not exist "%CADDY_DATA_DIR%" mkdir "%CADDY_DATA_DIR%"
+if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
@@ -35,15 +40,15 @@ if errorlevel 1 (
 )
 call :ok ".env synchronized"
 
-call :stage "03" "Consensus domain"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_cloudflare_tunnel_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env"
+call :stage "03" "Direct HTTPS domain"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_direct_web_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env" -PublicDomain "tvr.lat"
 if errorlevel 1 (
-  call :fail "Failed to configure the Cloudflare consensus domain"
+  call :fail "Failed to configure the direct HTTPS domain"
   call :warn "Approve the Windows administrator prompt and run this file again."
   pause
   exit /b 1
 )
-call :ok "Cloudflare Tunnel route ready"
+call :ok "Caddy HTTPS route ready"
 
 call :stage "04" "Localization"
 if not exist "%PERSISTENT_DIR%\localization.json" (
@@ -117,8 +122,9 @@ echo   T-Mod startup finished.
 echo   Database: %PERSISTENT_DIR%\data\tmod.db
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
-echo   Panel:    https://tmod.rundans.lat
-echo   Origin:   http://127.0.0.1:8787 ^(localhost only^)
+echo   Panel:    https://tvr.lat
+echo   HTTPS:    Caddy on public ports 80/443
+echo   Origin:   http://127.0.0.1:8787 ^(never forward this port^)
 echo ============================================================
 echo.
 echo Recent bot logs:

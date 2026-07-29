@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -703,11 +704,21 @@ def _request_token(request: web.Request) -> str:
 
 
 def _request_remote(request: web.Request) -> str:
-    if CONSENSUS_WEB_PUBLIC_URL:
-        cloudflare_address = request.headers.get("CF-Connecting-IP", "").strip()
-        if cloudflare_address:
-            return cloudflare_address[:64]
-    return str(request.remote or "unknown")
+    remote = str(request.remote or "").strip()
+    try:
+        proxy_address = ipaddress.ip_address(remote)
+    except ValueError:
+        proxy_address = None
+    if proxy_address is not None and (
+        proxy_address.is_private or proxy_address.is_loopback
+    ):
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        candidate = forwarded.rsplit(",", 1)[-1].strip()
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            pass
+    return remote[:64] or "unknown"
 
 
 @web.middleware
@@ -1187,7 +1198,7 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
             f"Резервный ключ просмотра: ||`{token}`||\n\n"
             "Панель работает только пока запущен контейнер T-Mod. "
             + (
-                "Доступ проходит через Cloudflare Tunnel."
+                "Публичный HTTPS принимает защищённый reverse proxy Caddy."
                 if public
                 else "Не публикуйте порт в интернете."
             )
@@ -1215,14 +1226,14 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
     )
     embed.add_field(
         name=(
-            "Cloudflare Tunnel"
+            "Прямой HTTPS"
             if public
             else "Если имя не открывается"
         ),
         value=(
-            "Публичный HTTPS-адрес направлен через Cloudflare Tunnel. "
-            "Для второго контура защиты включите Cloudflare Access "
-            "только для администраторов."
+            "Caddy автоматически выпускает и продлевает сертификат. "
+            "На роутере должны быть направлены только TCP-порты 80 и 443; "
+            "внутренний порт 8787 публиковать нельзя."
             if public
             else (
                 "На другом компьютере добавьте в файл hosts строку "

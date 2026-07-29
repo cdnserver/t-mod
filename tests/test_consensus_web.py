@@ -19,6 +19,7 @@ from modules.consensus_simulator import (
     register_consensus_simulation,
 )
 from modules.consensus_web import (
+    _request_remote,
     _result_payload,
     build_consensus_web_state,
     consensus_web_url,
@@ -557,6 +558,23 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 consensus_web_url(),
                 "https://consensus.example.com",
             )
+
+    def test_direct_reverse_proxy_uses_non_spoofable_forwarded_address(self) -> None:
+        request = SimpleNamespace(
+            remote="172.20.0.5",
+            headers={
+                "X-Forwarded-For": "8.8.4.4, 9.9.9.9",
+                "CF-Connecting-IP": "1.0.0.1",
+            },
+        )
+        self.assertEqual(_request_remote(request), "9.9.9.9")
+
+    def test_direct_client_cannot_override_remote_address(self) -> None:
+        request = SimpleNamespace(
+            remote="8.8.8.8",
+            headers={"X-Forwarded-For": "1.0.0.1"},
+        )
+        self.assertEqual(_request_remote(request), "8.8.8.8")
 
 
 if __name__ == "__main__":

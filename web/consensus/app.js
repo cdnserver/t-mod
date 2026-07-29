@@ -963,7 +963,7 @@ async function fetchState({ first = false } = {}) {
     setConnection("online", "обновляется");
   } catch (error) {
     setConnection("offline", "связь потеряна");
-    if (first) loginError.textContent = "Панель недоступна. Проверьте контейнер и Cloudflare Tunnel.";
+    if (first) loginError.textContent = "Панель недоступна. Проверьте контейнер T-Mod, Caddy и DNS.";
   } finally {
     fetching = false;
   }

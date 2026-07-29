@@ -1,0 +1,21 @@
+{
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+tvr.lat {
+	encode zstd gzip
+
+	reverse_proxy tmod-discord-bot:8787 {
+		health_uri /api/health
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

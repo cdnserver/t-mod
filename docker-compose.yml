@@ -11,3 +11,17 @@ services:
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
       - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
+
+  tmod-caddy:
+    image: caddy:2.10.2-alpine
+    container_name: tmod-caddy
+    restart: unless-stopped
+    depends_on:
+      - tmod-discord-bot
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
