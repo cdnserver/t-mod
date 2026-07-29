@@ -87,8 +87,15 @@ def normalize_browser_stream_url(value: str | None) -> str | None:
     cleaned = str(value or "").strip()
     if not cleaned:
         return None
+    if len(cleaned) > 2048:
+        raise ValueError("browser_stream_invalid_url")
     parsed = urlsplit(cleaned)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
         raise ValueError("browser_stream_invalid_url")
     return cleaned
 
@@ -174,10 +181,16 @@ class BrowserStreamClient:
 
 def browser_stream_embed(payload: Mapping[str, Any]) -> discord.Embed:
     state = str(payload.get("state") or "idle")
-    active = bool(payload.get("active")) or state in {"starting", "streaming"}
+    active = bool(payload.get("active")) or state in {
+        "starting",
+        "streaming",
+        "stopping",
+    }
     title = (
         "📺 Трансляция запускается"
         if state == "starting"
+        else "📺 Трансляция останавливается"
+        if state == "stopping"
         else "📺 Трансляция активна"
         if active
         else "📺 Трансляция остановлена"

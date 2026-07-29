@@ -32,6 +32,8 @@ class BrowserStreamDomainTests(unittest.TestCase):
             "javascript:alert(1)",
             "file:///etc/passwd",
             "ftp://example.org/file",
+            "https://admin:secret@example.org/",
+            f"https://example.org/{'x' * 2048}",
             "not a URL",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -100,6 +102,15 @@ class BrowserStreamDomainTests(unittest.TestCase):
             failed.fields[0].name,
             "Последняя ошибка клиента",
         )
+
+        stopping = browser_stream_embed(
+            {
+                "state": "stopping",
+                "active": True,
+                "url": "https://tvr.lat",
+            }
+        )
+        self.assertEqual(stopping.title, "📺 Трансляция останавливается")
 
 
 class BrowserStreamClientTests(unittest.IsolatedAsyncioTestCase):
@@ -261,6 +272,14 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         dockerfile = (
             ROOT / "discord-browser-stream/Dockerfile"
         ).read_text(encoding="utf-8")
+        dependency_patcher = (
+            ROOT
+            / "discord-browser-stream/scripts/patch-puppeteer-stream.mjs"
+        ).read_text(encoding="utf-8")
+        stream_dependency_patcher = (
+            ROOT
+            / "discord-browser-stream/scripts/patch-discord-video-stream.mjs"
+        ).read_text(encoding="utf-8")
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
 
         dependencies = package["dependencies"]
@@ -278,20 +297,27 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("BROWSER_STREAM_CAPTURE_FOCUS_DELAY_MS", source)
         self.assertIn("BROWSER_STREAM_BROWSER_LAUNCH_ATTEMPTS", source)
         self.assertIn("BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS", source)
+        self.assertIn("BROWSER_STREAM_GO_LIVE_TIMEOUT_MS", source)
         self.assertIn("BROWSER_STREAM_CHROMIUM_LOGS", source)
         self.assertIn("await session.browser.newPage()", source)
         self.assertNotIn("pages[0]", source)
         self.assertIn("createLifecycleQueue", source)
         self.assertIn("Reusing voice connection", source)
         self.assertIn("session.cleanupPromise", source)
-        self.assertIn("browserMedia.stop()", source)
+        self.assertIn("stopCaptureStream(browserMedia)", source)
+        self.assertIn("forcing browser termination", source)
         self.assertIn("SingletonLock", source)
         self.assertIn("SingletonSocket", source)
         self.assertIn("launchBrowser", source)
         self.assertIn("tmod-chromium-recovery-", source)
         self.assertIn("isolated recovery profile", source)
         self.assertIn("voice_connection_timeout", lifecycle)
+        self.assertIn("typeof stream.destroy", lifecycle)
         self.assertIn("survives a rejection", lifecycle_tests)
+        self.assertIn(
+            "supports both puppeteer-stream APIs",
+            lifecycle_tests,
+        )
         self.assertIn("BROWSER_STREAM_DISCORD_TOKEN", source)
         self.assertIn("timingSafeEqual", source)
         self.assertIn("BROWSER_STREAM_WIDTH", entrypoint)
@@ -302,6 +328,14 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("sed -i 's/\\r$//'", dockerfile)
         self.assertIn("mkdir -p /tmp/.X11-unix", dockerfile)
         self.assertIn("chmod 1777 /tmp/.X11-unix", dockerfile)
+        self.assertIn("patch-puppeteer-stream.mjs", dockerfile)
+        self.assertIn("patch-discord-video-stream.mjs", dockerfile)
+        self.assertIn("stream.stop = async", dependency_patcher)
+        self.assertIn("finally {", dependency_patcher)
+        self.assertIn(
+            "stream_connection_timeout",
+            stream_dependency_patcher,
+        )
         self.assertIn('ENTRYPOINT ["/usr/bin/tini"', dockerfile)
 
     def test_pnpm_build_scripts_use_an_explicit_reviewed_allowlist(
@@ -348,8 +382,13 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         emulator_env = (
             ROOT / "discord-browser-stream/.env.example"
         ).read_text(encoding="utf-8")
+        emulator_readme = (
+            ROOT / "discord-browser-stream/README.md"
+        ).read_text(encoding="utf-8")
         self.assertNotIn("BROWSER_STREAM_DISCORD_TOKEN", common_env)
         self.assertIn("BROWSER_STREAM_DISCORD_TOKEN", emulator_env)
+        self.assertIn("BROWSER_STREAM_GO_LIVE_TIMEOUT_MS", emulator_env)
+        self.assertIn("BROWSER_STREAM_GO_LIVE_TIMEOUT_MS", emulator_readme)
 
 
 if __name__ == "__main__":

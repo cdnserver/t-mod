@@ -17,6 +17,9 @@ import {
   delay,
   isExpectedBrowserCloseError,
   isRetryableBrowserLaunchError,
+  isSameLiveStream,
+  normalizeStreamUrl,
+  stopCaptureStream,
   waitForVoiceConnection,
 } from "./lifecycle.js";
 
@@ -98,6 +101,12 @@ const config = {
     5000,
     60000,
   ),
+  streamConnectTimeout: integer(
+    "BROWSER_STREAM_GO_LIVE_TIMEOUT_MS",
+    20000,
+    5000,
+    60000,
+  ),
   ignoreHttpsErrors: boolean("BROWSER_STREAM_IGNORE_HTTPS_ERRORS"),
   profileDir:
     process.env.BROWSER_STREAM_PROFILE_DIR?.trim() || "/data/chrome",
@@ -120,6 +129,7 @@ let lastError = null;
 let apiServer = null;
 const enqueueLifecycle = createLifecycleQueue();
 let browserCloseGraceUntil = 0;
+let shuttingDown = false;
 
 function log(message, error) {
   const suffix = error ? `\n${error.stack || error}` : "";
@@ -127,16 +137,7 @@ function log(message, error) {
 }
 
 function parseUrl(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("URL is invalid");
-  }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error("Only http:// and https:// URLs are supported");
-  }
-  return url.toString();
+  return normalizeStreamUrl(value);
 }
 
 function streamStatus() {
@@ -190,6 +191,13 @@ async function readJson(request) {
 
 function isAbortError(error) {
   return error?.name === "AbortError";
+}
+
+function rememberError(error) {
+  lastError = {
+    message: String(error?.message || error),
+    at: new Date(),
+  };
 }
 
 async function ensureVoiceConnection(session) {
@@ -289,14 +297,14 @@ async function launchBrowser(session) {
 async function closeSessionBrowser(session) {
   if (session.cleanupPromise) return session.cleanupPromise;
 
-  session.cleanupPromise = (async () => {
+  const cleanup = (async () => {
     session.state = "stopping";
     if (!session.controller.signal.aborted) session.controller.abort();
 
     const browserMedia = session.browserMedia;
     session.browserMedia = null;
     if (browserMedia) {
-      await browserMedia.stop().catch((error) => {
+      await stopCaptureStream(browserMedia).catch((error) => {
         if (!isExpectedBrowserCloseError(error)) {
           log("Cannot stop Chromium capture cleanly", error);
         }
@@ -338,6 +346,16 @@ async function closeSessionBrowser(session) {
       }
     }
   })();
+  session.cleanupPromise = cleanup.catch((error) => {
+    log("Stream cleanup failed; forcing browser termination", error);
+    const browser = session.browser;
+    session.browser = null;
+    try {
+      browser?.process()?.kill("SIGKILL");
+    } catch {
+      // The process may have already exited.
+    }
+  });
 
   return session.cleanupPromise;
 }
@@ -347,6 +365,12 @@ async function stopActiveStream({ leaveVoice = false } = {}) {
   if (session) {
     session.state = "stopping";
     if (!session.controller.signal.aborted) session.controller.abort();
+    // Closing an already assigned browser interrupts page navigation,
+    // getStream and FFmpeg immediately. If Chromium is still launching,
+    // executeStream remains the cleanup owner so a late process cannot leak.
+    if (session.browser) {
+      await closeSessionBrowser(session);
+    }
     await session.runPromise;
   }
   if (leaveVoice) streamer.leaveVoice();
@@ -428,6 +452,7 @@ async function executeStream(session) {
 
     command.on("error", (error, _stdout, stderr) => {
       if (!session.controller.signal.aborted) {
+        rememberError(error);
         log(`FFmpeg failed: ${stderr || "no stderr"}`, error);
       }
     });
@@ -437,15 +462,16 @@ async function executeStream(session) {
     await playStream(
       output,
       streamer,
-      { type: "go-live", readrateInitialBurst: 2 },
+      {
+        type: "go-live",
+        readrateInitialBurst: 2,
+        connectionTimeoutMs: config.streamConnectTimeout,
+      },
       session.controller.signal,
     );
   } catch (error) {
-    if (!isAbortError(error)) {
-      lastError = {
-        message: String(error?.message || error),
-        at: new Date(),
-      };
+    if (!session.controller.signal.aborted && !isAbortError(error)) {
+      rememberError(error);
       log(session.state === "streaming" ? "Stream failed" : "Cannot start stream", error);
     }
   } finally {
@@ -460,8 +486,13 @@ async function replaceStream(url, guildId, voiceChannelId) {
   if (!guildId || !voiceChannelId) {
     throw new Error(
       "Voice target is unknown; join a voice channel or set " +
-        "BROWSER_STREAM_GUILD_ID and BROWSER_STREAM_VOICE_CHANNEL_ID",
+      "BROWSER_STREAM_GUILD_ID and BROWSER_STREAM_VOICE_CHANNEL_ID",
     );
+  }
+
+  if (isSameLiveStream(active, url, guildId, voiceChannelId)) {
+    log(`Stream is already active: ${url}`);
+    return active;
   }
 
   await stopActiveStream();
@@ -483,6 +514,7 @@ async function replaceStream(url, guildId, voiceChannelId) {
   lastUrl = url;
   lastError = null;
   session.runPromise = executeStream(session);
+  return session;
 }
 
 function runStream(url, guildId, voiceChannelId) {
@@ -490,10 +522,7 @@ function runStream(url, guildId, voiceChannelId) {
     replaceStream(url, guildId, voiceChannelId),
   ).catch((error) => {
     if (error?.name !== "AbortError") {
-      lastError = {
-        message: String(error?.message || error),
-        at: new Date(),
-      };
+      rememberError(error);
       log("Cannot start stream", error);
     }
   });
@@ -536,6 +565,10 @@ async function handleApi(request, response) {
           ok: false,
           error: "voice_target_required",
         });
+        return;
+      }
+      if (isSameLiveStream(active, url, guildId, voiceChannelId)) {
+        sendJson(response, 200, streamStatus());
         return;
       }
       runStream(url, guildId, voiceChannelId);
@@ -614,6 +647,13 @@ client.on("messageCreate", async (message) => {
     }
     const guildId = message.guildId || config.guildId;
     const voiceChannelId = message.member?.voice?.channelId || config.voiceChannelId;
+    if (!guildId || !voiceChannelId) {
+      await reply(
+        message,
+        "Сначала войдите в голосовой канал или настройте канал по умолчанию.",
+      );
+      return;
+    }
     await reply(message, `Запускаю трансляцию: ${url}`);
     runStream(url, guildId, voiceChannelId);
     return;
@@ -633,7 +673,13 @@ client.on("messageCreate", async (message) => {
 
   if (command === "status") {
     const status = active
-      ? `${active.state === "starting" ? "Запускается" : "Стрим идёт"}: ` +
+      ? `${
+          active.state === "starting"
+            ? "Запускается"
+            : active.state === "stopping"
+              ? "Останавливается"
+              : "Стрим идёт"
+        }: ` +
         `${active.url} (с ${active.startedAt.toISOString()})`
       : lastError
         ? `Сейчас трансляции нет. Последняя ошибка: ${lastError.message}`
@@ -656,6 +702,8 @@ client.on("messageCreate", async (message) => {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log(`Received ${signal}`);
     await enqueueLifecycle(() => stopActiveStream({ leaveVoice: true }));
     if (apiServer) {

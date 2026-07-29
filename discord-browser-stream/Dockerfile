@@ -20,9 +20,12 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY scripts ./scripts
 RUN corepack enable \
     && corepack prepare pnpm@11.9.0 --activate \
-    && pnpm install --prod --frozen-lockfile
+    && pnpm install --prod --frozen-lockfile \
+    && node scripts/patch-puppeteer-stream.mjs \
+    && node scripts/patch-discord-video-stream.mjs
 
 COPY src ./src
 COPY docker-entrypoint.sh /usr/local/bin/discord-stream-entrypoint

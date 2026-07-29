@@ -7,6 +7,9 @@ import {
   delay,
   isExpectedBrowserCloseError,
   isRetryableBrowserLaunchError,
+  isSameLiveStream,
+  normalizeStreamUrl,
+  stopCaptureStream,
   waitForVoiceConnection,
 } from "../src/lifecycle.js";
 
@@ -36,6 +39,29 @@ test("lifecycle queue serializes operations and survives a rejection", async () 
     "failed:start",
     "last:start",
   ]);
+});
+
+test("lifecycle queue stays serialized across repeated start-stop bursts", async () => {
+  const enqueue = createLifecycleQueue();
+  let running = 0;
+  let maximumRunning = 0;
+  let completed = 0;
+
+  const operations = Array.from({ length: 100 }, (_, index) =>
+    enqueue(async () => {
+      running += 1;
+      maximumRunning = Math.max(maximumRunning, running);
+      await delay(index % 3);
+      running -= 1;
+      completed += 1;
+      if (index % 17 === 0) throw new Error(`expected-${index}`);
+    }).catch(() => {}),
+  );
+
+  await Promise.all(operations);
+  assert.equal(maximumRunning, 1);
+  assert.equal(completed, 100);
+  assert.equal(running, 0);
 });
 
 test("voice connection is reused only for the same live target", () => {
@@ -116,4 +142,110 @@ test("only browser process startup failures are retried", () => {
     true,
   );
   assert.equal(isRetryableBrowserLaunchError(new Error("invalid URL")), false);
+});
+
+test("stream URL validation accepts web pages without leaking credentials", () => {
+  assert.equal(normalizeStreamUrl(" https://tvr.lat/egg "), "https://tvr.lat/egg");
+  assert.throws(() => normalizeStreamUrl("file:///etc/passwd"), /http/);
+  assert.throws(
+    () => normalizeStreamUrl("https://admin:secret@tvr.lat/"),
+    /credentials/,
+  );
+  assert.throws(
+    () => normalizeStreamUrl(`https://tvr.lat/${"x".repeat(2048)}`),
+    /invalid/,
+  );
+});
+
+test("capture cleanup supports both puppeteer-stream APIs", async () => {
+  let stopped = 0;
+  assert.equal(
+    await stopCaptureStream({
+      stop: async () => {
+        stopped += 1;
+      },
+    }),
+    "stop",
+  );
+  assert.equal(stopped, 1);
+
+  let destroyed = 0;
+  assert.equal(
+    await stopCaptureStream({
+      destroyed: false,
+      destroy: () => {
+        destroyed += 1;
+      },
+    }),
+    "destroy",
+  );
+  assert.equal(destroyed, 1);
+
+  let ended = 0;
+  assert.equal(
+    await stopCaptureStream({
+      writableEnded: false,
+      end: () => {
+        ended += 1;
+      },
+    }),
+    "end",
+  );
+  assert.equal(ended, 1);
+
+  assert.equal(await stopCaptureStream(null), "none");
+});
+
+test("capture cleanup cannot hang forever and falls back to destroy", async () => {
+  let destroyed = 0;
+  await assert.rejects(
+    stopCaptureStream(
+      {
+        destroyed: false,
+        stop: () => new Promise(() => {}),
+        destroy: () => {
+          destroyed += 1;
+        },
+      },
+      5,
+    ),
+    /capture_stop_timeout/,
+  );
+  assert.equal(destroyed, 1);
+});
+
+test("identical live stream starts are idempotent", () => {
+  const session = {
+    state: "streaming",
+    url: "https://tvr.lat/egg",
+    guildId: "guild",
+    voiceChannelId: "voice",
+  };
+
+  assert.equal(
+    isSameLiveStream(session, session.url, "guild", "voice"),
+    true,
+  );
+  assert.equal(
+    isSameLiveStream(
+      { ...session, state: "starting" },
+      session.url,
+      "guild",
+      "voice",
+    ),
+    true,
+  );
+  assert.equal(
+    isSameLiveStream(
+      { ...session, state: "stopping" },
+      session.url,
+      "guild",
+      "voice",
+    ),
+    false,
+  );
+  assert.equal(
+    isSameLiveStream(session, "https://tvr.lat/", "guild", "voice"),
+    false,
+  );
 });
