@@ -302,6 +302,18 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="result-announcer"', index_text)
             self.assertIn('id="bill-dialog"', index_text)
             self.assertIn('id="bill-library-dialog"', index_text)
+            self.assertIn(
+                '<meta name="theme-color" content="#080b0c">',
+                index_text,
+            )
+            self.assertIn(
+                "html,body{background:#080b0c;color:#edf1eb}",
+                index_text,
+            )
+            self.assertIn(
+                "'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po='",
+                index.headers["Content-Security-Policy"],
+            )
 
             script = await client.get("/assets/app.js")
             self.assertEqual(script.status, 200)
@@ -320,6 +332,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "@media (prefers-reduced-motion: reduce)",
                 stylesheet_text,
             )
+            self.assertIn("color-scheme: dark", stylesheet_text)
+            self.assertIn("background-color: #080b0c", stylesheet_text)
+            self.assertIn("min-height: 100dvh", stylesheet_text)
 
             denied = await client.get("/api/state")
             self.assertEqual(denied.status, 401)

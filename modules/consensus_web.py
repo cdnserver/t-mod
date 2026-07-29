@@ -741,7 +741,8 @@ def _apply_security_headers(response: web.StreamResponse) -> None:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po='; "
         "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
         "base-uri 'none'; object-src 'none'; form-action 'self'"
     )

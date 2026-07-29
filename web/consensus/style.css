@@ -1,4 +1,6 @@
 :root {
+  color-scheme: dark;
+  background-color: #080b0c;
   --bg: #080b0c;
   --surface: #101516;
   --surface-2: #151b1c;
@@ -28,20 +30,25 @@
 
 html {
   min-width: 320px;
-  background: var(--bg);
+  min-height: 100%;
+  background-color: #080b0c;
+  background-color: var(--bg);
 }
 
 body {
   position: relative;
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   color: var(--text);
   font-family: var(--sans);
-  background:
+  background-color: #080b0c;
+  background-color: var(--bg);
+  background-image:
     radial-gradient(circle at 8% -10%, rgba(200, 255, 115, 0.12), transparent 30rem),
-    radial-gradient(circle at 96% 15%, rgba(70, 113, 96, 0.12), transparent 28rem),
-    var(--bg);
+    radial-gradient(circle at 96% 15%, rgba(70, 113, 96, 0.12), transparent 28rem);
+  background-repeat: no-repeat;
 }
 
 .atmosphere {
