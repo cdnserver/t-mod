@@ -9,6 +9,13 @@ import {
 import { getStream, launch } from "puppeteer-stream";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import {
+  canReuseVoiceConnection,
+  createLifecycleQueue,
+  delay,
+  isExpectedBrowserCloseError,
+  waitForVoiceConnection,
+} from "./lifecycle.js";
 
 const CAPTURE_EXTENSION_ID = "jjndjgheafjngoipoacpjgeicjeomjli";
 
@@ -75,6 +82,12 @@ const config = {
     0,
     5000,
   ),
+  voiceConnectTimeout: integer(
+    "BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS",
+    20000,
+    5000,
+    60000,
+  ),
   ignoreHttpsErrors: boolean("BROWSER_STREAM_IGNORE_HTTPS_ERRORS"),
   profileDir:
     process.env.BROWSER_STREAM_PROFILE_DIR?.trim() || "/data/chrome",
@@ -95,6 +108,8 @@ let active = null;
 let lastUrl = config.startUrl;
 let lastError = null;
 let apiServer = null;
+const enqueueLifecycle = createLifecycleQueue();
+let browserCloseGraceUntil = 0;
 
 function log(message, error) {
   const suffix = error ? `\n${error.stack || error}` : "";
@@ -163,48 +178,98 @@ async function readJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function stopStream({ leaveVoice = false } = {}) {
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+async function ensureVoiceConnection(session) {
+  const current = streamer.voiceConnection;
+  if (canReuseVoiceConnection(current, session.guildId, session.voiceChannelId)) {
+    log(`Reusing voice connection ${session.guildId}/${session.voiceChannelId}`);
+    return current;
+  }
+
+  if (current) {
+    streamer.leaveVoice();
+    await delay(250);
+  }
+
+  log(`Joining voice channel ${session.guildId}/${session.voiceChannelId}`);
+  try {
+    return await waitForVoiceConnection(
+      streamer.joinVoice(session.guildId, session.voiceChannelId),
+      session.controller.signal,
+      config.voiceConnectTimeout,
+    );
+  } catch (error) {
+    streamer.leaveVoice();
+    throw error;
+  }
+}
+
+async function closeSessionBrowser(session) {
+  if (session.cleanupPromise) return session.cleanupPromise;
+
+  session.cleanupPromise = (async () => {
+    session.state = "stopping";
+    if (!session.controller.signal.aborted) session.controller.abort();
+
+    const browserMedia = session.browserMedia;
+    session.browserMedia = null;
+    if (browserMedia) {
+      await browserMedia.stop().catch((error) => {
+        if (!isExpectedBrowserCloseError(error)) {
+          log("Cannot stop Chromium capture cleanly", error);
+        }
+      });
+    }
+
+    const browser = session.browser;
+    session.browser = null;
+    if (!browser) return;
+
+    browserCloseGraceUntil = Date.now() + 5000;
+    try {
+      await Promise.race([
+        browser.close(),
+        delay(5000).then(() => {
+          throw new Error("chromium_close_timeout");
+        }),
+      ]);
+    } catch (error) {
+      if (!isExpectedBrowserCloseError(error)) {
+        log("Chromium did not close cleanly; terminating its process", error);
+      }
+      browser.process()?.kill("SIGKILL");
+    } finally {
+      browserCloseGraceUntil = Date.now() + 2000;
+    }
+  })();
+
+  return session.cleanupPromise;
+}
+
+async function stopActiveStream({ leaveVoice = false } = {}) {
   const session = active;
-  active = null;
   if (session) {
-    session.controller.abort();
-    await session.browser?.close().catch(() => {});
+    session.state = "stopping";
+    if (!session.controller.signal.aborted) session.controller.abort();
+    await session.runPromise;
   }
   if (leaveVoice) streamer.leaveVoice();
 }
 
-async function startStream(url, guildId, voiceChannelId) {
-  url = parseUrl(url);
-  if (!guildId || !voiceChannelId) {
-    throw new Error(
-      "Voice target is unknown; join a voice channel or set " +
-        "BROWSER_STREAM_GUILD_ID and BROWSER_STREAM_VOICE_CHANNEL_ID",
-    );
-  }
-
-  await stopStream();
-  const controller = new AbortController();
-  const session = {
-    controller,
-    browser: null,
-    url,
-    guildId,
-    voiceChannelId,
-    startedAt: new Date(),
-    state: "starting",
-  };
-  active = session;
-  lastUrl = url;
-  lastError = null;
-
+async function executeStream(session) {
+  const { url, guildId, voiceChannelId } = session;
   try {
-    log(`Joining voice channel ${guildId}/${voiceChannelId}`);
-    await streamer.joinVoice(guildId, voiceChannelId);
+    await ensureVoiceConnection(session);
+    session.controller.signal.throwIfAborted();
 
     const voiceChannel = await client.channels.fetch(voiceChannelId);
     if (voiceChannel instanceof StageChannel) {
       await client.user?.voice?.setSuppressed(false);
     }
+    session.controller.signal.throwIfAborted();
 
     session.browser = await launch({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium",
@@ -225,6 +290,7 @@ async function startStream(url, guildId, voiceChannelId) {
     });
 
     log(`Chromium ready: ${await session.browser.version()}`);
+    session.controller.signal.throwIfAborted();
 
     // puppeteer-stream owns a separate extension page. Always create a fresh
     // content page so the extension can never become the capture target.
@@ -234,14 +300,12 @@ async function startStream(url, guildId, voiceChannelId) {
     await page.goto(url, { waitUntil: "domcontentloaded" });
     await page.bringToFront();
     if (config.captureFocusDelay) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, config.captureFocusDelay),
-      );
+      await delay(config.captureFocusDelay);
     }
+    session.controller.signal.throwIfAborted();
 
-    let browserMedia;
     try {
-      browserMedia = await getStream(page, {
+      session.browserMedia = await getStream(page, {
         audio: true,
         video: true,
         mimeType: "video/webm;codecs=vp8,opus",
@@ -263,10 +327,13 @@ async function startStream(url, guildId, voiceChannelId) {
       }
       throw error;
     }
+    session.controller.signal.throwIfAborted();
 
-    const encoder = Encoders.software({ x264: { preset: "veryfast", tune: "zerolatency" } });
+    const encoder = Encoders.software({
+      x264: { preset: "veryfast", tune: "zerolatency" },
+    });
     const { command, output } = prepareStream(
-      browserMedia,
+      session.browserMedia,
       {
         encoder,
         width: config.width,
@@ -279,25 +346,71 @@ async function startStream(url, guildId, voiceChannelId) {
         minimizeLatency: true,
         videoCodec: Utils.normalizeVideoCodec("H264"),
       },
-      controller.signal,
+      session.controller.signal,
     );
 
     command.on("error", (error, _stdout, stderr) => {
-      if (!controller.signal.aborted) log(`FFmpeg failed: ${stderr || "no stderr"}`, error);
+      if (!session.controller.signal.aborted) {
+        log(`FFmpeg failed: ${stderr || "no stderr"}`, error);
+      }
     });
 
     log(`Streaming ${url}`);
     session.state = "streaming";
-    await playStream(output, streamer, { type: "go-live", readrateInitialBurst: 2 }, controller.signal);
+    await playStream(
+      output,
+      streamer,
+      { type: "go-live", readrateInitialBurst: 2 },
+      session.controller.signal,
+    );
+  } catch (error) {
+    if (!isAbortError(error)) {
+      lastError = {
+        message: String(error?.message || error),
+        at: new Date(),
+      };
+      log(session.state === "streaming" ? "Stream failed" : "Cannot start stream", error);
+    }
   } finally {
-    await session.browser?.close().catch(() => {});
+    await closeSessionBrowser(session);
     if (active === session) active = null;
     log(`Stream ended: ${url}`);
   }
 }
 
+async function replaceStream(url, guildId, voiceChannelId) {
+  url = parseUrl(url);
+  if (!guildId || !voiceChannelId) {
+    throw new Error(
+      "Voice target is unknown; join a voice channel or set " +
+        "BROWSER_STREAM_GUILD_ID and BROWSER_STREAM_VOICE_CHANNEL_ID",
+    );
+  }
+
+  await stopActiveStream();
+  const controller = new AbortController();
+  const session = {
+    controller,
+    browser: null,
+    browserMedia: null,
+    cleanupPromise: null,
+    runPromise: null,
+    url,
+    guildId,
+    voiceChannelId,
+    startedAt: new Date(),
+    state: "starting",
+  };
+  active = session;
+  lastUrl = url;
+  lastError = null;
+  session.runPromise = executeStream(session);
+}
+
 function runStream(url, guildId, voiceChannelId) {
-  void startStream(url, guildId, voiceChannelId).catch((error) => {
+  void enqueueLifecycle(() =>
+    replaceStream(url, guildId, voiceChannelId),
+  ).catch((error) => {
     if (error?.name !== "AbortError") {
       lastError = {
         message: String(error?.message || error),
@@ -359,7 +472,9 @@ async function handleApi(request, response) {
       return;
     }
     if (action === "stop" || action === "leave") {
-      await stopStream({ leaveVoice: action === "leave" });
+      await enqueueLifecycle(() =>
+        stopActiveStream({ leaveVoice: action === "leave" }),
+      );
       sendJson(response, 200, streamStatus());
       return;
     }
@@ -427,13 +542,13 @@ client.on("messageCreate", async (message) => {
   }
 
   if (command === "stop") {
-    await stopStream();
+    await enqueueLifecycle(() => stopActiveStream());
     await reply(message, "Трансляция остановлена.");
     return;
   }
 
   if (command === "leave") {
-    await stopStream({ leaveVoice: true });
+    await enqueueLifecycle(() => stopActiveStream({ leaveVoice: true }));
     await reply(message, "Трансляция остановлена, голосовой канал покинут.");
     return;
   }
@@ -464,7 +579,7 @@ client.on("messageCreate", async (message) => {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
     log(`Received ${signal}`);
-    await stopStream({ leaveVoice: true });
+    await enqueueLifecycle(() => stopActiveStream({ leaveVoice: true }));
     if (apiServer) {
       await new Promise((resolve) => apiServer.close(resolve));
     }
@@ -473,6 +588,14 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-process.on("unhandledRejection", (error) => log("Unhandled rejection", error));
+process.on("unhandledRejection", (error) => {
+  if (
+    Date.now() <= browserCloseGraceUntil &&
+    isExpectedBrowserCloseError(error)
+  ) {
+    return;
+  }
+  log("Unhandled rejection", error);
+});
 await client.login(config.token);
 await startApi();

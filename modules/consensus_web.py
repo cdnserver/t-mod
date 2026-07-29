@@ -758,9 +758,12 @@ def create_consensus_web_app(
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
 
+    async def egg(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "egg.html")
+
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info["name"])
-        if name not in {"app.js", "style.css"}:
+        if name not in {"app.js", "style.css", "egg.css"}:
             raise web.HTTPNotFound()
         return web.FileResponse(_ASSET_DIR / name)
 
@@ -1123,6 +1126,8 @@ def create_consensus_web_app(
         return web.json_response(response_payload)
 
     app.router.add_get("/", index)
+    app.router.add_get("/egg", egg)
+    app.router.add_get("/egg/", egg)
     app.router.add_get("/assets/{name}", asset)
     app.router.add_get("/auth/ticket", ticket_login)
     app.router.add_get("/auth/logout", logout)

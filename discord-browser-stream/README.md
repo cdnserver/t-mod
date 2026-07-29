@@ -127,7 +127,9 @@ docker compose logs -f
 - `BROWSER_STREAM_CAPTURE_STARTUP_DELAY_MS` — ожидание загрузки расширения
   Chromium перед открытием трансляции, по умолчанию `1250`;
 - `BROWSER_STREAM_CAPTURE_FOCUS_DELAY_MS` — пауза после активации вкладки,
-  по умолчанию `250`.
+  по умолчанию `250`;
+- `BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS` — максимальное ожидание
+  voice-handshake, по умолчанию `20000`.
 
 Профиль Chromium хранится в `BROWSER_STREAM_PROFILE_DIR` (`/data/chrome`
 внутри штатного контейнера). Cookies и токены не следует помещать в образ или

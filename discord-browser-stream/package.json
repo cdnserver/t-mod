@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js && node --test test/*.test.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@dank074/discord-video-stream": "6.0.0",

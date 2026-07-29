@@ -28,6 +28,9 @@ COPY src ./src
 COPY docker-entrypoint.sh /usr/local/bin/discord-stream-entrypoint
 RUN sed -i 's/\r$//' /usr/local/bin/discord-stream-entrypoint \
     && chmod +x /usr/local/bin/discord-stream-entrypoint \
+    && mkdir -p /tmp/.X11-unix \
+    && chown root:root /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
     && mkdir -p /data/chrome \
     && chown -R node:node /app /data
 

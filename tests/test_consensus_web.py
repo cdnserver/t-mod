@@ -336,6 +336,23 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("background-color: #080b0c", stylesheet_text)
             self.assertIn("min-height: 100dvh", stylesheet_text)
 
+            egg = await client.get("/egg")
+            self.assertEqual(egg.status, 200)
+            egg_text = await egg.text()
+            self.assertIn("СОУЛ ГУДМАН", egg_text)
+            self.assertIn("ЯЙЦА НА СТОЛ", egg_text)
+            self.assertIn("БОТ ПОКАЗЫВАЕТ ДЕМКУ", egg_text)
+            self.assertNotIn("<script", egg_text)
+
+            egg_stylesheet = await client.get("/assets/egg.css")
+            self.assertEqual(egg_stylesheet.status, 200)
+            egg_stylesheet_text = await egg_stylesheet.text()
+            self.assertIn("height: 100dvh", egg_stylesheet_text)
+            self.assertIn(
+                "@media (prefers-reduced-motion: reduce)",
+                egg_stylesheet_text,
+            )
+
             denied = await client.get("/api/state")
             self.assertEqual(denied.status, 401)
 

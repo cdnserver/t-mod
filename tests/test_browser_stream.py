@@ -249,6 +249,12 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         source = (
             ROOT / "discord-browser-stream/src/index.js"
         ).read_text(encoding="utf-8")
+        lifecycle = (
+            ROOT / "discord-browser-stream/src/lifecycle.js"
+        ).read_text(encoding="utf-8")
+        lifecycle_tests = (
+            ROOT / "discord-browser-stream/test/lifecycle.test.js"
+        ).read_text(encoding="utf-8")
         entrypoint = (
             ROOT / "discord-browser-stream/docker-entrypoint.sh"
         ).read_text(encoding="utf-8")
@@ -267,13 +273,25 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("--allowlisted-extension-id=", source)
         self.assertIn("BROWSER_STREAM_CAPTURE_STARTUP_DELAY_MS", source)
         self.assertIn("BROWSER_STREAM_CAPTURE_FOCUS_DELAY_MS", source)
+        self.assertIn("BROWSER_STREAM_VOICE_CONNECT_TIMEOUT_MS", source)
         self.assertIn("await session.browser.newPage()", source)
         self.assertNotIn("pages[0]", source)
+        self.assertIn("createLifecycleQueue", source)
+        self.assertIn("Reusing voice connection", source)
+        self.assertIn("session.cleanupPromise", source)
+        self.assertIn("browserMedia.stop()", source)
+        self.assertIn("voice_connection_timeout", lifecycle)
+        self.assertIn("survives a rejection", lifecycle_tests)
         self.assertIn("BROWSER_STREAM_DISCORD_TOKEN", source)
         self.assertIn("timingSafeEqual", source)
         self.assertIn("BROWSER_STREAM_WIDTH", entrypoint)
+        self.assertIn("-noreset", entrypoint)
+        self.assertIn("Timed out waiting for Xvfb", entrypoint)
+        self.assertIn("Xvfb stopped", entrypoint)
         self.assertIn("*.sh text eol=lf", attributes)
         self.assertIn("sed -i 's/\\r$//'", dockerfile)
+        self.assertIn("mkdir -p /tmp/.X11-unix", dockerfile)
+        self.assertIn("chmod 1777 /tmp/.X11-unix", dockerfile)
         self.assertIn('ENTRYPOINT ["/usr/bin/tini"', dockerfile)
 
     def test_pnpm_build_scripts_use_an_explicit_reviewed_allowlist(
