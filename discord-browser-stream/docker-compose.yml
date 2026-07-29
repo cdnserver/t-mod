@@ -4,7 +4,6 @@ services:
       context: .
     container_name: discord-browser-stream
     restart: unless-stopped
-    init: true
     env_file:
       - .env
     expose:

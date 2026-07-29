@@ -224,6 +224,7 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("/health", compose)
         self.assertNotIn("browser-stream.env", bot_service)
         self.assertIn("browser-stream.env", emulator_service)
+        self.assertNotIn("init: true", emulator_service)
 
     def test_windows_launcher_validates_separate_user_credentials(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
@@ -251,6 +252,10 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         entrypoint = (
             ROOT / "discord-browser-stream/docker-entrypoint.sh"
         ).read_text(encoding="utf-8")
+        dockerfile = (
+            ROOT / "discord-browser-stream/Dockerfile"
+        ).read_text(encoding="utf-8")
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
 
         dependencies = package["dependencies"]
         self.assertIn("discord.js-selfbot-v13", dependencies)
@@ -262,6 +267,9 @@ class BrowserStreamPackagingTests(unittest.TestCase):
         self.assertIn("BROWSER_STREAM_DISCORD_TOKEN", source)
         self.assertIn("timingSafeEqual", source)
         self.assertIn("BROWSER_STREAM_WIDTH", entrypoint)
+        self.assertIn("*.sh text eol=lf", attributes)
+        self.assertIn("sed -i 's/\\r$//'", dockerfile)
+        self.assertIn('ENTRYPOINT ["/usr/bin/tini"', dockerfile)
 
     def test_pnpm_build_scripts_use_an_explicit_reviewed_allowlist(
         self,

@@ -34,7 +34,6 @@ services:
     image: tmod-browser-stream:latest
     container_name: discord-browser-stream
     restart: unless-stopped
-    init: true
     env_file:
       - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
       - "C:/Users/Admin/Documents/SGLDiscordBot/browser-stream.env"

@@ -26,9 +26,10 @@ RUN corepack enable \
 
 COPY src ./src
 COPY docker-entrypoint.sh /usr/local/bin/discord-stream-entrypoint
-RUN chmod +x /usr/local/bin/discord-stream-entrypoint \
+RUN sed -i 's/\r$//' /usr/local/bin/discord-stream-entrypoint \
+    && chmod +x /usr/local/bin/discord-stream-entrypoint \
     && mkdir -p /data/chrome \
     && chown -R node:node /app /data
 
 USER node
-ENTRYPOINT ["tini", "--", "/usr/local/bin/discord-stream-entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/discord-stream-entrypoint"]
