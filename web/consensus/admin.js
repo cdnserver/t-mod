@@ -428,7 +428,7 @@ function rememberActivity(data, section = appState.section, notify = appState.au
   appState.activitySignatures.set(section, signature);
   const changed = !previous || previous !== signature;
   if (!notify || !previous || !changed) return changed;
-  const sectionTitle = sectionMeta[section]?.[1] || "Админ-центр";
+  const sectionTitle = sectionMeta[section]?.[1] || "Ядерный Реактор";
   showToast(
     `В разделе «${sectionTitle}» появились новые данные.`,
     false,
@@ -534,7 +534,7 @@ function showApplication(payload) {
     gate.dataset.state = "verified";
     byId("gate-login").hidden = true;
     setText("gate-state", "ЛИЧНОСТЬ И ПРАВА ПОДТВЕРЖДЕНЫ");
-    setText("gate-message", "Защищённая сессия готова. Открываем административный контур…");
+    setText("gate-message", "Защищённая сессия готова. Запускаем Ядерный Реактор…");
     shell.hidden = false;
     const delay = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches
       ? 80

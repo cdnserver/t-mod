@@ -807,9 +807,9 @@ function renderMode(data) {
 function renderViewer(data) {
   const viewer = data.viewer || {};
   const chip = byId("viewer-chip");
+  byId("reactor-link").hidden = !viewer.administrator;
   chip.hidden = !viewer.authenticated && !viewer.legacy_read_only;
   if (chip.hidden) return;
-  byId("admin-center-link").hidden = !viewer.administrator;
   text("viewer-name", viewer.name || "Наблюдатель");
   const role = viewer.leader
     ? "ведущий"

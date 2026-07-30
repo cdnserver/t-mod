@@ -282,6 +282,32 @@ body[data-outcome="oral"] .atmosphere-orb {
   gap: 18px;
 }
 
+.panel-switch {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border: 1px solid rgba(200, 255, 115, 0.28);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(200, 255, 115, 0.075);
+  font-size: 0.72rem;
+  text-decoration: none;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.panel-switch:hover {
+  border-color: rgba(200, 255, 115, 0.54);
+  background: rgba(200, 255, 115, 0.13);
+  transform: translateY(-1px);
+}
+
+.panel-switch > span {
+  color: var(--accent);
+  font-size: 1rem;
+}
+
 .viewer-chip {
   display: grid;
   grid-template-columns: auto auto;
@@ -2235,6 +2261,16 @@ footer {
 
   .topbar-tools {
     gap: 8px;
+  }
+
+  .panel-switch {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .panel-switch strong {
+    display: none;
   }
 
   .viewer-chip {

@@ -353,7 +353,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             admin = await client.get("/admin")
             self.assertEqual(admin.status, 200)
             admin_text = await admin.text()
-            self.assertIn("T·Control", admin_text)
+            self.assertIn("Ядерный Реактор", admin_text)
+            self.assertIn('class="icon-button panel-switch" href="/"', admin_text)
+            self.assertIn('id="reactor-link"', index_text)
             self.assertIn(
                 "html,body{background:#080b0c;color:#edf1eb}",
                 admin_text,

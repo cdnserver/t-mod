@@ -6,10 +6,10 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#080b0c">
     <style>html,body{background:#080b0c;color:#edf1eb}</style>
-    <title>T·Control — административный центр</title>
+    <title>Ядерный Реактор — T-Mod</title>
     <meta
       name="description"
-      content="Защищённый административный и аудитный центр T-Mod."
+      content="Ядерный Реактор — защищённая административная панель T-Mod."
     >
     <link rel="stylesheet" href="/assets/admin.css">
     <script src="/assets/admin.js" defer></script>
@@ -41,7 +41,7 @@
           <span class="gate-state-dot"></span>
           <span id="gate-state">ПРОВЕРКА ЗАЩИЩЁННОЙ СЕССИИ</span>
         </div>
-        <h1>Административный центр</h1>
+        <h1>Ядерный Реактор</h1>
         <p id="gate-message">
           Проверяем персональную сессию и административные права…
         </p>
@@ -56,15 +56,15 @@
 
     <div id="admin-shell" class="admin-shell" hidden>
       <aside class="sidebar">
-        <a class="brand" href="/admin" aria-label="T Control">
-          <span class="brand-mark">T</span>
+        <a class="brand" href="/admin" aria-label="Ядерный Реактор">
+          <span class="brand-mark">⚛</span>
           <span class="brand-copy">
-            <strong>CONTROL</strong>
-            <small>administrative system</small>
+            <strong>ЯДЕРНЫЙ РЕАКТОР</strong>
+            <small>administrative core</small>
           </span>
         </a>
 
-        <nav class="primary-nav" aria-label="Разделы админ-центра">
+        <nav class="primary-nav" aria-label="Разделы Ядерного Реактора">
           <button class="nav-item active" type="button" data-section="overview">
             <span class="nav-icon">⌂</span>
             <span>Обзор</span>
@@ -148,6 +148,10 @@
             <h1 id="section-title">Обзор системы</h1>
           </div>
           <div class="top-actions">
+            <a class="icon-button panel-switch" href="/" title="Перейти в панель консенсуса">
+              <span aria-hidden="true">🏛</span>
+              <span>Консенсус</span>
+            </a>
             <label class="period-control" for="period-select">
               <span>Период</span>
               <select id="period-select">
@@ -206,7 +210,7 @@
             <div class="status-banner">
               <span class="status-symbol">T</span>
               <div>
-                <strong id="welcome-title">Административная картина готова</strong>
+                <strong id="welcome-title">Ядерный Реактор готов</strong>
                 <span id="welcome-subtitle">
                   Сводка событий, денег и процессов Товарищества
                 </span>

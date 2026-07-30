@@ -308,6 +308,17 @@ select:focus-visible {
   background: rgba(165, 240, 192, 0.075);
 }
 
+.panel-switch {
+  border-color: rgba(165, 240, 192, 0.28);
+  background: rgba(165, 240, 192, 0.075);
+  color: var(--mint);
+}
+
+.panel-switch:hover {
+  border-color: rgba(165, 240, 192, 0.52);
+  background: rgba(165, 240, 192, 0.13);
+}
+
 .admin-shell {
   position: relative;
   z-index: 1;
@@ -355,8 +366,9 @@ select:focus-visible {
 }
 
 .brand-copy strong {
-  font-size: 14px;
-  letter-spacing: 0.18em;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 
 .brand-copy small {
