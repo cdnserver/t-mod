@@ -38,6 +38,7 @@ let state = null;
 let pollTimer = null;
 let fetching = false;
 let commanding = false;
+let stateSignature = "";
 let messageTimer = null;
 let observerTab = sessionStorage.getItem("t-consensus-observer-tab") || "participants";
 let dialogBill = null;
@@ -72,6 +73,27 @@ function stableSignature(value) {
   } catch (error) {
     return String(value);
   }
+}
+
+function payloadSignature(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const { updated_at: _updatedAt, ...stablePayload } = payload;
+  return stableSignature(stablePayload);
+}
+
+function setDataLoading(visible) {
+  byId("data-loading").hidden = !visible;
+  if (visible) dashboard.setAttribute("inert", "");
+  else dashboard.removeAttribute("inert");
+}
+
+function schedulePoll(delay = null) {
+  clearTimeout(pollTimer);
+  const nextDelay = delay ?? (state?.active ? 2500 : 8000);
+  pollTimer = setTimeout(async () => {
+    if (!document.hidden && !dashboard.hidden) await fetchState();
+    schedulePoll();
+  }, nextDelay);
 }
 
 function formatNumber(value) {
@@ -1122,9 +1144,10 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function fetchState({ first = false } = {}) {
+async function fetchState({ first = false, blocking = false } = {}) {
   if (fetching || commanding) return;
   fetching = true;
+  if (first || blocking) setDataLoading(true);
   try {
     const query = selectedMode ? `?mode=${encodeURIComponent(selectedMode)}` : "";
     const response = await fetch(`/api/state${query}`, {
@@ -1142,7 +1165,12 @@ async function fetchState({ first = false } = {}) {
       return;
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
+    const payload = await response.json();
+    const nextSignature = payloadSignature(payload);
+    if (first || nextSignature !== stateSignature) {
+      render(payload);
+      stateSignature = nextSignature;
+    }
     login.hidden = true;
     dashboard.hidden = false;
     loginError.textContent = "";
@@ -1161,6 +1189,7 @@ async function fetchState({ first = false } = {}) {
     if (first) loginError.textContent = "Панель недоступна. Проверьте контейнер T-Mod, Caddy и DNS.";
   } finally {
     fetching = false;
+    if (first || blocking) setDataLoading(false);
   }
 }
 
@@ -1224,7 +1253,7 @@ document.querySelectorAll("#mode-switch button").forEach((button) => {
     selectedMode = button.dataset.mode || "live";
     sessionStorage.setItem("t-consensus-mode", selectedMode);
     libraryItems = [];
-    await fetchState();
+    await fetchState({ blocking: true });
   });
 });
 
@@ -1271,9 +1300,11 @@ setInterval(() => {
   }
 }, 1000);
 
-fetchState({ first: true });
-pollTimer = setInterval(() => {
-  if (dashboard.hidden) return;
-  fetchState();
-}, 1000);
-window.addEventListener("beforeunload", () => clearInterval(pollTimer));
+fetchState({ first: true }).finally(() => schedulePoll());
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !dashboard.hidden) {
+    void fetchState();
+    schedulePoll();
+  }
+});
+window.addEventListener("beforeunload", () => clearTimeout(pollTimer));

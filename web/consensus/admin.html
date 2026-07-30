@@ -21,6 +21,14 @@
       <span class="backdrop-grid"></span>
     </div>
 
+    <div id="data-loading" class="data-loading" role="status" aria-live="polite" hidden>
+      <span class="data-loading-spinner" aria-hidden="true"></span>
+      <span>
+        <strong>Обновление данных</strong>
+        <small>Получаем актуальное состояние из базы T-Mod…</small>
+      </span>
+    </div>
+
     <section id="auth-gate" class="auth-gate" data-state="checking">
       <div class="gate-card" role="status" aria-live="polite">
         <div class="gate-visual" aria-hidden="true">
@@ -39,6 +47,9 @@
         </p>
         <a id="gate-back" class="primary-link" href="/" hidden>
           Вернуться к консенсусу
+        </a>
+        <a id="gate-login" class="gate-login-link" href="/login?next=/admin" hidden>
+          Войти по логину и PIN
         </a>
       </div>
     </section>
@@ -67,7 +78,7 @@
             <span>Аудит действий</span>
           </button>
           <button class="nav-item" type="button" data-section="treasury">
-            <span class="nav-icon">₽</span>
+            <span class="nav-icon">$</span>
             <span>Казна</span>
           </button>
           <button class="nav-item" type="button" data-section="craft">
@@ -205,7 +216,7 @@
 
             <div class="kpi-grid">
               <article class="kpi-card accent-mint">
-                <div class="kpi-head"><span>Казна</span><i>₽</i></div>
+                <div class="kpi-head"><span>Казна</span><i>$</i></div>
                 <strong id="overview-balance">—</strong>
                 <small id="overview-net">нет данных за период</small>
               </article>
@@ -403,7 +414,7 @@
 
             <div class="kpi-grid compact-kpis">
               <article class="kpi-card accent-mint">
-                <div class="kpi-head"><span>Расчётный баланс</span><i>₽</i></div>
+                <div class="kpi-head"><span>Расчётный баланс</span><i>$</i></div>
                 <strong id="finance-balance">—</strong>
                 <small id="finance-report-state">последняя сверка неизвестна</small>
               </article>

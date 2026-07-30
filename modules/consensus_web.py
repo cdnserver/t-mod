@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import discord
 from aiohttp import web
@@ -27,6 +27,7 @@ from modules.consensus_simulator import get_consensus_simulation
 from modules.consensus_web_auth import (
     ConsensusWebAuthError,
     ConsensusWebPrincipal,
+    PERSISTENT_SESSION_LIFETIME_SECONDS,
     clear_session_cookie,
     consensus_web_entry_url as _authenticated_entry_url,
     consume_entry_ticket,
@@ -43,6 +44,7 @@ from modules.consensus_web_control import (
 from modules.tvrs_presentation import is_chair
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
+from persistence import web_auth_repository as credential_storage
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -104,6 +106,7 @@ _runner: web.AppRunner | None = None
 _start_lock = asyncio.Lock()
 _runtime_token: str | None = None
 _failed_auth: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+_login_failures: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=30))
 _command_rate: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=80))
 _command_receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 
@@ -776,9 +779,14 @@ def create_consensus_web_app(
             "zigmund-murchalki.mp3",
             "admin.css",
             "admin.js",
+            "login.css",
+            "login.js",
         }:
             raise web.HTTPNotFound()
         return web.FileResponse(_ASSET_DIR / name)
+
+    async def login_page(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "login.html")
 
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
@@ -853,6 +861,67 @@ def create_consensus_web_app(
             response,
             token,
             secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+        )
+        return response
+
+    async def credential_login(request: web.Request) -> web.Response:
+        remote = _request_remote(request)
+        now = asyncio.get_running_loop().time()
+        attempts = _login_failures[remote]
+        while attempts and now - attempts[0] > 10 * 60:
+            attempts.popleft()
+        next_path = "/admin" if request.query.get("next") == "/admin" else "/"
+        if len(attempts) >= 15:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'locked'})}"
+            )
+        try:
+            body = await request.post()
+        except (ValueError, web.HTTPException):
+            body = {}
+        result = await asyncio.to_thread(
+            credential_storage.authenticate_web_credential,
+            int(guild_id),
+            str(body.get("login") or "")[:64],
+            str(body.get("pin") or "")[:32],
+        )
+        if result.status != "ok" or result.credential is None:
+            attempts.append(now)
+            error = "locked" if result.status == "locked" else "invalid"
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': error})}"
+            )
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
+        member = guild.get_member(int(result.credential.user_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(result.credential.user_id))
+            except discord.DiscordException:
+                member = None
+        if member is None:
+            attempts.append(now)
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'invalid'})}"
+            )
+        if next_path == "/admin" and not bool(member.guild_permissions.administrator):
+            raise web.HTTPSeeOther(
+                location="/login?next=%2Fadmin&error=administrator"
+            )
+        attempts.clear()
+        token, _ = create_session_token(
+            guild_id=int(guild_id),
+            user_id=int(member.id),
+            lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
+            session_version=int(result.credential.session_version),
+        )
+        response = web.HTTPSeeOther(location=next_path)
+        set_session_cookie(
+            response,
+            token,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+            max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
         )
         return response
 
@@ -1144,10 +1213,12 @@ def create_consensus_web_app(
         return web.json_response(response_payload)
 
     app.router.add_get("/", index)
+    app.router.add_get("/login", login_page)
     app.router.add_get("/egg", egg)
     app.router.add_get("/egg/", egg)
     app.router.add_get("/assets/{name}", asset)
     app.router.add_get("/auth/ticket", ticket_login)
+    app.router.add_post("/auth/login", credential_login)
     app.router.add_get("/auth/logout", logout)
     app.router.add_get("/api/health", health)
     app.router.add_get("/api/state", state)

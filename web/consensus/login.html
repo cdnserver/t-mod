@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#080b0c">
+    <style>html,body{background:#080b0c;color:#edf1eb}</style>
+    <title>T·ID — вход в систему</title>
+    <meta name="description" content="Персональный вход в веб-систему T-Mod.">
+    <link rel="stylesheet" href="/assets/login.css">
+    <script src="/assets/login.js" defer></script>
+  </head>
+  <body>
+    <div class="auth-atmosphere" aria-hidden="true">
+      <span></span><span></span><i></i>
+    </div>
+    <main class="login-shell">
+      <section class="identity-panel">
+        <a class="identity-brand" href="/">
+          <span>T</span>
+          <strong>T·ID</strong>
+        </a>
+        <div class="identity-copy">
+          <p>ЕДИНАЯ УЧЁТНАЯ ЗАПИСЬ</p>
+          <h1>Один вход.<br>Вся система.</h1>
+          <span>
+            Права синхронизируются с Discord: участник получает личные разделы,
+            администратор — полный операционный контур.
+          </span>
+        </div>
+        <div class="identity-status">
+          <i></i>
+          <span><b>Discord authority</b><small>права проверяются при каждом входе</small></span>
+        </div>
+      </section>
+
+      <section class="credential-panel" aria-labelledby="login-title">
+        <div class="credential-head">
+          <span class="credential-mark" aria-hidden="true">T</span>
+          <p>ЗАЩИЩЁННАЯ СЕССИЯ</p>
+          <h2 id="login-title">Войти в T-Mod</h2>
+          <span>Используйте данные, заданные лично через <b>/profile</b> в Discord.</span>
+        </div>
+        <form id="credential-form" action="/auth/login" method="post">
+          <label>
+            <span>Логин</span>
+            <input
+              id="credential-login"
+              name="login"
+              type="text"
+              minlength="3"
+              maxlength="32"
+              pattern="[A-Za-z0-9._-]{3,32}"
+              autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+              required
+              autofocus
+              placeholder="ваш.логин"
+            >
+          </label>
+          <label>
+            <span>PIN · 8 цифр</span>
+            <span class="pin-field">
+              <input
+                id="credential-pin"
+                name="pin"
+                type="password"
+                minlength="8"
+                maxlength="8"
+                pattern="[0-9]{8}"
+                inputmode="numeric"
+                autocomplete="current-password"
+                required
+                placeholder="••••••••"
+              >
+              <button id="pin-visibility" type="button" aria-label="Показать PIN">◉</button>
+            </span>
+          </label>
+          <output id="login-feedback" class="login-feedback" aria-live="polite" hidden></output>
+          <button class="login-submit" type="submit">
+            <span>ПОДТВЕРДИТЬ ЛИЧНОСТЬ</span><i>→</i>
+          </button>
+        </form>
+        <footer>
+          <span>Нет данных для входа?</span>
+          <span>Discord → /profile → Настройки → Веб-доступ</span>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

@@ -200,6 +200,25 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_profile_characters_owner
             ON profile_characters(guild_id, user_id, position);
 
+            CREATE TABLE IF NOT EXISTS web_credentials (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                login_key TEXT NOT NULL,
+                login_display TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                session_version INTEGER NOT NULL DEFAULT 1,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0,
+                last_login_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id),
+                UNIQUE (guild_id, login_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_credentials_login
+            ON web_credentials(guild_id, login_key);
+
             CREATE TABLE IF NOT EXISTS voice_user_profiles (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from persistence import profile_context as storage
+from persistence import web_auth_repository as web_auth_storage
 from persistence import voice_control_context as voice_storage
 from modules.technical_log import log_technical_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
@@ -78,6 +79,10 @@ PROFILE_ERROR_MESSAGES = {
     "profile_quiet_hours_invalid": (
         "Проверьте время тихих часов: используйте ЧЧ:ММ, начало и конец должны отличаться."
     ),
+    "web_login_invalid": "Логин: 3–32 латинских символа, цифры, точка, дефис или подчёркивание.",
+    "web_pin_invalid": "PIN должен состоять ровно из 8 цифр.",
+    "web_pin_mismatch": "Введённые PIN не совпадают.",
+    "web_login_taken": "Этот логин уже занят другим участником.",
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
 
@@ -344,6 +349,7 @@ def profile_settings_embed(
     characters: list[Any],
     voice_profile: Any | None = None,
     local_status: str = "unknown",
+    web_credential: Any | None = None,
 ) -> discord.Embed:
     visibility = str(getattr(profile, "visibility", None) or "members")
     visibility_emoji, visibility_label, visibility_description = PROFILE_VISIBILITY_INFO.get(
@@ -419,6 +425,15 @@ def profile_settings_embed(
         inline=True,
     )
     embed.add_field(name="Оформление", value=f"{theme_emoji} **{theme_label}**", inline=True)
+    embed.add_field(
+        name="Веб-доступ",
+        value=(
+            f"🔐 **{_clean_display(web_credential.login)}** · постоянный вход включён"
+            if web_credential is not None
+            else "🔒 **Не настроен** · вход только по ссылке Discord"
+        ),
+        inline=True,
+    )
     quality_score = int(getattr(voice_profile, "quality_score", 0) or 0)
     calibrated_at = getattr(voice_profile, "calibrated_at", None)
     local_ready = local_status == "ready"
@@ -564,7 +579,7 @@ async def _edit_profile_settings(
 ) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer()
-    (profile, characters), voice_profile = await asyncio.gather(
+    (profile, characters), voice_profile, web_credential = await asyncio.gather(
         asyncio.to_thread(
             storage.get_profile_snapshot,
             member.guild.id,
@@ -572,6 +587,11 @@ async def _edit_profile_settings(
         ),
         asyncio.to_thread(
             voice_storage.get_voice_user_profile,
+            member.guild.id,
+            member.id,
+        ),
+        asyncio.to_thread(
+            web_auth_storage.get_web_credential,
             member.guild.id,
             member.id,
         ),
@@ -585,8 +605,66 @@ async def _edit_profile_settings(
             characters,
             voice_profile,
             voice_control.local_status if voice_control is not None else "unavailable",
+            web_credential,
         ),
         view=ProfileSettingsView(requester_id, member, profile, characters),
+    )
+
+
+def profile_web_access_embed(
+    member: discord.Member,
+    credential: Any | None,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="Веб-доступ T-Mod",
+        description=(
+            "Логин и восьмизначный PIN задаются только здесь, в личном меню Discord. "
+            "Права на сайте всегда берутся из текущих ролей сервера."
+        ),
+        color=PROFILE_COLOR,
+    )
+    embed.add_field(
+        name="Состояние",
+        value=(
+            f"🟢 **Включён**\nЛогин: `{_clean_display(credential.login)}`"
+            if credential is not None
+            else "⚪ **Не настроен**\nИспользуйте кнопку «Настроить»."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Безопасность",
+        value=(
+            "PIN хранится только в виде защищённого хэша. Пять ошибочных попыток "
+            "временно блокируют вход. Смена или отключение доступа завершает старые сессии."
+        ),
+        inline=False,
+    )
+    if credential is not None and credential.last_login_at:
+        embed.add_field(
+            name="Последний вход",
+            value=_discord_time(credential.last_login_at),
+            inline=True,
+        )
+    return embed
+
+
+async def _edit_profile_web_access(
+    interaction: discord.Interaction,
+    requester_id: int,
+    member: discord.Member,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    credential = await asyncio.to_thread(
+        web_auth_storage.get_web_credential,
+        member.guild.id,
+        member.id,
+    )
+    await interaction.edit_original_response(
+        content=None,
+        embed=profile_web_access_embed(member, credential),
+        view=ProfileWebAccessView(requester_id, member, credential),
     )
 
 
@@ -758,6 +836,125 @@ class ProfileBaseView(discord.ui.View):
 class ProfileModal(discord.ui.Modal):
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         await _report_unexpected_profile_error(interaction, error)
+
+
+class WebAccessModal(ProfileModal, title="Веб-доступ T-Mod"):
+    login = discord.ui.TextInput(
+        label="Логин",
+        placeholder="latin.login",
+        min_length=3,
+        max_length=32,
+    )
+    pin = discord.ui.TextInput(
+        label="PIN — ровно 8 цифр",
+        placeholder="••••••••",
+        min_length=8,
+        max_length=8,
+    )
+    pin_repeat = discord.ui.TextInput(
+        label="Повторите PIN",
+        placeholder="••••••••",
+        min_length=8,
+        max_length=8,
+    )
+
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        credential: Any | None,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.requester_id = int(requester_id)
+        self.member = member
+        if credential is not None:
+            self.login.default = str(credential.login)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Нельзя изменить чужой веб-доступ.",
+                ephemeral=True,
+            )
+            return
+        if str(self.pin.value) != str(self.pin_repeat.value):
+            await interaction.response.send_message(
+                PROFILE_ERROR_MESSAGES["web_pin_mismatch"],
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        try:
+            await asyncio.to_thread(
+                web_auth_storage.configure_web_credential,
+                self.member.guild.id,
+                self.member.id,
+                str(self.login.value),
+                str(self.pin.value),
+            )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await _edit_profile_web_access(interaction, self.requester_id, self.member)
+
+
+class ProfileWebAccessDisableView(ProfileBaseView):
+    def __init__(self, requester_id: int, member: discord.Member) -> None:
+        super().__init__(requester_id)
+        self.member = member
+
+    @discord.ui.button(label="Отключить вход", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await asyncio.to_thread(
+            web_auth_storage.delete_web_credential,
+            self.member.guild.id,
+            self.member.id,
+        )
+        await _edit_profile_web_access(interaction, self.requester_id, self.member)
+
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_web_access(interaction, self.requester_id, self.member)
+
+
+class ProfileWebAccessView(ProfileBaseView):
+    def __init__(
+        self,
+        requester_id: int,
+        member: discord.Member,
+        credential: Any | None,
+    ) -> None:
+        super().__init__(requester_id)
+        self.member = member
+        self.credential = credential
+        if credential is None:
+            self.remove_item(self.disable)
+
+    @discord.ui.button(label="Настроить", emoji="🔑", style=discord.ButtonStyle.primary)
+    async def configure(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            WebAccessModal(self.requester_id, self.member, self.credential)
+        )
+
+    @discord.ui.button(label="Отключить", emoji="🔒", style=discord.ButtonStyle.danger)
+    async def disable(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="Отключить постоянный веб-вход?",
+            description=(
+                "Логин будет удалён, а открытые с его помощью сессии перестанут работать. "
+                "Персональные ссылки Discord останутся доступны."
+            ),
+            color=0xED4245,
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=ProfileWebAccessDisableView(self.requester_id, self.member),
+        )
+
+    @discord.ui.button(label="Назад", emoji="↩️", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_settings(interaction, self.requester_id, self.member)
 
 
 class CharacterModal(ProfileModal):
@@ -1352,6 +1549,10 @@ class ProfileSettingsView(ProfileBaseView):
     async def microphone(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _edit_profile_microphone(interaction, self.requester_id, self.member)
 
+    @discord.ui.button(label="Веб-доступ", emoji="🔑", style=discord.ButtonStyle.secondary, row=3)
+    async def web_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await _edit_profile_web_access(interaction, self.requester_id, self.member)
+
     @discord.ui.button(label="По умолчанию", emoji="♻️", style=discord.ButtonStyle.secondary, row=3)
     async def reset(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _save_profile_preferences(
@@ -1695,12 +1896,15 @@ __all__ = [
     "MemberDirectoryModal",
     "ProfileSettingsView",
     "ProfileStatusView",
+    "ProfileWebAccessView",
     "StatusNoteModal",
+    "WebAccessModal",
     "character_embed",
     "character_manager_embed",
     "member_position_text",
     "profile_embed",
     "profile_microphone_embed",
     "profile_settings_embed",
+    "profile_web_access_embed",
     "setup_profile",
 ]

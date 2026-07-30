@@ -1,0 +1,299 @@
+"""Durable password credentials for the self-hosted T-Mod web portal."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import hmac
+import re
+import secrets
+import sqlite3
+import time
+from dataclasses import dataclass
+
+from persistence.core import _db_lock, connect, utc_now_iso
+
+
+_LOGIN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
+_PIN_PATTERN = re.compile(r"^[0-9]{8}$")
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_MAX_FAILURES = 5
+_LOCK_SECONDS = 5 * 60
+_DUMMY_HASH: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WebCredential:
+    guild_id: int
+    user_id: int
+    login: str
+    session_version: int
+    last_login_at: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class WebAuthenticationResult:
+    status: str
+    credential: WebCredential | None = None
+
+
+def normalize_web_login(value: str) -> str:
+    login = str(value or "").strip().lower()
+    if not _LOGIN_PATTERN.fullmatch(login):
+        raise ValueError("web_login_invalid")
+    return login
+
+
+def normalize_web_pin(value: str) -> str:
+    pin = str(value or "").strip()
+    if not _PIN_PATTERN.fullmatch(pin):
+        raise ValueError("web_pin_invalid")
+    return pin
+
+
+def _hash_pin(pin: str, *, salt: bytes | None = None) -> str:
+    selected_salt = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        pin.encode("ascii"),
+        salt=selected_salt,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=32,
+    )
+    return "scrypt${}${}${}${}${}".format(
+        _SCRYPT_N,
+        _SCRYPT_R,
+        _SCRYPT_P,
+        base64.urlsafe_b64encode(selected_salt).decode("ascii"),
+        base64.urlsafe_b64encode(digest).decode("ascii"),
+    )
+
+
+def _dummy_hash() -> str:
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = _hash_pin("00000000", salt=b"T-Mod-web-dummy!")
+    return _DUMMY_HASH
+
+
+def _verify_pin(pin: str, encoded: str) -> bool:
+    try:
+        algorithm, n, r, p, salt, expected = str(encoded).split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        digest = hashlib.scrypt(
+            str(pin).encode("ascii", errors="ignore"),
+            salt=base64.urlsafe_b64decode(salt),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=32,
+        )
+        return hmac.compare_digest(
+            base64.urlsafe_b64encode(digest).decode("ascii"),
+            expected,
+        )
+    except (binascii.Error, TypeError, ValueError):
+        return False
+
+
+def _credential_from_row(row: sqlite3.Row | None) -> WebCredential | None:
+    if row is None:
+        return None
+    return WebCredential(
+        guild_id=int(row["guild_id"]),
+        user_id=int(row["user_id"]),
+        login=str(row["login_display"]),
+        session_version=int(row["session_version"]),
+        last_login_at=row["last_login_at"],
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def get_web_credential(guild_id: int, user_id: int) -> WebCredential | None:
+    with _db_lock, connect() as con:
+        row = con.execute(
+            "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+    return _credential_from_row(row)
+
+
+def configure_web_credential(
+    guild_id: int,
+    user_id: int,
+    login: str,
+    pin: str,
+) -> WebCredential:
+    clean_login = normalize_web_login(login)
+    clean_pin = normalize_web_pin(pin)
+    pin_hash = _hash_pin(clean_pin)
+    now = utc_now_iso()
+    try:
+        with _db_lock, connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                """
+                INSERT INTO web_credentials(
+                    guild_id, user_id, login_key, login_display, pin_hash,
+                    session_version, failed_attempts, locked_until,
+                    created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, 1, 0, 0, ?, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    login_key = excluded.login_key,
+                    login_display = excluded.login_display,
+                    pin_hash = excluded.pin_hash,
+                    session_version = web_credentials.session_version + 1,
+                    failed_attempts = 0,
+                    locked_until = 0,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(guild_id),
+                    int(user_id),
+                    clean_login,
+                    clean_login,
+                    pin_hash,
+                    now,
+                    now,
+                ),
+            )
+            row = con.execute(
+                "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(user_id)),
+            ).fetchone()
+            con.commit()
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("web_login_taken") from exc
+    credential = _credential_from_row(row)
+    if credential is None:  # pragma: no cover
+        raise RuntimeError("web_credential_write_failed")
+    return credential
+
+
+def delete_web_credential(guild_id: int, user_id: int) -> bool:
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            "DELETE FROM web_credentials WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        )
+        con.commit()
+    return cursor.rowcount > 0
+
+
+def authenticate_web_credential(
+    guild_id: int,
+    login: str,
+    pin: str,
+    *,
+    now_epoch: int | None = None,
+) -> WebAuthenticationResult:
+    try:
+        clean_login = normalize_web_login(login)
+        clean_pin = normalize_web_pin(pin)
+    except ValueError:
+        _verify_pin("00000000", _dummy_hash())
+        return WebAuthenticationResult("invalid")
+    now = int(now_epoch if now_epoch is not None else time.time())
+    with _db_lock, connect() as con:
+        row = con.execute(
+            "SELECT * FROM web_credentials WHERE guild_id = ? AND login_key = ?",
+            (int(guild_id), clean_login),
+        ).fetchone()
+    if row is None:
+        _verify_pin(clean_pin, _dummy_hash())
+        return WebAuthenticationResult("invalid")
+    valid = _verify_pin(clean_pin, str(row["pin_hash"]))
+    if int(row["locked_until"] or 0) > now:
+        return WebAuthenticationResult("locked")
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        current = con.execute(
+            "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(row["user_id"])),
+        ).fetchone()
+        if current is None or not hmac.compare_digest(
+            str(current["pin_hash"]),
+            str(row["pin_hash"]),
+        ):
+            con.rollback()
+            return WebAuthenticationResult("invalid")
+        if not valid:
+            failures = int(current["failed_attempts"] or 0) + 1
+            locked_until = now + _LOCK_SECONDS if failures >= _MAX_FAILURES else 0
+            con.execute(
+                """
+                UPDATE web_credentials
+                SET failed_attempts = ?, locked_until = ?, updated_at = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (
+                    failures,
+                    locked_until,
+                    utc_now_iso(),
+                    int(guild_id),
+                    int(row["user_id"]),
+                ),
+            )
+            con.commit()
+            return WebAuthenticationResult(
+                "locked" if locked_until else "invalid"
+            )
+        logged_in_at = utc_now_iso()
+        con.execute(
+            """
+            UPDATE web_credentials
+            SET failed_attempts = 0, locked_until = 0,
+                last_login_at = ?, updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (
+                logged_in_at,
+                logged_in_at,
+                int(guild_id),
+                int(row["user_id"]),
+            ),
+        )
+        current = con.execute(
+            "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(row["user_id"])),
+        ).fetchone()
+        con.commit()
+    return WebAuthenticationResult("ok", _credential_from_row(current))
+
+
+def web_session_version_matches(
+    guild_id: int,
+    user_id: int,
+    session_version: int,
+) -> bool:
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT session_version FROM web_credentials
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+    return row is not None and int(row["session_version"]) == int(session_version)
+
+
+__all__ = [
+    "WebAuthenticationResult",
+    "WebCredential",
+    "authenticate_web_credential",
+    "configure_web_credential",
+    "delete_web_credential",
+    "get_web_credential",
+    "normalize_web_login",
+    "normalize_web_pin",
+    "web_session_version_matches",
+]

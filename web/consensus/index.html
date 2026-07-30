@@ -23,6 +23,13 @@
     </div>
     <div class="noise" aria-hidden="true"></div>
     <div id="result-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+    <div id="data-loading" class="public-data-loading" role="status" aria-live="polite">
+      <span class="public-data-spinner" aria-hidden="true"></span>
+      <span>
+        <strong>Обновление данных</strong>
+        <small>Сверяем состояние с T-Mod</small>
+      </span>
+    </div>
 
     <main class="shell">
       <header class="topbar">
@@ -52,10 +59,13 @@
         <div class="eyebrow">ЗАЩИЩЁННЫЙ ЛОКАЛЬНЫЙ КОНТУР</div>
         <h1 id="login-title">Вход в панель</h1>
         <p>
-          Откройте личный пульт консенсуса в Discord и нажмите
-          <strong>«Веб-пульт»</strong>. Персональная ссылка автоматически
-          определит вас как ведущего или наблюдателя.
+          Войдите по постоянной учётной записи T·ID или откройте персональную
+          ссылку из Discord. Права ведущего, наблюдателя и администратора
+          определяются автоматически.
         </p>
+        <a class="account-login-button" href="/login?next=/">
+          Войти по логину и PIN →
+        </a>
         <div class="login-guide">
           <span>01</span><b>/tvrs</b><i>Откройте текущий консенсус</i>
           <span>02</span><b>Личный пульт</b><i>Выберите участие или обзор</i>

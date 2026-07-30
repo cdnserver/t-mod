@@ -1,0 +1,275 @@
+:root {
+  color-scheme: dark;
+  --bg: #080b0c;
+  --surface: #111718;
+  --text: #edf1eb;
+  --muted: #8b9690;
+  --mint: #a5f0c0;
+  --line: rgba(237, 241, 235, 0.1);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  font-family:
+    "Segoe UI Variable Text", "SF Pro Text", Inter, Roboto, "Segoe UI",
+    Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.auth-atmosphere {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.auth-atmosphere span {
+  position: absolute;
+  width: 50vw;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(130px);
+  opacity: 0.09;
+  background: var(--mint);
+}
+
+.auth-atmosphere span:first-child { top: -35vw; left: -15vw; }
+.auth-atmosphere span:nth-child(2) { right: -30vw; bottom: -35vw; opacity: 0.05; }
+.auth-atmosphere i {
+  position: absolute;
+  inset: 0;
+  opacity: 0.025;
+  background-image:
+    linear-gradient(#fff 1px, transparent 1px),
+    linear-gradient(90deg, #fff 1px, transparent 1px);
+  background-size: 54px 54px;
+}
+
+.login-shell {
+  position: relative;
+  display: grid;
+  width: min(1120px, calc(100% - 32px));
+  min-height: min(720px, calc(100dvh - 48px));
+  grid-template-columns: 1.08fr 0.92fr;
+  margin: 24px auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: rgba(13, 18, 19, 0.94);
+  box-shadow: 0 40px 130px rgba(0, 0, 0, 0.5);
+}
+
+.identity-panel,
+.credential-panel { padding: clamp(30px, 5vw, 66px); }
+
+.identity-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(165, 240, 192, 0.15), transparent 34%),
+    linear-gradient(145deg, #151d1b, #0c1112);
+}
+
+.identity-brand {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 12px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.identity-brand > span,
+.credential-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(165, 240, 192, 0.4);
+  border-radius: 13px;
+  color: var(--mint);
+  font-size: 22px;
+  font-weight: 750;
+}
+
+.identity-copy p,
+.credential-head p {
+  margin: 0 0 14px;
+  color: var(--mint);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.identity-copy h1 {
+  margin: 0 0 22px;
+  font-size: clamp(42px, 6vw, 76px);
+  line-height: 0.92;
+  letter-spacing: -0.065em;
+}
+
+.identity-copy > span,
+.credential-head > span:last-child {
+  display: block;
+  max-width: 470px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.identity-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.identity-status i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--mint);
+  box-shadow: 0 0 0 7px rgba(165, 240, 192, 0.07);
+}
+
+.identity-status span { display: grid; gap: 2px; }
+.identity-status b { color: var(--text); font-size: 13px; }
+.identity-status small { font-size: 11px; }
+
+.credential-panel {
+  display: grid;
+  align-content: center;
+  background: rgba(8, 11, 12, 0.72);
+}
+
+.credential-mark { margin-bottom: 30px; }
+.credential-head h2 {
+  margin: 0 0 12px;
+  font-size: clamp(32px, 4vw, 48px);
+  letter-spacing: -0.045em;
+}
+
+form { display: grid; gap: 18px; margin-top: 34px; }
+label { display: grid; gap: 8px; }
+label > span:first-child {
+  color: #b8c0ba;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+input {
+  width: 100%;
+  height: 54px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  outline: none;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.028);
+  font: inherit;
+  font-size: 16px;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+input:focus {
+  border-color: rgba(165, 240, 192, 0.46);
+  box-shadow: 0 0 0 4px rgba(165, 240, 192, 0.06);
+}
+
+.pin-field { position: relative; }
+.pin-field input { padding-right: 52px; letter-spacing: 0.22em; }
+.pin-field button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--mint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.login-submit {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 5px;
+  padding: 0 18px;
+  border: 1px solid var(--mint);
+  border-radius: 14px;
+  color: #071008;
+  background: var(--mint);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.login-submit i { font-size: 21px; font-style: normal; }
+.submitting .login-submit { opacity: 0.7; cursor: wait; }
+.login-feedback {
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 140, 133, 0.2);
+  border-radius: 12px;
+  color: #ffaca6;
+  background: rgba(255, 140, 133, 0.055);
+  font-size: 13px;
+}
+
+.credential-panel footer {
+  display: grid;
+  gap: 4px;
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.credential-panel footer span:last-child { color: #b8c0ba; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .login-shell { animation: shell-in 650ms var(--ease) both; }
+  .identity-status i { animation: status-pulse 1.8s ease-out infinite; }
+}
+
+@keyframes shell-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.99); }
+}
+
+@keyframes status-pulse {
+  70% { box-shadow: 0 0 0 11px rgba(165, 240, 192, 0); }
+}
+
+@media (max-width: 760px) {
+  .login-shell { grid-template-columns: 1fr; }
+  .identity-panel { min-height: 270px; gap: 32px; }
+  .identity-copy h1 { font-size: clamp(38px, 12vw, 58px); }
+  .identity-copy > span { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

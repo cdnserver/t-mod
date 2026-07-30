@@ -137,6 +137,7 @@ const appState = {
   pendingSectionLoad: false,
   toastTimer: null,
   authTimer: null,
+  loadingOverlayTimer: null,
   authorized: false,
   authTransitioning: false,
   soundEnabled: true,
@@ -193,7 +194,7 @@ function formatMoney(value, signed = false) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "—";
   const sign = signed && numeric > 0 ? "+" : "";
-  return `${sign}${numberFormat.format(numeric)} ₽`;
+  return `${sign}$${numberFormat.format(numeric)}`;
 }
 
 function formatDate(value) {
@@ -411,15 +412,22 @@ function activitySignature(section, data) {
       workspaces: compactActivityRows(data.workspaces),
     });
   }
+  if (section === "media") {
+    return JSON.stringify({
+      music: data.music || {},
+      browser: data.browser_stream || {},
+    });
+  }
   return null;
 }
 
 function rememberActivity(data, section = appState.section, notify = appState.autoRefreshing) {
   const signature = activitySignature(section, data);
-  if (!signature) return;
+  if (!signature) return true;
   const previous = appState.activitySignatures.get(section);
   appState.activitySignatures.set(section, signature);
-  if (!notify || !previous || previous === signature) return;
+  const changed = !previous || previous !== signature;
+  if (!notify || !previous || !changed) return changed;
   const sectionTitle = sectionMeta[section]?.[1] || "Админ-центр";
   showToast(
     `В разделе «${sectionTitle}» появились новые данные.`,
@@ -431,6 +439,7 @@ function rememberActivity(data, section = appState.section, notify = appState.au
       sound: "update",
     },
   );
+  return true;
 }
 
 class ApiError extends Error {
@@ -510,17 +519,20 @@ function showGate(message, allowBack = true) {
   setText("gate-state", "ДОСТУП НЕ ПОДТВЕРЖДЁН");
   setText("gate-message", message);
   byId("gate-back").hidden = !allowBack;
+  byId("gate-login").hidden = false;
 }
 
 function showApplication(payload) {
   const gate = byId("auth-gate");
   const shell = byId("admin-shell");
-  rememberActivity(payload);
+  const changed = rememberActivity(payload);
+  if (appState.autoRefreshing && !changed) return false;
   if (!appState.authorized) {
     appState.authorized = true;
     appState.authTransitioning = true;
     gate.hidden = false;
     gate.dataset.state = "verified";
+    byId("gate-login").hidden = true;
     setText("gate-state", "ЛИЧНОСТЬ И ПРАВА ПОДТВЕРЖДЕНЫ");
     setText("gate-message", "Защищённая сессия готова. Открываем административный контур…");
     shell.hidden = false;
@@ -547,6 +559,7 @@ function showApplication(payload) {
     );
   }
   if (payload?.guild?.id) appState.guildId = Number(payload.guild.id);
+  return true;
 }
 
 function handleError(error) {
@@ -696,6 +709,16 @@ function setLoading(value) {
   if (!appState.autoRefreshing) {
     byId("refresh-button").disabled = value;
     byId("refresh-button").classList.toggle("loading", value);
+    clearTimeout(appState.loadingOverlayTimer);
+    if (value) {
+      appState.loadingOverlayTimer = setTimeout(() => {
+        byId("data-loading").hidden = false;
+        byId("admin-shell").setAttribute("inert", "");
+      }, 140);
+    } else {
+      byId("data-loading").hidden = true;
+      byId("admin-shell").removeAttribute("inert");
+    }
   }
   if (!value && appState.pendingSectionLoad) {
     appState.pendingSectionLoad = false;
@@ -752,7 +775,7 @@ function compactItem(title, subtitle, value, onClick = null) {
 
 function renderOverview(data) {
   appState.overview = data;
-  showApplication(data);
+  if (!showApplication(data)) return;
   const counts = data.counts || {};
   const finance = data.finance?.stats || {};
   const financeState = data.finance?.state || {};
@@ -946,7 +969,7 @@ function renderPagination(targetId, total, offset, load) {
 }
 
 function renderAudit(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.audit = data.items || [];
   setText("audit-count", `${formatNumber(data.total)} записей`);
   fillSelect("audit-module", data.modules || [], (value) => moduleLabels[value] || value);
@@ -1011,7 +1034,7 @@ function rankingItem(title, subtitle, value, maxValue = 1) {
 }
 
 function renderFinance(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.finance = data.items || [];
   const stats = data.stats || {};
   const latest = data.state || {};
@@ -1222,7 +1245,7 @@ function detailsPreview(details) {
 }
 
 function renderCraft(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const stats = data.stats || {};
   const plans = data.active_plans || [];
   const events = data.events || {};
@@ -1301,7 +1324,7 @@ function discordSourceCell(item) {
 }
 
 function renderDiscord(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const stats = data.stats || {};
   appState.rows.discord = data.items || [];
   setText("discord-events", formatCompact(stats.events));
@@ -1429,7 +1452,7 @@ function capabilityCard(capability) {
 }
 
 function renderRegistry(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const registry = data.registry || {};
   const kpis = [
     ["Участники", registry.members, `${formatNumber(registry.profiles)} профилей`, "accent-blue"],
@@ -1671,7 +1694,7 @@ function marketAlertItem(item) {
 }
 
 function renderMarket(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.market = data.items || [];
   const catalog = data.catalog || {};
   const alerts = data.my_alerts || [];
@@ -1789,7 +1812,7 @@ function billCard(item) {
 }
 
 function renderBills(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.bills = data.items || [];
   const workspaces = data.workspaces || [];
   const sessions = data.active_sessions || [];
@@ -1849,7 +1872,7 @@ function sglStatusLabel(status) {
 }
 
 function renderSgl(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const cases = data.cases || {};
   const archives = data.archives || {};
   appState.rows.sgl = cases.items || [];
@@ -1927,7 +1950,7 @@ async function loadSgl(offset = appState.offsets.sgl) {
 }
 
 function renderMembers(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.members = data.items || [];
   setText("members-count", `${formatNumber(data.total)} участников`);
   const rows = appState.rows.members.map((item) =>
@@ -1979,7 +2002,7 @@ async function loadMembers(offset = appState.offsets.members) {
 }
 
 function renderCommunications(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   appState.rows.communications = data.items || [];
   const delivered = appState.rows.communications.reduce(
     (sum, item) => sum + Number(item.delivered_count || 0),
@@ -2058,7 +2081,7 @@ async function sendBroadcast() {
 }
 
 function renderMedia(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const music = data.music || {};
   const browser = data.browser_stream || {};
   const musicState = music.connected
@@ -2128,6 +2151,8 @@ function renderMedia(data) {
 async function loadMedia(silent = false) {
   if (appState.mediaRefreshing) return;
   appState.mediaRefreshing = true;
+  const previousAutoRefreshing = appState.autoRefreshing;
+  if (silent) appState.autoRefreshing = true;
   if (!silent) setLoading(true);
   try {
     renderMedia(await fetchJSON("/api/admin/media"));
@@ -2135,6 +2160,7 @@ async function loadMedia(silent = false) {
     handleError(error);
   } finally {
     appState.mediaRefreshing = false;
+    appState.autoRefreshing = previousAutoRefreshing;
     if (!silent) setLoading(false);
   }
 }
@@ -2212,7 +2238,7 @@ async function updateCharacterVisibility(characterId, isPublic) {
 }
 
 function renderProfile(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const profile = data.profile || {};
   const characters = data.characters || [];
   const voice = data.voice || {};
@@ -2352,7 +2378,7 @@ async function loadProfile() {
 }
 
 function renderSystem(data) {
-  showApplication(data);
+  if (!showApplication(data)) return;
   const runtime = data.runtime || {};
   const statusRows = data.outbox_status || [];
   const topics = data.outbox_topics || [];

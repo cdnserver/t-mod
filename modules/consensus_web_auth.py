@@ -8,6 +8,7 @@ and resolves the member from Discord again on every authenticated request.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -24,12 +25,14 @@ import discord
 from aiohttp import web
 
 from persistence import activity_repository as meta_storage
+from persistence import web_auth_repository as credential_storage
 
 
 SESSION_COOKIE = "tmod_consensus_session"
 _SECRET_META_KEY = "consensus_web:session_secret:v1"
 _TICKET_LIFETIME_SECONDS = 10 * 60
 _SESSION_LIFETIME_SECONDS = 12 * 60 * 60
+PERSISTENT_SESSION_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 _used_tickets: dict[str, int] = {}
 _runtime_secret: bytes | None = None
 
@@ -186,21 +189,27 @@ def consume_entry_ticket(
     return guild_id, user_id
 
 
-def create_session_token(*, guild_id: int, user_id: int) -> tuple[str, str]:
+def create_session_token(
+    *,
+    guild_id: int,
+    user_id: int,
+    lifetime_seconds: int = _SESSION_LIFETIME_SECONDS,
+    session_version: int | None = None,
+) -> tuple[str, str]:
     now = int(time.time())
     csrf_token = secrets.token_urlsafe(24)
+    payload: dict[str, Any] = {
+        "gid": int(guild_id),
+        "uid": int(user_id),
+        "iat": now,
+        "exp": now + max(60, int(lifetime_seconds)),
+        "csrf": csrf_token,
+        "nonce": secrets.token_urlsafe(12),
+    }
+    if session_version is not None:
+        payload["sv"] = int(session_version)
     return (
-        _sign(
-            {
-                "gid": int(guild_id),
-                "uid": int(user_id),
-                "iat": now,
-                "exp": now + _SESSION_LIFETIME_SECONDS,
-                "csrf": csrf_token,
-                "nonce": secrets.token_urlsafe(12),
-            },
-            purpose="session",
-        ),
+        _sign(payload, purpose="session"),
         csrf_token,
     )
 
@@ -224,11 +233,12 @@ def set_session_cookie(
     token: str,
     *,
     secure: bool,
+    max_age: int = _SESSION_LIFETIME_SECONDS,
 ) -> None:
     response.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=_SESSION_LIFETIME_SECONDS,
+        max_age=max(60, int(max_age)),
         path="/",
         secure=bool(secure),
         httponly=True,
@@ -252,6 +262,14 @@ async def resolve_principal(
     if int(payload.get("gid") or 0) != int(guild_id):
         return None
     user_id = int(payload.get("uid") or 0)
+    session_version = payload.get("sv")
+    if session_version is not None and not await asyncio.to_thread(
+        credential_storage.web_session_version_matches,
+        int(guild_id),
+        user_id,
+        int(session_version),
+    ):
+        return None
     guild = bot.get_guild(int(guild_id))
     if guild is None or user_id <= 0:
         return None
@@ -283,6 +301,7 @@ def csrf_matches(request: web.Request, principal: ConsensusWebPrincipal) -> bool
 __all__ = [
     "ConsensusWebAuthError",
     "ConsensusWebPrincipal",
+    "PERSISTENT_SESSION_LIFETIME_SECONDS",
     "SESSION_COOKIE",
     "clear_session_cookie",
     "consensus_web_entry_url",

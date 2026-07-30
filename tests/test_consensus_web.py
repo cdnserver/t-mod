@@ -322,7 +322,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "document.body.dataset.outcome",
                 script_text,
             )
-            self.assertIn("if (dashboard.hidden) return;", script_text)
+            self.assertIn("if (!document.hidden && !dashboard.hidden)", script_text)
+            self.assertIn("payloadSignature", script_text)
+            self.assertIn('id="data-loading"', index_text)
             self.assertIn("requestedBillId", script_text)
             self.assertIn('id="copy-bill-link"', index_text)
             stylesheet = await client.get("/assets/style.css")
@@ -341,6 +343,12 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("color-scheme: dark", stylesheet_text)
             self.assertIn("background-color: #080b0c", stylesheet_text)
             self.assertIn("min-height: 100dvh", stylesheet_text)
+
+            login_page = await client.get("/login")
+            self.assertEqual(login_page.status, 200)
+            login_text = await login_page.text()
+            self.assertIn("T·ID", login_text)
+            self.assertIn('name="pin"', login_text)
 
             admin = await client.get("/admin")
             self.assertEqual(admin.status, 200)
@@ -476,6 +484,53 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
+        finally:
+            await client.close()
+
+    async def test_persistent_login_uses_profile_credential_and_admin_role(self) -> None:
+        storage.configure_web_credential(77, 42, "operator", "12345678")
+        member = SimpleNamespace(
+            id=42,
+            display_name="Оператор",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda user_id: member if user_id == 42 else None,
+            fetch_member=AsyncMock(return_value=member),
+        )
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            denied = await client.post(
+                "/auth/login?next=/admin",
+                data={"login": "operator", "pin": "00000000"},
+                allow_redirects=False,
+            )
+            self.assertEqual(denied.status, 303)
+            self.assertIn("error=invalid", denied.headers["Location"])
+
+            accepted = await client.post(
+                "/auth/login?next=/admin",
+                data={"login": "operator", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(accepted.status, 303)
+            self.assertEqual(accepted.headers["Location"], "/admin")
+            self.assertIn("tmod_consensus_session=", accepted.headers["Set-Cookie"])
+
+            member.guild_permissions.administrator = False
+            not_admin = await client.post(
+                "/auth/login?next=/admin",
+                data={"login": "operator", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(not_admin.status, 303)
+            self.assertIn("error=administrator", not_admin.headers["Location"])
         finally:
             await client.close()
 
