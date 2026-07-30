@@ -22,6 +22,10 @@
   --radius: 22px;
   --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
   --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --glass-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.2),
+    inset 0 1px rgba(255, 255, 255, 0.035);
 }
 
 * {
@@ -511,6 +515,7 @@ button:active:not(:disabled) {
   border: 1px solid var(--line);
   border-radius: 18px;
   background: rgba(16, 21, 22, 0.78);
+  -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
 
@@ -1005,6 +1010,12 @@ body[data-outcome="oral"] .observer-bill {
     box-shadow 0.6s ease;
 }
 
+.observer-screen-mode .topbar {
+  min-height: 46px;
+  padding: 5px 10px;
+  border-radius: 14px;
+}
+
 body[data-outcome="accepted"] .consensus-result,
 body[data-outcome="rejected"] .consensus-result,
 body[data-outcome="vetoed"] .consensus-result,
@@ -1346,6 +1357,7 @@ button.observer-feed-row:hover {
 
 .bill-dialog::backdrop {
   background: rgba(2, 4, 5, 0.78);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -1411,6 +1423,12 @@ button.observer-feed-row:hover {
   padding: 0;
 }
 
+.bill-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .dialog-result {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1470,6 +1488,7 @@ button.observer-feed-row:hover {
 
 .bill-library-dialog::backdrop {
   background: rgba(2, 4, 5, 0.78);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -2368,7 +2387,454 @@ footer {
   }
 }
 
+/* Unified T-Mod visual layer. */
+.atmosphere::after {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(var(--mood-rgb), 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--mood-rgb), 0.025) 1px, transparent 1px);
+  background-size: 72px 72px;
+  content: "";
+  opacity: 0.32;
+  -webkit-mask-image: radial-gradient(circle at 50% 30%, black, transparent 72%);
+  mask-image: radial-gradient(circle at 50% 30%, black, transparent 72%);
+  transition: background-image 0.8s ease;
+}
+
+.noise {
+  -webkit-mask-image: radial-gradient(circle at center, black, transparent 88%);
+  mask-image: radial-gradient(circle at center, black, transparent 88%);
+}
+
+.topbar {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    linear-gradient(115deg, rgba(var(--mood-rgb), 0.035), transparent 45%),
+    rgba(12, 17, 18, 0.82);
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+  box-shadow: var(--glass-shadow);
+  transition:
+    border-color 0.6s ease,
+    background 0.6s ease,
+    box-shadow 0.6s ease;
+}
+
+.brand-mark {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(var(--mood-rgb), 0.32);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent 38%),
+    var(--mood);
+  box-shadow:
+    0 10px 30px rgba(var(--mood-rgb), 0.14),
+    inset 0 1px rgba(255, 255, 255, 0.55);
+  transition:
+    background 0.6s ease,
+    border-color 0.6s ease,
+    box-shadow 0.6s ease;
+}
+
+.brand-mark::after {
+  position: absolute;
+  top: -35%;
+  left: -75%;
+  width: 40%;
+  height: 170%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.48), transparent);
+  content: "";
+  transform: rotate(18deg);
+}
+
+.connection-dot.online {
+  background: var(--mood);
+  box-shadow: 0 0 0 4px var(--mood-soft), 0 0 20px rgba(var(--mood-rgb), 0.26);
+  transition:
+    background 0.6s ease,
+    box-shadow 0.6s ease;
+}
+
+.login-card,
+.mode-toolbar,
+.simulation-banner,
+.metric,
+.panel,
+.observer-card,
+.control-group,
+.block-card,
+.list-row,
+.participant-row,
+.bill-meta > span,
+.dialog-meta > span,
+.consensus-result,
+.observer-blocks > span,
+.observer-metrics > div {
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.login-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(var(--mood-rgb), 0.14);
+  background:
+    radial-gradient(circle at 10% 0, rgba(var(--mood-rgb), 0.12), transparent 38%),
+    linear-gradient(145deg, rgba(21, 27, 28, 0.97), rgba(10, 14, 15, 0.98));
+  box-shadow:
+    0 38px 120px rgba(0, 0, 0, 0.42),
+    inset 0 1px rgba(255, 255, 255, 0.045);
+}
+
+.mode-toolbar,
+.simulation-banner {
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--glass-shadow);
+}
+
+.mode-toolbar {
+  border-color: rgba(var(--mood-rgb), 0.1);
+  background:
+    linear-gradient(105deg, rgba(var(--mood-rgb), 0.045), transparent 48%),
+    rgba(16, 21, 22, 0.82);
+  transition:
+    border-color 0.6s ease,
+    background 0.6s ease;
+}
+
+.mode-switch,
+.library-filters {
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.34),
+    0 1px rgba(255, 255, 255, 0.025);
+}
+
+.mode-switch button.active,
+.library-filters button.active {
+  box-shadow:
+    0 7px 22px rgba(var(--mood-rgb), 0.12),
+    inset 0 1px rgba(255, 255, 255, 0.34);
+}
+
+.hero h1,
+.observer-session h1 {
+  text-shadow: 0 14px 48px rgba(var(--mood-rgb), 0.1);
+}
+
+.stage-badge,
+.result-status,
+.operator-lock {
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 8px 26px rgba(var(--mood-rgb), 0.035);
+}
+
+.metric,
+.panel,
+.observer-card {
+  position: relative;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.026), transparent 45%),
+    linear-gradient(145deg, rgba(17, 22, 23, 0.98), rgba(10, 14, 15, 0.985));
+  box-shadow: var(--glass-shadow);
+  transition:
+    border-color 0.6s ease,
+    box-shadow 260ms ease,
+    background 0.6s ease,
+    transform 260ms var(--ease-out);
+}
+
+.metric {
+  overflow: hidden;
+}
+
+.metric::before,
+.observer-card::before {
+  position: absolute;
+  top: 0;
+  right: 18px;
+  left: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--mood-rgb), 0.34), transparent);
+  content: "";
+  opacity: 0.42;
+}
+
+.metric::after {
+  position: absolute;
+  right: -48px;
+  bottom: -70px;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background: rgba(var(--mood-rgb), 0.08);
+  content: "";
+  filter: blur(48px);
+}
+
+.operator-panel {
+  background:
+    radial-gradient(circle at 0 0, rgba(var(--mood-rgb), 0.08), transparent 36%),
+    linear-gradient(145deg, rgba(17, 22, 23, 0.98), rgba(10, 14, 15, 0.985));
+}
+
+.operator-panel::before {
+  box-shadow: 0 0 22px rgba(var(--mood-rgb), 0.3);
+}
+
+.control-group,
+.block-card,
+.bill-meta > span,
+.dialog-meta > span,
+.observer-blocks > span,
+.observer-metrics > div {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.018), transparent 50%),
+    rgba(8, 11, 12, 0.5);
+}
+
+.control-button,
+.subtle-button,
+.library-button,
+.mode-switch button,
+.library-filters button {
+  position: relative;
+  overflow: hidden;
+}
+
+.control-button.primary,
+.mode-switch button.active,
+.library-filters button.active,
+button:not(.dialog-close):not(.list-title-button):not(.library-row):not(.observer-feed-row) {
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.control-button.primary {
+  box-shadow:
+    0 10px 28px rgba(var(--mood-rgb), 0.12),
+    inset 0 1px rgba(255, 255, 255, 0.38);
+}
+
+.current-bill,
+.observer-bill {
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.current-bill::after,
+.observer-bill::after {
+  position: absolute;
+  z-index: 0;
+  top: -110px;
+  right: -90px;
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  background: rgba(var(--mood-rgb), 0.055);
+  content: "";
+  filter: blur(55px);
+  pointer-events: none;
+  transition:
+    background 0.6s ease,
+    transform 0.8s var(--ease-out);
+}
+
+.current-bill > *,
+.observer-bill > * {
+  position: relative;
+  z-index: 1;
+}
+
+.bill-reading {
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(var(--mood-rgb), 0.018), transparent);
+}
+
+.result-track {
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.44),
+    0 1px rgba(255, 255, 255, 0.025);
+}
+
+.result-track span {
+  position: relative;
+  overflow: hidden;
+}
+
+.result-track span::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.38), transparent 80%);
+  content: "";
+  transform: translateX(-120%);
+}
+
+.list-row,
+.participant-row,
+.observer-feed-row,
+.library-row {
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease,
+    transform 220ms var(--ease-out);
+}
+
+.bill-dialog,
+.bill-library-dialog {
+  border-color: var(--mood-line);
+  background:
+    radial-gradient(circle at 8% 0, rgba(var(--mood-rgb), 0.11), transparent 35%),
+    linear-gradient(145deg, #111718, #0a0f10);
+  box-shadow:
+    0 38px 130px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(var(--mood-rgb), 0.035),
+    0 0 80px rgba(var(--mood-rgb), 0.07);
+  transition:
+    border-color 0.6s ease,
+    background 0.6s ease;
+}
+
+.bill-dialog header,
+.bill-library-dialog header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bill-dialog section {
+  background:
+    linear-gradient(115deg, rgba(var(--mood-rgb), 0.035), transparent 48%),
+    rgba(8, 11, 12, 0.5);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.dialog-close {
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    transform 180ms ease;
+}
+
+.command-message {
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.2);
+}
+
+* {
+  scrollbar-color: rgba(var(--mood-rgb), 0.26) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(var(--mood-rgb), 0.2);
+  background-clip: padding-box;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .metric:hover,
+  .panel:hover,
+  .observer-card:hover {
+    border-color: rgba(var(--mood-rgb), 0.2);
+    box-shadow:
+      0 30px 82px rgba(0, 0, 0, 0.24),
+      0 0 45px rgba(var(--mood-rgb), 0.035),
+      inset 0 1px rgba(255, 255, 255, 0.05);
+  }
+
+  .metric:hover,
+  .observer-card:hover {
+    transform: translateY(-2px);
+  }
+
+  .control-group:hover,
+  .block-card:hover {
+    border-color: rgba(var(--mood-rgb), 0.18);
+    background-color: rgba(var(--mood-rgb), 0.025);
+  }
+
+  .list-row:hover,
+  .participant-row:hover,
+  .observer-feed-row:hover,
+  .library-row:hover {
+    background: rgba(var(--mood-rgb), 0.04);
+    box-shadow: inset 2px 0 var(--mood);
+    transform: translateX(3px);
+  }
+
+  .dialog-close:hover {
+    border-color: var(--mood-line);
+    color: var(--mood);
+    background: var(--mood-soft);
+    transform: rotate(4deg);
+  }
+
+  .current-bill:hover::after,
+  .observer-bill:hover::after {
+    transform: scale(1.12) translate3d(-8px, 7px, 0);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
+  .atmosphere-orb-primary {
+    animation: ambientDriftPrimary 18s ease-in-out infinite alternate;
+  }
+
+  .atmosphere-orb-secondary {
+    animation: ambientDriftSecondary 22s ease-in-out infinite alternate;
+  }
+
+  .brand-mark::after {
+    animation: consensusMarkShine 7s ease-in-out infinite;
+  }
+
+  .mode-toolbar,
+  .hero,
+  .metrics,
+  .layout-main,
+  .layout-secondary,
+  .observer-screen {
+    animation: surfaceRise 480ms var(--ease-out) both;
+  }
+
+  .hero,
+  .metrics {
+    animation-delay: 45ms;
+  }
+
+  .layout-main,
+  .observer-screen {
+    animation-delay: 90ms;
+  }
+
+  .layout-secondary {
+    animation-delay: 130ms;
+  }
+
+  body[data-stage="voting"] .result-track span::after,
+  body[data-stage="finalizing"] .result-track span::after,
+  body[data-outcome="accepted"] .result-track span::after,
+  body[data-outcome="rejected"] .result-track span::after,
+  body[data-outcome="vetoed"] .result-track span::after {
+    animation: resultGlimmer 2.8s ease-in-out infinite;
+  }
+
   .dashboard {
     animation: reveal 0.35s ease-out both;
   }
@@ -2474,6 +2940,56 @@ footer {
     from {
       opacity: 0;
       transform: translateY(8px) scale(0.985);
+    }
+  }
+
+  @keyframes ambientDriftPrimary {
+    from {
+      transform: translate3d(-2vw, -1vh, 0) scale(0.94);
+    }
+    to {
+      transform: translate3d(4vw, 3vh, 0) scale(1.08);
+    }
+  }
+
+  @keyframes ambientDriftSecondary {
+    from {
+      transform: translate3d(2vw, 2vh, 0) scale(1.06);
+    }
+    to {
+      transform: translate3d(-4vw, -2vh, 0) scale(0.93);
+    }
+  }
+
+  @keyframes consensusMarkShine {
+    0%,
+    72% {
+      left: -75%;
+      opacity: 0;
+    }
+    82% {
+      opacity: 0.75;
+    }
+    100% {
+      left: 135%;
+      opacity: 0;
+    }
+  }
+
+  @keyframes surfaceRise {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+  }
+
+  @keyframes resultGlimmer {
+    0%,
+    55% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(120%);
     }
   }
 }

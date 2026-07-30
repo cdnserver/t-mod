@@ -28,10 +28,12 @@ const CATEGORY_LABELS = {
   supreme: "Верховное",
 };
 
+const initialQuery = new URLSearchParams(window.location.search);
 let token = sessionStorage.getItem("t-consensus-token") || "";
-let selectedMode = new URLSearchParams(window.location.search).get("mode")
+let selectedMode = initialQuery.get("mode")
   || sessionStorage.getItem("t-consensus-mode")
   || "";
+let requestedBillId = Number(initialQuery.get("bill") || 0);
 let state = null;
 let pollTimer = null;
 let fetching = false;
@@ -529,6 +531,14 @@ function showBillDialog(bill, result = null) {
     : null;
   dialogBill = bill;
   dialogResult = result;
+  const billId = Number(bill.id || bill.bill_id || 0);
+  byId("copy-bill-link").disabled = !Number.isInteger(billId) || billId <= 0;
+  if (Number.isInteger(billId) && billId > 0) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("bill", String(billId));
+    if (selectedMode) url.searchParams.set("mode", selectedMode);
+    window.history.replaceState(null, "", url);
+  }
   text("bill-dialog-number", `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
   text("bill-dialog-title", bill.title || "Без названия");
   text("bill-dialog-author", bill.author?.name || "Автор не указан");
@@ -569,6 +579,36 @@ function closeBillDialog() {
   else dialog.removeAttribute("open");
   if (billDialogReturnFocus?.isConnected) billDialogReturnFocus.focus();
   billDialogReturnFocus = null;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("bill");
+  window.history.replaceState(null, "", url);
+}
+
+async function copyBillLink() {
+  const billId = Number(dialogBill?.id || dialogBill?.bill_id || 0);
+  if (!Number.isInteger(billId) || billId <= 0) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("bill", String(billId));
+  if (selectedMode) url.searchParams.set("mode", selectedMode);
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url.toString());
+    } else {
+      const helper = document.createElement("textarea");
+      helper.value = url.toString();
+      helper.readOnly = true;
+      helper.style.position = "fixed";
+      helper.style.left = "-9999px";
+      document.body.append(helper);
+      helper.select();
+      const copied = document.execCommand("copy");
+      helper.remove();
+      if (!copied) throw new Error("clipboard_unavailable");
+    }
+    showCommandMessage("Ссылка на законопроект скопирована.");
+  } catch {
+    showCommandMessage("Не удалось скопировать ссылку. Скопируйте адрес браузера.", "error");
+  }
 }
 
 async function openBillRecord(item) {
@@ -747,6 +787,7 @@ function renderViewer(data) {
   const chip = byId("viewer-chip");
   chip.hidden = !viewer.authenticated && !viewer.legacy_read_only;
   if (chip.hidden) return;
+  byId("admin-center-link").hidden = !viewer.administrator;
   text("viewer-name", viewer.name || "Наблюдатель");
   const role = viewer.leader
     ? "ведущий"
@@ -1106,6 +1147,15 @@ async function fetchState({ first = false } = {}) {
     dashboard.hidden = false;
     loginError.textContent = "";
     setConnection("online", "обновляется");
+    if (
+      first
+      && Number.isInteger(requestedBillId)
+      && requestedBillId > 0
+    ) {
+      const billId = requestedBillId;
+      requestedBillId = 0;
+      await openBillRecord({ id: billId });
+    }
   } catch (error) {
     setConnection("offline", "связь потеряна");
     if (first) loginError.textContent = "Панель недоступна. Проверьте контейнер T-Mod, Caddy и DNS.";
@@ -1192,6 +1242,7 @@ byId("open-bill-dialog").addEventListener(
 );
 byId("close-bill-dialog").addEventListener("click", closeBillDialog);
 byId("bill-dialog-done").addEventListener("click", closeBillDialog);
+byId("copy-bill-link").addEventListener("click", copyBillLink);
 byId("bill-dialog").addEventListener("click", (event) => {
   if (event.target === byId("bill-dialog")) closeBillDialog();
 });
@@ -1221,5 +1272,8 @@ setInterval(() => {
 }, 1000);
 
 fetchState({ first: true });
-pollTimer = setInterval(fetchState, 1000);
+pollTimer = setInterval(() => {
+  if (dashboard.hidden) return;
+  fetchState();
+}, 1000);
 window.addEventListener("beforeunload", () => clearInterval(pollTimer));

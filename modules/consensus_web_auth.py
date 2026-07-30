@@ -147,9 +147,21 @@ def consensus_web_entry_url(
     guild_id: int,
     user_id: int,
     mode: str = "live",
+    destination: str = "/",
 ) -> str:
     ticket = create_entry_ticket(guild_id=guild_id, user_id=user_id)
-    query = urlencode({"ticket": ticket, "mode": str(mode)})
+    selected_destination = (
+        str(destination)
+        if str(destination) in {"/", "/admin"}
+        else "/"
+    )
+    query = urlencode(
+        {
+            "ticket": ticket,
+            "mode": str(mode),
+            "next": selected_destination,
+        }
+    )
     return f"{str(base_url).rstrip('/')}/auth/ticket?{query}"
 
 

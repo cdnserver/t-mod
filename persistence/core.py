@@ -15,6 +15,11 @@ CONSENSUS_RESULT_DEDUP_ID = "2026-07-17-live-result-dedup-v1"
 _db_lock = threading.RLock()
 
 
+def _sqlite_casefold(value: object) -> str:
+    """Unicode-aware normalization for Russian and mixed-language search."""
+    return str(value or "").casefold()
+
+
 @dataclass(slots=True)
 class ActivitySummary:
     guild_id: int
@@ -296,6 +301,7 @@ def connect() -> sqlite3.Connection:
     DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DATABASE_FILE, timeout=30)
     con.row_factory = sqlite3.Row
+    con.create_function("T_CASEFOLD", 1, _sqlite_casefold, deterministic=True)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")

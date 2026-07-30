@@ -1,0 +1,1323 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#080b0c">
+    <style>html,body{background:#080b0c;color:#edf1eb}</style>
+    <title>T·Control — административный центр</title>
+    <meta
+      name="description"
+      content="Защищённый административный и аудитный центр T-Mod."
+    >
+    <link rel="stylesheet" href="/assets/admin.css">
+    <script src="/assets/admin.js" defer></script>
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true">
+      <span class="backdrop-glow glow-one"></span>
+      <span class="backdrop-glow glow-two"></span>
+      <span class="backdrop-grid"></span>
+    </div>
+
+    <section id="auth-gate" class="auth-gate">
+      <div class="gate-card">
+        <span class="gate-mark">T</span>
+        <div class="eyebrow">ЗАЩИЩЁННЫЙ КОНТУР</div>
+        <h1>Административный центр</h1>
+        <p id="gate-message">
+          Проверяем персональную сессию и административные права…
+        </p>
+        <a id="gate-back" class="primary-link" href="/" hidden>
+          Вернуться к консенсусу
+        </a>
+      </div>
+    </section>
+
+    <div id="admin-shell" class="admin-shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="/admin" aria-label="T Control">
+          <span class="brand-mark">T</span>
+          <span class="brand-copy">
+            <strong>CONTROL</strong>
+            <small>administrative system</small>
+          </span>
+        </a>
+
+        <nav class="primary-nav" aria-label="Разделы админ-центра">
+          <button class="nav-item active" type="button" data-section="overview">
+            <span class="nav-icon">⌂</span>
+            <span>Обзор</span>
+          </button>
+          <button class="nav-item" type="button" data-section="modules">
+            <span class="nav-icon">▦</span>
+            <span>Все системы</span>
+          </button>
+          <button class="nav-item" type="button" data-section="audit">
+            <span class="nav-icon">⌁</span>
+            <span>Аудит действий</span>
+          </button>
+          <button class="nav-item" type="button" data-section="treasury">
+            <span class="nav-icon">₽</span>
+            <span>Казна</span>
+          </button>
+          <button class="nav-item" type="button" data-section="craft">
+            <span class="nav-icon">◇</span>
+            <span>Крафты</span>
+          </button>
+          <button class="nav-item" type="button" data-section="market">
+            <span class="nav-icon">⌕</span>
+            <span>Рынок RU15</span>
+          </button>
+          <button class="nav-item" type="button" data-section="bills">
+            <span class="nav-icon">§</span>
+            <span>Законопроекты</span>
+          </button>
+          <button class="nav-item" type="button" data-section="sgl">
+            <span class="nav-icon">⚖</span>
+            <span>Бюро СГЛ</span>
+          </button>
+          <button class="nav-item" type="button" data-section="members">
+            <span class="nav-icon">◎</span>
+            <span>Участники</span>
+          </button>
+          <button class="nav-item" type="button" data-section="communications">
+            <span class="nav-icon">◫</span>
+            <span>Коммуникации</span>
+          </button>
+          <button class="nav-item" type="button" data-section="media">
+            <span class="nav-icon">▶</span>
+            <span>Медиа</span>
+          </button>
+          <button class="nav-item" type="button" data-section="profile">
+            <span class="nav-icon">♙</span>
+            <span>Мой профиль</span>
+          </button>
+          <button class="nav-item" type="button" data-section="discord">
+            <span class="nav-icon">◉</span>
+            <span>Discord-аудит</span>
+          </button>
+          <button class="nav-item" type="button" data-section="system">
+            <span class="nav-icon">⟡</span>
+            <span>Система</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <a class="portal-link" href="/">
+            <span>🏛</span>
+            <span>
+              <strong>Консенсус</strong>
+              <small>оперативная панель</small>
+            </span>
+          </a>
+          <div class="security-note">
+            <span class="live-dot"></span>
+            <span>
+              <strong>Личный контур</strong>
+              <small>права проверяются онлайн</small>
+            </span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="title-group">
+            <div class="eyebrow" id="section-eyebrow">ОПЕРАЦИОННАЯ КАРТИНА</div>
+            <h1 id="section-title">Обзор системы</h1>
+          </div>
+          <div class="top-actions">
+            <label class="period-control" for="period-select">
+              <span>Период</span>
+              <select id="period-select">
+                <option value="7">7 дней</option>
+                <option value="30" selected>30 дней</option>
+                <option value="90">90 дней</option>
+                <option value="365">1 год</option>
+              </select>
+            </label>
+            <button
+              id="copy-section-link"
+              class="icon-button"
+              type="button"
+              title="Скопировать ссылку на текущий раздел"
+            >
+              <span aria-hidden="true">⛓</span>
+              <span>Ссылка</span>
+            </button>
+            <button id="refresh-button" class="icon-button" type="button">
+              <span aria-hidden="true">↻</span>
+              <span>Обновить</span>
+            </button>
+            <div class="viewer">
+              <span class="viewer-avatar" id="viewer-avatar">A</span>
+              <span class="viewer-copy">
+                <small>Администратор</small>
+                <strong id="viewer-name">—</strong>
+              </span>
+              <a href="/auth/logout" aria-label="Выйти">↗</a>
+            </div>
+          </div>
+        </header>
+
+        <div class="content">
+          <section
+            id="screen-overview"
+            class="screen active"
+            data-screen="overview"
+            aria-labelledby="section-title"
+          >
+            <div class="status-banner">
+              <span class="status-symbol">T</span>
+              <div>
+                <strong id="welcome-title">Административная картина готова</strong>
+                <span id="welcome-subtitle">
+                  Сводка событий, денег и процессов Товарищества
+                </span>
+              </div>
+              <time id="overview-updated">—</time>
+            </div>
+
+            <div class="kpi-grid">
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Казна</span><i>₽</i></div>
+                <strong id="overview-balance">—</strong>
+                <small id="overview-net">нет данных за период</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Активные крафты</span><i>◇</i></div>
+                <strong id="overview-crafts">—</strong>
+                <small id="overview-craft-note">в работе сейчас</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Действия</span><i>⌁</i></div>
+                <strong id="overview-actions">—</strong>
+                <small id="overview-action-note">в универсальном аудите</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Discord-события</span><i>◉</i></div>
+                <strong id="overview-discord">—</strong>
+                <small id="overview-discord-note">активных участников</small>
+              </article>
+            </div>
+
+            <div id="attention-strip" class="attention-strip" hidden></div>
+
+            <div class="overview-grid">
+              <article class="panel panel-wide">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">УНИВЕРСАЛЬНЫЙ ЖУРНАЛ</span>
+                    <h2>Последние административные действия</h2>
+                  </div>
+                  <button class="text-button" type="button" data-go="audit">
+                    Весь аудит →
+                  </button>
+                </header>
+                <div id="overview-actions-list" class="timeline-list"></div>
+              </article>
+
+              <article class="panel system-panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">СОСТОЯНИЕ</span>
+                    <h2>Контур T-Mod</h2>
+                  </div>
+                  <span id="system-indicator" class="health-pill">проверка</span>
+                </header>
+                <div id="system-metrics" class="system-metrics"></div>
+              </article>
+
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ПРОИЗВОДСТВО</span>
+                    <h2>Крафты в работе</h2>
+                  </div>
+                  <button class="text-button" type="button" data-go="craft">
+                    Открыть →
+                  </button>
+                </header>
+                <div id="overview-craft-list" class="compact-list"></div>
+              </article>
+
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ЖИВОЙ ПОТОК</span>
+                    <h2>Активность Discord</h2>
+                  </div>
+                  <button class="text-button" type="button" data-go="discord">
+                    Исследовать →
+                  </button>
+                </header>
+                <div id="overview-discord-list" class="compact-list"></div>
+              </article>
+            </div>
+          </section>
+
+          <section id="screen-modules" class="screen" data-screen="modules">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">T-MOD / CAPABILITY MAP</span>
+                <h2>Все системы в одном месте</h2>
+                <p>
+                  Живая карта возможностей, данных и состояния каждого контура бота.
+                </p>
+              </div>
+              <span id="registry-health" class="health-pill">загрузка</span>
+            </div>
+
+            <div id="registry-kpis" class="kpi-grid compact-kpis"></div>
+
+            <article class="panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">КАРТА T-MOD</span>
+                  <h2>Функциональные контуры</h2>
+                </div>
+              </header>
+              <div id="capability-grid" class="capability-grid"></div>
+            </article>
+
+            <div class="dual-grid registry-lower">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">MARKET DATA</span>
+                    <h2>Каталоги Majestic</h2>
+                  </div>
+                </header>
+                <div id="registry-catalogs" class="compact-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">КОНТРОЛЬНЫЕ ТОЧКИ</span>
+                    <h2>Что требует внимания</h2>
+                  </div>
+                </header>
+                <div id="registry-attention" class="compact-list"></div>
+              </article>
+            </div>
+          </section>
+
+          <section id="screen-audit" class="screen" data-screen="audit">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">01 / UNIVERSAL LOG</span>
+                <h2>Кто, что и когда изменил</h2>
+                <p>
+                  Единый неизменяемый журнал действий бота и администраторов.
+                </p>
+              </div>
+              <button id="audit-export" class="secondary-button" type="button">
+                Экспорт CSV
+              </button>
+            </div>
+
+            <form id="audit-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск</span>
+                <input name="q" type="search" placeholder="Действие, участник, объект…">
+              </label>
+              <label>
+                <span>Модуль</span>
+                <select name="module" id="audit-module">
+                  <option value="">Все модули</option>
+                </select>
+              </label>
+              <label>
+                <span>Статус</span>
+                <select name="status">
+                  <option value="">Все статусы</option>
+                  <option value="active">Активно</option>
+                  <option value="undone">Отменено</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Применить</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">АУДИТ ДЕЙСТВИЙ</span>
+                  <h2 id="audit-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Модуль</th>
+                      <th>Действие</th>
+                      <th>Исполнитель</th>
+                      <th>Объект</th>
+                      <th>Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody id="audit-table-body"></tbody>
+                </table>
+              </div>
+              <div id="audit-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-treasury" class="screen" data-screen="treasury">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">02 / TREASURY</span>
+                <h2>Казна под контролем</h2>
+                <p>Баланс, движение средств, причины и связь с крафтами.</p>
+              </div>
+              <button id="finance-export" class="secondary-button" type="button">
+                Экспорт CSV
+              </button>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Расчётный баланс</span><i>₽</i></div>
+                <strong id="finance-balance">—</strong>
+                <small id="finance-report-state">последняя сверка неизвестна</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Поступления</span><i>↗</i></div>
+                <strong id="finance-deposits">—</strong>
+                <small>за выбранный период</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Расходы</span><i>↘</i></div>
+                <strong id="finance-withdrawals">—</strong>
+                <small id="finance-craft-cost">включая расходы крафта</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Чистый поток</span><i>≈</i></div>
+                <strong id="finance-net">—</strong>
+                <small id="finance-operations">операций: —</small>
+              </article>
+            </div>
+
+            <div class="dual-grid">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ОСНОВНЫЕ ПРИЧИНЫ</span>
+                    <h2>Куда движутся средства</h2>
+                  </div>
+                </header>
+                <div id="finance-reasons" class="ranking-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ОПЕРАТОРЫ</span>
+                    <h2>Активность по казне</h2>
+                  </div>
+                </header>
+                <div id="finance-actors" class="ranking-list"></div>
+              </article>
+            </div>
+
+            <form id="finance-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск в реестре</span>
+                <input name="q" type="search" placeholder="Причина, код, исполнитель…">
+              </label>
+              <label>
+                <span>Тип</span>
+                <select name="kind">
+                  <option value="">Все операции</option>
+                  <option value="daily">Ежедневный отчёт</option>
+                  <option value="interim">Промежуточный отчёт</option>
+                  <option value="deposit">Поступление</option>
+                  <option value="withdraw">Расход</option>
+                  <option value="undo">Отмена</option>
+                </select>
+              </label>
+              <label class="code-field">
+                <span>Игровой код</span>
+                <input name="code" maxlength="4" placeholder="ABCD">
+              </label>
+              <button class="primary-button" type="submit">Применить</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">ФИНАНСОВЫЙ РЕЕСТР</span>
+                  <h2 id="finance-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Тип</th>
+                      <th>Сумма</th>
+                      <th>Баланс после</th>
+                      <th>Причина / связь</th>
+                      <th>Исполнитель</th>
+                      <th>Код</th>
+                    </tr>
+                  </thead>
+                  <tbody id="finance-table-body"></tbody>
+                </table>
+              </div>
+              <div id="finance-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-craft" class="screen" data-screen="craft">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">03 / PRODUCTION</span>
+                <h2>Производственный аудит</h2>
+                <p>Прогресс, материалы, сроки, экономика и история каждого плана.</p>
+              </div>
+              <button id="craft-export" class="secondary-button" type="button">
+                Экспорт событий
+              </button>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>В работе</span><i>◇</i></div>
+                <strong id="craft-active">—</strong>
+                <small id="craft-planned">запланировано попыток: —</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Завершено</span><i>✓</i></div>
+                <strong id="craft-completed">—</strong>
+                <small id="craft-output">готовой продукции: —</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Выручка</span><i>↗</i></div>
+                <strong id="craft-revenue">—</strong>
+                <small id="craft-sold">продано: —</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Результат</span><i>≈</i></div>
+                <strong id="craft-profit">—</strong>
+                <small id="craft-costs">затраты: —</small>
+              </article>
+            </div>
+
+            <article class="panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">АКТИВНЫЕ ПЛАНЫ</span>
+                  <h2 id="active-plan-count">Производство сейчас</h2>
+                </div>
+              </header>
+              <div id="craft-plan-grid" class="plan-grid"></div>
+            </article>
+
+            <form id="craft-filters" class="filter-bar">
+              <label class="search-field">
+                <span>История производства</span>
+                <input name="q" type="search" placeholder="Предмет, событие, исполнитель…">
+              </label>
+              <button class="primary-button" type="submit">Найти</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">СОБЫТИЯ КРАФТА</span>
+                  <h2 id="craft-event-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>План</th>
+                      <th>Событие</th>
+                      <th>Исполнитель</th>
+                      <th>Стадия</th>
+                      <th>Подробности</th>
+                    </tr>
+                  </thead>
+                  <tbody id="craft-table-body"></tbody>
+                </table>
+              </div>
+              <div id="craft-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-market" class="screen" data-screen="market">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">05 / MAJESTIC MARKET</span>
+                <h2>Рынок RU15</h2>
+                <p>Предметы, транспорт и одежда из локального каталога T-Mod.</p>
+              </div>
+              <span id="market-freshness" class="health-pill">проверка данных</span>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Записей</span><i>⌕</i></div>
+                <strong id="market-total">—</strong>
+                <small id="market-category-note">в выбранном каталоге</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Обновление</span><i>↻</i></div>
+                <strong id="market-updated">—</strong>
+                <small>снимок Majestic API</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Мои сигналы</span><i>◉</i></div>
+                <strong id="market-my-alerts">—</strong>
+                <small>персональные уведомления</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Активные сигналы</span><i>⌁</i></div>
+                <strong id="market-active-alerts">—</strong>
+                <small>во всём выбранном каталоге</small>
+              </article>
+            </div>
+
+            <form id="market-filters" class="filter-bar filter-five">
+              <label class="search-field">
+                <span>Поиск по-русски</span>
+                <input name="q" type="search" placeholder="Название или идентификатор…">
+              </label>
+              <label>
+                <span>Категория</span>
+                <select name="category">
+                  <option value="items">Предметы</option>
+                  <option value="vehicles">Автомобили</option>
+                  <option value="clothes">Одежда</option>
+                </select>
+              </label>
+              <label>
+                <span>Сортировка</span>
+                <select name="sort">
+                  <option value="popular">Популярное</option>
+                  <option value="name">По названию</option>
+                  <option value="price_asc">Сначала дешевле</option>
+                  <option value="price_desc">Сначала дороже</option>
+                  <option value="supply">По количеству</option>
+                </select>
+              </label>
+              <label class="code-field">
+                <span>Сервер</span>
+                <input name="server" value="RU15" maxlength="20">
+              </label>
+              <button class="primary-button" type="submit">Найти</button>
+            </form>
+
+            <article class="panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">КАТАЛОГ</span>
+                  <h2 id="market-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div id="market-grid" class="market-grid"></div>
+              <div id="market-pagination" class="pagination"></div>
+            </article>
+
+            <article class="panel market-alert-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">ПЕРСОНАЛЬНЫЕ СИГНАЛЫ</span>
+                  <h2>Мои наблюдения</h2>
+                </div>
+              </header>
+              <form id="market-alert-form" class="market-alert-form" hidden>
+                <input name="item_id" type="hidden">
+                <input name="category" type="hidden">
+                <input name="server_id" type="hidden">
+                <strong id="market-alert-item">Новый сигнал</strong>
+                <label>
+                  <span>Цена не выше</span>
+                  <input name="target_price" type="number" min="1" step="1" required>
+                </label>
+                <label>
+                  <span>Количество от</span>
+                  <input name="min_quantity" type="number" min="1" step="1" value="1" required>
+                </label>
+                <button class="primary-button" type="submit">Сохранить сигнал</button>
+                <button id="market-alert-cancel" class="secondary-button" type="button">Отмена</button>
+              </form>
+              <div id="market-alert-list" class="compact-list"></div>
+            </article>
+          </section>
+
+          <section id="screen-bills" class="screen" data-screen="bills">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">06 / LEGISLATION</span>
+                <h2>Законопроекты и консенсус</h2>
+                <p>Полный реестр проектов, редакторские пространства и результаты.</p>
+              </div>
+              <a class="secondary-button" href="/">Открыть пленарную панель</a>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Проекты</span><i>§</i></div>
+                <strong id="bills-total">—</strong>
+                <small>в текущей выборке</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Редактор</span><i>✎</i></div>
+                <strong id="bill-workspaces">—</strong>
+                <small>открытых пространств</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Сессии</span><i>🏛</i></div>
+                <strong id="bill-sessions">—</strong>
+                <small>активный консенсус</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Результаты</span><i>✓</i></div>
+                <strong id="bill-results">—</strong>
+                <small>последние решения</small>
+              </article>
+            </div>
+
+            <form id="bills-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск</span>
+                <input name="q" type="search" placeholder="Номер, название, автор, текст…">
+              </label>
+              <label>
+                <span>Статус</span>
+                <select name="status">
+                  <option value="">Все проекты</option>
+                  <option value="submitted">В очереди</option>
+                  <option value="voting">На рассмотрении</option>
+                  <option value="accepted">Принят</option>
+                  <option value="rejected">Отклонён</option>
+                  <option value="vetoed">Вето</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Применить</button>
+            </form>
+
+            <div class="bills-layout">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">РЕЕСТР ПРОЕКТОВ</span>
+                    <h2 id="bills-count">Загрузка…</h2>
+                  </div>
+                </header>
+                <div id="bills-list" class="bill-list"></div>
+              </article>
+              <aside class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">AI-РЕДАКТОР</span>
+                    <h2>Открытые пространства</h2>
+                  </div>
+                </header>
+                <div id="workspace-list" class="compact-list"></div>
+              </aside>
+            </div>
+          </section>
+
+          <section id="screen-sgl" class="screen" data-screen="sgl">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">07 / SGL BUREAU</span>
+                <h2>Кейсы и юридический архив</h2>
+                <p>Рабочие дела, сотрудники, чеки и долговременные снимки каналов.</p>
+              </div>
+              <button id="sgl-export" class="secondary-button" type="button">
+                Экспорт кейсов
+              </button>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Всего кейсов</span><i>⚖</i></div>
+                <strong id="sgl-total">—</strong>
+                <small>в базе Бюро</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Открыто</span><i>◌</i></div>
+                <strong id="sgl-open">—</strong>
+                <small>требуют сопровождения</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Архивы</span><i>▣</i></div>
+                <strong id="sgl-archives">—</strong>
+                <small>сохранённых каналов</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Объём архива</span><i>◫</i></div>
+                <strong id="sgl-bytes">—</strong>
+                <small>вложения и сообщения</small>
+              </article>
+            </div>
+
+            <form id="sgl-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск кейса</span>
+                <input name="q" type="search" placeholder="Номер, клиент, сотрудник, статик…">
+              </label>
+              <label>
+                <span>Статус</span>
+                <select name="status" id="sgl-status">
+                  <option value="">Все статусы</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Применить</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">РЕЕСТР КЕЙСОВ</span>
+                  <h2 id="sgl-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Кейс</th>
+                      <th>Клиент</th>
+                      <th>Ведущий</th>
+                      <th>Секретарь</th>
+                      <th>Тип</th>
+                      <th>Состояние</th>
+                      <th>Активность</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sgl-table-body"></tbody>
+                </table>
+              </div>
+              <div id="sgl-pagination" class="pagination"></div>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">ДОЛГОВРЕМЕННЫЙ АРХИВ</span>
+                  <h2>Последние снимки кейсов</h2>
+                </div>
+              </header>
+              <div id="sgl-archive-list" class="archive-grid"></div>
+            </article>
+          </section>
+
+          <section id="screen-members" class="screen" data-screen="members">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">08 / MEMBER DIRECTORY</span>
+                <h2>Участники Товарищества</h2>
+                <p>Профили, персонажи, вклад, ответственность и последняя активность.</p>
+              </div>
+              <button id="members-export" class="secondary-button" type="button">
+                Экспорт справочника
+              </button>
+            </div>
+
+            <form id="members-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск участника</span>
+                <input name="q" type="search" placeholder="Имя, Discord ID, вклад, ответственность…">
+              </label>
+              <button class="primary-button" type="submit">Найти</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">СПРАВОЧНИК</span>
+                  <h2 id="members-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Участник</th>
+                      <th>Статус</th>
+                      <th>Персонажи</th>
+                      <th>Вклад</th>
+                      <th>Ответственность</th>
+                      <th>Активность</th>
+                    </tr>
+                  </thead>
+                  <tbody id="members-table-body"></tbody>
+                </table>
+              </div>
+              <div id="members-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-communications" class="screen" data-screen="communications">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">09 / COMMUNICATIONS</span>
+                <h2>Уведомления Товарищества</h2>
+                <p>Массовые сообщения сенаторам и прозрачный отчёт по каждой доставке.</p>
+              </div>
+              <span class="health-pill">durable outbox</span>
+            </div>
+
+            <article class="panel broadcast-composer">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">НОВОЕ УВЕДОМЛЕНИЕ</span>
+                  <h2>Отправить всем сенаторам</h2>
+                </div>
+                <span class="status-pill">через надёжную очередь</span>
+              </header>
+              <form id="broadcast-form" class="broadcast-form">
+                <label>
+                  <span>Тип</span>
+                  <select name="kind">
+                    <option value="global">Общее уведомление</option>
+                    <option value="consensus">Уведомление о консенсусе</option>
+                  </select>
+                </label>
+                <label class="broadcast-title-field">
+                  <span>Заголовок</span>
+                  <input name="title" maxlength="180" minlength="3" required placeholder="Что произошло или требует внимания">
+                </label>
+                <label class="broadcast-body-field">
+                  <span>Сообщение</span>
+                  <textarea name="body" maxlength="3000" minlength="5" required placeholder="Понятный текст уведомления для участников"></textarea>
+                </label>
+                <label class="broadcast-link-field">
+                  <span>Связанная ссылка</span>
+                  <input name="link_url" type="url" maxlength="500" placeholder="https://tvr.lat/">
+                </label>
+                <label class="confirmation-field">
+                  <input name="confirmed" type="checkbox" value="yes" required>
+                  <span>Подтверждаю отправку всем участникам с ролью сенатора</span>
+                </label>
+                <button class="primary-button" type="submit">Поставить в очередь</button>
+              </form>
+            </article>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Кампании</span><i>◫</i></div>
+                <strong id="comms-total">—</strong>
+                <small>в истории отправок</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Доставлено</span><i>✓</i></div>
+                <strong id="comms-delivered">—</strong>
+                <small>по текущей странице</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Ожидает</span><i>⌛</i></div>
+                <strong id="comms-queued">—</strong>
+                <small>в очереди доставки</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Проблемы</span><i>!</i></div>
+                <strong id="comms-problems">—</strong>
+                <small>пропуски и ошибки</small>
+              </article>
+            </div>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">ИСТОРИЯ КАМПАНИЙ</span>
+                  <h2 id="comms-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Тип</th>
+                      <th>Заголовок</th>
+                      <th>Автор</th>
+                      <th>Получатели</th>
+                      <th>Доставка</th>
+                      <th>Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody id="comms-table-body"></tbody>
+                </table>
+              </div>
+              <div id="comms-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-media" class="screen" data-screen="media">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">10 / MEDIA CONTROL</span>
+                <h2>Музыка, голос и трансляция</h2>
+                <p>Живое управление аудио T-Mod и изолированным браузерным клиентом.</p>
+              </div>
+              <span id="media-state" class="health-pill">проверка</span>
+            </div>
+
+            <div class="media-layout">
+              <article class="panel media-card">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">T-MOD MUSIC</span>
+                    <h2 id="music-title">Музыка не подключена</h2>
+                  </div>
+                  <span id="music-status" class="status-pill">offline</span>
+                </header>
+                <div class="media-now">
+                  <span class="media-cover">♪</span>
+                  <div>
+                    <strong id="music-current">Сейчас ничего не играет</strong>
+                    <small id="music-current-meta">Подключитесь к голосовому каналу</small>
+                  </div>
+                </div>
+                <div class="media-controls">
+                  <button type="button" data-media-target="music" data-media-action="connect">Подключить</button>
+                  <button type="button" data-media-target="music" data-media-action="pause">Пауза</button>
+                  <button type="button" data-media-target="music" data-media-action="resume">Играть</button>
+                  <button type="button" data-media-target="music" data-media-action="skip">Дальше</button>
+                  <button type="button" data-media-target="music" data-media-action="stop">Стоп</button>
+                  <button type="button" data-media-target="music" data-media-action="disconnect">Выйти</button>
+                </div>
+                <form id="music-enqueue" class="inline-command">
+                  <input name="query" placeholder="Название песни или YouTube-ссылка" required>
+                  <button class="primary-button" type="submit">Добавить</button>
+                </form>
+                <div class="volume-control">
+                  <label for="music-volume">Громкость</label>
+                  <input id="music-volume" type="range" min="5" max="100" value="50">
+                  <output id="music-volume-value">50%</output>
+                </div>
+                <div id="music-queue" class="compact-list"></div>
+              </article>
+
+              <article class="panel media-card">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">BROWSER STREAM</span>
+                    <h2>Демонстрация веб-страницы</h2>
+                  </div>
+                  <span id="browser-status" class="status-pill">offline</span>
+                </header>
+                <div class="browser-preview">
+                  <span>▣</span>
+                  <strong id="browser-page">Трансляция не запущена</strong>
+                  <small id="browser-meta">Изолированный Discord-клиент</small>
+                </div>
+                <form id="browser-stream-form" class="inline-command vertical-command">
+                  <input name="url" type="url" placeholder="https://tvr.lat/" required>
+                  <button class="primary-button" type="submit">Запустить страницу</button>
+                </form>
+                <div class="media-controls">
+                  <button type="button" data-media-target="browser" data-media-action="stop">Остановить</button>
+                  <button type="button" data-media-target="browser" data-media-action="leave">Остановить и выйти</button>
+                </div>
+                <div id="browser-details" class="system-metrics"></div>
+              </article>
+            </div>
+          </section>
+
+          <section id="screen-profile" class="screen" data-screen="profile">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">11 / PERSONAL SPACE</span>
+                <h2>Мой профиль T-Mod</h2>
+                <p>Персонажи, видимость, уведомления, тихие часы и качество микрофона.</p>
+              </div>
+              <a class="secondary-button" href="/auth/logout">Завершить сессию</a>
+            </div>
+
+            <div class="profile-layout">
+              <article class="panel profile-identity">
+                <div class="profile-hero">
+                  <span id="profile-avatar">A</span>
+                  <div>
+                    <small>DISCORD IDENTITY</small>
+                    <h2 id="profile-name">—</h2>
+                    <p id="profile-status">Статус не задан</p>
+                  </div>
+                </div>
+                <div id="profile-directory" class="detail-content"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ПЕРСОНАЖИ</span>
+                    <h2>Игровые аккаунты</h2>
+                  </div>
+                </header>
+                <div id="profile-characters" class="character-grid"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">ПРИВАТНОСТЬ И ЛС</span>
+                    <h2>Текущая конфигурация</h2>
+                  </div>
+                </header>
+                <div id="profile-preferences" class="preference-grid"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">VOICE CONTROL V2</span>
+                    <h2>Диагностика микрофона</h2>
+                  </div>
+                </header>
+                <div id="profile-voice" class="voice-diagnostic"></div>
+              </article>
+            </div>
+          </section>
+
+          <section id="screen-discord" class="screen" data-screen="discord">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">04 / DISCORD INTELLIGENCE</span>
+                <h2>Аудит пространства Discord</h2>
+                <p>События, участники и каналы без доступа к закрытым данным извне.</p>
+              </div>
+              <button id="discord-export" class="secondary-button" type="button">
+                Экспорт CSV
+              </button>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>События</span><i>◉</i></div>
+                <strong id="discord-events">—</strong>
+                <small>за выбранный период</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Участники</span><i>◎</i></div>
+                <strong id="discord-users">—</strong>
+                <small>с зафиксированной активностью</small>
+              </article>
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Каналы</span><i>#</i></div>
+                <strong id="discord-channels">—</strong>
+                <small>затронуто событиями</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Последнее событие</span><i>↻</i></div>
+                <strong id="discord-last">—</strong>
+                <small id="discord-window">окно наблюдения</small>
+              </article>
+            </div>
+
+            <div class="triple-grid">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">СОБЫТИЯ</span>
+                    <h2>Структура потока</h2>
+                  </div>
+                </header>
+                <div id="discord-types" class="ranking-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">КАНАЛЫ</span>
+                    <h2>Где происходит</h2>
+                  </div>
+                </header>
+                <div id="discord-top-channels" class="ranking-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">УЧАСТНИКИ</span>
+                    <h2>Кто активен</h2>
+                  </div>
+                </header>
+                <div id="discord-top-users" class="ranking-list"></div>
+              </article>
+            </div>
+
+            <form id="discord-filters" class="filter-bar">
+              <label class="search-field">
+                <span>Поиск по потоку</span>
+                <input name="q" type="search" placeholder="Текст, канал, участник…">
+              </label>
+              <label>
+                <span>Тип события</span>
+                <select name="type" id="discord-type">
+                  <option value="">Все события</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Применить</button>
+            </form>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">DISCORD EVENT STREAM</span>
+                  <h2 id="discord-count">Загрузка…</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Время</th>
+                      <th>Тип</th>
+                      <th>Участник</th>
+                      <th>Канал</th>
+                      <th>Событие</th>
+                      <th>Источник</th>
+                    </tr>
+                  </thead>
+                  <tbody id="discord-table-body"></tbody>
+                </table>
+              </div>
+              <div id="discord-pagination" class="pagination"></div>
+            </article>
+          </section>
+
+          <section id="screen-system" class="screen" data-screen="system">
+            <div class="section-intro">
+              <div>
+                <span class="section-number">12 / SYSTEM CONTROL</span>
+                <h2>Технический контур</h2>
+                <p>Доставка, фоновые задачи, генерации и состояние рабочих процессов.</p>
+              </div>
+              <span id="system-health-badge" class="health-pill">диагностика</span>
+            </div>
+
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-mint">
+                <div class="kpi-head"><span>Discord gateway</span><i>◉</i></div>
+                <strong id="runtime-ready">—</strong>
+                <small id="runtime-latency">задержка неизвестна</small>
+              </article>
+              <article class="kpi-card accent-blue">
+                <div class="kpi-head"><span>Доставка</span><i>↗</i></div>
+                <strong id="system-outbox-open">—</strong>
+                <small>в работе или ожидает</small>
+              </article>
+              <article class="kpi-card accent-amber">
+                <div class="kpi-head"><span>Dead-letter</span><i>!</i></div>
+                <strong id="system-outbox-dead">—</strong>
+                <small>исчерпали попытки</small>
+              </article>
+              <article class="kpi-card accent-violet">
+                <div class="kpi-head"><span>Фоновые задачи</span><i>⟡</i></div>
+                <strong id="system-background">—</strong>
+                <small>генерации и рабочие пространства</small>
+              </article>
+            </div>
+
+            <div class="triple-grid">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">OUTBOX STATUS</span>
+                    <h2>Состояния доставки</h2>
+                  </div>
+                </header>
+                <div id="outbox-status-list" class="ranking-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">OUTBOX TOPICS</span>
+                    <h2>Потоки сообщений</h2>
+                  </div>
+                </header>
+                <div id="outbox-topic-list" class="ranking-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">RUNTIME</span>
+                    <h2>Кеш и сервисы</h2>
+                  </div>
+                </header>
+                <div id="runtime-metrics" class="system-metrics"></div>
+              </article>
+            </div>
+
+            <article class="panel table-panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">ДОСТАВКА С ПРОБЛЕМАМИ</span>
+                  <h2>Повторы, обработка и dead-letter</h2>
+                </div>
+              </header>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Тема</th>
+                      <th>Статус</th>
+                      <th>Попытки</th>
+                      <th>Доступно</th>
+                      <th>Последняя ошибка</th>
+                    </tr>
+                  </thead>
+                  <tbody id="system-delivery-body"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <div class="dual-grid">
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">AI / AUDIO</span>
+                    <h2>Последние генерации</h2>
+                  </div>
+                </header>
+                <div id="audio-job-list" class="compact-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head">
+                  <div>
+                    <span class="panel-kicker">WORKSPACES</span>
+                    <h2>Редактор и сессии</h2>
+                  </div>
+                </header>
+                <div id="system-workspace-list" class="compact-list"></div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="detail-dialog" class="detail-dialog">
+      <form method="dialog" class="dialog-head">
+        <div>
+          <span class="panel-kicker">ПОДРОБНОСТИ</span>
+          <h2 id="detail-title">Запись аудита</h2>
+        </div>
+        <div class="dialog-actions">
+          <button
+            id="copy-detail-link"
+            class="detail-link-button"
+            type="button"
+            title="Скопировать ссылку на эту карточку"
+            hidden
+          >
+            <span aria-hidden="true">⛓</span>
+            <span>Скопировать ссылку</span>
+          </button>
+          <button class="dialog-close" value="cancel" aria-label="Закрыть">×</button>
+        </div>
+      </form>
+      <div id="detail-content" class="detail-content"></div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

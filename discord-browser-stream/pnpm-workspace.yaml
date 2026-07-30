@@ -4,3 +4,8 @@ allowBuilds:
   puppeteer: true
   sharp: true
   zeromq: true
+
+overrides:
+  sharp: 0.35.3
+  "werift-ice>ip": "npm:neoip@2.1.0"
+  "werift>ip": "npm:neoip@2.1.0"

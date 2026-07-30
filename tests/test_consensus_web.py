@@ -317,10 +317,14 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
             script = await client.get("/assets/app.js")
             self.assertEqual(script.status, 200)
+            script_text = await script.text()
             self.assertIn(
                 "document.body.dataset.outcome",
-                await script.text(),
+                script_text,
             )
+            self.assertIn("if (dashboard.hidden) return;", script_text)
+            self.assertIn("requestedBillId", script_text)
+            self.assertIn('id="copy-bill-link"', index_text)
             stylesheet = await client.get("/assets/style.css")
             self.assertEqual(stylesheet.status, 200)
             stylesheet_text = await stylesheet.text()
@@ -332,9 +336,52 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "@media (prefers-reduced-motion: reduce)",
                 stylesheet_text,
             )
+            self.assertIn("ambientDriftPrimary", stylesheet_text)
+            self.assertIn("@media (hover: hover)", stylesheet_text)
             self.assertIn("color-scheme: dark", stylesheet_text)
             self.assertIn("background-color: #080b0c", stylesheet_text)
             self.assertIn("min-height: 100dvh", stylesheet_text)
+
+            admin = await client.get("/admin")
+            self.assertEqual(admin.status, 200)
+            admin_text = await admin.text()
+            self.assertIn("T·Control", admin_text)
+            self.assertIn(
+                "html,body{background:#080b0c;color:#edf1eb}",
+                admin_text,
+            )
+            self.assertIn('id="screen-treasury"', admin_text)
+            self.assertIn('id="screen-craft"', admin_text)
+            self.assertIn('id="screen-discord"', admin_text)
+            self.assertIn('id="screen-market"', admin_text)
+            self.assertIn('id="screen-sgl"', admin_text)
+            self.assertIn('id="screen-media"', admin_text)
+            self.assertIn('id="screen-system"', admin_text)
+            self.assertIn('id="copy-section-link"', admin_text)
+            self.assertIn('id="copy-detail-link"', admin_text)
+
+            admin_script = await client.get("/assets/admin.js")
+            self.assertEqual(admin_script.status, 200)
+            admin_script_text = await admin_script.text()
+            self.assertIn("/api/admin/overview", admin_script_text)
+            self.assertIn("/api/admin/media/command", admin_script_text)
+            self.assertIn("/api/admin/link/", admin_script_text)
+            self.assertIn("parseAdminRoute", admin_script_text)
+            self.assertIn(
+                'appState.loading || byId("admin-shell").hidden',
+                admin_script_text,
+            )
+            self.assertIn('error.payload?.error === "too_many_attempts"', admin_script_text)
+            self.assertNotIn("innerHTML", admin_script_text)
+            admin_stylesheet = await client.get("/assets/admin.css")
+            self.assertEqual(admin_stylesheet.status, 200)
+            admin_stylesheet_text = await admin_stylesheet.text()
+            self.assertIn("prefers-reduced-motion", admin_stylesheet_text)
+            self.assertIn('body[data-section="treasury"]', admin_stylesheet_text)
+            self.assertIn("adminAmbient", admin_stylesheet_text)
+            self.assertIn("@media (hover: hover)", admin_stylesheet_text)
+            self.assertIn("@media (max-width: 480px)", admin_stylesheet_text)
+            self.assertIn("overflow-x: hidden", admin_stylesheet_text)
 
             egg = await client.get("/egg")
             self.assertEqual(egg.status, 200)
@@ -342,14 +389,28 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("ЗИГМУНД ПРАВОСУДОВ", egg_text)
             self.assertIn("ЯЙЦА НА СТОЛ", egg_text)
             self.assertIn("БОТ ПОКАЗЫВАЕТ ДЕМКУ", egg_text)
+            self.assertIn(
+                "html,body{background:#000;color:#f5f7ed}",
+                egg_text,
+            )
+            self.assertIn(
+                "'sha256-kivcxaEPD+v/Ecc3Z+TNAW/Uf1rs+0/EwVf6c/m1dKc='",
+                egg.headers["Content-Security-Policy"],
+            )
+            self.assertIn('id="egg-entry"', egg_text)
+            self.assertIn('id="egg-enter"', egg_text)
             self.assertIn('src="/assets/egg.js"', egg_text)
             self.assertIn('src="/assets/zigmund-murchalki.mp3"', egg_text)
+            self.assertNotIn(" autoplay", egg_text)
 
             egg_script = await client.get("/assets/egg.js")
             self.assertEqual(egg_script.status, 200)
             egg_script_text = await egg_script.text()
             self.assertIn("createAnalyser", egg_script_text)
             self.assertIn("--energy", egg_script_text)
+            self.assertIn("startExperience", egg_script_text)
+            self.assertIn("Promise.all", egg_script_text)
+            self.assertNotIn("void startSound()", egg_script_text)
 
             egg_audio = await client.get(
                 "/assets/zigmund-murchalki.mp3",
@@ -362,6 +423,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(egg_stylesheet.status, 200)
             egg_stylesheet_text = await egg_stylesheet.text()
             self.assertIn("height: 100dvh", egg_stylesheet_text)
+            self.assertIn(".egg-entry", egg_stylesheet_text)
+            self.assertIn("@keyframes shockwave", egg_stylesheet_text)
+            self.assertIn("@supports not (backdrop-filter", egg_stylesheet_text)
+            self.assertNotRegex(
+                egg_stylesheet_text,
+                r"(?m)^\s*(?:translate|scale):",
+            )
             self.assertIn(
                 "@media (prefers-reduced-motion: reduce)",
                 egg_stylesheet_text,
@@ -379,6 +447,299 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
+        finally:
+            await client.close()
+
+    async def test_admin_center_requires_personal_administrator_session(self) -> None:
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        regular_member = self._principal(user_id=2)
+        regular_member.member.guild_permissions.administrator = False
+        try:
+            unauthorized = await client.get("/api/admin/overview")
+            self.assertEqual(unauthorized.status, 401)
+
+            with patch(
+                "modules.consensus_web._runtime_token",
+                "test-access-token-123456",
+            ):
+                legacy = await client.get(
+                    "/api/admin/overview",
+                    headers={"Authorization": "Bearer test-access-token-123456"},
+                )
+            self.assertEqual(legacy.status, 403)
+            self.assertEqual(
+                (await legacy.json())["error"],
+                "personal_login_required",
+            )
+
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=regular_member),
+            ):
+                denied = await client.get("/api/admin/overview")
+            self.assertEqual(denied.status, 403)
+            self.assertEqual(
+                (await denied.json())["error"],
+                "administrator_required",
+            )
+
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                overview = await client.get("/api/admin/overview?days=30")
+                actions = await client.get("/api/admin/actions")
+                finance = await client.get("/api/admin/finance")
+                crafts = await client.get("/api/admin/crafts")
+                discord_audit = await client.get("/api/admin/discord")
+                registry = await client.get("/api/admin/registry")
+                market = await client.get("/api/admin/market")
+                bills = await client.get("/api/admin/bills")
+                sgl = await client.get("/api/admin/sgl")
+                members = await client.get("/api/admin/members")
+                communications = await client.get("/api/admin/communications")
+                profile = await client.get("/api/admin/profile")
+                system = await client.get("/api/admin/system")
+                media = await client.get("/api/admin/media")
+                linked_bill = await client.get(
+                    f"/api/admin/link/bill/{self.bill.id}",
+                )
+                missing_link = await client.get("/api/admin/link/bill/999999")
+
+            for response in (
+                overview,
+                actions,
+                finance,
+                crafts,
+                discord_audit,
+                registry,
+                market,
+                bills,
+                sgl,
+                members,
+                communications,
+                profile,
+                system,
+                media,
+                linked_bill,
+            ):
+                self.assertEqual(response.status, 200)
+                self.assertTrue((await response.json())["viewer"]["administrator"])
+            overview_payload = await overview.json()
+            self.assertIn("counts", overview_payload)
+            self.assertIn("system", overview_payload)
+            self.assertIn("capabilities", await registry.json())
+            self.assertEqual((await market.json())["server_id"], "RU15")
+            self.assertEqual((await bills.json())["items"][0]["summary"], self.bill.summary)
+            self.assertIn("outbox_status", await system.json())
+            self.assertEqual(
+                (await linked_bill.json())["item"]["title"],
+                self.bill.title,
+            )
+            self.assertEqual(missing_link.status, 404)
+            self.assertEqual(
+                (await missing_link.json())["error"],
+                "linked_record_not_found",
+            )
+        finally:
+            await client.close()
+
+    async def test_admin_media_commands_require_csrf_and_runtime(self) -> None:
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                without_csrf = await client.post(
+                    "/api/admin/media/command",
+                    headers={"X-Idempotency-Key": "media-command-without-csrf"},
+                    json={"target": "music", "action": "pause"},
+                )
+                unavailable = await client.post(
+                    "/api/admin/media/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "media-command-no-runtime",
+                    },
+                    json={"target": "music", "action": "pause"},
+                )
+            self.assertEqual(without_csrf.status, 403)
+            self.assertEqual((await without_csrf.json())["error"], "csrf_failed")
+            self.assertEqual(unavailable.status, 400)
+            self.assertIn("недоступен", (await unavailable.json())["message"])
+        finally:
+            await client.close()
+
+    async def test_admin_broadcast_is_confirmed_durable_and_idempotent(self) -> None:
+        senator = SimpleNamespace(id=44, display_name="Сенатор", bot=False)
+        role = SimpleNamespace(members=[senator])
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            chunked=True,
+            members=[senator],
+            channels=[],
+            get_role=lambda role_id: role,
+        )
+        self.bot.get_guild = lambda guild_id: guild if guild_id == 77 else None
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        headers = {
+            "X-CSRF-Token": "csrf-test-token",
+            "X-Idempotency-Key": "web-broadcast-idempotent",
+        }
+        body = {
+            "kind": "consensus",
+            "title": "Собираемся на консенсус",
+            "body": "Откройте личный пульт и подтвердите участие.",
+            "link_url": "https://tvr.lat/",
+            "confirmed": True,
+        }
+        try:
+            with (
+                patch(
+                    "modules.consensus_web.resolve_principal",
+                    AsyncMock(return_value=administrator),
+                ),
+                patch("modules.consensus_admin_web.wake_delivery_worker") as wake,
+            ):
+                first = await client.post(
+                    "/api/admin/communications/send",
+                    headers=headers,
+                    json=body,
+                )
+                second = await client.post(
+                    "/api/admin/communications/send",
+                    headers=headers,
+                    json=body,
+                )
+            self.assertEqual(first.status, 200)
+            self.assertEqual(second.status, 200)
+            self.assertEqual(
+                (await first.json())["broadcast"]["id"],
+                (await second.json())["broadcast"]["id"],
+            )
+            self.assertEqual(storage.broadcast_report(guild_id=77)["recipient_count"], 1)
+            wake.assert_called_once()
+        finally:
+            await client.close()
+
+    async def test_admin_profile_updates_only_authenticated_owner(self) -> None:
+        character = storage.add_profile_character(77, 1, "Web Hero", "77101")
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                preference = await client.post(
+                    "/api/admin/profile/preference",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "profile-preference-test",
+                    },
+                    json={"preference": "dm_market", "enabled": False},
+                )
+                visibility = await client.post(
+                    "/api/admin/profile/character",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "profile-character-test",
+                    },
+                    json={
+                        "character_id": character.id,
+                        "is_public": False,
+                    },
+                )
+            self.assertEqual(preference.status, 200)
+            self.assertFalse((await preference.json())["profile"]["dm_market"])
+            self.assertEqual(visibility.status, 200)
+            self.assertFalse((await visibility.json())["character"]["is_public"])
+            profile, characters = storage.get_profile_snapshot(77, 1)
+            self.assertIsNotNone(profile)
+            self.assertFalse(profile.dm_market)
+            self.assertFalse(characters[0].is_public)
+        finally:
+            await client.close()
+
+    async def test_admin_market_alert_lifecycle_is_personal(self) -> None:
+        storage.market_replace_snapshot(
+            server_id="RU15",
+            category="items",
+            server_name="RU15",
+            source_updated_at="2026-07-30T12:00:00+00:00",
+            period_days=1,
+            items=[
+                {
+                    "item_id": 501,
+                    "external_id": "web-alert-item",
+                    "item_name": "Тестовый сплав",
+                    "total_count": 12,
+                    "sold_count": 2,
+                    "average_price": 100_000,
+                    "min_price": 90_000,
+                    "max_price": 120_000,
+                }
+            ],
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                created = await client.post(
+                    "/api/admin/market/alert",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "market-alert-create",
+                    },
+                    json={
+                        "action": "upsert",
+                        "server_id": "RU15",
+                        "category": "items",
+                        "item_id": 501,
+                        "target_price": 95_000,
+                        "min_quantity": 2,
+                    },
+                )
+                alert_id = int((await created.json())["alert"]["id"])
+                paused = await client.post(
+                    "/api/admin/market/alert",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "market-alert-pause",
+                    },
+                    json={"action": "pause", "alert_id": alert_id},
+                )
+                deleted = await client.post(
+                    "/api/admin/market/alert",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "market-alert-delete",
+                    },
+                    json={"action": "delete", "alert_id": alert_id},
+                )
+            self.assertEqual(created.status, 200)
+            self.assertEqual(paused.status, 200)
+            self.assertEqual((await paused.json())["alert"]["status"], "paused")
+            self.assertEqual(deleted.status, 200)
+            self.assertIsNone(storage.market_get_alert(1, "RU15", 501))
         finally:
             await client.close()
 

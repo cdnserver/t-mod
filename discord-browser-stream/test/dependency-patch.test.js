@@ -25,6 +25,8 @@ const streamPatcher = new URL(
   "scripts/patch-discord-video-stream.mjs",
   projectRoot,
 );
+const workspaceConfig = new URL("pnpm-workspace.yaml", projectRoot);
+const lockfile = new URL("pnpm-lock.yaml", projectRoot);
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -72,4 +74,17 @@ test("Go Live connection patch applies and is idempotent", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("media transport keeps audited transitive dependency replacements", async () => {
+  const [workspace, lock] = await Promise.all([
+    readFile(workspaceConfig, "utf8"),
+    readFile(lockfile, "utf8"),
+  ]);
+
+  assert.match(workspace, /sharp: 0\.35\.3/);
+  assert.match(workspace, /npm:neoip@2\.1\.0/);
+  assert.match(lock, /sharp@0\.35\.3/);
+  assert.match(lock, /neoip@2\.1\.0/);
+  assert.doesNotMatch(lock, /^\s{2}ip@2\.0\.1:/m);
 });

@@ -20,6 +20,7 @@ import discord
 from aiohttp import web
 from discord.ext import commands
 
+from modules.consensus_admin_web import register_admin_web_routes
 from modules.consensus_core import ConsensusStateError
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import get_consensus_simulation
@@ -143,12 +144,14 @@ def consensus_web_entry_url(
     guild_id: int,
     user_id: int,
     mode: str = "live",
+    destination: str = "/",
 ) -> str:
     return _authenticated_entry_url(
         consensus_web_url(),
         guild_id=guild_id,
         user_id=user_id,
         mode=mode,
+        destination=destination,
     )
 
 
@@ -742,7 +745,9 @@ def _apply_security_headers(response: web.StreamResponse) -> None:
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; "
-        "style-src 'self' 'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po='; "
+        "style-src 'self' "
+        "'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po=' "
+        "'sha256-kivcxaEPD+v/Ecc3Z+TNAW/Uf1rs+0/EwVf6c/m1dKc='; "
         "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
         "base-uri 'none'; object-src 'none'; form-action 'self'"
     )
@@ -769,6 +774,8 @@ def create_consensus_web_app(
             "egg.css",
             "egg.js",
             "zigmund-murchalki.mp3",
+            "admin.css",
+            "admin.js",
         }:
             raise web.HTTPNotFound()
         return web.FileResponse(_ASSET_DIR / name)
@@ -836,7 +843,12 @@ def create_consensus_web_app(
             if request.query.get("mode") == "simulation"
             else "live"
         )
-        response = web.HTTPFound(location=f"/?mode={mode}")
+        destination = (
+            "/admin"
+            if request.query.get("next") == "/admin"
+            else f"/?mode={mode}"
+        )
+        response = web.HTTPFound(location=destination)
         set_session_cookie(
             response,
             token,
@@ -1142,6 +1154,13 @@ def create_consensus_web_app(
     app.router.add_get("/api/bills", bills)
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_post("/api/command", command)
+    register_admin_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
     return app
 
 
@@ -1199,16 +1218,22 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         guild_id=interaction.guild.id,
         user_id=interaction.user.id,
     )
+    admin_url = consensus_web_entry_url(
+        guild_id=interaction.guild.id,
+        user_id=interaction.user.id,
+        destination="/admin",
+    )
     embed = discord.Embed(
         title=(
-            "🖥️ Панель консенсуса"
+            "🖥️ Административная веб-система"
             if public
-            else "🖥️ Локальная панель консенсуса"
+            else "🖥️ Локальная административная веб-система"
         ),
         description=(
             f"Адрес: **{consensus_web_url()}**\n"
             f"Резервный ключ просмотра: ||`{token}`||\n\n"
-            "Панель работает только пока запущен контейнер T-Mod. "
+            "Админ-центр и панель консенсуса работают только пока запущен "
+            "контейнер T-Mod. "
             + (
                 "Публичный HTTPS принимает защищённый reverse proxy Caddy."
                 if public
@@ -1221,17 +1246,25 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Режимы доступа",
         value=(
-            "Кнопка ниже открывает персональную сессию и проверяет ваши роли "
+            "Кнопки ниже открывают персональную сессию и проверяют ваши роли "
             "при каждом действии. Резервный ключ даёт только просмотр и не "
-            "позволяет управлять заседанием."
+            "позволяет управлять заседанием или читать административные аудиты."
         ),
         inline=False,
     )
     view = discord.ui.View(timeout=600)
     view.add_item(
         discord.ui.Button(
-            label="Открыть персональный веб-пульт",
-            emoji="🖥️",
+            label="Открыть админ-центр",
+            emoji="🛡️",
+            style=discord.ButtonStyle.link,
+            url=admin_url,
+        )
+    )
+    view.add_item(
+        discord.ui.Button(
+            label="Панель консенсуса",
+            emoji="🏛️",
             style=discord.ButtonStyle.link,
             url=personal_url,
         )

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#080a08">
+    <style>html,body{background:#000;color:#f5f7ed}</style>
     <meta
       name="description"
       content="Специальный музыкальный экран прямой демонстрации T-Mod."
@@ -13,21 +14,66 @@
     <link rel="stylesheet" href="/assets/egg.css">
   </head>
   <body>
-    <main class="egg-screen">
+    <section id="egg-entry" class="egg-entry" aria-labelledby="entry-title">
+      <div class="entry-noise" aria-hidden="true"></div>
+      <div class="entry-orbit orbit-one" aria-hidden="true"></div>
+      <div class="entry-orbit orbit-two" aria-hidden="true"></div>
+      <div class="entry-content">
+        <span class="entry-mark" aria-hidden="true">T</span>
+        <p class="entry-kicker">T·MOD SPECIAL TRANSMISSION</p>
+        <h1 id="entry-title">ДОСТУП К СОБЫТИЮ</h1>
+        <p class="entry-copy">
+          Звук и визуальная сцена запустятся одновременно.
+        </p>
+        <button id="egg-enter" class="entry-button" type="button">
+          <span class="entry-button-icon" aria-hidden="true">▶</span>
+          <span>НАЧАТЬ ТРАНСЛЯЦИЮ</span>
+        </button>
+        <span id="entry-status" class="entry-status" role="status" aria-live="polite">
+          Нажмите, чтобы войти со звуком
+        </span>
+      </div>
+    </section>
+
+    <main class="egg-screen" aria-hidden="true" inert>
       <div class="ambient ambient-left" aria-hidden="true"></div>
       <div class="ambient ambient-right" aria-hidden="true"></div>
       <div class="grid" aria-hidden="true"></div>
       <div class="scanlines" aria-hidden="true"></div>
       <div class="impact" aria-hidden="true"></div>
       <div class="rings" aria-hidden="true"></div>
+      <div class="shockwaves" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </div>
+      <div class="light-beams" aria-hidden="true">
+        <i></i><i></i><i></i><i></i>
+      </div>
+      <div class="ghost-type" aria-hidden="true">
+        <span>OFFICIAL</span>
+        <span>JUSTICE</span>
+        <span>TVRS</span>
+      </div>
       <div class="particles" aria-hidden="true">
         <i></i><i></i><i></i><i></i>
         <i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i>
+      </div>
+      <div class="cinema-bars" aria-hidden="true">
+        <i></i><i></i>
+      </div>
+      <div class="scene-flash" aria-hidden="true"></div>
+      <div class="side-code side-code-left" aria-hidden="true">
+        OFFICIAL // VERIFIED // TRANSMISSION 001
+      </div>
+      <div class="side-code side-code-right" aria-hidden="true">
+        TVRS NETWORK // MAXIMUM AUTHORITY
       </div>
 
       <header class="live-status">
         <span class="live-dot" aria-hidden="true"></span>
         <span>БОТ ПОКАЗЫВАЕТ ДЕМКУ</span>
+        <span class="live-index">LIVE / 001</span>
       </header>
 
       <section class="announcement" aria-labelledby="egg-title">
@@ -41,25 +87,22 @@
           <span class="equalizer" aria-hidden="true">
             <i></i><i></i><i></i><i></i><i></i>
           </span>
-          <span>ЗИГМУНД И МУРЧАЛКИ</span>
+          <span>NOW PLAYING — ЗИГМУНД И МУРЧАЛКИ</span>
         </div>
       </section>
 
       <footer>
-        <span>TVRS NETWORK</span>
-        <span class="signal">СИГНАЛ СТАБИЛЕН</span>
+        <span>TVRS NETWORK · SPECIAL EVENT</span>
+        <span class="signal">
+          <i aria-hidden="true"></i>
+          СИГНАЛ СТАБИЛЕН
+        </span>
       </footer>
-
-      <button class="sound-gate" type="button" hidden>
-        <span aria-hidden="true">▶</span>
-        ВКЛЮЧИТЬ ЗВУК
-      </button>
 
       <audio
         id="egg-audio"
         src="/assets/zigmund-murchalki.mp3"
         preload="auto"
-        autoplay
         loop
         playsinline
       ></audio>

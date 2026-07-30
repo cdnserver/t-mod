@@ -37,6 +37,7 @@
           <div id="viewer-chip" class="viewer-chip" hidden>
             <span id="viewer-role">наблюдатель</span>
             <strong id="viewer-name">—</strong>
+            <a id="admin-center-link" href="/admin" hidden>Админ-центр</a>
             <a href="/auth/logout">Выйти</a>
           </div>
           <div class="connection">
@@ -418,7 +419,12 @@
           <a id="bill-dialog-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
             Открыть оригинал в Discord ↗
           </a>
-          <button id="bill-dialog-done" class="subtle-button" type="button">Готово</button>
+          <div class="bill-dialog-actions">
+            <button id="copy-bill-link" class="subtle-button" type="button">
+              ⛓ Скопировать ссылку
+            </button>
+            <button id="bill-dialog-done" class="subtle-button" type="button">Готово</button>
+          </div>
         </footer>
       </article>
     </dialog>

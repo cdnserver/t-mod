@@ -30,6 +30,7 @@ def setup_music(
     # jitter-buffer flushes as warnings even when the receiver stays healthy.
     logging.getLogger("discord.ext.voice_recv.opus").setLevel(logging.ERROR)
     manager = MusicManager(bot)
+    bot.music_manager = manager
     bot.voice_control = manager.voice_control
     manager.voice_control.set_diagnostic_gateway(
         partial(run_microphone_diagnostic, manager)

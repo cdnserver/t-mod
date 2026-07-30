@@ -1339,6 +1339,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_activity_events_user_at
             ON activity_events(guild_id, user_id, at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_activity_events_guild_at
+            ON activity_events(guild_id, at DESC, id DESC);
+
             CREATE INDEX IF NOT EXISTS idx_activity_events_scope
             ON activity_events(guild_id, category_id, channel_id, event_type, at DESC);
 
@@ -1432,6 +1435,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_finance_events_guild_id
             ON finance_events(guild_id, id DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_finance_events_guild_created
+            ON finance_events(guild_id, created_at DESC, id DESC);
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_events_one_undo
             ON finance_events(reversed_event_id)
             WHERE reversed_event_id IS NOT NULL;
@@ -1451,6 +1457,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_bot_actions_module
             ON bot_actions(guild_id, module, created_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_bot_actions_guild_created
+            ON bot_actions(guild_id, created_at DESC, id DESC);
+
             CREATE INDEX IF NOT EXISTS idx_craft_recipes_guild_active
             ON craft_recipes(guild_id, active, product_name);
 
@@ -1465,6 +1474,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_craft_events_unsent
             ON craft_events(thread_message_id, id ASC);
+
+            CREATE INDEX IF NOT EXISTS idx_craft_events_guild_created
+            ON craft_events(guild_id, created_at DESC, id DESC);
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_craft_purchase_finance_event
             ON craft_purchases(finance_event_id)
