@@ -6,12 +6,23 @@ const entry = document.querySelector("#egg-entry");
 const enterButton = document.querySelector("#egg-enter");
 const entryStatus = document.querySelector("#entry-status");
 const audio = document.querySelector("#egg-audio");
+const equalizerBars = [...document.querySelectorAll(".equalizer i")];
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const equalizerRanges = [
+  [42, 105],
+  [105, 220],
+  [220, 520],
+  [520, 1600],
+  [1600, 7200],
+];
 
 let context;
 let analyser;
 let spectrum;
-let baseline = 0.08;
+let bassEnvelope = 0;
+let bassPunch = 0;
+let previousBass = 0;
+let analysisReady = false;
 let energy = 0;
 let lastBeatAt = 0;
 let lastFrameAt = 0;
@@ -31,8 +42,10 @@ function buildAudioGraph() {
   try {
     context = new AudioContext();
     analyser = context.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.7;
+    analyser.fftSize = 2048;
+    analyser.minDecibels = -90;
+    analyser.maxDecibels = -15;
+    analyser.smoothingTimeConstant = 0.42;
     spectrum = new Uint8Array(analyser.frequencyBinCount);
     const source = context.createMediaElementSource(audio);
     source.connect(analyser);
@@ -99,15 +112,38 @@ function bandEnergy(fromHz, toHz) {
   const last = Math.min(spectrum.length - 1, Math.ceil(toHz / binWidth));
   let total = 0;
   for (let index = first; index <= last; index += 1) {
-    total += spectrum[index] / 255;
+    const value = spectrum[index] / 255;
+    total += value * value;
   }
-  return total / Math.max(1, last - first + 1);
+  return Math.sqrt(total / Math.max(1, last - first + 1));
 }
 
-function markBeat() {
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function markBeat(strength) {
+  root.style.setProperty("--beat-strength", strength.toFixed(3));
   screen.classList.remove("on-beat");
   void screen.offsetWidth;
   screen.classList.add("on-beat");
+}
+
+function updateEqualizer(now, punch) {
+  equalizerBars.forEach((bar, index) => {
+    const range = equalizerRanges[index];
+    const measured = bandEnergy(range[0], range[1]);
+    const fallback =
+      0.24
+      + Math.max(0, Math.sin(now / (105 + index * 19) + index * 1.7)) * 0.48;
+    const level = measured === null
+      ? fallback
+      : clamp01((measured - 0.18) / 0.7 + punch * (0.24 - index * 0.025));
+    bar.style.setProperty(
+      "--bar-level",
+      (reducedMotion.matches ? Math.min(level, 0.3) : level).toFixed(3),
+    );
+  });
 }
 
 function render(now) {
@@ -117,7 +153,8 @@ function render(now) {
   }
   lastFrameAt = now;
 
-  const measuredBass = bandEnergy(38, 190);
+  analyser?.getByteFrequencyData(spectrum);
+  const measuredBass = bandEnergy(36, 180);
   const measuredMid = bandEnergy(190, 2200);
   const measuredHigh = bandEnergy(2200, 9000);
   const fallback = started ? 0.17 + Math.max(0, Math.sin(now / 235)) * 0.12 : 0;
@@ -125,24 +162,56 @@ function render(now) {
   const mid = measuredMid ?? fallback * 0.72;
   const high = measuredHigh ?? fallback * 0.46;
 
-  baseline = baseline * 0.94 + bass * 0.06;
-  const transient = Math.max(0, bass - baseline);
-  const target = Math.min(1, bass * 0.76 + mid * 0.16 + transient * 5.1);
-  energy = Math.max(target, energy * 0.83);
+  if (!analysisReady && measuredBass !== null) {
+    bassEnvelope = bass;
+    previousBass = bass;
+    analysisReady = true;
+  }
+  bassEnvelope = bassEnvelope * 0.9 + bass * 0.1;
+  const transient = Math.max(
+    0,
+    bass - bassEnvelope,
+    (bass - previousBass) * 0.72,
+  );
+  const punchTarget = clamp01(transient * 14);
+  bassPunch =
+    punchTarget > bassPunch
+      ? bassPunch * 0.18 + punchTarget * 0.82
+      : bassPunch * 0.72;
+  const bassLevel = clamp01((bass - 0.42) / 0.5);
+  const target = clamp01(
+    bassLevel * 0.16
+      + bassPunch * 0.84
+      + mid * 0.08
+      + high * 0.025,
+  );
+  energy =
+    target > energy
+      ? energy * 0.24 + target * 0.76
+      : energy * 0.7 + target * 0.3;
 
-  const beat = started && transient > 0.078 && now - lastBeatAt > 145;
+  const beat =
+    started
+    && punchTarget > 0.5
+    && bassLevel > 0.18
+    && now - lastBeatAt > 180;
   if (beat) {
     lastBeatAt = now;
-    markBeat();
+    markBeat(punchTarget);
   }
+  previousBass = bass;
 
   const motionEnergy = reducedMotion.matches ? Math.min(energy, 0.16) : energy;
+  const motionPunch = reducedMotion.matches ? Math.min(bassPunch, 0.1) : bassPunch;
   root.style.setProperty("--energy", motionEnergy.toFixed(3));
   root.style.setProperty("--bass", bass.toFixed(3));
+  root.style.setProperty("--bass-level", bassLevel.toFixed(3));
+  root.style.setProperty("--bass-punch", motionPunch.toFixed(3));
   root.style.setProperty("--mid", mid.toFixed(3));
   root.style.setProperty("--high", high.toFixed(3));
   root.style.setProperty("--flow", ((now / 1000) % 10).toFixed(3));
-  screen.classList.toggle("high-energy", started && energy > 0.56);
+  updateEqualizer(now, bassPunch);
+  screen.classList.toggle("high-energy", started && (energy > 0.56 || bassPunch > 0.68));
   requestAnimationFrame(render);
 }
 

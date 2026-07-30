@@ -20,8 +20,10 @@
   --mood-soft: rgba(var(--mood-rgb), 0.1);
   --mood-line: rgba(var(--mood-rgb), 0.25);
   --radius: 22px;
-  --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
-  --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", "Roboto Mono", Consolas, monospace;
+  --sans:
+    "Segoe UI Variable Text", "SF Pro Text", Inter, Roboto, "Segoe UI",
+    Arial, sans-serif;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --glass-shadow:
     0 24px 70px rgba(0, 0, 0, 0.2),
@@ -47,6 +49,10 @@ body {
   overflow-x: hidden;
   color: var(--text);
   font-family: var(--sans);
+  font-feature-settings: "kern" 1, "liga" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-color: #080b0c;
   background-color: var(--bg);
   background-image:

@@ -1,8 +1,9 @@
 "use strict";
 
 const PAGE_SIZE = 50;
-const REFRESH_INTERVAL = 15000;
+const REFRESH_INTERVAL = 10000;
 const MEDIA_REFRESH_INTERVAL = 3000;
+const NOTIFICATION_SOUND_KEY = "t-control-notification-sound";
 
 const sectionMeta = {
   overview: ["ОПЕРАЦИОННАЯ КАРТИНА", "Обзор системы"],
@@ -132,7 +133,16 @@ const appState = {
   refreshTimer: null,
   mediaRefreshTimer: null,
   mediaRefreshing: false,
+  autoRefreshing: false,
+  pendingSectionLoad: false,
   toastTimer: null,
+  authTimer: null,
+  authorized: false,
+  authTransitioning: false,
+  soundEnabled: true,
+  soundUnlocked: false,
+  audioContext: null,
+  activitySignatures: new Map(),
   detailRoute: null,
   openingRoute: false,
 };
@@ -236,15 +246,191 @@ function statusPill(label, tone = "") {
   });
 }
 
-function showToast(message, error = false) {
+function storedSoundPreference() {
+  try {
+    return localStorage.getItem(NOTIFICATION_SOUND_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function persistSoundPreference(enabled) {
+  try {
+    localStorage.setItem(NOTIFICATION_SOUND_KEY, enabled ? "on" : "off");
+  } catch {
+    // Private browsing can make storage unavailable; the in-memory choice still works.
+  }
+}
+
+function notificationAudioContext() {
+  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AudioContext) return null;
+  if (!appState.audioContext) {
+    try {
+      appState.audioContext = new AudioContext();
+    } catch {
+      return null;
+    }
+  }
+  return appState.audioContext;
+}
+
+async function unlockNotificationSound() {
+  if (!appState.soundEnabled) return false;
+  const context = notificationAudioContext();
+  if (!context) return false;
+  try {
+    if (context.state === "suspended") await context.resume();
+    appState.soundUnlocked = context.state === "running";
+  } catch {
+    appState.soundUnlocked = false;
+  }
+  return appState.soundUnlocked;
+}
+
+function playNotificationSound(tone = "update") {
+  if (!appState.soundEnabled || !appState.soundUnlocked) return;
+  const context = notificationAudioContext();
+  if (!context || context.state !== "running") return;
+  try {
+    const frequencies =
+      tone === "error" ? [310, 220] : tone === "success" ? [520, 740] : [440, 620];
+    const startedAt = context.currentTime;
+    frequencies.forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = startedAt + index * 0.085;
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.055, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.18);
+    });
+  } catch {
+    appState.soundUnlocked = false;
+  }
+}
+
+function updateNotificationToggle() {
+  const toggle = byId("notification-toggle");
+  if (!toggle) return;
+  toggle.setAttribute("aria-pressed", String(appState.soundEnabled));
+  toggle.title = appState.soundEnabled
+    ? "Звуковые уведомления включены"
+    : "Звуковые уведомления выключены";
+  setText("notification-label", appState.soundEnabled ? "Звук" : "Без звука");
+}
+
+function showToast(message, error = false, options = {}) {
   const toast = byId("toast");
-  toast.textContent = message;
-  toast.className = `toast${error ? " error" : ""}`;
+  const tone = error ? "error" : options.tone || "";
+  setText("toast-icon", options.icon || (error ? "!" : "✓"));
+  setText("toast-title", options.title || (error ? "Не удалось" : "Готово"));
+  setText("toast-message", message);
+  setText("toast-time", timeFormat.format(new Date()));
+  toast.className = `toast${tone ? ` ${tone}` : ""}`;
   toast.hidden = false;
+  if (options.sound) playNotificationSound(error ? "error" : options.sound);
   clearTimeout(appState.toastTimer);
   appState.toastTimer = setTimeout(() => {
     toast.hidden = true;
-  }, 4200);
+  }, options.duration || 5200);
+}
+
+function compactActivityRows(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 16).map((item) => [
+    item.id ?? item.bill_id ?? item.item_id ?? item.user_id ?? null,
+    item.status ?? item.stage ?? item.event_kind ?? item.event_type ?? null,
+    item.updated_at ?? item.created_at ?? item.at ?? item.source_updated_at ?? null,
+    item.average_price ?? item.amount ?? item.total_count ?? null,
+  ]);
+}
+
+function activitySignature(section, data) {
+  if (!data || typeof data !== "object") return null;
+  if (section === "overview") {
+    const counts = data.counts || {};
+    return JSON.stringify({
+      counts: [
+        counts.active_crafts,
+        counts.actions,
+        counts.active_actions,
+        counts.overdue_batches,
+        counts.outbox_dead,
+        counts.outbox_open,
+        counts.finance_retries,
+      ],
+      audit: compactActivityRows(data.audit?.items),
+      discord: compactActivityRows(data.discord?.events?.items),
+      craft: compactActivityRows(data.craft?.active_plans),
+    });
+  }
+  if (section === "audit") return JSON.stringify(compactActivityRows(data.items));
+  if (section === "treasury") return JSON.stringify(compactActivityRows(data.items));
+  if (section === "craft") {
+    return JSON.stringify({
+      events: compactActivityRows(data.events?.items),
+      plans: compactActivityRows(data.active_plans),
+    });
+  }
+  if (section === "market") {
+    return JSON.stringify({
+      items: compactActivityRows(data.items),
+      alerts: compactActivityRows(data.my_alerts),
+      catalog: [
+        data.catalog?.last_success_at,
+        data.catalog?.last_error,
+      ],
+    });
+  }
+  if (section === "bills") {
+    return JSON.stringify({
+      bills: compactActivityRows(data.items),
+      workspaces: compactActivityRows(data.workspaces),
+    });
+  }
+  if (section === "sgl") {
+    return JSON.stringify({
+      cases: compactActivityRows(data.cases?.items),
+      archives: compactActivityRows(data.archives?.items),
+    });
+  }
+  if (section === "members") return JSON.stringify(compactActivityRows(data.items));
+  if (section === "communications") {
+    return JSON.stringify(compactActivityRows(data.items));
+  }
+  if (section === "modules") return JSON.stringify(data.registry || {});
+  if (section === "system") {
+    return JSON.stringify({
+      delivery: data.delivery || {},
+      outbox: compactActivityRows(data.outbox_status),
+      workspaces: compactActivityRows(data.workspaces),
+    });
+  }
+  return null;
+}
+
+function rememberActivity(data, section = appState.section, notify = appState.autoRefreshing) {
+  const signature = activitySignature(section, data);
+  if (!signature) return;
+  const previous = appState.activitySignatures.get(section);
+  appState.activitySignatures.set(section, signature);
+  if (!notify || !previous || previous === signature) return;
+  const sectionTitle = sectionMeta[section]?.[1] || "Админ-центр";
+  showToast(
+    `В разделе «${sectionTitle}» появились новые данные.`,
+    false,
+    {
+      title: "Обновление в реальном времени",
+      icon: "◆",
+      tone: "update",
+      sound: "update",
+    },
+  );
 }
 
 class ApiError extends Error {
@@ -312,15 +498,46 @@ function buildQuery(values) {
 }
 
 function showGate(message, allowBack = true) {
-  byId("admin-shell").hidden = true;
-  byId("auth-gate").hidden = false;
+  clearTimeout(appState.authTimer);
+  appState.authorized = false;
+  appState.authTransitioning = false;
+  const gate = byId("auth-gate");
+  const shell = byId("admin-shell");
+  shell.hidden = true;
+  shell.classList.remove("is-entering");
+  gate.hidden = false;
+  gate.dataset.state = "error";
+  setText("gate-state", "ДОСТУП НЕ ПОДТВЕРЖДЁН");
   setText("gate-message", message);
   byId("gate-back").hidden = !allowBack;
 }
 
 function showApplication(payload) {
-  byId("auth-gate").hidden = true;
-  byId("admin-shell").hidden = false;
+  const gate = byId("auth-gate");
+  const shell = byId("admin-shell");
+  rememberActivity(payload);
+  if (!appState.authorized) {
+    appState.authorized = true;
+    appState.authTransitioning = true;
+    gate.hidden = false;
+    gate.dataset.state = "verified";
+    setText("gate-state", "ЛИЧНОСТЬ И ПРАВА ПОДТВЕРЖДЕНЫ");
+    setText("gate-message", "Защищённая сессия готова. Открываем административный контур…");
+    shell.hidden = false;
+    const delay = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      ? 80
+      : 720;
+    clearTimeout(appState.authTimer);
+    appState.authTimer = setTimeout(() => {
+      appState.authTransitioning = false;
+      gate.hidden = true;
+      shell.classList.add("is-entering");
+      setTimeout(() => shell.classList.remove("is-entering"), 560);
+    }, delay);
+  } else {
+    shell.hidden = false;
+    if (!appState.authTransitioning) gate.hidden = true;
+  }
   if (payload?.viewer) {
     appState.csrfToken = payload.viewer.csrf_token || appState.csrfToken;
     setText("viewer-name", payload.viewer.name || "Администратор");
@@ -467,13 +684,25 @@ async function switchSection(section, updateHash = true) {
   setText("section-title", sectionMeta[section][1]);
   if (updateHash) history.replaceState(null, "", routeHash({ section }));
   document.querySelector(".content")?.scrollTo({ top: 0 });
+  if (appState.loading) {
+    appState.pendingSectionLoad = true;
+    return;
+  }
   await loadCurrentSection();
 }
 
 function setLoading(value) {
   appState.loading = value;
-  byId("refresh-button").disabled = value;
-  byId("refresh-button").classList.toggle("loading", value);
+  if (!appState.autoRefreshing) {
+    byId("refresh-button").disabled = value;
+    byId("refresh-button").classList.toggle("loading", value);
+  }
+  if (!value && appState.pendingSectionLoad) {
+    appState.pendingSectionLoad = false;
+    queueMicrotask(() => {
+      if (!appState.loading) void loadCurrentSection();
+    });
+  }
 }
 
 function auditTimelineItem(item) {
@@ -1370,7 +1599,17 @@ async function sendMarketAlertAction(action, payload) {
   setLoading(true);
   try {
     const result = await postJSON("/api/admin/market/alert", { action, ...payload });
-    showToast(result.message || "Сигнал обновлён.");
+    const created = action === "upsert";
+    showToast(
+      result.message || "Сигнал обновлён.",
+      false,
+      {
+        title: created ? "Сигнал поставлен" : "Наблюдение обновлено",
+        icon: created ? "◉" : "✓",
+        tone: "update",
+        sound: created ? "success" : false,
+      },
+    );
     byId("market-alert-form").hidden = true;
     await loadMarket(appState.offsets.market);
   } catch (error) {
@@ -1396,15 +1635,38 @@ function marketAlertItem(item) {
     sendMarketAlertAction("delete", { alert_id: item.id }),
   );
   controls.append(toggle, remove);
-  return node("div", { className: "compact-item" }, [
-    node("span", {}, [
-      node("strong", { text: item.item_name || `Объект #${item.item_id}` }),
-      node("small", {
-        text: `${marketCategoryLabel(item.category)} · от ${formatNumber(item.min_quantity)} шт.`,
+  const active = item.status === "active";
+  return node("article", { className: `signal-card${active ? "" : " paused"}` }, [
+    node("header", { className: "signal-card-head" }, [
+      node("span", { className: "signal-card-identity" }, [
+        node("small", {
+          text: `${marketCategoryLabel(item.category)} · ${item.server_id || "RU15"}`,
+        }),
+        node("strong", { text: item.item_name || `Объект #${item.item_id}` }),
+      ]),
+      node("span", {
+        className: "signal-state",
+        text: active ? "наблюдает" : "на паузе",
       }),
     ]),
-    node("b", { text: `≤ ${formatMoney(item.target_price)}` }),
-    controls,
+    node("div", { className: "signal-card-thresholds" }, [
+      node("span", {}, [
+        node("small", { text: "Цена срабатывания" }),
+        node("b", { text: `≤ ${formatMoney(item.target_price)}` }),
+      ]),
+      node("span", {}, [
+        node("small", { text: "Количество" }),
+        node("b", { text: `от ${formatNumber(item.min_quantity)} шт.` }),
+      ]),
+    ]),
+    node("footer", { className: "signal-card-foot" }, [
+      node("small", {
+        text: item.last_triggered_at
+          ? `Последнее срабатывание ${relativeTime(item.last_triggered_at)}`
+          : "Личное уведомление будет отправлено в Discord",
+      }),
+      controls,
+    ]),
   ]);
 }
 
@@ -1444,6 +1706,9 @@ function renderMarket(data) {
           }),
         ],
   );
+  byId("market-alert-list").className = alerts.length
+    ? "market-signal-list"
+    : "compact-list";
   renderPagination(
     "market-pagination",
     Number(data.total || 0),
@@ -2368,6 +2633,33 @@ async function loadCurrentSection() {
   if (appState.section === "system") await loadSystem();
 }
 
+async function refreshCurrentSection(silent = false) {
+  if (appState.loading || appState.autoRefreshing) return;
+  appState.autoRefreshing = silent;
+  try {
+    await loadCurrentSection();
+  } finally {
+    appState.autoRefreshing = false;
+  }
+}
+
+async function pollGlobalActivity() {
+  if (
+    ["overview", "audit", "craft", "discord"].includes(appState.section)
+    || !appState.authorized
+  ) {
+    return;
+  }
+  try {
+    const data = await fetchJSON(`/api/admin/overview?days=${appState.days}`);
+    rememberActivity(data, "overview", true);
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      handleError(error);
+    }
+  }
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-section]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.section));
@@ -2375,7 +2667,41 @@ function bindEvents() {
   document.querySelectorAll("[data-go]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.go));
   });
-  byId("refresh-button").addEventListener("click", loadCurrentSection);
+  byId("refresh-button").addEventListener("click", () =>
+    refreshCurrentSection(false),
+  );
+  byId("notification-toggle").addEventListener("click", async () => {
+    appState.soundEnabled = !appState.soundEnabled;
+    persistSoundPreference(appState.soundEnabled);
+    updateNotificationToggle();
+    if (appState.soundEnabled) {
+      await unlockNotificationSound();
+      playNotificationSound("success");
+      showToast(
+        "Новые события будут сопровождаться мягким звуковым сигналом.",
+        false,
+        { title: "Звук включён", icon: "◉" },
+      );
+    } else {
+      showToast(
+        "Визуальные уведомления останутся активными.",
+        false,
+        { title: "Звук выключен", icon: "○" },
+      );
+    }
+  });
+  document.addEventListener(
+    "pointerdown",
+    () => {
+      void unlockNotificationSound();
+    },
+    { once: true, capture: true },
+  );
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !appState.authorized) return;
+    void refreshCurrentSection(true);
+    void pollGlobalActivity();
+  });
   byId("copy-section-link").addEventListener("click", () =>
     copyRoute(
       { section: appState.section },
@@ -2493,6 +2819,8 @@ function bindEvents() {
 
 async function bootstrap() {
   bindEvents();
+  appState.soundEnabled = storedSoundPreference();
+  updateNotificationToggle();
   const requestedRoute = parseAdminRoute();
   appState.section = requestedRoute.section;
   document.body.dataset.section = appState.section;
@@ -2512,10 +2840,12 @@ async function bootstrap() {
   if (!byId("admin-shell").hidden && requestedRoute.kind && requestedRoute.key) {
     await openLinkedRecord(requestedRoute);
   }
-  appState.refreshTimer = setInterval(() => {
+  appState.refreshTimer = setInterval(async () => {
     if (document.hidden || appState.loading || byId("admin-shell").hidden) return;
-    if (appState.section === "overview") loadOverview(true);
-    if (appState.section === "system") loadSystem(true);
+    if (appState.section !== "media" && appState.section !== "profile") {
+      await refreshCurrentSection(true);
+    }
+    await pollGlobalActivity();
   }, REFRESH_INTERVAL);
   appState.mediaRefreshTimer = setInterval(() => {
     if (

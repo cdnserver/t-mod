@@ -21,10 +21,18 @@
       <span class="backdrop-grid"></span>
     </div>
 
-    <section id="auth-gate" class="auth-gate">
-      <div class="gate-card">
-        <span class="gate-mark">T</span>
-        <div class="eyebrow">ЗАЩИЩЁННЫЙ КОНТУР</div>
+    <section id="auth-gate" class="auth-gate" data-state="checking">
+      <div class="gate-card" role="status" aria-live="polite">
+        <div class="gate-visual" aria-hidden="true">
+          <span class="gate-orbit gate-orbit-outer"></span>
+          <span class="gate-orbit gate-orbit-inner"></span>
+          <span class="gate-mark">T</span>
+          <span class="gate-check">✓</span>
+        </div>
+        <div class="gate-state">
+          <span class="gate-state-dot"></span>
+          <span id="gate-state">ПРОВЕРКА ЗАЩИЩЁННОЙ СЕССИИ</span>
+        </div>
         <h1>Административный центр</h1>
         <p id="gate-message">
           Проверяем персональную сессию и административные права…
@@ -147,9 +155,24 @@
               <span aria-hidden="true">⛓</span>
               <span>Ссылка</span>
             </button>
-            <button id="refresh-button" class="icon-button" type="button">
+            <button
+              id="refresh-button"
+              class="icon-button refresh-button"
+              type="button"
+              title="Автообновление каждые 10 секунд · нажмите для обновления сейчас"
+            >
               <span aria-hidden="true">↻</span>
-              <span>Обновить</span>
+              <span id="refresh-label">Авто · 10 сек</span>
+            </button>
+            <button
+              id="notification-toggle"
+              class="icon-button notification-toggle"
+              type="button"
+              aria-pressed="true"
+              title="Звуковые уведомления включены"
+            >
+              <span class="notification-bell" aria-hidden="true">◉</span>
+              <span id="notification-label">Звук</span>
             </button>
             <div class="viewer">
               <span class="viewer-avatar" id="viewer-avatar">A</span>
@@ -636,7 +659,14 @@
                 <input name="item_id" type="hidden">
                 <input name="category" type="hidden">
                 <input name="server_id" type="hidden">
-                <strong id="market-alert-item">Новый сигнал</strong>
+                <div class="signal-composer-head">
+                  <span class="signal-radar" aria-hidden="true"><i></i></span>
+                  <span>
+                    <small>НОВЫЙ ПЕРСОНАЛЬНЫЙ СИГНАЛ</small>
+                    <strong id="market-alert-item">Новый сигнал</strong>
+                  </span>
+                  <em>уведомление в ЛС</em>
+                </div>
                 <label>
                   <span>Цена не выше</span>
                   <input name="target_price" type="number" min="1" step="1" required>
@@ -1318,6 +1348,13 @@
       <div id="detail-content" class="detail-content"></div>
     </dialog>
 
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+      <span id="toast-icon" class="toast-icon" aria-hidden="true">✓</span>
+      <span class="toast-copy">
+        <strong id="toast-title">Готово</strong>
+        <small id="toast-message"></small>
+      </span>
+      <time id="toast-time"></time>
+    </div>
   </body>
 </html>

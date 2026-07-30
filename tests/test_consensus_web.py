@@ -359,6 +359,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="screen-system"', admin_text)
             self.assertIn('id="copy-section-link"', admin_text)
             self.assertIn('id="copy-detail-link"', admin_text)
+            self.assertIn('id="notification-toggle"', admin_text)
+            self.assertIn('id="gate-state"', admin_text)
+            self.assertIn('class="gate-check"', admin_text)
+            self.assertIn('id="toast-title"', admin_text)
+            self.assertIn("signal-composer-head", admin_text)
 
             admin_script = await client.get("/assets/admin.js")
             self.assertEqual(admin_script.status, 200)
@@ -367,6 +372,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("/api/admin/media/command", admin_script_text)
             self.assertIn("/api/admin/link/", admin_script_text)
             self.assertIn("parseAdminRoute", admin_script_text)
+            self.assertIn("const REFRESH_INTERVAL = 10000", admin_script_text)
+            self.assertIn("pollGlobalActivity", admin_script_text)
+            self.assertIn("playNotificationSound", admin_script_text)
+            self.assertIn("activitySignature", admin_script_text)
+            self.assertIn("market-signal-list", admin_script_text)
             self.assertIn(
                 'appState.loading || byId("admin-shell").hidden',
                 admin_script_text,
@@ -382,6 +392,15 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("@media (hover: hover)", admin_stylesheet_text)
             self.assertIn("@media (max-width: 480px)", admin_stylesheet_text)
             self.assertIn("overflow-x: hidden", admin_stylesheet_text)
+            self.assertIn("Segoe UI Variable Display", admin_stylesheet_text)
+            self.assertIn(".signal-card", admin_stylesheet_text)
+            self.assertIn(".toast-copy", admin_stylesheet_text)
+            self.assertIn("@keyframes gateOrbit", admin_stylesheet_text)
+            self.assertNotIn("Georgia", admin_stylesheet_text)
+            self.assertNotRegex(
+                admin_stylesheet_text,
+                r"font-size:\s*(?:7|8|9|10)px",
+            )
 
             egg = await client.get("/egg")
             self.assertEqual(egg.status, 200)
@@ -408,6 +427,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             egg_script_text = await egg_script.text()
             self.assertIn("createAnalyser", egg_script_text)
             self.assertIn("--energy", egg_script_text)
+            self.assertIn("--bass-punch", egg_script_text)
+            self.assertIn("bassEnvelope", egg_script_text)
+            self.assertIn("punchTarget", egg_script_text)
+            self.assertIn("getByteFrequencyData", egg_script_text)
+            self.assertIn("equalizerRanges", egg_script_text)
+            self.assertIn("updateEqualizer", egg_script_text)
+            self.assertIn("--bar-level", egg_script_text)
             self.assertIn("startExperience", egg_script_text)
             self.assertIn("Promise.all", egg_script_text)
             self.assertNotIn("void startSound()", egg_script_text)
@@ -425,6 +451,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("height: 100dvh", egg_stylesheet_text)
             self.assertIn(".egg-entry", egg_stylesheet_text)
             self.assertIn("@keyframes shockwave", egg_stylesheet_text)
+            self.assertIn("@keyframes stage-hit", egg_stylesheet_text)
+            self.assertIn("@keyframes announcement-hit", egg_stylesheet_text)
+            self.assertIn("var(--bass-punch)", egg_stylesheet_text)
             self.assertIn("@supports not (backdrop-filter", egg_stylesheet_text)
             self.assertNotRegex(
                 egg_stylesheet_text,

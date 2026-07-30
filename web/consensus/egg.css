@@ -10,12 +10,20 @@
   --line: rgba(245, 247, 237, 0.12);
   --energy: 0;
   --bass: 0;
+  --bass-level: 0;
+  --bass-punch: 0;
+  --beat-strength: 0;
   --mid: 0;
   --high: 0;
   --flow: 0;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
-  --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
+  --sans:
+    "Segoe UI Variable Text", "SF Pro Text", Inter, Roboto, "Segoe UI",
+    Arial, sans-serif;
+  --display:
+    "Segoe UI Variable Display", "SF Pro Display", Inter, Roboto, "Segoe UI",
+    Arial, sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", "Roboto Mono", Consolas, monospace;
 }
 
 * {
@@ -36,6 +44,10 @@ body {
 body {
   color: var(--ink);
   font-family: var(--sans);
+  font-feature-settings: "kern" 1, "liga" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-color: #000;
 }
 
@@ -149,7 +161,7 @@ button {
   box-shadow:
     0 0 70px rgba(var(--acid-rgb), 0.1),
     inset 0 1px rgba(255, 255, 255, 0.08);
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--display);
   font-size: 38px;
 }
 
@@ -282,11 +294,14 @@ body.experience-started .egg-entry {
     ),
     radial-gradient(
       circle at 50% 46%,
-      rgba(var(--acid-rgb), calc(var(--bass) * 0.13)),
+      rgba(
+        var(--acid-rgb),
+        calc(var(--bass-level) * 0.1 + var(--bass-punch) * 0.18)
+      ),
       transparent 31%
     ),
     linear-gradient(145deg, #080a08 0%, #0c110d 54%, #070807 100%);
-  transform: scale(calc(1 + var(--energy) * 0.006));
+  transform: scale(calc(1 + var(--energy) * 0.004 + var(--bass-punch) * 0.018));
   transform-origin: center;
   opacity: 0;
   visibility: hidden;
@@ -296,7 +311,7 @@ body.experience-started .egg-entry {
     filter 850ms var(--ease-out),
     opacity 650ms ease,
     visibility 650ms step-end,
-    transform 850ms var(--ease-out);
+    transform 48ms linear;
 }
 
 body.experience-started .egg-screen {
@@ -330,8 +345,8 @@ body.experience-started .egg-screen {
   background-size: clamp(48px, 6vw, 92px) clamp(48px, 6vw, 92px);
   mask-image: linear-gradient(to bottom, transparent, black 28%, black 72%, transparent);
   transform: perspective(700px) rotateX(calc(1deg + var(--energy) * 2deg))
-    scale(calc(1 + var(--energy) * 0.035));
-  transition: transform 90ms linear;
+    scale(calc(1 + var(--energy) * 0.025 + var(--bass-punch) * 0.055));
+  transition: transform 45ms linear;
 }
 
 .scanlines,
@@ -365,7 +380,7 @@ body.experience-started .egg-screen {
 .impact {
   z-index: -1;
   inset: -20%;
-  opacity: calc(var(--energy) * 0.28);
+  opacity: calc(var(--energy) * 0.18 + var(--bass-punch) * 0.42);
   background: radial-gradient(
     circle,
     rgba(var(--acid-rgb), 0.72) 0,
@@ -373,7 +388,12 @@ body.experience-started .egg-screen {
     transparent 56%
   );
   filter: blur(22px);
-  transform: scale(calc(0.78 + var(--energy) * 0.28));
+  transform: scale(
+    calc(0.74 + var(--energy) * 0.18 + var(--bass-punch) * 0.34)
+  );
+  transition:
+    opacity 42ms linear,
+    transform 52ms linear;
 }
 
 .rings {
@@ -389,8 +409,11 @@ body.experience-started .egg-screen {
       rgba(var(--acid-rgb), calc(0.025 + var(--energy) * 0.035)),
     0 0 calc(80px + var(--energy) * 100px)
       rgba(var(--acid-rgb), calc(var(--energy) * 0.18));
-  transform: translate(-50%, -50%) scale(calc(0.72 + var(--energy) * 0.19));
-  transition: 80ms linear;
+  transform: translate(-50%, -50%)
+    scale(
+      calc(0.7 + var(--energy) * 0.12 + var(--bass-punch) * 0.25)
+    );
+  transition: 48ms linear;
 }
 
 .shockwaves {
@@ -668,8 +691,11 @@ body.experience-started .egg-screen {
   background: rgba(var(--acid-rgb), 0.055);
   filter: blur(1px);
   box-shadow:
-    0 0 calc(90px + var(--energy) * 100px)
-      rgba(var(--acid-rgb), calc(0.08 + var(--energy) * 0.16)),
+    0 0 calc(90px + var(--energy) * 70px + var(--bass-punch) * 90px)
+      rgba(
+        var(--acid-rgb),
+        calc(0.08 + var(--energy) * 0.1 + var(--bass-punch) * 0.18)
+      ),
     inset 0 0 100px rgba(var(--acid-rgb), 0.04);
   transform: rotate(var(--ambient-rotation));
   animation: egg-float 8s ease-in-out infinite alternate;
@@ -708,7 +734,10 @@ body.experience-started .egg-screen {
   font-weight: 700;
   letter-spacing: 0.13em;
   box-shadow: 0 0 calc(var(--energy) * 34px)
-    rgba(var(--acid-rgb), calc(var(--energy) * 0.35));
+    rgba(
+      var(--acid-rgb),
+      calc(var(--energy) * 0.22 + var(--bass-punch) * 0.4)
+    );
 }
 
 .live-index {
@@ -736,8 +765,11 @@ body.experience-started .egg-screen {
   align-content: center;
   width: min(1320px, 100%);
   margin: 0 auto;
-  transform: translateY(calc(var(--energy) * -5px));
-  transition: transform 70ms linear;
+  transform:
+    translateY(calc(var(--energy) * -3px - var(--bass-punch) * 10px))
+    scale(calc(1 + var(--bass-punch) * 0.012));
+  transform-origin: center;
+  transition: transform 45ms linear;
 }
 
 .eyebrow {
@@ -772,12 +804,14 @@ h1 strong {
       rgba(var(--acid-rgb), calc(var(--energy) * 0.5)),
     calc(var(--energy) * 5px) 0 0 rgba(255, 40, 118, calc(var(--energy) * 0.28)),
     calc(var(--energy) * -5px) 0 0 rgba(66, 210, 255, calc(var(--energy) * 0.24));
-  transform: scale(calc(1 + var(--energy) * 0.018));
+  transform: scale(
+    calc(1 + var(--energy) * 0.01 + var(--bass-punch) * 0.032)
+  );
   transform-origin: left center;
   transition:
     color 100ms linear,
     text-shadow 75ms linear,
-    transform 75ms linear;
+    transform 42ms linear;
 }
 
 .action {
@@ -803,9 +837,11 @@ h1 strong {
     0 0 calc(var(--energy) * 46px)
       rgba(var(--acid-rgb), calc(var(--energy) * 0.5));
   transform: rotate(calc(-1.25deg + var(--energy) * 0.65deg))
-    scale(calc(1 + var(--energy) * 0.045));
+    scale(
+      calc(1 + var(--energy) * 0.025 + var(--bass-punch) * 0.065)
+    );
   transform-origin: left center;
-  transition: transform 65ms linear, box-shadow 65ms linear;
+  transition: transform 42ms linear, box-shadow 42ms linear;
 }
 
 .verdict::before,
@@ -845,35 +881,31 @@ h1 strong {
 
 .equalizer {
   display: flex;
-  height: 19px;
-  gap: 3px;
+  height: 22px;
+  gap: 4px;
   align-items: end;
 }
 
 .equalizer i {
+  --bar-level: 0.18;
   display: block;
-  width: 3px;
-  height: calc(4px + var(--energy) * 15px);
+  width: 4px;
+  height: 100%;
   border-radius: 4px;
   background: var(--acid);
   box-shadow: 0 0 8px rgba(var(--acid-rgb), 0.55);
-  animation: equalizer 0.7s ease-in-out infinite alternate;
+  transform: scaleY(calc(0.12 + var(--bar-level) * 0.88));
+  transform-origin: center bottom;
+  transition:
+    transform 45ms linear,
+    filter 45ms linear;
 }
 
-.equalizer i:nth-child(2) {
-  animation-delay: -0.2s;
-}
-
-.equalizer i:nth-child(3) {
-  animation-delay: -0.42s;
-}
-
-.equalizer i:nth-child(4) {
-  animation-delay: -0.31s;
-}
-
-.equalizer i:nth-child(5) {
-  animation-delay: -0.55s;
+.high-energy .equalizer i {
+  filter: brightness(1.24);
+  box-shadow:
+    0 0 8px rgba(var(--acid-rgb), 0.72),
+    0 0 18px rgba(var(--gold-rgb), 0.22);
 }
 
 footer {
@@ -928,6 +960,14 @@ footer {
 
 .on-beat .light-beams {
   animation: beam-hit 300ms var(--ease-out);
+}
+
+.egg-screen.on-beat {
+  animation: stage-hit 210ms var(--ease-out);
+}
+
+.on-beat .announcement {
+  animation: announcement-hit 230ms var(--ease-out);
 }
 
 body.experience-started .live-status {
@@ -1032,12 +1072,6 @@ body.experience-started .cinema-bars i:last-child {
   }
 }
 
-@keyframes equalizer {
-  to {
-    transform: scaleY(0.38);
-  }
-}
-
 @keyframes impact-flash {
   0% {
     opacity: 0.68;
@@ -1046,6 +1080,30 @@ body.experience-started .cinema-bars i:last-child {
   100% {
     opacity: calc(var(--energy) * 0.28);
     transform: scale(1);
+  }
+}
+
+@keyframes stage-hit {
+  0% {
+    filter: brightness(calc(1 + var(--beat-strength) * 0.28))
+      saturate(calc(1 + var(--beat-strength) * 0.22));
+  }
+  42% {
+    transform: scale(calc(1.01 + var(--beat-strength) * 0.018));
+  }
+  100% {
+    filter: brightness(1) saturate(1);
+  }
+}
+
+@keyframes announcement-hit {
+  0% {
+    transform: translateY(calc(var(--beat-strength) * -15px))
+      scale(calc(1 + var(--beat-strength) * 0.022));
+  }
+  100% {
+    transform: translateY(calc(var(--energy) * -3px))
+      scale(1);
   }
 }
 
