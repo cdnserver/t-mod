@@ -5,6 +5,7 @@
 ## Что нового
 
 * [Журнал изменений](changelog/README.md)
+  * [31 июля 2026 — Minecraft Paper на mc.tvr.lat](changelog/2026-07-31.md)
   * [30 июля 2026 — административный центр T·Control](changelog/2026-07-30.md)
   * [29 июля 2026 — прямой домен tvr.lat](changelog/2026-07-29.md)
   * [28 июля 2026 — локальная панель консенсуса](changelog/2026-07-28.md)

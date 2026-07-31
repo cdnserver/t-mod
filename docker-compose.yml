@@ -26,6 +26,28 @@ services:
       - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
       - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
 
+  minecraft:
+    image: itzg/minecraft-server:java25-jdk
+    container_name: minecraft
+    restart: unless-stopped
+    ports:
+      - "25565:25565/tcp"
+    environment:
+      EULA: "TRUE"
+      TYPE: "PAPER"
+      VERSION: "26.1.2"
+      PAPER_BUILD: "74"
+      MEMORY: "4G"
+      TZ: "Europe/Riga"
+      MOTD: "T-Mod Paper 26.1.2-74 | mc.tvr.lat"
+      VIEW_DISTANCE: "8"
+      SIMULATION_DISTANCE: "6"
+      ONLINE_MODE: "TRUE"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "tmod-local-rcon"
+    volumes:
+      - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
+
   discord-browser-stream:
     profiles:
       - browser-stream

@@ -12,6 +12,7 @@ set CADDY_DATA_DIR=%CADDY_DIR%\data
 set CADDY_CONFIG_DIR=%CADDY_DIR%\config
 set BROWSER_STREAM_DATA_DIR=%PERSISTENT_DIR%\browser-stream
 set BROWSER_STREAM_ENV=%PERSISTENT_DIR%\browser-stream.env
+set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
 
 call :banner
@@ -23,6 +24,7 @@ if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
 if not exist "%CADDY_DATA_DIR%" mkdir "%CADDY_DATA_DIR%"
 if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
 if not exist "%BROWSER_STREAM_DATA_DIR%" mkdir "%BROWSER_STREAM_DATA_DIR%"
+if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
@@ -69,7 +71,17 @@ if errorlevel 1 (
 )
 call :ok "Caddy HTTPS route ready"
 
-call :stage "04" "Localization"
+call :stage "04" "Minecraft public port"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_minecraft_windows.ps1" -ServerHostName "mc.tvr.lat" -Port 25565
+if errorlevel 1 (
+  call :fail "Failed to configure the Minecraft public port"
+  call :warn "Approve the Windows administrator prompt and run this file again."
+  pause
+  exit /b 1
+)
+call :ok "Minecraft port ready"
+
+call :stage "05" "Localization"
 if not exist "%PERSISTENT_DIR%\localization.json" (
   copy "localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
   call :ok "localization.json created"
@@ -83,7 +95,7 @@ if not exist "%PERSISTENT_DIR%\localization.json" (
   call :ok "localization.json synchronized"
 )
 
-call :stage "05" "Modules"
+call :stage "06" "Modules"
 call :module "T-Mod Core"
 call :module "TVRS Consensus"
 call :module "SGL Bureau"
@@ -94,26 +106,29 @@ if defined COMPOSE_PROFILES call :module "Discord Browser Client"
 call :module "Zigmund AI"
 call :module "SGL Contracts"
 call :module "SQLite Migrator"
+call :module "Minecraft Paper 26.1.2-74"
 
-call :stage "06" "Docker engine"
+call :stage "07" "Docker engine"
 call :ensure_docker_engine
 if errorlevel 1 (
   pause
   exit /b 1
 )
 
-call :stage "07" "Stopping old containers"
+call :stage "08" "Stopping old containers"
 docker stop sgl-discord-bot >nul 2>nul
 docker rm sgl-discord-bot >nul 2>nul
 docker stop tmod-discord-bot >nul 2>nul
 docker rm tmod-discord-bot >nul 2>nul
+docker stop minecraft >nul 2>nul
+docker rm minecraft >nul 2>nul
 if not defined COMPOSE_PROFILES (
   docker stop discord-browser-stream >nul 2>nul
   docker rm discord-browser-stream >nul 2>nul
 )
 call :ok "Old containers stopped"
 
-call :stage "08" "Docker build"
+call :stage "09" "Docker build"
 set COMPOSE_BAKE=true
 docker compose build
 if errorlevel 1 (
@@ -124,7 +139,7 @@ if errorlevel 1 (
 )
 call :ok "Docker image ready"
 
-call :stage "09" "Starting T-Mod"
+call :stage "10" "Starting T-Mod and Minecraft"
 docker compose up -d --force-recreate
 if errorlevel 1 (
   call :fail "Docker startup failed"
@@ -134,10 +149,10 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
-call :stage "10" "Consensus health check"
+call :stage "11" "Consensus health check"
 call :check_consensus_health
 
-call :stage "11" "Status"
+call :stage "12" "Status"
 docker compose ps
 
 echo.
@@ -147,6 +162,8 @@ echo   Database: %PERSISTENT_DIR%\data\tmod.db
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
 echo   Panel:    https://tvr.lat
+echo   MC:       mc.tvr.lat ^(Paper 26.1.2-74, 25565/TCP^)
+echo   MC data:  %MINECRAFT_DIR%
 echo   HTTPS:    Caddy on public ports 80/443
 echo   Origin:   http://127.0.0.1:8787 ^(never forward this port^)
 if defined COMPOSE_PROFILES echo   Screen:   Discord browser client enabled
@@ -158,6 +175,7 @@ docker logs --tail 60 tmod-discord-bot
 echo ------------------------------------------------------------
 echo.
 echo Live logs: docker logs -f tmod-discord-bot
+echo Minecraft logs: docker logs -f minecraft
 echo.
 pause
 exit /b 0
