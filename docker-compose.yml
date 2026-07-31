@@ -39,10 +39,10 @@ services:
       PAPER_BUILD: "74"
       MEMORY: "4G"
       TZ: "Europe/Riga"
-      MOTD: "T-Mod Paper 26.1.2-74 | mc.tvr.lat"
+      MOTD: "mc.tvr.lat | By Alexey Wick"
       VIEW_DISTANCE: "8"
       SIMULATION_DISTANCE: "6"
-      ONLINE_MODE: "TRUE"
+      ONLINE_MODE: "FALSE"
       ENABLE_RCON: "true"
       RCON_PASSWORD: "tmod-local-rcon"
     volumes:
