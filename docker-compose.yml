@@ -39,7 +39,7 @@ services:
       PAPER_BUILD: "74"
       MEMORY: "4G"
       TZ: "Europe/Riga"
-      MOTD: "mc.tvr.lat | By Alexey Wick"
+      MOTD: "mc.tvr.lat | By Alexey Neblagodarniy Ueban"
       VIEW_DISTANCE: "8"
       SIMULATION_DISTANCE: "6"
       ONLINE_MODE: "FALSE"
