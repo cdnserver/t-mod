@@ -16,6 +16,14 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("https://tvr.lat", launcher)
         self.assertNotIn("http://SERVER_LAN_IP:8787", launcher)
 
+    def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertNotIn("$bytes ^|", launcher)
+        self.assertEqual(launcher.count("[BitConverter]::ToString($bytes)"), 2)
+        self.assertIn("MINECRAFT_RCON_SECRET", launcher)
+        self.assertIn("MINECRAFT_SUPERVISOR_SECRET", launcher)
+
     def test_cloudflare_configuration_preserves_and_validates_config(self) -> None:
         script = (ROOT / "configure_cloudflare_tunnel_windows.ps1").read_text(
             encoding="utf-8"

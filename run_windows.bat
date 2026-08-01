@@ -30,7 +30,7 @@ if not exist "%BROWSER_STREAM_DATA_DIR%" mkdir "%BROWSER_STREAM_DATA_DIR%"
 if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
 if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
 if not exist "%MINECRAFT_RCON_SECRET%" (
-  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=-join ($bytes ^| ForEach-Object { $_.ToString('x2') }); [IO.File]::WriteAllText('%MINECRAFT_RCON_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
+  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=[BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant(); [IO.File]::WriteAllText('%MINECRAFT_RCON_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
   if errorlevel 1 (
     call :fail "Failed to generate Minecraft RCON secret"
     pause
@@ -39,7 +39,7 @@ if not exist "%MINECRAFT_RCON_SECRET%" (
   call :ok "Minecraft control secret generated outside Git"
 )
 if not exist "%MINECRAFT_SUPERVISOR_SECRET%" (
-  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=-join ($bytes ^| ForEach-Object { $_.ToString('x2') }); [IO.File]::WriteAllText('%MINECRAFT_SUPERVISOR_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
+  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=[BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant(); [IO.File]::WriteAllText('%MINECRAFT_SUPERVISOR_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
   if errorlevel 1 (
     call :fail "Failed to generate Minecraft supervisor secret"
     pause
