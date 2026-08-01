@@ -5,10 +5,12 @@ const form = document.querySelector("#credential-form");
 const pin = document.querySelector("#credential-pin");
 const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
-const next = params.get("next") === "/admin" ? "/admin" : "/";
+const requestedNext = params.get("next");
+const next = ["/admin", "/reactor"].includes(requestedNext) ? requestedNext : "/";
 const errors = {
   invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
-  locked: "Вход временно приостановлен после нескольких попыток. Подождите пять минут.",
+  locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",
+  reset_required: "После трёх неверных попыток вход заблокирован. Напишите боту /reset в личных сообщениях и задайте новый PIN.",
   administrator: "Эта учётная запись действует, но административных прав в Discord нет.",
 };
 

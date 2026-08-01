@@ -13,6 +13,9 @@ set CADDY_CONFIG_DIR=%CADDY_DIR%\config
 set BROWSER_STREAM_DATA_DIR=%PERSISTENT_DIR%\browser-stream
 set BROWSER_STREAM_ENV=%PERSISTENT_DIR%\browser-stream.env
 set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
+set SECRETS_DIR=%PERSISTENT_DIR%\secrets
+set MINECRAFT_RCON_SECRET=%SECRETS_DIR%\minecraft-rcon-password.txt
+set MINECRAFT_SUPERVISOR_SECRET=%SECRETS_DIR%\minecraft-supervisor-token.txt
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
 
 call :banner
@@ -25,6 +28,25 @@ if not exist "%CADDY_DATA_DIR%" mkdir "%CADDY_DATA_DIR%"
 if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
 if not exist "%BROWSER_STREAM_DATA_DIR%" mkdir "%BROWSER_STREAM_DATA_DIR%"
 if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
+if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
+if not exist "%MINECRAFT_RCON_SECRET%" (
+  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=-join ($bytes ^| ForEach-Object { $_.ToString('x2') }); [IO.File]::WriteAllText('%MINECRAFT_RCON_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
+  if errorlevel 1 (
+    call :fail "Failed to generate Minecraft RCON secret"
+    pause
+    exit /b 1
+  )
+  call :ok "Minecraft control secret generated outside Git"
+)
+if not exist "%MINECRAFT_SUPERVISOR_SECRET%" (
+  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=-join ($bytes ^| ForEach-Object { $_.ToString('x2') }); [IO.File]::WriteAllText('%MINECRAFT_SUPERVISOR_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
+  if errorlevel 1 (
+    call :fail "Failed to generate Minecraft supervisor secret"
+    pause
+    exit /b 1
+  )
+  call :ok "Minecraft supervisor secret generated outside Git"
+)
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
@@ -107,6 +129,7 @@ call :module "Zigmund AI"
 call :module "SGL Contracts"
 call :module "SQLite Migrator"
 call :module "Minecraft Paper 26.1.2-74"
+call :module "Minecraft Lifecycle Supervisor"
 
 call :stage "07" "Docker engine"
 call :ensure_docker_engine
@@ -122,6 +145,8 @@ docker stop tmod-discord-bot >nul 2>nul
 docker rm tmod-discord-bot >nul 2>nul
 docker stop minecraft >nul 2>nul
 docker rm minecraft >nul 2>nul
+docker stop minecraft-supervisor >nul 2>nul
+docker rm minecraft-supervisor >nul 2>nul
 if not defined COMPOSE_PROFILES (
   docker stop discord-browser-stream >nul 2>nul
   docker rm discord-browser-stream >nul 2>nul
@@ -161,7 +186,10 @@ echo   T-Mod startup finished.
 echo   Database: %PERSISTENT_DIR%\data\tmod.db
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
-echo   Panel:    https://tvr.lat
+echo   Reactor:  https://reactor.tvr.lat
+echo   Member:   https://tvr.lat
+echo   Consensus:https://consensus.tvr.lat
+echo   Zigmund:  https://zigmund.tvr.lat
 echo   MC:       mc.tvr.lat ^(Paper 26.1.2-74, 25565/TCP^)
 echo   MC data:  %MINECRAFT_DIR%
 echo   HTTPS:    Caddy on public ports 80/443

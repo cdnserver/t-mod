@@ -7,12 +7,15 @@
     <meta name="theme-color" content="#080b0c">
     <style>html,body{background:#080b0c;color:#edf1eb}</style>
     <title>Ядерный Реактор — T-Mod</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
     <meta
       name="description"
       content="Ядерный Реактор — защищённая административная панель T-Mod."
     >
     <link rel="stylesheet" href="/assets/admin.css">
+    <script src="/assets/tab-signal.js" defer></script>
     <script src="/assets/admin.js" defer></script>
+    <script src="/assets/reactor.js" defer></script>
   </head>
   <body>
     <div class="backdrop" aria-hidden="true">
@@ -45,7 +48,7 @@
         <p id="gate-message">
           Проверяем персональную сессию и административные права…
         </p>
-        <a id="gate-back" class="primary-link" href="/" hidden>
+        <a id="gate-back" class="primary-link" href="https://consensus.tvr.lat/" hidden>
           Вернуться к консенсусу
         </a>
         <a id="gate-login" class="gate-login-link" href="/login?next=/admin" hidden>
@@ -121,10 +124,14 @@
             <span class="nav-icon">⟡</span>
             <span>Система</span>
           </button>
+          <button class="nav-item minecraft-nav" type="button" data-section="minecraft">
+            <span class="nav-icon">▣</span>
+            <span>Minecraft</span>
+          </button>
         </nav>
 
         <div class="sidebar-foot">
-          <a class="portal-link" href="/">
+          <a class="portal-link" href="https://consensus.tvr.lat/">
             <span>🏛</span>
             <span>
               <strong>Консенсус</strong>
@@ -148,7 +155,21 @@
             <h1 id="section-title">Обзор системы</h1>
           </div>
           <div class="top-actions">
-            <a class="icon-button panel-switch" href="/" title="Перейти в панель консенсуса">
+            <button id="command-button" class="icon-button command-button" type="button" title="Командная строка · Ctrl+K">
+              <span aria-hidden="true">⌘</span>
+              <span>Команды</span>
+              <kbd>Ctrl K</kbd>
+            </button>
+            <button id="reactor-inbox-button" class="icon-button inbox-button" type="button" title="Центр уведомлений">
+              <span aria-hidden="true">◫</span>
+              <span>События</span>
+              <b id="reactor-inbox-badge" hidden>0</b>
+            </button>
+            <button id="reactor-layout-button" class="icon-button" type="button" title="Настроить экран">
+              <span aria-hidden="true">▦</span>
+              <span>Экран</span>
+            </button>
+            <a class="icon-button panel-switch" href="https://consensus.tvr.lat/" title="Перейти в панель консенсуса">
               <span aria-hidden="true">🏛</span>
               <span>Консенсус</span>
             </a>
@@ -174,10 +195,10 @@
               id="refresh-button"
               class="icon-button refresh-button"
               type="button"
-              title="Автообновление каждые 10 секунд · нажмите для обновления сейчас"
+              title="Умное автообновление · нажмите для немедленного обновления"
             >
               <span aria-hidden="true">↻</span>
-              <span id="refresh-label">Авто · 10 сек</span>
+              <span id="refresh-label">Авто · умно</span>
             </button>
             <button
               id="notification-toggle"
@@ -208,7 +229,7 @@
             aria-labelledby="section-title"
           >
             <div class="status-banner">
-              <span class="status-symbol">T</span>
+              <span class="status-symbol">⚛</span>
               <div>
                 <strong id="welcome-title">Ядерный Реактор готов</strong>
                 <span id="welcome-subtitle">
@@ -218,7 +239,7 @@
               <time id="overview-updated">—</time>
             </div>
 
-            <div class="kpi-grid">
+            <div class="kpi-grid" data-reactor-widget="treasury">
               <article class="kpi-card accent-mint">
                 <div class="kpi-head"><span>Казна</span><i>$</i></div>
                 <strong id="overview-balance">—</strong>
@@ -242,6 +263,47 @@
             </div>
 
             <div id="attention-strip" class="attention-strip" hidden></div>
+
+            <div id="reactor-command-deck" class="reactor-command-deck">
+              <article class="reactor-card attention-center" data-reactor-widget="attention">
+                <header>
+                  <span class="reactor-card-icon">!</span>
+                  <span><small>ЕДИНЫЙ ЦЕНТР ВНИМАНИЯ</small><strong>Что требует решения</strong></span>
+                  <b id="reactor-attention-count">—</b>
+                </header>
+                <div id="reactor-attention-list" class="reactor-attention-list">
+                  <span class="reactor-skeleton"></span>
+                </div>
+              </article>
+
+              <article class="reactor-card health-center" data-reactor-widget="health">
+                <header>
+                  <span class="reactor-card-icon">◎</span>
+                  <span><small>ЗДОРОВЬЕ СИСТЕМ</small><strong>Контуры Реактора</strong></span>
+                  <b id="reactor-health-state">проверка</b>
+                </header>
+                <div id="reactor-health-grid" class="reactor-health-grid"></div>
+              </article>
+
+              <article class="reactor-card event-center" data-reactor-widget="events">
+                <header>
+                  <span class="reactor-card-icon">⌁</span>
+                  <span><small>ЖИВАЯ ЛЕНТА</small><strong>События прямо сейчас</strong></span>
+                  <i id="reactor-live-indicator">LIVE</i>
+                </header>
+                <div id="reactor-event-feed" class="reactor-event-feed"></div>
+              </article>
+
+              <article class="reactor-card minecraft-peek" data-reactor-widget="minecraft">
+                <header>
+                  <span class="reactor-card-icon">▣</span>
+                  <span><small>MINECRAFT NODE</small><strong>mc.tvr.lat</strong></span>
+                  <b id="minecraft-peek-state">проверка</b>
+                </header>
+                <div id="minecraft-peek-body" class="minecraft-peek-body">Получаем телеметрию сервера…</div>
+                <button class="secondary-button" type="button" data-go="minecraft">Открыть управление →</button>
+              </article>
+            </div>
 
             <div class="overview-grid">
               <article class="panel panel-wide">
@@ -268,7 +330,7 @@
                 <div id="system-metrics" class="system-metrics"></div>
               </article>
 
-              <article class="panel">
+              <article class="panel" data-reactor-widget="craft">
                 <header class="panel-head">
                   <div>
                     <span class="panel-kicker">ПРОИЗВОДСТВО</span>
@@ -281,7 +343,7 @@
                 <div id="overview-craft-list" class="compact-list"></div>
               </article>
 
-              <article class="panel">
+              <article class="panel" data-reactor-widget="discord">
                 <header class="panel-head">
                   <div>
                     <span class="panel-kicker">ЖИВОЙ ПОТОК</span>
@@ -941,10 +1003,6 @@
                   <span>Связанная ссылка</span>
                   <input name="link_url" type="url" maxlength="500" placeholder="https://tvr.lat/">
                 </label>
-                <label class="confirmation-field">
-                  <input name="confirmed" type="checkbox" value="yes" required>
-                  <span>Подтверждаю отправку всем участникам с ролью сенатора</span>
-                </label>
                 <button class="primary-button" type="submit">Поставить в очередь</button>
               </form>
             </article>
@@ -1336,6 +1394,154 @@
               </article>
             </div>
           </section>
+
+          <section id="screen-minecraft" class="screen" data-screen="minecraft">
+            <div class="section-intro minecraft-intro">
+              <div>
+                <span class="section-number">13 / MINECRAFT NODE</span>
+                <h2>Сервер mc.tvr.lat</h2>
+                <p>Полноценный центр управления Paper: мир, файлы, плагины, консоль, резервные копии и журналы.</p>
+              </div>
+              <div class="minecraft-head-state">
+                <span id="minecraft-storage-pill">хранилище · проверка</span>
+                <span id="minecraft-status-pill" class="health-pill">диагностика</span>
+              </div>
+            </div>
+
+            <nav class="minecraft-tabs" aria-label="Разделы управления Minecraft">
+              <button class="active" type="button" data-minecraft-tab="overview"><i>◈</i><span>Обзор</span></button>
+              <button type="button" data-minecraft-tab="files"><i>▤</i><span>Файлы</span></button>
+              <button type="button" data-minecraft-tab="plugins"><i>⬡</i><span>Плагины</span></button>
+              <button type="button" data-minecraft-tab="console"><i>›_</i><span>Консоль</span></button>
+              <button type="button" data-minecraft-tab="backups"><i>⟳</i><span>Бэкапы</span></button>
+              <button type="button" data-minecraft-tab="logs"><i>≡</i><span>Логи</span></button>
+            </nav>
+
+            <div class="minecraft-pane active" data-minecraft-pane="overview">
+              <div class="minecraft-console-grid">
+                <article class="panel minecraft-world-card">
+                  <span class="minecraft-orbit" aria-hidden="true"></span>
+                  <span class="minecraft-scanline" aria-hidden="true"></span>
+                  <small>SERVER TELEMETRY</small>
+                  <h2 id="minecraft-address">mc.tvr.lat</h2>
+                  <strong id="minecraft-players">— / —</strong>
+                  <p id="minecraft-detail">Получаем состояние игрового мира…</p>
+                  <div id="minecraft-player-list" class="minecraft-player-list"></div>
+                  <div class="minecraft-telemetry-labels" aria-hidden="true">
+                    <span>PAPER CORE</span><span>RU / 15</span><span>TCP 25565</span>
+                  </div>
+                </article>
+                <article class="panel minecraft-controls">
+                  <header class="panel-head"><div><span class="panel-kicker">SERVER CONTROL</span><h2>Управление миром</h2></div></header>
+                  <div class="minecraft-action-row">
+                    <button class="primary-button" type="button" data-minecraft-action="start">Запустить</button>
+                    <button class="danger-soft-button" type="button" data-minecraft-action="stop">Остановить</button>
+                    <button class="secondary-button" type="button" data-minecraft-action="save">Сохранить мир</button>
+                    <button class="danger-soft-button" type="button" data-minecraft-action="restart">Перезапустить</button>
+                    <button class="secondary-button" type="button" data-minecraft-action="whitelist_on">Whitelist ON</button>
+                    <button class="secondary-button" type="button" data-minecraft-action="whitelist_off">Whitelist OFF</button>
+                  </div>
+                  <form id="minecraft-announce-form" class="minecraft-inline-form">
+                    <label><span>Объявление игрокам</span><input name="message" maxlength="180" required placeholder="Текст от T-Mod"></label>
+                    <button class="primary-button" type="submit">Отправить</button>
+                  </form>
+                  <form id="minecraft-player-form" class="minecraft-inline-form minecraft-player-action-form">
+                    <label><span>Игрок</span><input name="player" pattern="[A-Za-z0-9_]{3,16}" required placeholder="PlayerName"></label>
+                    <label><span>Действие</span><select name="action"><option value="whitelist_add">Добавить в whitelist</option><option value="whitelist_remove">Убрать из whitelist</option><option value="kick">Отключить от сервера</option></select></label>
+                    <button class="primary-button" type="submit">Выполнить</button>
+                  </form>
+                  <div class="minecraft-safety-note">Команды подтверждаются и записываются в аудит. Секрет RCON и Docker API никогда не передаются в браузер.</div>
+                </article>
+              </div>
+            </div>
+
+            <div class="minecraft-pane" data-minecraft-pane="files" hidden>
+              <article class="panel minecraft-file-manager">
+                <header class="minecraft-manager-head">
+                  <div><span class="panel-kicker">SANDBOXED STORAGE</span><h2>Файлы сервера</h2></div>
+                  <div class="minecraft-manager-actions">
+                    <button id="minecraft-file-up" class="secondary-button" type="button">↑ Выше</button>
+                    <button id="minecraft-file-refresh" class="secondary-button" type="button">↻ Обновить</button>
+                    <button id="minecraft-folder-create" class="secondary-button" type="button">＋ Папка</button>
+                    <button id="minecraft-file-create" class="secondary-button" type="button">＋ Файл</button>
+                    <button id="minecraft-file-upload" class="primary-button" type="button">Загрузить файл</button>
+                  </div>
+                </header>
+                <div class="minecraft-pathbar"><i>▣</i><span>minecraft</span><strong id="minecraft-current-path">/</strong></div>
+                <input id="minecraft-upload-input" type="file" hidden>
+                <div class="minecraft-file-columns" aria-hidden="true"><span>Имя</span><span>Размер</span><span>Изменён</span><span>Действия</span></div>
+                <div id="minecraft-file-list" class="minecraft-file-list"><div class="minecraft-loading-row">Получаем структуру сервера…</div></div>
+              </article>
+            </div>
+
+            <div class="minecraft-pane" data-minecraft-pane="plugins" hidden>
+              <article class="panel minecraft-plugins-panel">
+                <header class="minecraft-manager-head">
+                  <div><span class="panel-kicker">PAPER EXTENSIONS</span><h2>Плагины сервера</h2><p>Загружайте JAR, включайте или отключайте плагины. Изменения применяются после перезапуска.</p></div>
+                  <button id="minecraft-plugin-upload" class="primary-button" type="button">＋ Загрузить плагин</button>
+                </header>
+                <input id="minecraft-plugin-input" type="file" accept=".jar,application/java-archive" hidden>
+                <div id="minecraft-plugin-list" class="minecraft-plugin-grid"><div class="minecraft-loading-row">Сканируем plugins…</div></div>
+              </article>
+            </div>
+
+            <div class="minecraft-pane" data-minecraft-pane="console" hidden>
+              <article class="panel minecraft-console-panel">
+                <header class="minecraft-manager-head">
+                  <div><span class="panel-kicker">LIVE RCON TERMINAL</span><h2>Консоль сервера</h2><p>Команды выполняются с правами серверной консоли и остаются в аудите T-Mod.</p></div>
+                  <span class="minecraft-console-live">● RCON</span>
+                </header>
+                <pre id="minecraft-console-output" class="minecraft-terminal" aria-live="polite">T-Mod Minecraft Console ready.
+Введите команду без символа /.</pre>
+                <form id="minecraft-console-form" class="minecraft-console-form">
+                  <span>›</span><input name="command" maxlength="500" autocomplete="off" spellcheck="false" required placeholder="time set day"><button class="primary-button" type="submit">Выполнить</button>
+                </form>
+              </article>
+            </div>
+
+            <div class="minecraft-pane" data-minecraft-pane="backups" hidden>
+              <div class="minecraft-backup-layout">
+                <article class="panel minecraft-backup-create">
+                  <span class="minecraft-backup-mark">⟳</span><span class="panel-kicker">FULL SNAPSHOT</span><h2>Создать резервную копию</h2>
+                  <p>T-Mod приостановит автосохранение, зафиксирует мир и упакует мир, плагины и настройки без RCON-секрета.</p>
+                  <form id="minecraft-backup-form"><input name="label" maxlength="50" placeholder="Например: перед обновлением"><button class="primary-button" type="submit">Создать бэкап</button></form>
+                </article>
+                <article class="panel minecraft-backup-list-panel">
+                  <header class="panel-head"><div><span class="panel-kicker">RECOVERY VAULT</span><h2>Хранилище копий</h2></div><button id="minecraft-backup-refresh" class="secondary-button" type="button">↻</button></header>
+                  <div id="minecraft-backup-list" class="minecraft-backup-list"><div class="minecraft-loading-row">Получаем список копий…</div></div>
+                </article>
+              </div>
+              <article class="panel minecraft-trash-panel">
+                <header class="panel-head"><div><span class="panel-kicker">RECYCLE BIN</span><h2>Корзина файлов</h2></div></header>
+                <div id="minecraft-trash-list" class="minecraft-trash-list"></div>
+              </article>
+            </div>
+
+            <div class="minecraft-pane" data-minecraft-pane="logs" hidden>
+              <article class="panel minecraft-log-panel">
+                <header class="minecraft-manager-head">
+                  <div><span class="panel-kicker">LATEST.LOG</span><h2>Журнал Minecraft</h2><p id="minecraft-log-meta">Последние строки активного журнала сервера.</p></div>
+                  <div class="minecraft-manager-actions"><label class="minecraft-auto-log"><input id="minecraft-log-auto" type="checkbox" checked> авто</label><button id="minecraft-log-refresh" class="secondary-button" type="button">↻ Обновить</button></div>
+                </header>
+                <pre id="minecraft-log-output" class="minecraft-terminal minecraft-log-output">Ожидаем журнал…</pre>
+              </article>
+            </div>
+
+            <dialog id="minecraft-editor-dialog" class="reactor-dialog minecraft-editor-dialog">
+              <header class="reactor-dialog-head"><span><small>SAFE TEXT EDITOR</small><strong id="minecraft-editor-title">Редактор файла</strong></span><button type="button" data-close-dialog="minecraft-editor-dialog">×</button></header>
+              <div id="minecraft-editor-warning" class="minecraft-editor-warning" hidden></div>
+              <textarea id="minecraft-editor-content" spellcheck="false" aria-label="Содержимое файла"></textarea>
+              <footer><span id="minecraft-editor-meta">UTF-8</span><div><button class="secondary-button" type="button" data-close-dialog="minecraft-editor-dialog">Отмена</button><button id="minecraft-editor-save" class="primary-button" type="button">Сохранить</button></div></footer>
+            </dialog>
+
+            <dialog id="minecraft-name-dialog" class="reactor-dialog minecraft-name-dialog">
+              <form id="minecraft-name-form">
+                <header class="reactor-dialog-head"><span><small>FILE OPERATION</small><strong id="minecraft-name-title">Новая папка</strong></span><button type="button" data-close-dialog="minecraft-name-dialog">×</button></header>
+                <label><span>Имя</span><input id="minecraft-name-input" name="name" maxlength="180" required autocomplete="off"></label>
+                <footer><button class="secondary-button" type="button" data-close-dialog="minecraft-name-dialog">Отмена</button><button class="primary-button" type="submit">Применить</button></footer>
+              </form>
+            </dialog>
+          </section>
         </div>
       </main>
     </div>
@@ -1361,6 +1567,50 @@
         </div>
       </form>
       <div id="detail-content" class="detail-content"></div>
+    </dialog>
+
+    <dialog id="command-dialog" class="reactor-dialog command-dialog">
+      <form method="dialog" class="reactor-dialog-head">
+        <span><small>COMMAND DECK</small><strong>Команды и глобальный поиск</strong></span>
+        <button value="cancel" aria-label="Закрыть">×</button>
+      </form>
+      <label class="command-search">
+        <span>⌕</span>
+        <input id="command-search-input" type="search" autocomplete="off" placeholder="Участник, законопроект, кейс, товар или команда…">
+        <kbd>Esc</kbd>
+      </label>
+      <div id="command-results" class="command-results" role="listbox"></div>
+      <footer><span>↑↓ выбрать</span><span>Enter открыть</span><span>Ctrl K вызвать</span></footer>
+    </dialog>
+
+    <dialog id="reactor-inbox-dialog" class="reactor-dialog inbox-dialog">
+      <form method="dialog" class="reactor-dialog-head">
+        <span><small>NOTIFICATION CORE</small><strong>Центр уведомлений</strong></span>
+        <button value="cancel" aria-label="Закрыть">×</button>
+      </form>
+      <div class="inbox-toolbar"><span id="reactor-inbox-summary">Загрузка…</span><button id="reactor-read-all" class="text-button" type="button">Прочитать все</button></div>
+      <div id="reactor-inbox-list" class="reactor-inbox-list"></div>
+    </dialog>
+
+    <dialog id="reactor-layout-dialog" class="reactor-dialog layout-dialog">
+      <form method="dialog" class="reactor-dialog-head">
+        <span><small>PERSONAL CANVAS</small><strong>Настройка главного экрана</strong></span>
+        <button value="cancel" aria-label="Закрыть">×</button>
+      </form>
+      <p>Выберите виджеты. Порядок можно менять стрелками; настройка хранится в T-Mod.</p>
+      <div id="reactor-layout-list" class="reactor-layout-list"></div>
+      <button id="reactor-layout-save" class="primary-button" type="button">Сохранить экран</button>
+    </dialog>
+
+    <dialog id="reactor-confirm-dialog" class="reactor-dialog confirm-dialog">
+      <div class="confirm-mark" id="reactor-confirm-mark">!</div>
+      <small id="reactor-confirm-eyebrow">ПОДТВЕРЖДЕНИЕ</small>
+      <h2 id="reactor-confirm-title">Подтвердите действие</h2>
+      <p id="reactor-confirm-message"></p>
+      <div class="confirm-actions">
+        <button id="reactor-confirm-cancel" class="secondary-button" type="button">Отмена</button>
+        <button id="reactor-confirm-accept" class="primary-button" type="button">Подтвердить</button>
+      </div>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden>

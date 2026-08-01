@@ -21,6 +21,7 @@ from persistence import voice_control_repository as _voice_control_repository
 from persistence import bill_workspace_repository as _bill_workspace_repository
 from persistence import broadcast_repository as _broadcast_repository
 from persistence import web_auth_repository as _web_auth_repository
+from persistence import reactor_repository as _reactor_repository
 from persistence import schema as _schema
 
 _PERSISTENCE_MODULES = (
@@ -40,6 +41,7 @@ _PERSISTENCE_MODULES = (
     _bill_workspace_repository,
     _broadcast_repository,
     _web_auth_repository,
+    _reactor_repository,
     _schema,
 )
 

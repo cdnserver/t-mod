@@ -5,17 +5,49 @@
 	}
 }
 
-tvr.lat {
+(tmod_backend) {
 	encode zstd gzip
-
 	reverse_proxy tmod-discord-bot:8787 {
 		health_uri /api/health
 		health_interval 30s
 		health_timeout 5s
 	}
-
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		-Server
+	}
+}
+
+tvr.lat {
+	handle / {
+		rewrite * /reactor
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
+reactor.tvr.lat {
+	handle / {
+		rewrite * /admin
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
+consensus.tvr.lat {
+	import tmod_backend
+}
+
+zigmund.tvr.lat {
+	handle / {
+		rewrite * /egg
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
 	}
 }

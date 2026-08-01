@@ -43,24 +43,31 @@ class WebAuthRepositoryTests(unittest.TestCase):
             web_auth.configure_web_credential(10, 22, "another", "1234abcd")
         web_auth.configure_web_credential(11, 21, "senator", "87654321")
 
-    def test_five_bad_attempts_lock_credential_temporarily(self) -> None:
+    def test_three_bad_attempts_require_discord_reset(self) -> None:
         web_auth.configure_web_credential(10, 20, "senator", "12345678")
-        for attempt in range(4):
+        for attempt in range(2):
             result = web_auth.authenticate_web_credential(
                 10, "senator", "00000000", now_epoch=1000 + attempt
             )
             self.assertEqual(result.status, "invalid")
+            self.assertTrue(result.notify_owner)
+            self.assertEqual(result.failed_attempts, attempt + 1)
         result = web_auth.authenticate_web_credential(
-            10, "senator", "00000000", now_epoch=1004
+            10, "senator", "00000000", now_epoch=1002
         )
-        self.assertEqual(result.status, "locked")
-        still_locked = web_auth.authenticate_web_credential(
-            10, "senator", "12345678", now_epoch=1005
+        self.assertEqual(result.status, "reset_required")
+        self.assertTrue(result.notify_owner)
+        self.assertFalse(web_auth.web_session_version_matches(10, 20, 1))
+        still_blocked = web_auth.authenticate_web_credential(
+            10, "senator", "12345678", now_epoch=5000
         )
-        self.assertEqual(still_locked.status, "locked")
-        unlocked = web_auth.authenticate_web_credential(
-            10, "senator", "12345678", now_epoch=1305
-        )
+        self.assertEqual(still_blocked.status, "reset_required")
+        self.assertFalse(still_blocked.notify_owner)
+
+        reset = web_auth.configure_web_credential(10, 20, "senator", "87654321")
+        self.assertFalse(reset.reset_required)
+        self.assertEqual(reset.failed_attempts, 0)
+        unlocked = web_auth.authenticate_web_credential(10, "senator", "87654321")
         self.assertEqual(unlocked.status, "ok")
 
     def test_change_and_delete_revoke_persistent_sessions(self) -> None:

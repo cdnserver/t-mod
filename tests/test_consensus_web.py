@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 import storage
@@ -98,9 +99,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         active_sessions[77] = self.session
         self.bot = SimpleNamespace(
             get_guild=lambda guild_id: (
-                SimpleNamespace(id=77, name="Товарищество")
-                if guild_id == 77
-                else None
+                SimpleNamespace(id=77, name="Товарищество") if guild_id == 77 else None
             )
         )
 
@@ -152,7 +151,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bill["decision_category"], "ordinary")
         self.assertIsNone(state["session"]["current_result"])
 
-    async def test_fixed_result_exposes_exact_percentages_and_restores_bill_text(self) -> None:
+    async def test_fixed_result_exposes_exact_percentages_and_restores_bill_text(
+        self,
+    ) -> None:
         self.session.current_bill = None
         self.session.stage = "after_result"
         self.session.results.append(
@@ -204,8 +205,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "status": "accepted",
                 "overall_percent": 75,
                 "block_votes_json": (
-                    '{"first":"yes","second":"yes",'
-                    '"third":"no","consensus":"yes"}'
+                    '{"first":"yes","second":"yes","third":"no","consensus":"yes"}'
                 ),
             },
             77,
@@ -354,8 +354,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(admin.status, 200)
             admin_text = await admin.text()
             self.assertIn("Ядерный Реактор", admin_text)
-            self.assertIn('class="icon-button panel-switch" href="/"', admin_text)
+            self.assertIn(
+                'class="icon-button panel-switch" href="https://consensus.tvr.lat/"',
+                admin_text,
+            )
             self.assertIn('id="reactor-link"', index_text)
+            self.assertIn('href="/assets/favicon.svg"', index_text)
+            self.assertIn('src="/assets/tab-signal.js"', index_text)
             self.assertIn(
                 "html,body{background:#080b0c;color:#edf1eb}",
                 admin_text,
@@ -367,12 +372,61 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="screen-sgl"', admin_text)
             self.assertIn('id="screen-media"', admin_text)
             self.assertIn('id="screen-system"', admin_text)
+            self.assertIn('id="screen-minecraft"', admin_text)
+            self.assertIn('data-minecraft-tab="files"', admin_text)
+            self.assertIn('id="minecraft-file-list"', admin_text)
+            self.assertIn('id="minecraft-plugin-list"', admin_text)
+            self.assertIn('id="minecraft-console-form"', admin_text)
+            self.assertIn('id="minecraft-backup-list"', admin_text)
+            self.assertIn('id="minecraft-log-output"', admin_text)
+            self.assertIn('id="minecraft-editor-dialog"', admin_text)
+            self.assertIn('id="command-dialog"', admin_text)
+            self.assertIn('id="reactor-inbox-dialog"', admin_text)
+            self.assertIn('id="reactor-confirm-dialog"', admin_text)
+            self.assertIn('href="/assets/favicon.svg"', admin_text)
+            self.assertIn('src="/assets/tab-signal.js"', admin_text)
             self.assertIn('id="copy-section-link"', admin_text)
             self.assertIn('id="copy-detail-link"', admin_text)
             self.assertIn('id="notification-toggle"', admin_text)
             self.assertIn('id="gate-state"', admin_text)
             self.assertIn('class="gate-check"', admin_text)
             self.assertIn('id="toast-title"', admin_text)
+
+            reactor = await client.get("/reactor")
+            self.assertEqual(reactor.status, 200)
+            reactor_text = await reactor.text()
+            self.assertIn("Личный Реактор", reactor_text)
+            self.assertIn('id="portal-canvas"', reactor_text)
+            self.assertIn('id="treasury"', reactor_text)
+            self.assertIn('id="legislation"', reactor_text)
+            self.assertIn('id="editor-workspace"', reactor_text)
+            self.assertNotIn('data-portal-widget="market"', reactor_text)
+            reactor_script = await client.get("/assets/reactor.js")
+            self.assertEqual(reactor_script.status, 200)
+            reactor_script_text = await reactor_script.text()
+            self.assertIn("/api/admin/reactor/search", reactor_script_text)
+            self.assertIn(
+                "/api/admin/reactor/minecraft/upload",
+                reactor_script_text,
+            )
+            self.assertIn(
+                "/api/admin/reactor/minecraft/backups",
+                reactor_script_text,
+            )
+            self.assertIn("switchMinecraftTab", reactor_script_text)
+            self.assertNotIn("innerHTML", reactor_script_text)
+            tab_signal = await client.get("/assets/tab-signal.js")
+            self.assertEqual(tab_signal.status, 200)
+            tab_signal_text = await tab_signal.text()
+            self.assertIn("TModTabSignal", tab_signal_text)
+            self.assertIn("visibilitychange", tab_signal_text)
+            self.assertNotIn("innerHTML", tab_signal_text)
+            favicon = await client.get("/assets/favicon.svg")
+            self.assertEqual(favicon.status, 200)
+            self.assertEqual(favicon.content_type, "image/svg+xml")
+            self.assertIn("<svg", await favicon.text())
+            automatic_favicon = await client.get("/favicon.ico")
+            self.assertEqual(automatic_favicon.status, 200)
             self.assertIn("signal-composer-head", admin_text)
 
             admin_script = await client.get("/assets/admin.js")
@@ -382,16 +436,18 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("/api/admin/media/command", admin_script_text)
             self.assertIn("/api/admin/link/", admin_script_text)
             self.assertIn("parseAdminRoute", admin_script_text)
-            self.assertIn("const REFRESH_INTERVAL = 10000", admin_script_text)
+            self.assertIn("const REFRESH_INTERVALS = Object.freeze", admin_script_text)
+            self.assertIn("scheduleAutoRefresh", admin_script_text)
+            self.assertIn("GLOBAL_ACTIVITY_INTERVAL = 60000", admin_script_text)
             self.assertIn("pollGlobalActivity", admin_script_text)
             self.assertIn("playNotificationSound", admin_script_text)
             self.assertIn("activitySignature", admin_script_text)
             self.assertIn("market-signal-list", admin_script_text)
+            self.assertIn('!byId("admin-shell").hidden', admin_script_text)
+            self.assertIn("!document.hidden", admin_script_text)
             self.assertIn(
-                'appState.loading || byId("admin-shell").hidden',
-                admin_script_text,
+                'error.payload?.error === "too_many_attempts"', admin_script_text
             )
-            self.assertIn('error.payload?.error === "too_many_attempts"', admin_script_text)
             self.assertNotIn("innerHTML", admin_script_text)
             admin_stylesheet = await client.get("/assets/admin.css")
             self.assertEqual(admin_stylesheet.status, 200)
@@ -477,7 +533,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             denied = await client.get("/api/state")
             self.assertEqual(denied.status, 401)
 
-            with patch("modules.consensus_web._runtime_token", "test-access-token-123456"):
+            with patch(
+                "modules.consensus_web._runtime_token", "test-access-token-123456"
+            ):
                 allowed = await client.get(
                     "/api/state",
                     headers={"Authorization": "Bearer test-access-token-123456"},
@@ -489,7 +547,60 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_persistent_login_uses_profile_credential_and_admin_role(self) -> None:
+    async def test_member_reactor_exposes_revisioned_bill_workspace_api(self) -> None:
+        principal = self._principal(user_id=42)
+        principal.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                catalog = await client.get("/api/reactor/legislation")
+                rejected = await client.post(
+                    "/api/reactor/legislation",
+                    json={"action": "create"},
+                )
+                created = await client.post(
+                    "/api/reactor/legislation",
+                    json={"action": "create"},
+                    headers={"X-CSRF-Token": principal.csrf_token},
+                )
+                workspace = (await created.json())["workspace"]
+                saved = await client.post(
+                    "/api/reactor/legislation",
+                    json={
+                        "action": "save",
+                        "workspace_id": workspace["id"],
+                        "expected_revision": workspace["revision"],
+                        "idea": "Создать справочник участников Товарищества.",
+                        "desired_outcome": "Упростить знакомство и координацию.",
+                        "constraints_text": "Без закрытых данных.",
+                        "title": "О справочнике участников",
+                        "summary": "Создать единый открытый справочник участников Товарищества.",
+                        "materials": "",
+                        "implementation_plan": "Подготовить форму и открыть справочник.",
+                        "leadership_actions": "Назначить ответственного за актуальность.",
+                    },
+                    headers={"X-CSRF-Token": principal.csrf_token},
+                )
+
+            self.assertEqual(catalog.status, 200)
+            self.assertIn("bills", await catalog.json())
+            self.assertEqual(rejected.status, 403)
+            self.assertEqual(created.status, 200)
+            self.assertEqual(saved.status, 200)
+            saved_workspace = (await saved.json())["workspace"]
+            self.assertTrue(saved_workspace["ready"])
+            self.assertGreater(saved_workspace["revision"], workspace["revision"])
+        finally:
+            await client.close()
+
+    async def test_persistent_login_uses_profile_credential_and_admin_role(
+        self,
+    ) -> None:
         storage.configure_web_credential(77, 42, "operator", "12345678")
         member = SimpleNamespace(
             id=42,
@@ -503,7 +614,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             get_member=lambda user_id: member if user_id == 42 else None,
             fetch_member=AsyncMock(return_value=member),
         )
-        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+        bot = SimpleNamespace(
+            get_guild=lambda guild_id: guild if guild_id == 77 else None
+        )
         app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -533,6 +646,66 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(not_admin.status, 303)
             self.assertIn("error=administrator", not_admin.headers["Location"])
+        finally:
+            await client.close()
+
+    async def test_three_bad_pins_warn_owner_and_require_discord_reset(self) -> None:
+        storage.configure_web_credential(77, 42, "operator", "12345678")
+        member = SimpleNamespace(
+            id=42,
+            display_name="Оператор",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+            send=AsyncMock(),
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda user_id: None,
+            fetch_member=AsyncMock(return_value=member),
+        )
+        bot = SimpleNamespace(
+            get_guild=lambda guild_id: guild if guild_id == 77 else None
+        )
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            locations = []
+            for _ in range(3):
+                response = await client.post(
+                    "/auth/login?next=/reactor",
+                    data={"login": "operator", "pin": "00000000"},
+                    allow_redirects=False,
+                )
+                locations.append(response.headers["Location"])
+
+            self.assertIn("error=invalid", locations[0])
+            self.assertIn("error=invalid", locations[1])
+            self.assertIn("error=reset_required", locations[2])
+            self.assertEqual(member.send.await_count, 3)
+            self.assertGreaterEqual(guild.fetch_member.await_count, 3)
+            credential = storage.get_web_credential(77, 42)
+            self.assertIsNotNone(credential)
+            self.assertTrue(credential.reset_required)
+            inbox = storage.reactor_list_notifications(77, 42)
+            self.assertEqual(inbox["unread"], 1)
+            self.assertEqual(inbox["items"][0]["severity"], "critical")
+
+            blocked = await client.post(
+                "/auth/login?next=/reactor",
+                data={"login": "operator", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertIn("error=reset_required", blocked.headers["Location"])
+
+            storage.configure_web_credential(77, 42, "operator", "87654321")
+            accepted = await client.post(
+                "/auth/login?next=/reactor",
+                data={"login": "operator", "pin": "87654321"},
+                allow_redirects=False,
+            )
+            self.assertEqual(accepted.headers["Location"], "/reactor")
         finally:
             await client.close()
 
@@ -590,6 +763,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 profile = await client.get("/api/admin/profile")
                 system = await client.get("/api/admin/system")
                 media = await client.get("/api/admin/media")
+                reactor_attention = await client.get("/api/admin/reactor/attention")
+                reactor_health = await client.get("/api/admin/reactor/health")
+                reactor_search = await client.get(
+                    "/api/admin/reactor/search?q=следующий"
+                )
+                reactor_events = await client.get("/api/admin/reactor/events")
+                reactor_home = await client.get("/api/reactor/home")
                 linked_bill = await client.get(
                     f"/api/admin/link/bill/{self.bill.id}",
                 )
@@ -610,6 +790,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 profile,
                 system,
                 media,
+                reactor_attention,
+                reactor_health,
+                reactor_search,
+                reactor_events,
+                reactor_home,
                 linked_bill,
             ):
                 self.assertEqual(response.status, 200)
@@ -617,10 +802,39 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             overview_payload = await overview.json()
             self.assertIn("counts", overview_payload)
             self.assertIn("system", overview_payload)
+            self.assertIn(
+                overview_payload["cache_state"], {"fresh", "refreshed", "stale"}
+            )
+            self.assertIn(
+                overview.headers["X-T-Mod-Cache"],
+                {"fresh", "refreshed", "stale"},
+            )
             self.assertIn("capabilities", await registry.json())
             self.assertEqual((await market.json())["server_id"], "RU15")
-            self.assertEqual((await bills.json())["items"][0]["summary"], self.bill.summary)
+            self.assertEqual(
+                (await bills.json())["items"][0]["summary"], self.bill.summary
+            )
             self.assertIn("outbox_status", await system.json())
+            attention_payload = await reactor_attention.json()
+            health_payload = await reactor_health.json()
+            self.assertIn("health", attention_payload)
+            self.assertIn(
+                attention_payload["cache_state"],
+                {"fresh", "refreshed", "stale"},
+            )
+            self.assertIn("components", health_payload)
+            self.assertIn(
+                health_payload["cache_state"],
+                {"fresh", "refreshed", "stale"},
+            )
+            self.assertTrue((await reactor_search.json())["items"])
+            self.assertIn("items", await reactor_events.json())
+            reactor_home_payload = await reactor_home.json()
+            self.assertIn("consensus", reactor_home_payload)
+            self.assertIn("treasury", reactor_home_payload)
+            self.assertIn("legislation", reactor_home_payload)
+            self.assertIn("bills", reactor_home_payload["legislation"])
+            self.assertNotIn("market_alerts", reactor_home_payload)
             self.assertEqual(
                 (await linked_bill.json())["item"]["title"],
                 self.bill.title,
@@ -632,6 +846,106 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await client.close()
+
+    async def test_minecraft_file_manager_is_admin_only_and_sandboxed(self) -> None:
+        minecraft_root = Path(self.temp_dir.name) / "minecraft"
+        (minecraft_root / "plugins").mkdir(parents=True)
+        (minecraft_root / "server.properties").write_text(
+            "motd=Old\nrcon.password=never-expose\n",
+            encoding="utf-8",
+        )
+        administrator = self._principal()
+        with patch.dict(
+            "os.environ",
+            {"MINECRAFT_DATA_DIR": str(minecraft_root)},
+        ):
+            app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                denied = await client.get("/api/admin/reactor/minecraft/files")
+                self.assertEqual(denied.status, 401)
+                with patch(
+                    "modules.consensus_web.resolve_principal",
+                    AsyncMock(return_value=administrator),
+                ):
+                    listing = await client.get(
+                        "/api/admin/reactor/minecraft/files?path=",
+                    )
+                    traversal = await client.get(
+                        "/api/admin/reactor/minecraft/files?path=../outside",
+                    )
+                    opened = await client.get(
+                        "/api/admin/reactor/minecraft/file?path=server.properties",
+                    )
+                    protected_download = await client.get(
+                        "/api/admin/reactor/minecraft/download?path=server.properties",
+                    )
+                    opened_payload = await opened.json()
+                    saved = await client.post(
+                        "/api/admin/reactor/minecraft/file",
+                        headers={
+                            "X-CSRF-Token": "csrf-test-token",
+                            "X-Idempotency-Key": "minecraft-save-config-1",
+                        },
+                        json={
+                            "action": "save",
+                            "path": "server.properties",
+                            "content": opened_payload["item"]["content"].replace(
+                                "motd=Old",
+                                "motd=New",
+                            ),
+                            "etag": opened_payload["item"]["etag"],
+                        },
+                    )
+                    form = FormData()
+                    form.add_field("path", "plugins")
+                    form.add_field("overwrite", "false")
+                    form.add_field(
+                        "file",
+                        b"test-plugin",
+                        filename="PanelTest.jar",
+                        content_type="application/java-archive",
+                    )
+                    uploaded = await client.post(
+                        "/api/admin/reactor/minecraft/upload",
+                        headers={
+                            "X-CSRF-Token": "csrf-test-token",
+                            "X-Idempotency-Key": "minecraft-upload-plugin-1",
+                        },
+                        data=form,
+                    )
+                    plugins = await client.get(
+                        "/api/admin/reactor/minecraft/plugins",
+                    )
+                    backup = await client.post(
+                        "/api/admin/reactor/minecraft/backups",
+                        headers={
+                            "X-CSRF-Token": "csrf-test-token",
+                            "X-Idempotency-Key": "minecraft-create-backup-1",
+                        },
+                        json={"action": "create", "label": "api-test"},
+                    )
+
+                self.assertEqual(listing.status, 200)
+                self.assertEqual(traversal.status, 400)
+                self.assertEqual(protected_download.status, 403)
+                self.assertNotIn("never-expose", opened_payload["item"]["content"])
+                self.assertEqual(saved.status, 200)
+                self.assertIn(
+                    "rcon.password=never-expose",
+                    (minecraft_root / "server.properties").read_text(encoding="utf-8"),
+                )
+                self.assertEqual(uploaded.status, 200)
+                self.assertTrue(
+                    (minecraft_root / "plugins" / "PanelTest.jar").is_file()
+                )
+                self.assertEqual(
+                    (await plugins.json())["items"][0]["display_name"], "PanelTest"
+                )
+                self.assertEqual(backup.status, 200)
+            finally:
+                await client.close()
 
     async def test_admin_media_commands_require_csrf_and_runtime(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
@@ -714,7 +1028,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 (await first.json())["broadcast"]["id"],
                 (await second.json())["broadcast"]["id"],
             )
-            self.assertEqual(storage.broadcast_report(guild_id=77)["recipient_count"], 1)
+            self.assertEqual(
+                storage.broadcast_report(guild_id=77)["recipient_count"], 1
+            )
             wake.assert_called_once()
         finally:
             await client.close()
@@ -829,7 +1145,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_bill_catalog_and_detail_expose_only_guild_public_record(self) -> None:
+    async def test_bill_catalog_and_detail_expose_only_guild_public_record(
+        self,
+    ) -> None:
         foreign_bill = storage.tvrs_create_bill(
             guild_id=78,
             channel_id=90,
@@ -879,7 +1197,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
-            with patch("modules.consensus_web._runtime_token", "test-access-token-123456"):
+            with patch(
+                "modules.consensus_web._runtime_token", "test-access-token-123456"
+            ):
                 response = await client.post(
                     "/api/command",
                     headers={
@@ -940,7 +1260,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_simulation_is_selectable_without_masking_live_consensus(self) -> None:
+    async def test_simulation_is_selectable_without_masking_live_consensus(
+        self,
+    ) -> None:
         simulation = ConsensusSimulation(
             guild_id=77,
             leader_id=100,
@@ -962,9 +1284,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(default_state["session"]["key"], "web-test")
         self.assertEqual(simulation_state["mode"], "simulation")
         self.assertTrue(simulation_state["active"])
-        self.assertTrue(
-            simulation_state["session"]["key"].startswith("simulation:")
-        )
+        self.assertTrue(simulation_state["session"]["key"].startswith("simulation:"))
         self.assertEqual(simulation_state["session"]["voting"]["received"], 1)
         self.assertEqual(len(simulation_state["queue"]), 3)
         self.assertEqual(
@@ -983,7 +1303,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
-            with patch("modules.consensus_web._runtime_token", "test-access-token-123456"):
+            with patch(
+                "modules.consensus_web._runtime_token", "test-access-token-123456"
+            ):
                 response = await client.get(
                     "/api/state?mode=simulation",
                     headers={"Authorization": "Bearer test-access-token-123456"},

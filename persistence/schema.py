@@ -209,6 +209,7 @@ def init_db() -> None:
                 session_version INTEGER NOT NULL DEFAULT 1,
                 failed_attempts INTEGER NOT NULL DEFAULT 0,
                 locked_until INTEGER NOT NULL DEFAULT 0,
+                reset_required INTEGER NOT NULL DEFAULT 0,
                 last_login_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -218,6 +219,37 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
+
+            CREATE TABLE IF NOT EXISTS reactor_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'info'
+                    CHECK(severity IN ('info', 'success', 'warning', 'critical')),
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                route TEXT,
+                source_key TEXT,
+                dedupe_key TEXT NOT NULL,
+                read_at TEXT,
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, user_id, dedupe_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
+            ON reactor_notifications(guild_id, user_id, read_at, id DESC);
+
+            CREATE TABLE IF NOT EXISTS reactor_preferences (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                surface TEXT NOT NULL,
+                layout_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id, surface)
+            );
 
             CREATE TABLE IF NOT EXISTS voice_user_profiles (
                 guild_id INTEGER NOT NULL,
@@ -1080,6 +1112,12 @@ def init_db() -> None:
             "profile_characters",
             "is_public",
             "INTEGER NOT NULL DEFAULT 1",
+        )
+        _add_column_if_missing(
+            con,
+            "web_credentials",
+            "reset_required",
+            "INTEGER NOT NULL DEFAULT 0",
         )
         _add_column_if_missing(
             con,

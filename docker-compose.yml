@@ -11,6 +11,14 @@ services:
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
       - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+    networks:
+      - default
+      - minecraft-control
+    depends_on:
+      minecraft-supervisor:
+        condition: service_healthy
 
   tmod-caddy:
     image: caddy:2.10.2-alpine
@@ -44,9 +52,51 @@ services:
       SIMULATION_DISTANCE: "6"
       ONLINE_MODE: "FALSE"
       ENABLE_RCON: "true"
-      RCON_PASSWORD: "tmod-local-rcon"
+      RCON_PASSWORD_FILE: "/run/secrets/minecraft_rcon_password"
+      OVERRIDE_SERVER_PROPERTIES: "false"
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+    tty: true
+    stdin_open: true
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+
+  minecraft-supervisor:
+    build:
+      context: ./minecraft-supervisor
+    image: tmod-minecraft-supervisor:latest
+    container_name: minecraft-supervisor
+    restart: unless-stopped
+    environment:
+      MINECRAFT_CONTAINER_NAME: "minecraft"
+      MINECRAFT_SUPERVISOR_TOKEN_FILE: "/run/secrets/minecraft_supervisor_token"
+    expose:
+      - "8791"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+    networks:
+      - minecraft-control
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8791/health', timeout=2)"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   discord-browser-stream:
     profiles:
@@ -76,3 +126,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+networks:
+  default:
+  minecraft-control:
+    internal: true

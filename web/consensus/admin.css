@@ -501,6 +501,7 @@ select:focus-visible {
 
 .topbar {
   display: flex;
+  min-width: 0;
   min-height: 86px;
   align-items: center;
   justify-content: space-between;
@@ -522,6 +523,7 @@ select:focus-visible {
 
 .top-actions {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
 }
@@ -621,6 +623,7 @@ select:focus-visible {
 }
 
 .content {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: clamp(22px, 3vw, 42px);
@@ -3391,7 +3394,30 @@ tbody tr {
   }
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1700px) {
+  .topbar {
+    gap: 14px;
+  }
+
+  .top-actions {
+    gap: 7px;
+  }
+
+  .command-button kbd,
+  #reactor-inbox-button span:nth-child(2),
+  #reactor-layout-button span:last-child,
+  #copy-section-link span:last-child,
+  #notification-label,
+  .viewer-copy {
+    display: none;
+  }
+
+  .icon-button {
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 1380px) {
   :root {
     --sidebar: 86px;
   }
@@ -3452,6 +3478,18 @@ tbody tr {
 
   .triple-grid > :first-child {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1100px) and (min-width: 781px) {
+  .topbar {
+    align-content: center;
+    flex-wrap: wrap;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 
@@ -3702,6 +3740,12 @@ tbody tr {
 }
 
 @media (max-width: 480px) {
+  #reactor-layout-button,
+  #copy-section-link,
+  #notification-toggle {
+    display: none;
+  }
+
   .topbar {
     justify-content: flex-end;
   }
@@ -3755,5 +3799,1418 @@ tbody tr {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Nuclear Reactor live command layer */
+:root {
+  --reactor-ok: #79f2bd;
+  --reactor-warning: #ffca6a;
+  --reactor-critical: #ff667a;
+  --reactor-blue: #72a6ff;
+  --reactor-surface: rgba(14, 21, 24, 0.88);
+  --reactor-line: rgba(215, 255, 239, 0.11);
+}
+
+body[data-reactor-state="warning"] .backdrop-glow.glow-two {
+  background: rgba(242, 177, 77, 0.16);
+}
+
+body[data-reactor-state="critical"] .backdrop-glow.glow-two {
+  background: rgba(255, 74, 105, 0.18);
+  animation-duration: 5s;
+}
+
+.command-button kbd {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: var(--muted);
+  font: 650 11px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+  padding: 4px 5px;
+}
+
+.inbox-button {
+  position: relative;
+}
+
+.inbox-button b {
+  align-items: center;
+  background: var(--reactor-critical);
+  border: 2px solid #0b0f11;
+  border-radius: 999px;
+  color: #160408;
+  display: flex;
+  font-size: 11px;
+  height: 19px;
+  justify-content: center;
+  min-width: 19px;
+  padding: 0 4px;
+  position: absolute;
+  right: -5px;
+  top: -6px;
+}
+
+.minecraft-nav .nav-icon {
+  color: #a7eb89;
+}
+
+.reactor-command-deck {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  margin: 16px 0 22px;
+}
+
+.reactor-card {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), transparent 42%),
+    var(--reactor-surface);
+  border: 1px solid var(--reactor-line);
+  border-radius: 20px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
+  min-width: 0;
+  overflow: hidden;
+  padding: 16px;
+  position: relative;
+  transition: border-color 180ms ease, transform 180ms ease, opacity 180ms ease;
+}
+
+.reactor-card::after {
+  background: radial-gradient(circle, currentColor 0 1px, transparent 1.5px);
+  background-size: 14px 14px;
+  content: "";
+  inset: auto -45px -60px auto;
+  height: 140px;
+  opacity: 0.055;
+  pointer-events: none;
+  position: absolute;
+  transform: rotate(17deg);
+  width: 180px;
+}
+
+.reactor-card > header {
+  align-items: center;
+  display: grid;
+  gap: 11px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-bottom: 14px;
+}
+
+.reactor-card > header > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.reactor-card header small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.14em;
+}
+
+.reactor-card header strong {
+  font: 690 17px/1.15 "Segoe UI Variable Display", "Segoe UI", sans-serif;
+}
+
+.reactor-card header > b,
+.reactor-card header > i {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--reactor-ok);
+  font-size: 11px;
+  font-style: normal;
+  padding: 5px 8px;
+}
+
+.reactor-card-icon {
+  align-items: center;
+  background: rgba(121, 242, 189, 0.1);
+  border: 1px solid rgba(121, 242, 189, 0.24);
+  border-radius: 11px;
+  color: var(--reactor-ok);
+  display: flex;
+  font: 750 14px/1 monospace;
+  height: 35px;
+  justify-content: center;
+  width: 35px;
+}
+
+.attention-center {
+  color: #effff8;
+  grid-row: span 2;
+}
+
+.attention-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 13px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 11px;
+  text-align: left;
+  transition: background 160ms ease, transform 160ms ease;
+  width: 100%;
+}
+
+.attention-row + .attention-row {
+  margin-top: 7px;
+}
+
+.attention-row:hover {
+  background: rgba(255, 255, 255, 0.065);
+  transform: translateX(3px);
+}
+
+.attention-row.critical { border-color: rgba(255, 102, 122, 0.28); }
+.attention-row.warning { border-color: rgba(255, 202, 106, 0.22); }
+.attention-row.info { border-color: rgba(114, 166, 255, 0.2); }
+.attention-row.critical .attention-mark {
+  background: rgba(255, 102, 122, 0.14);
+  color: var(--reactor-critical);
+}
+
+.attention-row.warning .attention-mark {
+  background: rgba(255, 202, 106, 0.13);
+  color: var(--reactor-warning);
+}
+
+.attention-row.info .attention-mark {
+  background: rgba(114, 166, 255, 0.13);
+  color: var(--reactor-blue);
+}
+
+.attention-mark {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  display: flex;
+  font-weight: 900;
+  height: 29px;
+  justify-content: center;
+  width: 29px;
+}
+
+.attention-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.attention-copy strong { font-size: 13px; }
+.attention-copy small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attention-row > b { font: 750 14px/1 monospace; }
+.attention-clear { color: var(--reactor-ok); padding: 20px 4px; text-align: center; }
+
+.reactor-health-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.health-node {
+  background: rgba(255, 255, 255, 0.025);
+  border: 0;
+  border-radius: 11px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 3px 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 9px;
+  text-align: left;
+}
+
+.health-node-led {
+  background: var(--reactor-ok);
+  border-radius: 50%;
+  box-shadow: 0 0 12px currentColor;
+  grid-row: span 2;
+  height: 7px;
+  margin-top: 4px;
+  width: 7px;
+}
+
+.health-node.warning .health-node-led { background: var(--reactor-warning); }
+.health-node.critical .health-node-led { background: var(--reactor-critical); }
+.health-node.disabled .health-node-led { background: #647078; box-shadow: none; }
+.health-node strong { font-size: 11px; }
+.health-node small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.reactor-event-feed {
+  display: grid;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.reactor-event {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font-size: 11px;
+  gap: 7px;
+  grid-template-columns: 48px 22px minmax(0, 1fr);
+  padding: 6px;
+  text-align: left;
+}
+
+.reactor-event:hover { background: rgba(255, 255, 255, 0.04); }
+.reactor-event time { color: var(--muted); font-family: ui-monospace, monospace; }
+.reactor-event i { align-items: center; background: rgba(121, 242, 189, 0.1); border-radius: 6px; color: var(--reactor-ok); display: flex; font-style: normal; height: 22px; justify-content: center; }
+.reactor-event span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reactor-event.fresh { animation: reactorEventIn 600ms ease both; }
+#reactor-live-indicator.offline { color: var(--reactor-warning); }
+
+.minecraft-peek {
+  color: #e8ffe0;
+}
+
+.minecraft-peek::before,
+.minecraft-world-card::before {
+  background: linear-gradient(90deg, rgba(143, 222, 108, 0.11) 50%, transparent 50%);
+  background-size: 20px 20px;
+  content: "";
+  inset: 0;
+  opacity: 0.15;
+  pointer-events: none;
+  position: absolute;
+}
+
+.minecraft-peek-body { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 0 0 12px; min-height: 34px; position: relative; }
+.reactor-widget-hidden { display: none !important; }
+
+.reactor-dialog {
+  background: rgba(11, 16, 19, 0.98);
+  border: 1px solid rgba(208, 255, 237, 0.14);
+  border-radius: 22px;
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.65);
+  color: #eef8f2;
+  max-height: min(760px, calc(100vh - 40px));
+  max-width: min(720px, calc(100vw - 30px));
+  padding: 0;
+  width: 100%;
+}
+
+.reactor-dialog::backdrop {
+  backdrop-filter: blur(11px);
+  background: rgba(3, 6, 8, 0.76);
+}
+
+.reactor-dialog-head {
+  align-items: center;
+  border-bottom: 1px solid var(--reactor-line);
+  display: flex;
+  justify-content: space-between;
+  padding: 17px 18px;
+}
+
+.reactor-dialog-head > span { display: grid; gap: 4px; }
+.reactor-dialog-head small { color: var(--reactor-ok); font-size: 11px; font-weight: 800; letter-spacing: 0.14em; }
+.reactor-dialog-head strong { font: 680 17px/1.1 "Segoe UI Variable Display", "Segoe UI", sans-serif; }
+.reactor-dialog-head button { background: rgba(255, 255, 255, 0.05); border: 0; border-radius: 9px; color: inherit; cursor: pointer; font-size: 20px; height: 34px; width: 34px; }
+
+.command-search {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 13px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 16px;
+  padding: 0 13px;
+}
+
+.command-search input {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: 540 15px/1 "Segoe UI Variable", "Segoe UI", sans-serif;
+  outline: 0;
+  padding: 15px 2px;
+}
+
+.command-search kbd,
+.command-dialog footer span { color: var(--muted); font: 600 11px/1 ui-monospace, monospace; }
+.command-results { max-height: 430px; min-height: 180px; overflow: auto; padding: 0 10px 12px; }
+.command-result { align-items: center; background: transparent; border: 1px solid transparent; border-radius: 11px; color: inherit; cursor: pointer; display: grid; gap: 10px; grid-template-columns: 32px minmax(0, 1fr) minmax(90px, 0.45fr) 20px; padding: 9px; text-align: left; width: 100%; }
+.command-result.selected { background: rgba(121, 242, 189, 0.08); border-color: rgba(121, 242, 189, 0.18); }
+.command-result > i { align-items: center; background: rgba(255, 255, 255, 0.06); border-radius: 8px; color: var(--reactor-ok); display: flex; font-style: normal; height: 32px; justify-content: center; }
+.command-result > span { font-size: 12px; font-weight: 650; }
+.command-result > small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.command-result > b { color: var(--muted); }
+.command-searching { color: var(--muted); padding: 45px; text-align: center; }
+.command-dialog footer { border-top: 1px solid var(--reactor-line); display: flex; gap: 18px; padding: 12px 18px; }
+
+.inbox-toolbar { align-items: center; border-bottom: 1px solid var(--reactor-line); display: flex; justify-content: space-between; padding: 12px 18px; }
+.reactor-inbox-list { max-height: 520px; min-height: 160px; overflow: auto; padding: 9px; }
+.inbox-item { align-items: start; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 12px; color: inherit; cursor: pointer; display: grid; gap: 10px; grid-template-columns: 25px minmax(0, 1fr); margin: 6px; padding: 12px; text-align: left; width: calc(100% - 12px); }
+.inbox-item.read { opacity: 0.56; }
+.inbox-item > i { align-items: center; background: rgba(114, 166, 255, 0.14); border-radius: 7px; color: var(--reactor-blue); display: flex; font-style: normal; height: 25px; justify-content: center; }
+.inbox-item.critical > i { background: rgba(255, 102, 122, 0.14); color: var(--reactor-critical); }
+.inbox-item.warning > i { background: rgba(255, 202, 106, 0.14); color: var(--reactor-warning); }
+.inbox-item > span { display: grid; gap: 4px; }
+.inbox-item small { color: var(--muted); line-height: 1.45; }
+
+.layout-dialog > p { color: var(--muted); font-size: 12px; padding: 0 18px; }
+.reactor-layout-list { display: grid; gap: 6px; max-height: 430px; overflow: auto; padding: 10px 18px; }
+.layout-item { align-items: center; background: rgba(255, 255, 255, 0.028); border-radius: 11px; display: grid; gap: 11px; grid-template-columns: auto minmax(0, 1fr) auto; padding: 10px; }
+.layout-item input { accent-color: var(--reactor-ok); height: 18px; width: 18px; }
+.layout-item > span:nth-child(2) { display: grid; gap: 2px; }
+.layout-item small { color: var(--muted); font-size: 11px; }
+.layout-arrows { display: flex; gap: 4px; }
+.layout-arrows button { background: rgba(255, 255, 255, 0.055); border: 0; border-radius: 7px; color: inherit; cursor: pointer; height: 28px; width: 28px; }
+.layout-dialog > .primary-button { margin: 8px 18px 18px; width: calc(100% - 36px); }
+
+.confirm-dialog { max-width: 450px; padding: 25px; text-align: center; }
+.confirm-mark { align-items: center; background: rgba(255, 202, 106, 0.12); border: 1px solid rgba(255, 202, 106, 0.28); border-radius: 50%; color: var(--reactor-warning); display: flex; font-size: 30px; font-weight: 800; height: 68px; justify-content: center; margin: 0 auto 15px; width: 68px; }
+.confirm-mark[data-tone="critical"] { background: rgba(255, 102, 122, 0.12); border-color: rgba(255, 102, 122, 0.28); color: var(--reactor-critical); }
+.confirm-dialog > small { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.14em; }
+.confirm-dialog h2 { font: 700 23px/1.15 "Segoe UI Variable Display", "Segoe UI", sans-serif; margin: 8px 0; }
+.confirm-dialog p { color: var(--muted); line-height: 1.55; margin: 0 auto 22px; max-width: 380px; }
+.confirm-actions { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+
+.minecraft-console-grid { display: grid; gap: 16px; grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr); }
+.minecraft-world-card { align-items: center; background: radial-gradient(circle at 50% 28%, rgba(141, 224, 102, 0.15), transparent 38%), #0b1310; display: flex; flex-direction: column; justify-content: center; min-height: 430px; overflow: hidden; position: relative; text-align: center; }
+.minecraft-world-card > * { position: relative; }
+.minecraft-world-card > small { color: #9dde83; font-weight: 800; letter-spacing: 0.14em; }
+.minecraft-world-card h2 { font: 750 28px/1.1 ui-monospace, monospace; margin: 14px 0; }
+.minecraft-world-card > strong { color: #baff99; font: 760 54px/1 "Segoe UI Variable Display", "Segoe UI", sans-serif; }
+.minecraft-world-card p { color: var(--muted); max-width: 330px; }
+.minecraft-orbit { border: 1px solid rgba(157, 222, 131, 0.25); border-radius: 50%; height: 240px; position: absolute; width: 240px; }
+.minecraft-orbit::after { background: #9dde83; border-radius: 50%; box-shadow: 0 0 16px #9dde83; content: ""; height: 7px; left: 50%; position: absolute; top: -4px; width: 7px; }
+.minecraft-player-list { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
+.minecraft-player-list span { background: rgba(157, 222, 131, 0.1); border-radius: 7px; color: #caffb4; font-size: 11px; padding: 5px 8px; }
+.minecraft-controls { display: grid; gap: 18px; }
+.minecraft-action-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.danger-soft-button { background: rgba(255, 102, 122, 0.1); border: 1px solid rgba(255, 102, 122, 0.25); border-radius: 10px; color: #ff9baa; cursor: pointer; padding: 10px 14px; }
+.minecraft-inline-form { align-items: end; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.065); border-radius: 14px; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 14px; }
+.minecraft-player-action-form { grid-template-columns: minmax(150px, 0.6fr) minmax(200px, 1fr) auto; }
+.minecraft-inline-form label { display: grid; gap: 6px; }
+.minecraft-inline-form label > span { color: var(--muted); font-size: 11px; }
+.minecraft-inline-form input, .minecraft-inline-form select { background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 9px; color: inherit; min-height: 40px; padding: 0 11px; }
+.minecraft-safety-note { border-left: 2px solid #9dde83; color: var(--muted); font-size: 11px; line-height: 1.5; padding: 8px 12px; }
+
+.minecraft-head-state {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#minecraft-storage-pill {
+  background: rgba(157, 222, 131, 0.07);
+  border: 1px solid rgba(157, 222, 131, 0.16);
+  border-radius: 999px;
+  color: #baff99;
+  font: 700 11px/1 var(--font-mono);
+  padding: 8px 11px;
+  text-transform: uppercase;
+}
+
+#minecraft-storage-pill.warning {
+  background: rgba(255, 202, 106, 0.09);
+  border-color: rgba(255, 202, 106, 0.22);
+  color: var(--reactor-warning);
+}
+
+.minecraft-tabs {
+  align-items: center;
+  background: rgba(10, 15, 13, 0.92);
+  border: 1px solid rgba(157, 222, 131, 0.12);
+  border-radius: 16px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-bottom: 16px;
+  padding: 5px;
+}
+
+.minecraft-tabs button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  color: #87998d;
+  cursor: pointer;
+  display: flex;
+  font: 700 11px/1 var(--font-sans);
+  gap: 7px;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 10px;
+  transition: 180ms ease;
+}
+
+.minecraft-tabs button i {
+  color: #718078;
+  font: 800 14px/1 var(--font-mono);
+  font-style: normal;
+}
+
+.minecraft-tabs button:hover {
+  background: rgba(157, 222, 131, 0.05);
+  color: #d9eed0;
+}
+
+.minecraft-tabs button.active {
+  background: linear-gradient(135deg, rgba(157, 222, 131, 0.16), rgba(157, 222, 131, 0.055));
+  border-color: rgba(157, 222, 131, 0.2);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.05), 0 10px 30px rgba(0, 0, 0, 0.16);
+  color: #eaffdf;
+}
+
+.minecraft-tabs button.active i { color: #baff99; }
+
+.minecraft-pane.active {
+  animation: minecraftPaneIn 360ms var(--ease-out) both;
+}
+
+.minecraft-manager-head {
+  align-items: center;
+  border-bottom: 1px solid rgba(157, 222, 131, 0.09);
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  padding: 20px 22px;
+}
+
+.minecraft-manager-head h2 { margin: 3px 0 0; }
+.minecraft-manager-head p { color: var(--muted); font-size: 11px; margin: 5px 0 0; }
+.minecraft-manager-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }
+.minecraft-manager-actions .secondary-button,
+.minecraft-manager-actions .primary-button { min-height: 36px; padding: 8px 11px; }
+
+.minecraft-file-manager,
+.minecraft-plugins-panel,
+.minecraft-console-panel,
+.minecraft-log-panel {
+  background: linear-gradient(145deg, rgba(15, 23, 19, 0.98), rgba(9, 14, 12, 0.98));
+  border-color: rgba(157, 222, 131, 0.12);
+  overflow: hidden;
+}
+
+.minecraft-pathbar {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.16);
+  border-bottom: 1px solid rgba(157, 222, 131, 0.08);
+  color: #74847b;
+  display: flex;
+  font: 650 11px/1 var(--font-mono);
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 22px;
+}
+
+.minecraft-pathbar i { color: #9dde83; font-style: normal; }
+.minecraft-pathbar strong { color: #d9e8d3; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.minecraft-file-columns,
+.minecraft-file-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(230px, 1fr) 100px 160px minmax(220px, auto);
+}
+
+.minecraft-file-columns {
+  color: #617068;
+  font: 750 11px/1 var(--font-sans);
+  letter-spacing: 0.13em;
+  padding: 12px 22px 8px;
+  text-transform: uppercase;
+}
+
+.minecraft-file-list { min-height: 320px; }
+
+.minecraft-file-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+  min-height: 55px;
+  padding: 7px 16px 7px 22px;
+  transition: 150ms ease;
+}
+
+.minecraft-file-row:hover { background: rgba(157, 222, 131, 0.035); }
+.minecraft-file-main { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; gap: 11px; min-width: 0; padding: 0; text-align: left; }
+.minecraft-file-main:disabled { cursor: default; }
+.minecraft-file-main i { align-items: center; background: rgba(157, 222, 131, 0.08); border: 1px solid rgba(157, 222, 131, 0.12); border-radius: 9px; color: #a8e58d; display: flex; flex: 0 0 auto; font-style: normal; height: 34px; justify-content: center; width: 34px; }
+.minecraft-file-main span { display: grid; min-width: 0; }
+.minecraft-file-main strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.minecraft-file-main small { color: #68766e; font: 500 11px/1.4 var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.minecraft-file-row > span { color: #7f8d84; font: 550 11px/1.3 var(--font-mono); }
+.minecraft-file-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+.minecraft-file-actions button { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.065); border-radius: 7px; color: #aab6ae; cursor: pointer; font: 650 11px/1 var(--font-sans); min-height: 29px; padding: 0 8px; }
+.minecraft-file-actions button:hover { border-color: rgba(157, 222, 131, 0.22); color: #dfffce; }
+.minecraft-file-actions button.danger { color: #ff9baa; }
+.minecraft-loading-row,
+.minecraft-empty-row { color: #68776e; font-size: 11px; padding: 50px 22px; text-align: center; }
+
+.minecraft-plugin-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 330px;
+  padding: 18px;
+}
+
+.minecraft-plugin-card {
+  background: radial-gradient(circle at 80% 0, rgba(157, 222, 131, 0.09), transparent 40%), rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(157, 222, 131, 0.1);
+  border-radius: 15px;
+  display: grid;
+  gap: 14px;
+  min-height: 170px;
+  padding: 16px;
+}
+
+.minecraft-plugin-card.disabled { filter: saturate(0.55); opacity: 0.68; }
+.minecraft-plugin-card header { align-items: start; display: grid; gap: 10px; grid-template-columns: 38px minmax(0, 1fr) auto; }
+.minecraft-plugin-card header > i { align-items: center; background: rgba(157, 222, 131, 0.1); border: 1px solid rgba(157, 222, 131, 0.16); border-radius: 11px; color: #baff99; display: flex; font: 800 17px/1 var(--font-mono); font-style: normal; height: 38px; justify-content: center; }
+.minecraft-plugin-card header > span { display: grid; min-width: 0; }
+.minecraft-plugin-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.minecraft-plugin-card small { color: var(--muted); font-size: 11px; }
+.minecraft-plugin-state { border-radius: 999px; font: 750 11px/1 var(--font-sans); padding: 6px 7px; text-transform: uppercase; }
+.minecraft-plugin-state.on { background: rgba(157, 222, 131, 0.1); color: #baff99; }
+.minecraft-plugin-state.off { background: rgba(255, 202, 106, 0.1); color: var(--reactor-warning); }
+.minecraft-plugin-actions { align-items: end; display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+
+.minecraft-console-panel { min-height: 560px; }
+.minecraft-console-live { color: #9dde83; font: 750 11px/1 var(--font-mono); }
+.minecraft-terminal {
+  background: #050907;
+  border: 1px solid rgba(157, 222, 131, 0.08);
+  border-radius: 12px;
+  color: #a8d99b;
+  font: 500 11px/1.6 var(--font-mono);
+  margin: 18px;
+  min-height: 390px;
+  overflow: auto;
+  padding: 18px;
+  white-space: pre-wrap;
+}
+
+.minecraft-console-form {
+  align-items: center;
+  background: rgba(157, 222, 131, 0.045);
+  border: 1px solid rgba(157, 222, 131, 0.12);
+  border-radius: 11px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0 18px 18px;
+  padding: 6px 6px 6px 13px;
+}
+
+.minecraft-console-form > span { color: #9dde83; font: 800 18px/1 var(--font-mono); }
+.minecraft-console-form input { background: transparent; border: 0; color: #dff7d5; font: 550 12px/1 var(--font-mono); min-height: 38px; outline: 0; }
+
+.minecraft-backup-layout { display: grid; gap: 16px; grid-template-columns: minmax(280px, 0.7fr) minmax(0, 1.3fr); }
+.minecraft-backup-create { align-items: center; background: radial-gradient(circle at 50% 18%, rgba(157, 222, 131, 0.12), transparent 35%), #0a100d; display: flex; flex-direction: column; justify-content: center; min-height: 410px; padding: 35px; text-align: center; }
+.minecraft-backup-mark { align-items: center; background: rgba(157, 222, 131, 0.08); border: 1px solid rgba(157, 222, 131, 0.18); border-radius: 50%; color: #baff99; display: flex; font-size: 34px; height: 78px; justify-content: center; margin-bottom: 18px; width: 78px; }
+.minecraft-backup-create h2 { margin: 8px 0; }
+.minecraft-backup-create p { color: var(--muted); font-size: 11px; line-height: 1.6; max-width: 340px; }
+.minecraft-backup-create form { display: grid; gap: 8px; margin-top: 14px; max-width: 350px; width: 100%; }
+.minecraft-backup-create input { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 9px; color: inherit; min-height: 40px; padding: 0 11px; }
+.minecraft-backup-list-panel { min-height: 410px; }
+.minecraft-backup-list { display: grid; gap: 7px; padding: 12px; }
+.minecraft-backup-row,
+.minecraft-trash-row { align-items: center; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.055); border-radius: 11px; display: grid; gap: 10px; grid-template-columns: auto minmax(0, 1fr) auto; padding: 11px; }
+.minecraft-backup-row > i,
+.minecraft-trash-row > i { align-items: center; background: rgba(157, 222, 131, 0.08); border-radius: 8px; color: #a8e58d; display: flex; font-style: normal; height: 32px; justify-content: center; width: 32px; }
+.minecraft-backup-row > span,
+.minecraft-trash-row > span { display: grid; min-width: 0; }
+.minecraft-backup-row strong,
+.minecraft-trash-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.minecraft-backup-row small,
+.minecraft-trash-row small { color: var(--muted); font-size: 11px; }
+.minecraft-backup-row footer,
+.minecraft-trash-row footer { display: flex; gap: 5px; }
+.minecraft-backup-row button,
+.minecraft-trash-row button { min-height: 30px; padding: 6px 8px; }
+.minecraft-trash-panel { margin-top: 16px; }
+.minecraft-trash-list { display: grid; gap: 7px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
+
+.minecraft-auto-log { align-items: center; color: var(--muted); display: flex; font-size: 11px; gap: 5px; }
+.minecraft-auto-log input { accent-color: #9dde83; }
+.minecraft-log-output { height: min(610px, 60vh); margin-bottom: 18px; min-height: 430px; }
+
+.minecraft-editor-dialog { max-width: min(1050px, calc(100vw - 30px)); }
+.minecraft-editor-dialog textarea { background: #050907; border: 0; color: #ccebc2; display: block; font: 500 12px/1.55 var(--font-mono); height: min(620px, 65vh); outline: 0; padding: 20px; resize: vertical; tab-size: 2; width: 100%; }
+.minecraft-editor-warning { background: rgba(255, 202, 106, 0.09); border-bottom: 1px solid rgba(255, 202, 106, 0.18); color: var(--reactor-warning); font-size: 11px; padding: 10px 18px; }
+.minecraft-editor-dialog footer { align-items: center; border-top: 1px solid var(--reactor-line); display: flex; justify-content: space-between; padding: 12px 18px; }
+.minecraft-editor-dialog footer > span { color: var(--muted); font: 600 11px/1 var(--font-mono); }
+.minecraft-editor-dialog footer > div { display: flex; gap: 7px; }
+.minecraft-name-dialog { max-width: 440px; }
+.minecraft-name-dialog form > label { display: grid; gap: 7px; padding: 20px; }
+.minecraft-name-dialog form > label span { color: var(--muted); font-size: 11px; }
+.minecraft-name-dialog input { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; color: inherit; min-height: 44px; padding: 0 12px; }
+.minecraft-name-dialog footer { display: flex; gap: 7px; justify-content: flex-end; padding: 0 20px 20px; }
+
+@keyframes minecraftPaneIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes reactorEventIn {
+  from { background: rgba(121, 242, 189, 0.18); opacity: 0; transform: translateX(-10px); }
+  to { background: transparent; opacity: 1; transform: translateX(0); }
+}
+
+@media (max-width: 1380px) {
+  .reactor-command-deck { grid-template-columns: 1fr; }
+  .attention-center { grid-row: auto; }
+  .minecraft-console-grid { grid-template-columns: 1fr; }
+  .minecraft-plugin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .minecraft-file-columns,
+  .minecraft-file-row { grid-template-columns: minmax(220px, 1fr) 90px minmax(180px, auto); }
+  .minecraft-file-columns span:nth-child(3),
+  .minecraft-file-row > span:nth-child(3) { display: none; }
+  .command-button kbd { display: none; }
+}
+
+@media (max-width: 760px) {
+  .reactor-command-deck { display: block; }
+  .reactor-card { margin-bottom: 10px; }
+  .reactor-health-grid { grid-template-columns: 1fr; }
+  .command-result { grid-template-columns: 30px minmax(0, 1fr) 18px; }
+  .command-result > small { display: none; }
+  .minecraft-inline-form,
+  .minecraft-player-action-form { grid-template-columns: 1fr; }
+  .minecraft-head-state { align-items: flex-start; justify-content: flex-start; }
+  .minecraft-tabs { display: flex; overflow-x: auto; }
+  .minecraft-tabs button { flex: 0 0 auto; min-width: 104px; }
+  .minecraft-manager-head { align-items: flex-start; flex-direction: column; }
+  .minecraft-file-columns { display: none; }
+  .minecraft-file-row { gap: 8px; grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .minecraft-file-row > span { display: none; }
+  .minecraft-file-actions { justify-content: flex-start; padding-left: 45px; }
+  .minecraft-plugin-grid { grid-template-columns: 1fr; }
+  .minecraft-backup-layout { grid-template-columns: 1fr; }
+  .minecraft-trash-list { grid-template-columns: 1fr; }
+  .minecraft-backup-row,
+  .minecraft-trash-row { align-items: start; grid-template-columns: auto minmax(0, 1fr); }
+  .minecraft-backup-row footer,
+  .minecraft-trash-row footer { grid-column: 2; }
+  .minecraft-console-form { grid-template-columns: auto minmax(0, 1fr); }
+  .minecraft-console-form button { grid-column: 1 / -1; }
+  .confirm-actions { grid-template-columns: 1fr; }
+  #reactor-layout-button span:last-child,
+  #reactor-inbox-button span:nth-child(2),
+  #command-button span:nth-child(2) { display: none; }
+}
+
+/* Nuclear Reactor visual system v3: precise, technical, and information-first. */
+:root {
+  --bg: #050809;
+  --surface: rgba(12, 18, 20, 0.94);
+  --surface-raised: rgba(17, 25, 27, 0.98);
+  --line: rgba(210, 235, 222, 0.085);
+  --line-strong: rgba(210, 235, 222, 0.17);
+  --text: #f0f5f1;
+  --muted: #8a9891;
+  --mint: #75efb6;
+  --radius-lg: 18px;
+  --radius-md: 13px;
+  --sidebar: 268px;
+  --font-sans:
+    "Segoe UI Variable Text", Aptos, "SF Pro Text", Inter, Roboto, "Segoe UI",
+    Arial, sans-serif;
+  --font-display:
+    Bahnschrift, "Segoe UI Variable Display", Aptos Display, "SF Pro Display",
+    Inter, Roboto, "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at 76% -10%, rgba(var(--section-rgb), 0.06), transparent 31%),
+    linear-gradient(135deg, #06090a 0%, #080c0d 48%, #050708 100%);
+}
+
+.backdrop::before {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, transparent 0 24px, rgba(255, 255, 255, 0.012) 25px, transparent 26px),
+    linear-gradient(0deg, transparent 0 24px, rgba(255, 255, 255, 0.012) 25px, transparent 26px);
+  background-size: 96px 96px;
+  content: "";
+  opacity: 0.7;
+}
+
+.backdrop-grid {
+  background-image:
+    linear-gradient(rgba(var(--section-rgb), 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.06) 1px, transparent 1px);
+  background-size: 64px 64px;
+  opacity: 0.12;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 86%);
+  mask-image: linear-gradient(to bottom, black, transparent 86%);
+}
+
+.sidebar {
+  border-right-color: rgba(206, 237, 222, 0.1);
+  background:
+    linear-gradient(180deg, rgba(117, 239, 182, 0.025), transparent 23%),
+    rgba(6, 10, 11, 0.94);
+  box-shadow:
+    24px 0 70px rgba(0, 0, 0, 0.28),
+    inset -1px 0 rgba(255, 255, 255, 0.018);
+}
+
+.brand {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 7px 10px 24px;
+  border-bottom: 1px solid rgba(210, 235, 222, 0.075);
+}
+
+.brand::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  width: 46px;
+  height: 1px;
+  background: var(--section-accent);
+  box-shadow: 0 0 14px rgba(var(--section-rgb), 0.48);
+  content: "";
+}
+
+.brand-mark {
+  width: 43px;
+  height: 43px;
+  border-radius: 10px;
+  font-size: 21px;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--section-rgb), 0.07),
+    inset 0 1px rgba(255, 255, 255, 0.1),
+    0 0 34px rgba(var(--section-rgb), 0.08);
+}
+
+.brand-copy strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.13em;
+}
+
+.brand-copy small {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+}
+
+.primary-nav {
+  gap: 3px;
+}
+
+.nav-item {
+  min-height: 44px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: 0.005em;
+}
+
+.nav-item:hover {
+  border-color: rgba(var(--section-rgb), 0.08);
+  background: rgba(var(--section-rgb), 0.035);
+}
+
+.nav-item.active {
+  border-color: rgba(var(--section-rgb), 0.2);
+  background:
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.14), rgba(var(--section-rgb), 0.025) 68%, transparent);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.topbar {
+  min-height: 82px;
+  border-bottom-color: rgba(210, 235, 222, 0.09);
+  background:
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.025), transparent 30%),
+    rgba(6, 10, 11, 0.86);
+}
+
+.title-group h1 {
+  font-size: 27px;
+  font-weight: 640;
+  letter-spacing: -0.035em;
+}
+
+.eyebrow,
+.panel-kicker,
+.section-number {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+}
+
+.icon-button,
+.period-control,
+.viewer {
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.icon-button:hover {
+  border-color: rgba(var(--section-rgb), 0.24);
+  background: rgba(var(--section-rgb), 0.065);
+}
+
+.status-banner {
+  min-height: 104px;
+  border-radius: 15px;
+  background:
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.12), transparent 37%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.025), transparent 55%),
+    rgba(11, 17, 19, 0.96);
+  box-shadow:
+    inset 3px 0 var(--section-accent),
+    inset 0 1px rgba(255, 255, 255, 0.045),
+    0 22px 60px rgba(0, 0, 0, 0.2);
+}
+
+.status-banner::before {
+  position: absolute;
+  top: 15px;
+  right: 20px;
+  color: rgba(var(--section-rgb), 0.35);
+  content: "T-MOD / CONTROL CORE / 01";
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+}
+
+.status-symbol {
+  width: 54px;
+  height: 54px;
+  border-radius: 11px;
+  font-size: 27px;
+  transform: rotate(-8deg);
+}
+
+.status-banner strong {
+  font-size: 22px;
+  font-weight: 640;
+}
+
+.kpi-grid {
+  gap: 11px;
+}
+
+.kpi-card {
+  --kpi-rgb: 117, 239, 182;
+  min-height: 154px;
+  border-color: rgba(var(--kpi-rgb), 0.14);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(var(--kpi-rgb), 0.09), transparent 43%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.025), transparent 62%),
+    rgba(11, 17, 19, 0.94);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 -2px rgba(var(--kpi-rgb), 0.05),
+    0 18px 50px rgba(0, 0, 0, 0.16);
+}
+
+.kpi-card.accent-blue { --kpi-rgb: 114, 166, 255; }
+.kpi-card.accent-amber { --kpi-rgb: 255, 202, 106; }
+.kpi-card.accent-violet { --kpi-rgb: 189, 153, 255; }
+
+.kpi-card::before {
+  right: auto;
+  left: 0;
+  width: 34%;
+  height: 2px;
+  background: linear-gradient(90deg, rgb(var(--kpi-rgb)), transparent);
+  opacity: 0.72;
+}
+
+.kpi-card::after {
+  right: -38px;
+  bottom: -60px;
+  width: 140px;
+  height: 140px;
+  background: rgb(var(--kpi-rgb));
+  opacity: 0.055;
+}
+
+.kpi-head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+.kpi-head i {
+  border: 1px solid rgba(var(--kpi-rgb), 0.16);
+  border-radius: 7px;
+  color: rgb(var(--kpi-rgb));
+}
+
+.kpi-card > strong {
+  margin-top: 23px;
+  font-size: clamp(30px, 3vw, 39px);
+  font-weight: 650;
+}
+
+.panel {
+  border-color: rgba(210, 235, 222, 0.095);
+  border-radius: 13px;
+  background:
+    linear-gradient(135deg, rgba(var(--section-rgb), 0.032), transparent 34%),
+    rgba(11, 17, 19, 0.94);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 20px 56px rgba(0, 0, 0, 0.14);
+}
+
+.panel-head {
+  min-height: 78px;
+  border-bottom-color: rgba(210, 235, 222, 0.075);
+  background:
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.045), transparent 42%);
+}
+
+.panel-head h2,
+.section-intro h2,
+.reactor-card header strong,
+.minecraft-manager-head h2 {
+  font-family: var(--font-display);
+  font-weight: 640;
+}
+
+.section-intro {
+  position: relative;
+  min-height: 116px;
+  margin-bottom: 20px;
+  padding: 23px 24px 23px 27px;
+  border: 1px solid rgba(var(--section-rgb), 0.1);
+  border-radius: 13px;
+  background:
+    linear-gradient(90deg, rgba(var(--section-rgb), 0.07), transparent 52%),
+    rgba(10, 15, 17, 0.72);
+}
+
+.section-intro::before {
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 0;
+  width: 3px;
+  background: var(--section-accent);
+  box-shadow: 0 0 18px rgba(var(--section-rgb), 0.45);
+  content: "";
+}
+
+.section-intro h2 {
+  font-size: clamp(25px, 3vw, 34px);
+  letter-spacing: -0.035em;
+}
+
+.section-intro p {
+  max-width: 760px;
+  font-size: 13px;
+}
+
+.reactor-command-deck {
+  gap: 11px;
+}
+
+.reactor-card {
+  --card-rgb: 121, 242, 189;
+  min-height: 184px;
+  padding: 18px;
+  border-color: rgba(var(--card-rgb), 0.14);
+  border-radius: 12px;
+  background:
+    linear-gradient(140deg, rgba(var(--card-rgb), 0.075), transparent 42%),
+    rgba(10, 16, 18, 0.95);
+  box-shadow:
+    inset 3px 0 rgba(var(--card-rgb), 0.72),
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 18px 46px rgba(0, 0, 0, 0.18);
+}
+
+.attention-center { --card-rgb: 255, 190, 92; }
+.health-center { --card-rgb: 105, 181, 255; }
+.event-center { --card-rgb: 190, 151, 255; }
+.minecraft-peek { --card-rgb: 157, 222, 131; }
+
+.reactor-card::after {
+  right: -22px;
+  bottom: -25px;
+  width: 160px;
+  height: 100px;
+  background:
+    linear-gradient(rgba(var(--card-rgb), 0.17) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--card-rgb), 0.17) 1px, transparent 1px);
+  background-size: 16px 16px;
+  opacity: 0.2;
+  transform: rotate(-7deg);
+}
+
+.reactor-card > header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(var(--card-rgb), 0.1);
+}
+
+.reactor-card-icon {
+  border-color: rgba(var(--card-rgb), 0.28);
+  border-radius: 8px;
+  background: rgba(var(--card-rgb), 0.1);
+  color: rgb(var(--card-rgb));
+}
+
+.reactor-card header small {
+  color: rgba(var(--card-rgb), 0.68);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.reactor-card header > b,
+.reactor-card header > i {
+  border-color: rgba(var(--card-rgb), 0.3);
+  border-radius: 6px;
+  color: rgb(var(--card-rgb));
+  font-family: var(--font-mono);
+}
+
+.health-node,
+.attention-row,
+.inbox-item,
+.layout-item {
+  border: 1px solid rgba(217, 239, 228, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.023);
+}
+
+.health-node:hover,
+.attention-row:hover,
+.inbox-item:hover,
+.layout-item:hover {
+  border-color: rgba(var(--section-rgb), 0.17);
+  background: rgba(var(--section-rgb), 0.045);
+}
+
+.reactor-event {
+  min-height: 32px;
+  border-left: 1px solid rgba(190, 151, 255, 0.16);
+  border-radius: 0 6px 6px 0;
+}
+
+.reactor-event:hover {
+  border-left-color: rgba(190, 151, 255, 0.7);
+  background: rgba(190, 151, 255, 0.045);
+}
+
+.reactor-dialog {
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, rgba(117, 239, 182, 0.04), transparent 42%),
+    rgba(8, 13, 15, 0.99);
+  box-shadow:
+    0 40px 130px rgba(0, 0, 0, 0.74),
+    0 0 0 1px rgba(117, 239, 182, 0.035),
+    0 0 70px rgba(117, 239, 182, 0.05);
+}
+
+.confirm-mark {
+  border-radius: 12px;
+}
+
+.minecraft-intro {
+  border-color: rgba(157, 222, 131, 0.16);
+  background:
+    linear-gradient(90deg, rgba(157, 222, 131, 0.1), transparent 48%),
+    linear-gradient(rgba(157, 222, 131, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(157, 222, 131, 0.025) 1px, transparent 1px),
+    rgba(8, 14, 11, 0.9);
+  background-size: auto, 24px 24px, 24px 24px, auto;
+}
+
+.minecraft-tabs {
+  border-radius: 11px;
+  background: rgba(6, 11, 9, 0.94);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.03),
+    0 16px 44px rgba(0, 0, 0, 0.16);
+}
+
+.minecraft-tabs button {
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.minecraft-tabs button.active {
+  background: linear-gradient(135deg, rgba(157, 222, 131, 0.19), rgba(157, 222, 131, 0.045));
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 -2px rgba(157, 222, 131, 0.08);
+}
+
+.minecraft-world-card {
+  min-height: 460px;
+  border-color: rgba(157, 222, 131, 0.18);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(157, 222, 131, 0.16), transparent 31%),
+    linear-gradient(rgba(157, 222, 131, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(157, 222, 131, 0.035) 1px, transparent 1px),
+    #07100b;
+  background-size: auto, 22px 22px, 22px 22px, auto;
+  box-shadow:
+    inset 0 0 80px rgba(0, 0, 0, 0.44),
+    inset 3px 0 rgba(157, 222, 131, 0.65),
+    0 24px 70px rgba(0, 0, 0, 0.2);
+}
+
+.minecraft-world-card::before {
+  background:
+    linear-gradient(90deg, transparent 49.7%, rgba(157, 222, 131, 0.08) 50%, transparent 50.3%),
+    linear-gradient(transparent 49.7%, rgba(157, 222, 131, 0.08) 50%, transparent 50.3%);
+  background-size: 100% 100%;
+  opacity: 1;
+}
+
+.minecraft-orbit {
+  width: 254px;
+  height: 254px;
+  border-style: dashed;
+  animation: minecraftOrbit 22s linear infinite;
+}
+
+.minecraft-orbit::before {
+  position: absolute;
+  inset: 23px;
+  border: 1px solid rgba(157, 222, 131, 0.09);
+  border-radius: 50%;
+  content: "";
+}
+
+.minecraft-scanline {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 90px;
+  background: linear-gradient(180deg, transparent, rgba(157, 222, 131, 0.055), transparent);
+  animation: minecraftScan 7s linear infinite;
+  pointer-events: none;
+}
+
+.minecraft-world-card h2 {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  letter-spacing: -0.04em;
+}
+
+.minecraft-world-card > strong {
+  font-family: var(--font-display);
+  font-size: 60px;
+  font-weight: 680;
+  text-shadow: 0 0 34px rgba(157, 222, 131, 0.18);
+}
+
+.minecraft-telemetry-labels {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  left: 18px;
+  display: flex;
+  justify-content: space-between;
+  color: rgba(157, 222, 131, 0.42);
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.minecraft-controls {
+  border-color: rgba(157, 222, 131, 0.12);
+  background:
+    linear-gradient(145deg, rgba(157, 222, 131, 0.045), transparent 38%),
+    rgba(10, 16, 13, 0.95);
+}
+
+.minecraft-action-row {
+  padding: 0 18px;
+}
+
+.minecraft-inline-form {
+  margin-inline: 18px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.minecraft-safety-note {
+  margin: 0 18px 18px;
+  border: 1px solid rgba(157, 222, 131, 0.1);
+  border-left: 3px solid #9dde83;
+  border-radius: 0 8px 8px 0;
+  background: rgba(157, 222, 131, 0.035);
+}
+
+.minecraft-file-manager,
+.minecraft-plugins-panel,
+.minecraft-console-panel,
+.minecraft-log-panel {
+  border-radius: 12px;
+  background:
+    linear-gradient(150deg, rgba(157, 222, 131, 0.035), transparent 36%),
+    #09100d;
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 24px 70px rgba(0, 0, 0, 0.2);
+}
+
+.minecraft-file-row {
+  border-top-color: rgba(157, 222, 131, 0.055);
+}
+
+.minecraft-file-row:hover {
+  background:
+    linear-gradient(90deg, rgba(157, 222, 131, 0.065), transparent 62%);
+  box-shadow: inset 2px 0 rgba(157, 222, 131, 0.46);
+}
+
+.minecraft-plugin-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background:
+    linear-gradient(145deg, rgba(157, 222, 131, 0.085), transparent 46%),
+    rgba(255, 255, 255, 0.02);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
+  transition:
+    border-color 180ms ease,
+    transform 220ms var(--ease-out),
+    box-shadow 220ms ease;
+}
+
+.minecraft-plugin-card::after {
+  position: absolute;
+  right: -24px;
+  bottom: -24px;
+  width: 92px;
+  height: 92px;
+  border: 1px solid rgba(157, 222, 131, 0.09);
+  content: "";
+  transform: rotate(45deg);
+}
+
+.minecraft-plugin-card:hover {
+  border-color: rgba(157, 222, 131, 0.24);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.2);
+  transform: translateY(-2px);
+}
+
+.minecraft-terminal,
+.minecraft-editor-dialog textarea {
+  border-color: rgba(157, 222, 131, 0.12);
+  border-radius: 8px;
+  background:
+    repeating-linear-gradient(180deg, rgba(157, 222, 131, 0.018) 0 1px, transparent 1px 4px),
+    #030806;
+  color: #b9e6aa;
+  box-shadow:
+    inset 0 0 55px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+.minecraft-backup-create {
+  border-color: rgba(157, 222, 131, 0.14);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 22%, rgba(157, 222, 131, 0.13), transparent 35%),
+    linear-gradient(rgba(157, 222, 131, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(157, 222, 131, 0.025) 1px, transparent 1px),
+    #08100c;
+  background-size: auto, 22px 22px, 22px 22px, auto;
+}
+
+.minecraft-backup-mark {
+  border-radius: 14px;
+  transform: rotate(-5deg);
+}
+
+.minecraft-backup-row,
+.minecraft-trash-row {
+  border-radius: 8px;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.minecraft-backup-row:hover,
+.minecraft-trash-row:hover {
+  border-color: rgba(157, 222, 131, 0.18);
+  background: rgba(157, 222, 131, 0.04);
+}
+
+.primary-button,
+.primary-link,
+.secondary-button,
+.icon-button,
+.danger-soft-button {
+  border-radius: 8px;
+}
+
+.primary-button,
+.primary-link {
+  background: linear-gradient(135deg, #8cf5c1, #5fd99f);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.34),
+    0 10px 28px rgba(95, 217, 159, 0.11);
+}
+
+.danger-soft-button {
+  background: linear-gradient(135deg, rgba(255, 102, 122, 0.13), rgba(255, 102, 122, 0.06));
+}
+
+@keyframes minecraftOrbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes minecraftScan {
+  from { transform: translateY(-100px); }
+  to { transform: translateY(470px); }
+}
+
+@media (max-width: 980px) {
+  :root { --sidebar: 218px; }
+  .status-banner::before { display: none; }
+  .minecraft-telemetry-labels { display: none; }
+}
+
+@media (max-width: 760px) {
+  .section-intro {
+    min-height: 0;
+    padding: 19px 18px 19px 21px;
+  }
+
+  .reactor-card {
+    min-height: 0;
+  }
+
+  .minecraft-world-card {
+    min-height: 400px;
+  }
+
+  .minecraft-action-row,
+  .minecraft-inline-form,
+  .minecraft-safety-note {
+    margin-inline: 12px;
+    padding-inline: 12px;
   }
 }

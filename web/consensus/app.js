@@ -89,9 +89,9 @@ function setDataLoading(visible) {
 
 function schedulePoll(delay = null) {
   clearTimeout(pollTimer);
-  const nextDelay = delay ?? (state?.active ? 2500 : 8000);
+  const nextDelay = delay ?? (document.hidden ? 15000 : state?.active ? 2500 : 8000);
   pollTimer = setTimeout(async () => {
-    if (!document.hidden && !dashboard.hidden) await fetchState();
+    if (!dashboard.hidden) await fetchState();
     schedulePoll();
   }, nextDelay);
 }
@@ -1167,6 +1167,9 @@ async function fetchState({ first = false, blocking = false } = {}) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     const nextSignature = payloadSignature(payload);
+    if (!first && stateSignature && nextSignature !== stateSignature && document.hidden) {
+      globalThis.TModTabSignal?.pulse("Консенсус обновлён");
+    }
     if (first || nextSignature !== stateSignature) {
       render(payload);
       stateSignature = nextSignature;

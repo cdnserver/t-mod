@@ -33,9 +33,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("PrivateKey", script)
 
     def test_direct_network_configuration_enforces_container_settings(self) -> None:
-        script = (ROOT / "configure_direct_web_windows.ps1").read_text(
-            encoding="utf-8"
-        )
+        script = (ROOT / "configure_direct_web_windows.ps1").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         caddyfile = (ROOT / "Caddyfile").read_text(encoding="utf-8")
         example = (ROOT / ".env.persistent.example").read_text(encoding="utf-8")
@@ -51,9 +49,24 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("reverse_proxy tmod-discord-bot:8787", caddyfile)
         self.assertNotIn("cloudflare", caddyfile.lower())
         self.assertIn(
-            "CONSENSUS_WEB_PUBLIC_URL=https://tvr.lat",
+            "CONSENSUS_WEB_PUBLIC_URL=https://consensus.tvr.lat",
             example,
         )
+        self.assertIn("REACTOR_WEB_PUBLIC_URL=https://reactor.tvr.lat", example)
+        self.assertIn("PORTAL_WEB_PUBLIC_URL=https://tvr.lat", example)
+        self.assertIn("reactor.tvr.lat", caddyfile)
+        self.assertIn("consensus.tvr.lat", caddyfile)
+        self.assertIn("zigmund.tvr.lat", caddyfile)
+        self.assertNotIn("mc.tvr.lat", caddyfile)
+        self.assertIn('"25565:25565/tcp"', compose)
+        self.assertIn("MINECRAFT_PUBLIC_ADDRESS=mc.tvr.lat", example)
+        self.assertNotIn('RCON_PASSWORD: "', compose)
+        self.assertIn("RCON_PASSWORD_FILE", compose)
+        self.assertIn("minecraft-supervisor", compose)
+        self.assertIn("minecraft-supervisor-token.txt", compose)
+        self.assertIn('"/var/run/docker.sock:/var/run/docker.sock"', compose)
+        bot_service = compose.split("  tmod-caddy:", 1)[0]
+        self.assertNotIn("/var/run/docker.sock", bot_service)
 
 
 if __name__ == "__main__":

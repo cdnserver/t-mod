@@ -9,7 +9,6 @@ import hmac
 import re
 import secrets
 import sqlite3
-import time
 from dataclasses import dataclass
 
 from persistence.core import _db_lock, connect, utc_now_iso
@@ -20,8 +19,7 @@ _PIN_PATTERN = re.compile(r"^[0-9]{8}$")
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
 _SCRYPT_P = 1
-_MAX_FAILURES = 5
-_LOCK_SECONDS = 5 * 60
+_MAX_FAILURES = 3
 _DUMMY_HASH: str | None = None
 
 
@@ -31,6 +29,8 @@ class WebCredential:
     user_id: int
     login: str
     session_version: int
+    failed_attempts: int
+    reset_required: bool
     last_login_at: str | None
     created_at: str
     updated_at: str
@@ -40,6 +40,9 @@ class WebCredential:
 class WebAuthenticationResult:
     status: str
     credential: WebCredential | None = None
+    user_id: int | None = None
+    failed_attempts: int = 0
+    notify_owner: bool = False
 
 
 def normalize_web_login(value: str) -> str:
@@ -111,6 +114,8 @@ def _credential_from_row(row: sqlite3.Row | None) -> WebCredential | None:
         user_id=int(row["user_id"]),
         login=str(row["login_display"]),
         session_version=int(row["session_version"]),
+        failed_attempts=int(row["failed_attempts"] or 0),
+        reset_required=bool(row["reset_required"]),
         last_login_at=row["last_login_at"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
@@ -144,9 +149,9 @@ def configure_web_credential(
                 INSERT INTO web_credentials(
                     guild_id, user_id, login_key, login_display, pin_hash,
                     session_version, failed_attempts, locked_until,
-                    created_at, updated_at
+                    reset_required, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, 1, 0, 0, ?, ?)
+                VALUES(?, ?, ?, ?, ?, 1, 0, 0, 0, ?, ?)
                 ON CONFLICT(guild_id, user_id) DO UPDATE SET
                     login_key = excluded.login_key,
                     login_display = excluded.login_display,
@@ -154,6 +159,7 @@ def configure_web_credential(
                     session_version = web_credentials.session_version + 1,
                     failed_attempts = 0,
                     locked_until = 0,
+                    reset_required = 0,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -202,7 +208,6 @@ def authenticate_web_credential(
     except ValueError:
         _verify_pin("00000000", _dummy_hash())
         return WebAuthenticationResult("invalid")
-    now = int(now_epoch if now_epoch is not None else time.time())
     with _db_lock, connect() as con:
         row = con.execute(
             "SELECT * FROM web_credentials WHERE guild_id = ? AND login_key = ?",
@@ -212,8 +217,12 @@ def authenticate_web_credential(
         _verify_pin(clean_pin, _dummy_hash())
         return WebAuthenticationResult("invalid")
     valid = _verify_pin(clean_pin, str(row["pin_hash"]))
-    if int(row["locked_until"] or 0) > now:
-        return WebAuthenticationResult("locked")
+    if bool(row["reset_required"]):
+        return WebAuthenticationResult(
+            "reset_required",
+            user_id=int(row["user_id"]),
+            failed_attempts=int(row["failed_attempts"] or _MAX_FAILURES),
+        )
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         current = con.execute(
@@ -228,16 +237,20 @@ def authenticate_web_credential(
             return WebAuthenticationResult("invalid")
         if not valid:
             failures = int(current["failed_attempts"] or 0) + 1
-            locked_until = now + _LOCK_SECONDS if failures >= _MAX_FAILURES else 0
+            reset_required = failures >= _MAX_FAILURES
             con.execute(
                 """
                 UPDATE web_credentials
-                SET failed_attempts = ?, locked_until = ?, updated_at = ?
+                SET failed_attempts = ?, locked_until = 0,
+                    reset_required = ?,
+                    session_version = session_version + ?,
+                    updated_at = ?
                 WHERE guild_id = ? AND user_id = ?
                 """,
                 (
                     failures,
-                    locked_until,
+                    1 if reset_required else 0,
+                    1 if reset_required else 0,
                     utc_now_iso(),
                     int(guild_id),
                     int(row["user_id"]),
@@ -245,13 +258,16 @@ def authenticate_web_credential(
             )
             con.commit()
             return WebAuthenticationResult(
-                "locked" if locked_until else "invalid"
+                "reset_required" if reset_required else "invalid",
+                user_id=int(row["user_id"]),
+                failed_attempts=failures,
+                notify_owner=True,
             )
         logged_in_at = utc_now_iso()
         con.execute(
             """
             UPDATE web_credentials
-            SET failed_attempts = 0, locked_until = 0,
+            SET failed_attempts = 0, locked_until = 0, reset_required = 0,
                 last_login_at = ?, updated_at = ?
             WHERE guild_id = ? AND user_id = ?
             """,
@@ -267,7 +283,12 @@ def authenticate_web_credential(
             (int(guild_id), int(row["user_id"])),
         ).fetchone()
         con.commit()
-    return WebAuthenticationResult("ok", _credential_from_row(current))
+    credential = _credential_from_row(current)
+    return WebAuthenticationResult(
+        "ok",
+        credential,
+        user_id=(credential.user_id if credential is not None else None),
+    )
 
 
 def web_session_version_matches(

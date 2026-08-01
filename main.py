@@ -441,6 +441,11 @@ class TModBot(commands.Bot):
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
                 print(t("console.synced_guild", count=len(synced), guild_id=GUILD_ID))
+                global_synced = await self.tree.sync()
+                print(
+                    "Global commands synchronized for Discord DMs: "
+                    f"{len(global_synced)}"
+                )
             else:
                 synced = await self.tree.sync()
                 print(t("console.synced_global", count=len(synced)))

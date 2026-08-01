@@ -22,6 +22,7 @@ from modules.delivery_runtime import wake_delivery_worker
 from modules.music_runtime_errors import MusicRuntimeError
 from modules.profile import PROFILE_ROLE_HIERARCHY
 from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
+from modules.web_snapshot_cache import AsyncSnapshotCache
 from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import activity_repository as activity_storage
 from persistence import bill_workspace_repository as workspace_storage
@@ -40,8 +41,7 @@ ADMIN_BROADCAST_TOPIC = "admin.broadcast.dm.v1"
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
     role_ids = {
-        int(getattr(role, "id", 0) or 0)
-        for role in getattr(member, "roles", ())
+        int(getattr(role, "id", 0) or 0) for role in getattr(member, "roles", ())
     }
     return [
         {
@@ -53,6 +53,7 @@ def _member_positions(member: Any) -> list[dict[str, Any]]:
         for role_id, emoji, label, description in PROFILE_ROLE_HIERARCHY
         if int(role_id) in role_ids
     ]
+
 
 AuthenticatedRequest = Callable[
     [web.Request],
@@ -231,14 +232,10 @@ def _craft_plan_payload(
 ) -> dict[str, Any]:
     recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
     active_batch = (
-        plan.get("active_batch")
-        if isinstance(plan.get("active_batch"), dict)
-        else None
+        plan.get("active_batch") if isinstance(plan.get("active_batch"), dict) else None
     )
     last_batch = (
-        plan.get("last_batch")
-        if isinstance(plan.get("last_batch"), dict)
-        else None
+        plan.get("last_batch") if isinstance(plan.get("last_batch"), dict) else None
     )
     message_id = int(plan.get("message_id") or 0)
     channel_id = int(plan.get("thread_id") or plan.get("channel_id") or 0)
@@ -319,6 +316,10 @@ def register_admin_web_routes(
     """Attach protected administrative views and audited commands."""
 
     command_receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+    overview_cache = AsyncSnapshotCache[int, dict[str, Any]](
+        ttl_seconds=8,
+        max_stale_seconds=180,
+    )
 
     async def admin_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "admin.html")
@@ -422,9 +423,8 @@ def register_admin_web_routes(
                 workspace_storage.get_bill_workspace,
                 workspace_id,
             )
-            if (
-                workspace is not None
-                and int(workspace.get("guild_id") or 0) == int(guild_id)
+            if workspace is not None and int(workspace.get("guild_id") or 0) == int(
+                guild_id
             ):
                 item = workspace
         else:
@@ -453,11 +453,7 @@ def register_admin_web_routes(
         if kind == "member":
             guild = bot.get_guild(int(guild_id))
             get_member = getattr(guild, "get_member", None)
-            member = (
-                get_member(int(item["user_id"]))
-                if callable(get_member)
-                else None
-            )
+            member = get_member(int(item["user_id"])) if callable(get_member) else None
             positions = _member_positions(member)
             item["legal_positions"] = positions
             item["legal_status"] = (
@@ -476,9 +472,7 @@ def register_admin_web_routes(
             "case": f"Кейс СГЛ №{item.get('case_number') or record_key}",
             "archive": f"Архив кейса №{item.get('case_number') or record_key}",
             "member": str(
-                item.get("display_name")
-                or item.get("name")
-                or f"Участник {record_key}"
+                item.get("display_name") or item.get("name") or f"Участник {record_key}"
             ),
             "broadcast": f"Кампания #{record_key}",
         }
@@ -597,9 +591,7 @@ def register_admin_web_routes(
                 "last_error": str(exc),
             }
 
-    async def overview(request: web.Request) -> web.Response:
-        principal = await administrative_request(request)
-        days = _query_int(request, "days", 30, minimum=1, maximum=365)
+    async def build_overview_snapshot(days: int) -> dict[str, Any]:
         (
             counts,
             finance_state,
@@ -658,50 +650,64 @@ def register_admin_web_routes(
             latency_ms = max(0, round(float(raw_latency) * 1000))
         except (TypeError, ValueError):
             latency_ms = None
-        return web.json_response(
-            {
-                **context(principal),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "days": days,
-                "counts": counts,
-                "finance": {
-                    "state": finance_state,
-                    "stats": finance_stats,
-                },
-                "craft": {
-                    "stats": craft_stats,
-                    "active_plans": [
-                        _craft_plan_payload(plan, int(guild_id))
-                        for plan in active_plans
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "days": days,
+            "counts": counts,
+            "finance": {
+                "state": finance_state,
+                "stats": finance_stats,
+            },
+            "craft": {
+                "stats": craft_stats,
+                "active_plans": [
+                    _craft_plan_payload(plan, int(guild_id)) for plan in active_plans
+                ],
+            },
+            "audit": actions,
+            "discord": {
+                "stats": discord_stats,
+                "events": {
+                    **discord_events,
+                    "items": [
+                        {
+                            **item,
+                            "discord_url": _discord_message_url(
+                                int(guild_id),
+                                item.get("channel_id"),
+                                item.get("message_id"),
+                            ),
+                        }
+                        for item in discord_events["items"]
                     ],
                 },
-                "audit": actions,
-                "discord": {
-                    "stats": discord_stats,
-                    "events": {
-                        **discord_events,
-                        "items": [
-                            {
-                                **item,
-                                "discord_url": _discord_message_url(
-                                    int(guild_id),
-                                    item.get("channel_id"),
-                                    item.get("message_id"),
-                                ),
-                            }
-                            for item in discord_events["items"]
-                        ],
-                    },
-                },
-                "system": {
-                    "bot": str(bot_user or "T-Mod"),
-                    "connected": guild is not None,
-                    "latency_ms": latency_ms,
-                    "members": len(getattr(guild, "members", ()) or ()),
-                    "channels": len(getattr(guild, "channels", ()) or ()),
-                },
+            },
+            "system": {
+                "bot": str(bot_user or "T-Mod"),
+                "connected": guild is not None,
+                "latency_ms": latency_ms,
+                "members": len(getattr(guild, "members", ()) or ()),
+                "channels": len(getattr(guild, "channels", ()) or ()),
+            },
+        }
+
+    async def overview(request: web.Request) -> web.Response:
+        principal = await administrative_request(request)
+        days = _query_int(request, "days", 30, minimum=1, maximum=365)
+        snapshot, cache_state = await overview_cache.get(
+            days,
+            lambda: build_overview_snapshot(days),
+            force=request.query.get("fresh") == "1",
+        )
+        response = web.json_response(
+            {
+                **context(principal),
+                **snapshot,
+                "cache_state": cache_state,
             }
         )
+        response.headers["X-T-Mod-Cache"] = cache_state
+        return response
 
     async def actions(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
@@ -741,9 +747,7 @@ def register_admin_web_routes(
                     dashboard_storage.admin_finance_events,
                     int(guild_id),
                     days=days,
-                    event_kind=(
-                        str(request.query.get("kind", "")).strip() or None
-                    ),
+                    event_kind=(str(request.query.get("kind", "")).strip() or None),
                     actor_id=_optional_query_id(request, "actor_id"),
                     code=str(request.query.get("code", "")).strip() or None,
                     query=str(request.query.get("q", "")).strip() or None,
@@ -821,12 +825,10 @@ def register_admin_web_routes(
                 **context(principal),
                 "stats": stats,
                 "active_plans": [
-                    _craft_plan_payload(plan, int(guild_id))
-                    for plan in active
+                    _craft_plan_payload(plan, int(guild_id)) for plan in active
                 ],
                 "recent_plans": [
-                    _craft_plan_payload(plan, int(guild_id))
-                    for plan in recent
+                    _craft_plan_payload(plan, int(guild_id)) for plan in recent
                 ],
                 "events": events,
             }
@@ -845,9 +847,7 @@ def register_admin_web_routes(
                 dashboard_storage.admin_discord_events,
                 int(guild_id),
                 days=days,
-                event_type=(
-                    str(request.query.get("type", "")).strip() or None
-                ),
+                event_type=(str(request.query.get("type", "")).strip() or None),
                 user_id=_optional_query_id(request, "user_id"),
                 channel_id=_optional_query_id(request, "channel_id"),
                 query=str(request.query.get("q", "")).strip() or None,
@@ -1161,11 +1161,7 @@ def register_admin_web_routes(
         guild = bot.get_guild(int(guild_id))
         get_member = getattr(guild, "get_member", None)
         for item in result["items"]:
-            member = (
-                get_member(int(item["user_id"]))
-                if callable(get_member)
-                else None
-            )
+            member = get_member(int(item["user_id"])) if callable(get_member) else None
             positions = _member_positions(member)
             item["legal_positions"] = positions
             item["legal_status"] = (
@@ -1292,8 +1288,7 @@ def register_admin_web_routes(
         result = {
             "ok": True,
             "message": (
-                f"Уведомление поставлено в очередь для "
-                f"{len(recipients)} сенаторов."
+                f"Уведомление поставлено в очередь для {len(recipients)} сенаторов."
             ),
             "broadcast": broadcast,
         }
@@ -1339,16 +1334,10 @@ def register_admin_web_routes(
                 **context(principal),
                 "legal_positions": _member_positions(principal.member),
                 "profile": (
-                    asdict(profile_record)
-                    if profile_record is not None
-                    else None
+                    asdict(profile_record) if profile_record is not None else None
                 ),
                 "characters": [asdict(character) for character in characters],
-                "voice": (
-                    asdict(voice_profile)
-                    if voice_profile is not None
-                    else None
-                ),
+                "voice": (asdict(voice_profile) if voice_profile is not None else None),
             }
         )
 
@@ -1518,12 +1507,8 @@ def register_admin_web_routes(
                         if getattr(bot, "latency", None) is not None
                         else None
                     ),
-                    "members_cached": len(
-                        getattr(guild, "members", ()) or ()
-                    ),
-                    "channels_cached": len(
-                        getattr(guild, "channels", ()) or ()
-                    ),
+                    "members_cached": len(getattr(guild, "members", ()) or ()),
+                    "channels_cached": len(getattr(guild, "channels", ()) or ()),
                 },
             }
         )
@@ -1565,9 +1550,7 @@ def register_admin_web_routes(
                     )
                     if panel_service is not None and guild is not None:
                         try:
-                            panel_message = await panel_service.refresh_guild(
-                                guild
-                            )
+                            panel_message = await panel_service.refresh_guild(guild)
                         except (discord.DiscordException, OSError):
                             panel_message = None
                         panel_channel = getattr(
@@ -1704,6 +1687,28 @@ def register_admin_web_routes(
     app.router.add_get("/api/admin/system", system)
     app.router.add_get("/api/admin/media", media_status)
     app.router.add_post("/api/admin/media/command", media_command)
+
+    warm_tasks: list[asyncio.Task[None]] = []
+
+    async def warm_overview() -> None:
+        try:
+            await overview_cache.get(30, lambda: build_overview_snapshot(30))
+        except Exception:
+            # A cache warmup must never prevent the web server from starting.
+            pass
+
+    async def begin_warmup(_: web.Application) -> None:
+        warm_tasks.append(asyncio.create_task(warm_overview()))
+
+    async def stop_warmup(_: web.Application) -> None:
+        for task in warm_tasks:
+            if not task.done():
+                task.cancel()
+        if warm_tasks:
+            await asyncio.gather(*warm_tasks, return_exceptions=True)
+
+    app.on_startup.append(begin_warmup)
+    app.on_cleanup.append(stop_warmup)
 
 
 __all__ = [

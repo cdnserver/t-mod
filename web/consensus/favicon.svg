@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="5" x2="57" y2="61" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17251f"/>
+      <stop offset="1" stop-color="#070b0a"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="15" y1="15" x2="49" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#d5ffe3"/>
+      <stop offset="1" stop-color="#76e8ad"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="17" fill="url(#bg)" stroke="#375348" stroke-width="2"/>
+  <circle cx="32" cy="32" r="20" fill="none" stroke="#9cf2bd" stroke-opacity=".2"/>
+  <ellipse cx="32" cy="32" rx="22" ry="9" fill="none" stroke="#9cf2bd" stroke-width="1.7" stroke-opacity=".72" transform="rotate(-28 32 32)"/>
+  <ellipse cx="32" cy="32" rx="22" ry="9" fill="none" stroke="#8fc9ff" stroke-width="1.4" stroke-opacity=".45" transform="rotate(28 32 32)"/>
+  <circle cx="50" cy="21" r="2.7" fill="#c8ffda" filter="url(#glow)"/>
+  <path d="M22 20h20v6h-7v19h-6V26h-7z" fill="url(#mint)" filter="url(#glow)"/>
+</svg>

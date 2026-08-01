@@ -43,8 +43,10 @@ function Test-EnvConfiguration {
         CONSENSUS_WEB_ENABLED = "true"
         CONSENSUS_WEB_HOST = "0.0.0.0"
         CONSENSUS_WEB_PORT = "8787"
-        CONSENSUS_WEB_PUBLIC_NAME = $PublicDomain
-        CONSENSUS_WEB_PUBLIC_URL = "https://${PublicDomain}"
+        CONSENSUS_WEB_PUBLIC_NAME = "consensus.${PublicDomain}"
+        CONSENSUS_WEB_PUBLIC_URL = "https://consensus.${PublicDomain}"
+        REACTOR_WEB_PUBLIC_URL = "https://reactor.${PublicDomain}"
+        PORTAL_WEB_PUBLIC_URL = "https://${PublicDomain}"
     }
     foreach ($key in $expected.Keys) {
         if (!$actual.ContainsKey($key) -or $actual[$key] -ne $expected[$key]) {
@@ -101,8 +103,10 @@ function Set-EnvConfiguration {
         CONSENSUS_WEB_ENABLED = "true"
         CONSENSUS_WEB_HOST = "0.0.0.0"
         CONSENSUS_WEB_PORT = "8787"
-        CONSENSUS_WEB_PUBLIC_NAME = $PublicDomain
-        CONSENSUS_WEB_PUBLIC_URL = "https://${PublicDomain}"
+        CONSENSUS_WEB_PUBLIC_NAME = "consensus.${PublicDomain}"
+        CONSENSUS_WEB_PUBLIC_URL = "https://consensus.${PublicDomain}"
+        REACTOR_WEB_PUBLIC_URL = "https://reactor.${PublicDomain}"
+        PORTAL_WEB_PUBLIC_URL = "https://${PublicDomain}"
     }
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($line in (Get-Content -LiteralPath $TargetEnvPath -Encoding UTF8)) {
@@ -198,6 +202,9 @@ if (!$alreadyConfigured) {
     }
 }
 
-Write-Host "  [OK] Direct HTTPS domain: https://${PublicDomain}"
+Write-Host "  [OK] Member Reactor: https://${PublicDomain}"
+Write-Host "  [OK] Nuclear Reactor: https://reactor.${PublicDomain}"
+Write-Host "  [OK] Consensus: https://consensus.${PublicDomain}"
+Write-Host "  [OK] Zigmund: https://zigmund.${PublicDomain}"
 Write-Host "  [OK] T-Mod firewall rules allow public web ports 80/TCP and 443/TCP."
 Write-Host "  [OK] Internal T-Mod port 8787 remains bound to localhost."

@@ -1,8 +1,23 @@
 "use strict";
 
 const PAGE_SIZE = 50;
-const REFRESH_INTERVAL = 10000;
 const MEDIA_REFRESH_INTERVAL = 3000;
+const GLOBAL_ACTIVITY_INTERVAL = 60000;
+const REFRESH_INTERVALS = Object.freeze({
+  overview: 20000,
+  craft: 20000,
+  discord: 20000,
+  communications: 30000,
+  minecraft: 30000,
+  system: 30000,
+  audit: 45000,
+  treasury: 45000,
+  market: 45000,
+  bills: 60000,
+  sgl: 60000,
+  members: 60000,
+  modules: 120000,
+});
 const NOTIFICATION_SOUND_KEY = "t-control-notification-sound";
 
 const sectionMeta = {
@@ -20,6 +35,7 @@ const sectionMeta = {
   profile: ["PERSONAL SPACE", "Мой профиль"],
   discord: ["DISCORD INTELLIGENCE", "Discord-аудит"],
   system: ["SYSTEM CONTROL", "Технический контур"],
+  minecraft: ["MINECRAFT NODE", "Игровой сервер"],
 };
 
 const moduleLabels = {
@@ -131,9 +147,11 @@ const appState = {
   csrfToken: "",
   guildId: null,
   refreshTimer: null,
+  globalRefreshTimer: null,
   mediaRefreshTimer: null,
   mediaRefreshing: false,
   autoRefreshing: false,
+  forceFresh: false,
   pendingSectionLoad: false,
   toastTimer: null,
   authTimer: null,
@@ -699,9 +717,11 @@ async function switchSection(section, updateHash = true) {
   document.querySelector(".content")?.scrollTo({ top: 0 });
   if (appState.loading) {
     appState.pendingSectionLoad = true;
+    scheduleAutoRefresh();
     return;
   }
   await loadCurrentSection();
+  scheduleAutoRefresh();
 }
 
 function setLoading(value) {
@@ -904,7 +924,8 @@ function renderOverview(data) {
 async function loadOverview(silent = false) {
   if (!silent) setLoading(true);
   try {
-    const data = await fetchJSON(`/api/admin/overview?days=${appState.days}`);
+    const fresh = appState.forceFresh ? "&fresh=1" : "";
+    const data = await fetchJSON(`/api/admin/overview?days=${appState.days}${fresh}`);
     renderOverview(data);
   } catch (error) {
     handleError(error);
@@ -2060,6 +2081,15 @@ async function loadCommunications(offset = appState.offsets.communications) {
 
 async function sendBroadcast() {
   const values = formValues("broadcast-form");
+  const approved = window.TModReactor?.confirm
+    ? await window.TModReactor.confirm({
+        title: "Отправить уведомление всем сенаторам?",
+        message: `Кампания «${values.title || "без заголовка"}» будет поставлена в надёжную очередь личных сообщений.`,
+        accept: "Поставить в очередь",
+        tone: "warning",
+      })
+    : globalThis.confirm("Отправить уведомление всем сенаторам?");
+  if (!approved) return;
   setLoading(true);
   try {
     const result = await postJSON("/api/admin/communications/send", {
@@ -2067,7 +2097,7 @@ async function sendBroadcast() {
       title: values.title,
       body: values.body,
       link_url: values.link_url,
-      confirmed: values.confirmed === "yes",
+      confirmed: true,
     });
     byId("broadcast-form").reset();
     showToast(result.message || "Уведомление поставлено в очередь.");
@@ -2166,6 +2196,17 @@ async function loadMedia(silent = false) {
 }
 
 async function sendMediaCommand(target, action, payload = {}) {
+  if (["stop", "disconnect", "leave"].includes(action)) {
+    const approved = window.TModReactor?.confirm
+      ? await window.TModReactor.confirm({
+          title: "Остановить активный медиаконтур?",
+          message: "Воспроизведение или трансляция будут завершены для всех участников.",
+          accept: "Остановить",
+          tone: "critical",
+        })
+      : globalThis.confirm("Остановить активный медиаконтур?");
+    if (!approved) return;
+  }
   setLoading(true);
   try {
     const result = await postJSON("/api/admin/media/command", {
@@ -2659,14 +2700,42 @@ async function loadCurrentSection() {
   if (appState.section === "system") await loadSystem();
 }
 
-async function refreshCurrentSection(silent = false) {
+async function refreshCurrentSection(silent = false, forceFresh = false) {
   if (appState.loading || appState.autoRefreshing) return;
   appState.autoRefreshing = silent;
+  appState.forceFresh = forceFresh;
   try {
     await loadCurrentSection();
   } finally {
     appState.autoRefreshing = false;
+    appState.forceFresh = false;
   }
+}
+
+function currentRefreshDelay() {
+  return REFRESH_INTERVALS[appState.section] || 60000;
+}
+
+function scheduleAutoRefresh(delay = currentRefreshDelay()) {
+  clearTimeout(appState.refreshTimer);
+  const seconds = Math.max(1, Math.round(delay / 1000));
+  setText("refresh-label", `Авто · ${seconds} сек`);
+  appState.refreshTimer = setTimeout(async () => {
+    try {
+      const excluded = ["media", "profile", "minecraft"].includes(appState.section);
+      if (
+        !document.hidden
+        && appState.authorized
+        && !appState.loading
+        && !byId("admin-shell").hidden
+        && !excluded
+      ) {
+        await refreshCurrentSection(true);
+      }
+    } finally {
+      scheduleAutoRefresh();
+    }
+  }, delay);
 }
 
 async function pollGlobalActivity() {
@@ -2694,7 +2763,7 @@ function bindEvents() {
     button.addEventListener("click", () => switchSection(button.dataset.go));
   });
   byId("refresh-button").addEventListener("click", () =>
-    refreshCurrentSection(false),
+    refreshCurrentSection(false, true),
   );
   byId("notification-toggle").addEventListener("click", async () => {
     appState.soundEnabled = !appState.soundEnabled;
@@ -2727,6 +2796,7 @@ function bindEvents() {
     if (document.hidden || !appState.authorized) return;
     void refreshCurrentSection(true);
     void pollGlobalActivity();
+    scheduleAutoRefresh();
   });
   byId("copy-section-link").addEventListener("click", () =>
     copyRoute(
@@ -2866,13 +2936,12 @@ async function bootstrap() {
   if (!byId("admin-shell").hidden && requestedRoute.kind && requestedRoute.key) {
     await openLinkedRecord(requestedRoute);
   }
-  appState.refreshTimer = setInterval(async () => {
-    if (document.hidden || appState.loading || byId("admin-shell").hidden) return;
-    if (appState.section !== "media" && appState.section !== "profile") {
-      await refreshCurrentSection(true);
+  scheduleAutoRefresh();
+  appState.globalRefreshTimer = setInterval(() => {
+    if (!document.hidden && appState.authorized && !byId("admin-shell").hidden) {
+      void pollGlobalActivity();
     }
-    await pollGlobalActivity();
-  }, REFRESH_INTERVAL);
+  }, GLOBAL_ACTIVITY_INTERVAL);
   appState.mediaRefreshTimer = setInterval(() => {
     if (
       !document.hidden &&
@@ -2883,6 +2952,25 @@ async function bootstrap() {
       loadMedia(true);
     }
   }, MEDIA_REFRESH_INTERVAL);
+  window.addEventListener("pagehide", () => {
+    clearTimeout(appState.refreshTimer);
+    clearInterval(appState.globalRefreshTimer);
+    clearInterval(appState.mediaRefreshTimer);
+  }, { once: true });
 }
+
+window.TModAdmin = Object.freeze({
+  fetchJSON,
+  postJSON,
+  showToast,
+  switchSection,
+  formValues,
+  get csrfToken() {
+    return appState.csrfToken;
+  },
+  get authorized() {
+    return appState.authorized;
+  },
+});
 
 bootstrap();

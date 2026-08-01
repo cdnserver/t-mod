@@ -506,6 +506,9 @@ class ProfileUiTests(unittest.TestCase):
         self.assertIsNotNone(command)
         self.assertEqual([parameter.name for parameter in command.parameters], ["user"])
         self.assertFalse(command.parameters[0].required)
+        reset = bot.tree.get_command("reset")
+        self.assertIsNotNone(reset)
+        self.assertEqual(reset.parameters, [])
 
 
 if __name__ == "__main__":

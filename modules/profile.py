@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -626,7 +627,12 @@ def profile_web_access_embed(
     embed.add_field(
         name="Состояние",
         value=(
-            f"🟢 **Включён**\nЛогин: `{_clean_display(credential.login)}`"
+            (
+                f"🔴 **Требуется сброс**\nЛогин: `{_clean_display(credential.login)}`\n"
+                "Отправьте `/reset` боту в ЛС и задайте новый PIN."
+                if bool(getattr(credential, "reset_required", False))
+                else f"🟢 **Включён**\nЛогин: `{_clean_display(credential.login)}`"
+            )
             if credential is not None
             else "⚪ **Не настроен**\nИспользуйте кнопку «Настроить»."
         ),
@@ -635,8 +641,9 @@ def profile_web_access_embed(
     embed.add_field(
         name="Безопасность",
         value=(
-            "PIN хранится только в виде защищённого хэша. Пять ошибочных попыток "
-            "временно блокируют вход. Смена или отключение доступа завершает старые сессии."
+            "PIN хранится только в виде защищённого хэша. После трёх ошибочных попыток "
+            "вход блокируется до установки нового PIN через `/reset`. Смена или "
+            "отключение доступа завершает старые сессии."
         ),
         inline=False,
     )
@@ -1827,6 +1834,41 @@ def setup_profile(
             embed=profile_embed(target, profile_data, characters, activity, editable=editable),
             view=ProfileHomeView(interaction.user.id, target, characters, editable=editable),
             allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @bot.tree.command(
+        name="reset",
+        description="Сбросить заблокированный логин и PIN веб-панели T-Mod",
+    )
+    async def reset_web_access(interaction: discord.Interaction) -> None:
+        member: discord.Member | None = None
+        if isinstance(interaction.user, discord.Member):
+            member = interaction.user
+        else:
+            configured = str(os.getenv("DISCORD_GUILD_ID", "")).strip()
+            ordered_guilds = list(bot.guilds)
+            if configured.isdigit():
+                ordered_guilds.sort(
+                    key=lambda item: 0 if int(item.id) == int(configured) else 1
+                )
+            for guild in ordered_guilds:
+                candidate = guild.get_member(int(interaction.user.id))
+                if candidate is not None:
+                    member = candidate
+                    break
+        if member is None:
+            await interaction.response.send_message(
+                "Не удалось подтвердить ваше участие на сервере T-Mod.",
+                ephemeral=True,
+            )
+            return
+        credential = await asyncio.to_thread(
+            web_auth_storage.get_web_credential,
+            member.guild.id,
+            member.id,
+        )
+        await interaction.response.send_modal(
+            WebAccessModal(interaction.user.id, member, credential)
         )
 
     @bot.listen("on_member_update")

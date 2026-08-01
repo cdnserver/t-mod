@@ -42,9 +42,11 @@ from modules.consensus_web_control import (
     execute_consensus_web_command,
 )
 from modules.tvrs_presentation import is_chair
+from modules.reactor_web import register_reactor_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
+from persistence import reactor_repository as reactor_storage
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -60,8 +62,7 @@ try:
 except (TypeError, ValueError):
     CONSENSUS_WEB_PORT = 8787
 CONSENSUS_WEB_PUBLIC_NAME = (
-    os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip()
-    or "t.consensus"
+    os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip() or "t.consensus"
 )
 
 
@@ -90,11 +91,34 @@ def _configured_public_url() -> str:
 CONSENSUS_WEB_PUBLIC_URL = _configured_public_url()
 
 
+def _configured_surface_url(variable: str, fallback: str) -> str:
+    value = os.getenv(variable, fallback).strip().rstrip("/")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return fallback
+    return value
+
+
+REACTOR_WEB_PUBLIC_URL = _configured_surface_url(
+    "REACTOR_WEB_PUBLIC_URL",
+    CONSENSUS_WEB_PUBLIC_URL,
+)
+PORTAL_WEB_PUBLIC_URL = _configured_surface_url(
+    "PORTAL_WEB_PUBLIC_URL",
+    CONSENSUS_WEB_PUBLIC_URL,
+)
+
+
 def _configured_guild_id() -> int:
     raw = (
-        os.getenv("CONSENSUS_WEB_GUILD_ID")
-        or os.getenv("DISCORD_GUILD_ID")
-        or "0"
+        os.getenv("CONSENSUS_WEB_GUILD_ID") or os.getenv("DISCORD_GUILD_ID") or "0"
     ).strip()
     return int(raw) if raw.isdigit() else 0
 
@@ -118,7 +142,9 @@ def _access_token() -> str:
     configured = os.getenv("CONSENSUS_WEB_TOKEN", "").strip()
     if configured:
         if len(configured) < 16:
-            raise RuntimeError("CONSENSUS_WEB_TOKEN должен содержать не меньше 16 символов")
+            raise RuntimeError(
+                "CONSENSUS_WEB_TOKEN должен содержать не меньше 16 символов"
+            )
         _runtime_token = configured
         return configured
     stored = str(meta_storage.get_meta(_TOKEN_META_KEY) or "").strip()
@@ -149,8 +175,13 @@ def consensus_web_entry_url(
     mode: str = "live",
     destination: str = "/",
 ) -> str:
+    base_url = consensus_web_url()
+    if destination == "/admin" and REACTOR_WEB_PUBLIC_URL:
+        base_url = REACTOR_WEB_PUBLIC_URL
+    elif destination == "/reactor" and PORTAL_WEB_PUBLIC_URL:
+        base_url = PORTAL_WEB_PUBLIC_URL
     return _authenticated_entry_url(
-        consensus_web_url(),
+        base_url,
         guild_id=guild_id,
         user_id=user_id,
         mode=mode,
@@ -189,44 +220,24 @@ def _bill_payload(
             return fallback_result.get(key, default)
         return getattr(fallback_result, key, default)
 
-    author_id = int(
-        bill.get("author_id")
-        or bill.get("bill_author_id")
-        or 0
-    )
+    author_id = int(bill.get("author_id") or bill.get("bill_author_id") or 0)
     author_display = str(
-        bill.get("author_display")
-        or bill.get("bill_author_display")
-        or ""
+        bill.get("author_display") or bill.get("bill_author_display") or ""
     ).strip()
     return {
         "id": int(bill.get("id") or result_value("bill_id") or 0),
-        "bill_number": int(
-            bill.get("bill_number")
-            or result_value("bill_number")
-            or 0
-        ),
+        "bill_number": int(bill.get("bill_number") or result_value("bill_number") or 0),
         "title": str(
-            bill.get("title")
-            or bill.get("bill_title")
-            or result_value("title")
-            or ""
+            bill.get("title") or bill.get("bill_title") or result_value("title") or ""
         ),
-        "summary": str(
-            bill.get("summary")
-            or bill.get("bill_summary")
-            or ""
-        ).strip(),
+        "summary": str(bill.get("summary") or bill.get("bill_summary") or "").strip(),
         "materials": str(
-            bill.get("materials")
-            or bill.get("bill_materials")
-            or ""
+            bill.get("materials") or bill.get("bill_materials") or ""
         ).strip(),
         "author": {
             "id": author_id or None,
-            "name": author_display or (
-                f"Участник {author_id}" if author_id else "Автор не указан"
-            ),
+            "name": author_display
+            or (f"Участник {author_id}" if author_id else "Автор не указан"),
         },
         "decision_category": str(
             bill.get("decision_category")
@@ -235,12 +246,7 @@ def _bill_payload(
             or "ordinary"
         ),
         "created_at": (
-            str(
-                bill.get("created_at")
-                or bill.get("bill_created_at")
-                or ""
-            )
-            or None
+            str(bill.get("created_at") or bill.get("bill_created_at") or "") or None
         ),
         "source_url": (
             _discord_message_url(
@@ -262,8 +268,10 @@ def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
     if isinstance(result, dict):
         get = result.get
     else:
+
         def get(key: str, default: Any = None) -> Any:
             return getattr(result, key, default)
+
     source_channel_id = int(get("source_channel_id") or 0)
     source_message_id = int(get("source_message_id") or 0)
     block_votes = get("block_votes") or get("block_votes_json") or {}
@@ -285,8 +293,7 @@ def _result_payload(result: Any, guild_id: int) -> dict[str, Any]:
         "resolution_method": str(get("resolution_method") or "vote"),
         "resolution_note": str(get("resolution_note") or "").strip() or None,
         "block_votes": {
-            str(key): str(value)
-            for key, value in dict(block_votes).items()
+            str(key): str(value) for key, value in dict(block_votes).items()
         },
         "source_url": _discord_message_url(
             guild_id,
@@ -332,9 +339,7 @@ def _catalog_bill_payload(
             or (f"Участник {author_id}" if author_id else "Автор не указан"),
         },
         "created_at": str(row.get("created_at") or "") or None,
-        "decision_category": str(
-            row.get("decision_category") or "ordinary"
-        ),
+        "decision_category": str(row.get("decision_category") or "ordinary"),
         "status": str(row.get("status") or ""),
         "source_url": _discord_message_url(
             guild_id,
@@ -344,24 +349,12 @@ def _catalog_bill_payload(
         "result": (
             {
                 "status": result_status,
-                "internal_percent": float(
-                    row.get("result_internal_percent") or 0.0
-                ),
-                "overall_percent": float(
-                    row.get("result_overall_percent") or 0.0
-                ),
-                "opposed_percent": float(
-                    row.get("result_opposed_percent") or 0.0
-                ),
-                "required_percent": float(
-                    row.get("result_required_percent") or 0.0
-                ),
-                "resolution_method": str(
-                    row.get("result_resolution_method") or "vote"
-                ),
-                "created_at": (
-                    str(row.get("result_created_at") or "") or None
-                ),
+                "internal_percent": float(row.get("result_internal_percent") or 0.0),
+                "overall_percent": float(row.get("result_overall_percent") or 0.0),
+                "opposed_percent": float(row.get("result_opposed_percent") or 0.0),
+                "required_percent": float(row.get("result_required_percent") or 0.0),
+                "resolution_method": str(row.get("result_resolution_method") or "vote"),
+                "created_at": (str(row.get("result_created_at") or "") or None),
             }
             if result_status
             else None
@@ -407,9 +400,8 @@ def _session_payload(
     )
     confirmed = session.confirmed_participants()
     current_bill = dict(current_bill_details or session.current_bill or {})
-    reveal_blocks = (
-        session.stage in {"after_result", "finished"}
-        and bool(session.results)
+    reveal_blocks = session.stage in {"after_result", "finished"} and bool(
+        session.results
     )
     latest_result = session.results[-1] if reveal_blocks else None
     voted_ids = set(
@@ -488,20 +480,17 @@ def _session_payload(
         },
         "voting": {
             "received": sum(
-                participant.user_id in voted_ids
-                for participant in confirmed
+                participant.user_id in voted_ids for participant in confirmed
             ),
             "expected": len(confirmed),
             "directions_hidden": session.stage in {"voting", "finalizing"},
         },
         "rules": {
             "acceptance_percent": float(
-                getattr(session.rules, "acceptance_percent", 50.0)
-                or 50.0
+                getattr(session.rules, "acceptance_percent", 50.0) or 50.0
             ),
             "quorum_percent": float(
-                getattr(session.rules, "quorum_percent", 50.0)
-                or 50.0
+                getattr(session.rules, "quorum_percent", 50.0) or 50.0
             ),
         },
         "blocks": blocks,
@@ -521,18 +510,14 @@ def _session_payload(
                 "dm_ready": (
                     True
                     if simulation
-                    else bool(
-                        participant.dm_message_id
-                        or participant.vote_message_id
-                    )
+                    else bool(participant.dm_message_id or participant.vote_message_id)
                     and not participant.dm_failed
                 ),
             }
             for participant in participants
         ],
         "results": [
-            _result_payload(result, int(guild_id))
-            for result in session.results
+            _result_payload(result, int(guild_id)) for result in session.results
         ],
     }
 
@@ -551,14 +536,18 @@ async def build_consensus_web_state(
     simulation = get_consensus_simulation(guild_id)
     requested_mode = str(mode or "").strip().lower()
     if requested_mode not in {"live", "simulation"}:
-        requested_mode = "live" if live_session is not None else (
-            "simulation" if simulation is not None else "live"
+        requested_mode = (
+            "live"
+            if live_session is not None
+            else ("simulation" if simulation is not None else "live")
         )
     elif requested_mode == "simulation" and simulation is None:
         requested_mode = "live"
     selected_simulation = requested_mode == "simulation"
-    session = simulation.session if selected_simulation and simulation else (
-        live_session if not selected_simulation else None
+    session = (
+        simulation.session
+        if selected_simulation and simulation
+        else (live_session if not selected_simulation else None)
     )
 
     if selected_simulation:
@@ -596,9 +585,7 @@ async def build_consensus_web_state(
                     or "Автор не указан",
                 },
                 "created_at": str(row.get("created_at") or "") or None,
-                "decision_category": str(
-                    row.get("decision_category") or "ordinary"
-                ),
+                "decision_category": str(row.get("decision_category") or "ordinary"),
                 "source_url": (
                     f"https://discord.com/channels/{guild_id}/"
                     f"{int(row.get('channel_id') or 0)}/"
@@ -609,10 +596,7 @@ async def build_consensus_web_state(
             }
             for row in queue_rows
         ],
-        "recent_results": [
-            _result_payload(row, guild_id)
-            for row in recent_rows
-        ],
+        "recent_results": [_result_payload(row, guild_id) for row in recent_rows],
         "viewer": {
             "authenticated": principal is not None,
             "legacy_read_only": bool(legacy_read_only),
@@ -689,9 +673,7 @@ async def build_consensus_web_state(
                 )
         current_result = session_payload.get("current_result")
         if isinstance(current_result, dict):
-            bill_row = recent_bill_rows.get(
-                int(current_result.get("bill_id") or 0)
-            )
+            bill_row = recent_bill_rows.get(int(current_result.get("bill_id") or 0))
             if bill_row is not None:
                 current_result["bill"] = _bill_payload(
                     bill_row,
@@ -761,7 +743,15 @@ def create_consensus_web_app(
     *,
     guild_id: int,
 ) -> web.Application:
-    app = web.Application(middlewares=[_security_middleware], client_max_size=64 * 1024)
+    try:
+        upload_mib = int(os.getenv("MINECRAFT_UPLOAD_MAX_MIB", "128").strip())
+    except (TypeError, ValueError):
+        upload_mib = 128
+    client_max_size = (max(1, min(upload_mib, 512)) + 2) * 1024 * 1024
+    app = web.Application(
+        middlewares=[_security_middleware],
+        client_max_size=client_max_size,
+    )
 
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
@@ -779,6 +769,11 @@ def create_consensus_web_app(
             "zigmund-murchalki.mp3",
             "admin.css",
             "admin.js",
+            "reactor.js",
+            "tab-signal.js",
+            "favicon.svg",
+            "portal.css",
+            "portal.js",
             "login.css",
             "login.js",
         }:
@@ -787,6 +782,9 @@ def create_consensus_web_app(
 
     async def login_page(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "login.html")
+
+    async def favicon(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "favicon.svg")
 
     async def health(_: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
@@ -846,21 +844,17 @@ def create_consensus_web_app(
             guild_id=int(guild_id),
             user_id=int(member.id),
         )
-        mode = (
-            "simulation"
-            if request.query.get("mode") == "simulation"
-            else "live"
-        )
+        mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
-            "/admin"
-            if request.query.get("next") == "/admin"
+            str(request.query.get("next"))
+            if request.query.get("next") in {"/admin", "/reactor"}
             else f"/?mode={mode}"
         )
         response = web.HTTPFound(location=destination)
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
         )
         return response
 
@@ -870,7 +864,11 @@ def create_consensus_web_app(
         attempts = _login_failures[remote]
         while attempts and now - attempts[0] > 10 * 60:
             attempts.popleft()
-        next_path = "/admin" if request.query.get("next") == "/admin" else "/"
+        next_path = (
+            str(request.query.get("next"))
+            if request.query.get("next") in {"/admin", "/reactor"}
+            else "/"
+        )
         if len(attempts) >= 15:
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': 'locked'})}"
@@ -887,7 +885,71 @@ def create_consensus_web_app(
         )
         if result.status != "ok" or result.credential is None:
             attempts.append(now)
-            error = "locked" if result.status == "locked" else "invalid"
+            if result.notify_owner and result.user_id:
+                await asyncio.to_thread(
+                    reactor_storage.reactor_put_notification,
+                    guild_id=int(guild_id),
+                    user_id=int(result.user_id),
+                    severity=(
+                        "critical" if result.status == "reset_required" else "warning"
+                    ),
+                    kind="security",
+                    title=(
+                        "Веб-доступ заблокирован"
+                        if result.status == "reset_required"
+                        else "Неудачная попытка входа"
+                    ),
+                    body=(
+                        "Три неверных PIN. Используйте /reset в ЛС с ботом."
+                        if result.status == "reset_required"
+                        else f"Неверный PIN: попытка {result.failed_attempts}/3 · {remote}"
+                    ),
+                    route="/reactor",
+                    dedupe_key="web-login-security",
+                )
+                guild = bot.get_guild(int(guild_id))
+                member = (
+                    guild.get_member(int(result.user_id)) if guild is not None else None
+                )
+                fetch_member = getattr(guild, "fetch_member", None)
+                if member is None and callable(fetch_member):
+                    try:
+                        member = await fetch_member(int(result.user_id))
+                    except discord.DiscordException:
+                        member = None
+                if member is not None and callable(getattr(member, "send", None)):
+                    embed = discord.Embed(
+                        title=(
+                            "Веб-доступ T-Mod заблокирован"
+                            if result.status == "reset_required"
+                            else "Неудачная попытка веб-входа"
+                        ),
+                        description=(
+                            "После трёх неверных PIN доступ закрыт. Отправьте боту "
+                            "команду `/reset` в личных сообщениях и задайте новый PIN."
+                            if result.status == "reset_required"
+                            else (
+                                f"Кто-то ввёл неверный PIN для вашего логина. "
+                                f"Попытка **{result.failed_attempts}/3**."
+                            )
+                        ),
+                        color=(
+                            0xED4245 if result.status == "reset_required" else 0xF0B232
+                        ),
+                    )
+                    embed.add_field(
+                        name="Источник",
+                        value=f"`{remote}` · {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+                        inline=False,
+                    )
+                    try:
+                        await member.send(
+                            embed=embed,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except discord.DiscordException:
+                        pass
+            error = "reset_required" if result.status == "reset_required" else "invalid"
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': error})}"
             )
@@ -906,9 +968,7 @@ def create_consensus_web_app(
                 location=f"/login?{urlencode({'next': next_path, 'error': 'invalid'})}"
             )
         if next_path == "/admin" and not bool(member.guild_permissions.administrator):
-            raise web.HTTPSeeOther(
-                location="/login?next=%2Fadmin&error=administrator"
-            )
+            raise web.HTTPSeeOther(location="/login?next=%2Fadmin&error=administrator")
         attempts.clear()
         token, _ = create_session_token(
             guild_id=int(guild_id),
@@ -920,16 +980,24 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
         )
         return response
 
-    async def logout(_: web.Request) -> web.Response:
-        response = web.HTTPFound(location="/")
+    async def logout(request: web.Request) -> web.Response:
+        host = str(request.host or "").split(":", 1)[0].lower()
+        destination = (
+            "/login?next=/admin"
+            if host.startswith("reactor.")
+            else "/login?next=/reactor"
+            if host == "tvr.lat"
+            else "/"
+        )
+        response = web.HTTPFound(location=destination)
         clear_session_cookie(
             response,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
         )
         return response
 
@@ -953,9 +1021,7 @@ def create_consensus_web_app(
     async def bills(request: web.Request) -> web.Response:
         await authenticated_request(request)
         requested_mode = (
-            "simulation"
-            if request.query.get("mode") == "simulation"
-            else "live"
+            "simulation" if request.query.get("mode") == "simulation" else "live"
         )
         if requested_mode == "simulation":
             simulation = get_consensus_simulation(int(guild_id))
@@ -971,8 +1037,7 @@ def create_consensus_web_app(
                 ),
             }
             numbers.update(
-                int(result.bill_number)
-                for result in simulation.session.results
+                int(result.bill_number) for result in simulation.session.results
             )
             results = {
                 int(result.bill_number): _result_payload(
@@ -1002,10 +1067,7 @@ def create_consensus_web_app(
         return web.json_response(
             {
                 "mode": "live",
-                "items": [
-                    _catalog_bill_payload(row, int(guild_id))
-                    for row in rows
-                ],
+                "items": [_catalog_bill_payload(row, int(guild_id)) for row in rows],
             },
         )
 
@@ -1019,9 +1081,7 @@ def create_consensus_web_app(
             raise web.HTTPNotFound()
 
         requested_mode = (
-            "simulation"
-            if request.query.get("mode") == "simulation"
-            else "live"
+            "simulation" if request.query.get("mode") == "simulation" else "live"
         )
         if requested_mode == "simulation":
             simulation = get_consensus_simulation(int(guild_id))
@@ -1059,10 +1119,7 @@ def create_consensus_web_app(
             tvrs_storage.tvrs_get_bill_dict_by_id,
             bill_id,
         )
-        if (
-            raw_bill is None
-            or int(raw_bill.get("guild_id") or 0) != int(guild_id)
-        ):
+        if raw_bill is None or int(raw_bill.get("guild_id") or 0) != int(guild_id):
             raise web.HTTPNotFound()
         result = await asyncio.to_thread(
             tvrs_storage.tvrs_latest_live_result_for_bill,
@@ -1092,7 +1149,10 @@ def create_consensus_web_app(
             )
         if not csrf_matches(request, principal):
             return web.json_response(
-                {"error": "csrf_failed", "message": "Обновите панель и повторите действие."},
+                {
+                    "error": "csrf_failed",
+                    "message": "Обновите панель и повторите действие.",
+                },
                 status=403,
             )
         rate_now = asyncio.get_running_loop().time()
@@ -1183,7 +1243,10 @@ def create_consensus_web_app(
             )
         except (ValueError, TypeError):
             return web.json_response(
-                {"error": "invalid_payload", "message": "Некорректные параметры команды."},
+                {
+                    "error": "invalid_payload",
+                    "message": "Некорректные параметры команды.",
+                },
                 status=400,
             )
         except Exception as exc:
@@ -1217,6 +1280,7 @@ def create_consensus_web_app(
     app.router.add_get("/egg", egg)
     app.router.add_get("/egg/", egg)
     app.router.add_get("/assets/{name}", asset)
+    app.router.add_get("/favicon.ico", favicon)
     app.router.add_get("/auth/ticket", ticket_login)
     app.router.add_post("/auth/login", credential_login)
     app.router.add_get("/auth/logout", logout)
@@ -1226,6 +1290,13 @@ def create_consensus_web_app(
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_post("/api/command", command)
     register_admin_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
+    register_reactor_web_routes(
         app,
         bot,
         guild_id=int(guild_id),
@@ -1341,11 +1412,7 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         )
     )
     embed.add_field(
-        name=(
-            "Прямой HTTPS"
-            if public
-            else "Если имя не открывается"
-        ),
+        name=("Прямой HTTPS" if public else "Если имя не открывается"),
         value=(
             "Caddy автоматически выпускает и продлевает сертификат. "
             "На роутере должны быть направлены только TCP-порты 80 и 443; "
