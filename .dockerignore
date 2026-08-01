@@ -10,6 +10,4 @@
 data
 tests
 
-# The Node client is built from its own isolated Docker context.
-discord-browser-stream
 minecraft-supervisor

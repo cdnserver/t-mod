@@ -19,6 +19,7 @@ const REFRESH_INTERVALS = Object.freeze({
   modules: 120000,
 });
 const NOTIFICATION_SOUND_KEY = "t-control-notification-sound";
+const AUTH_ANIMATION_KEY = "t-control-auth-animation-seen";
 
 const sectionMeta = {
   overview: ["ОПЕРАЦИОННАЯ КАРТИНА", "Обзор системы"],
@@ -31,7 +32,7 @@ const sectionMeta = {
   sgl: ["SGL BUREAU", "Бюро СГЛ"],
   members: ["MEMBER DIRECTORY", "Участники"],
   communications: ["COMMUNICATIONS", "Уведомления"],
-  media: ["MEDIA CONTROL", "Музыка и трансляция"],
+  media: ["MEDIA CONTROL", "Музыка и голос"],
   profile: ["PERSONAL SPACE", "Мой профиль"],
   discord: ["DISCORD INTELLIGENCE", "Discord-аудит"],
   system: ["SYSTEM CONTROL", "Технический контур"],
@@ -162,6 +163,7 @@ const appState = {
   soundUnlocked: false,
   audioContext: null,
   activitySignatures: new Map(),
+  loadedSections: new Set(),
   detailRoute: null,
   openingRoute: false,
 };
@@ -433,7 +435,6 @@ function activitySignature(section, data) {
   if (section === "media") {
     return JSON.stringify({
       music: data.music || {},
-      browser: data.browser_stream || {},
     });
   }
   return null;
@@ -468,10 +469,20 @@ class ApiError extends Error {
   }
 }
 
+function requestTimeoutSignal(timeoutMs) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs);
+  return controller.signal;
+}
+
 async function fetchJSON(path) {
   const response = await fetch(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json" },
+    signal: requestTimeoutSignal(10000),
   });
   let payload = {};
   try {
@@ -503,6 +514,7 @@ async function postJSON(path, body) {
       "X-Idempotency-Key": idempotencyKey(),
     },
     body: JSON.stringify(body),
+    signal: requestTimeoutSignal(90000),
   });
   let payload = {};
   try {
@@ -544,6 +556,7 @@ function showApplication(payload) {
   const gate = byId("auth-gate");
   const shell = byId("admin-shell");
   const changed = rememberActivity(payload);
+  appState.loadedSections.add(appState.section);
   if (appState.autoRefreshing && !changed) return false;
   if (!appState.authorized) {
     appState.authorized = true;
@@ -554,9 +567,17 @@ function showApplication(payload) {
     setText("gate-state", "ЛИЧНОСТЬ И ПРАВА ПОДТВЕРЖДЕНЫ");
     setText("gate-message", "Защищённая сессия готова. Запускаем Ядерный Реактор…");
     shell.hidden = false;
-    const delay = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-      ? 80
-      : 720;
+    const reducedMotion = globalThis.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    let authAnimationSeen = false;
+    try {
+      authAnimationSeen = sessionStorage.getItem(AUTH_ANIMATION_KEY) === "1";
+      sessionStorage.setItem(AUTH_ANIMATION_KEY, "1");
+    } catch {
+      authAnimationSeen = false;
+    }
+    const delay = reducedMotion || authAnimationSeen ? 60 : 360;
     clearTimeout(appState.authTimer);
     appState.authTimer = setTimeout(() => {
       appState.authTransitioning = false;
@@ -720,6 +741,11 @@ async function switchSection(section, updateHash = true) {
     scheduleAutoRefresh();
     return;
   }
+  if (appState.loadedSections.has(section)) {
+    void refreshCurrentSection(true);
+    scheduleAutoRefresh();
+    return;
+  }
   await loadCurrentSection();
   scheduleAutoRefresh();
 }
@@ -730,11 +756,11 @@ function setLoading(value) {
     byId("refresh-button").disabled = value;
     byId("refresh-button").classList.toggle("loading", value);
     clearTimeout(appState.loadingOverlayTimer);
-    if (value) {
+    if (value && !appState.authorized) {
       appState.loadingOverlayTimer = setTimeout(() => {
         byId("data-loading").hidden = false;
         byId("admin-shell").setAttribute("inert", "");
-      }, 140);
+      }, 220);
     } else {
       byId("data-loading").hidden = true;
       byId("admin-shell").removeAttribute("inert");
@@ -743,7 +769,12 @@ function setLoading(value) {
   if (!value && appState.pendingSectionLoad) {
     appState.pendingSectionLoad = false;
     queueMicrotask(() => {
-      if (!appState.loading) void loadCurrentSection();
+      if (appState.loading) return;
+      if (appState.loadedSections.has(appState.section)) {
+        void refreshCurrentSection(true);
+      } else {
+        void loadCurrentSection();
+      }
     });
   }
 }
@@ -2113,7 +2144,6 @@ async function sendBroadcast() {
 function renderMedia(data) {
   if (!showApplication(data)) return;
   const music = data.music || {};
-  const browser = data.browser_stream || {};
   const musicState = music.connected
     ? music.paused
       ? "пауза"
@@ -2148,31 +2178,7 @@ function renderMedia(data) {
       : [node("div", { className: "empty-state", text: "Очередь пуста." })],
   );
 
-  const browserActive = Boolean(browser.active || browser.streaming);
-  setText("browser-status", browserActive ? "streaming" : browser.state || "offline");
-  setText("browser-page", browser.url || browser.current_url || "Трансляция не запущена");
-  setText(
-    "browser-meta",
-    browser.available === false
-      ? "Сервис не подключён"
-      : browser.last_error || "Изолированный Discord-клиент",
-  );
-  const browserMetrics = [
-    ["Доступность", browser.available === false ? "нет" : "да"],
-    ["Состояние", browser.state || (browserActive ? "streaming" : "idle")],
-    ["Voice channel", browser.voice_channel_id || "—"],
-    ["Аккаунт", browser.account || browser.username || "—"],
-  ];
-  replaceChildren(
-    "browser-details",
-    browserMetrics.map(([label, value]) =>
-      node("div", { className: "metric-row" }, [
-        node("span", { text: label }),
-        node("b", { text: value }),
-      ]),
-    ),
-  );
-  const healthy = music.available !== false && browser.available !== false;
+  const healthy = music.available !== false;
   const state = byId("media-state");
   state.textContent = healthy ? "управление готово" : "частично недоступно";
   state.className = `health-pill${healthy ? "" : " warning"}`;
@@ -2200,7 +2206,7 @@ async function sendMediaCommand(target, action, payload = {}) {
     const approved = window.TModReactor?.confirm
       ? await window.TModReactor.confirm({
           title: "Остановить активный медиаконтур?",
-          message: "Воспроизведение или трансляция будут завершены для всех участников.",
+          message: "Воспроизведение будет завершено для всех участников.",
           accept: "Остановить",
           tone: "critical",
         })
@@ -2482,7 +2488,6 @@ function renderSystem(data) {
     ["Участников в кеше", formatNumber(runtime.members_cached)],
     ["Каналов в кеше", formatNumber(runtime.channels_cached)],
     ["Музыка", data.music?.available === false ? "отключена" : "готова"],
-    ["Browser stream", data.browser_stream?.available === false ? "отключён" : "готов"],
   ];
   replaceChildren(
     "runtime-metrics",
@@ -2875,11 +2880,6 @@ function bindEvents() {
   byId("music-volume").addEventListener("change", (event) => {
     sendMediaCommand("music", "volume", { percent: Number(event.target.value) });
   });
-  byId("browser-stream-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const values = formValues("browser-stream-form");
-    if (values.url) sendMediaCommand("browser", "start", { url: values.url });
-  });
   byId("market-alert-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const values = formValues("market-alert-form");
@@ -2929,10 +2929,12 @@ async function bootstrap() {
   setText("section-eyebrow", sectionMeta[appState.section][0]);
   setText("section-title", sectionMeta[appState.section][1]);
 
-  await loadOverview();
-  if (!byId("admin-shell").hidden && appState.section !== "overview") {
-    await loadCurrentSection();
-  }
+  // Every protected section carries the viewer context, so direct links no
+  // longer wait for the heavy overview before loading their actual content.
+  // Minecraft is rendered by reactor.js and needs one lightweight cached
+  // overview request to establish the shared authenticated shell first.
+  if (appState.section === "minecraft") await loadOverview();
+  else await loadCurrentSection();
   if (!byId("admin-shell").hidden && requestedRoute.kind && requestedRoute.key) {
     await openLinkedRecord(requestedRoute);
   }

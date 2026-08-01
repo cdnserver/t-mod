@@ -13,10 +13,6 @@ from typing import Any, Awaitable, Callable
 import discord
 from aiohttp import web
 
-from modules.browser_stream import (
-    BrowserStreamError,
-    normalize_browser_stream_url,
-)
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.delivery_runtime import wake_delivery_worker
 from modules.music_runtime_errors import MusicRuntimeError
@@ -127,8 +123,8 @@ PORTAL_CAPABILITIES = (
     },
     {
         "id": "media",
-        "title": "Музыка и трансляция",
-        "description": "YouTube, очередь, голосовое управление и веб-демонстрация.",
+        "title": "Музыка и голос",
+        "description": "YouTube, очередь воспроизведения и голосовое управление.",
         "section": "media",
         "scope": "administrator",
         "state": "integrated",
@@ -569,27 +565,6 @@ def register_admin_web_routes(
             "last_notice": session.last_notice,
             "last_error": session.last_error,
         }
-
-    async def browser_snapshot() -> dict[str, Any]:
-        browser_client = getattr(bot, "browser_stream_client", None)
-        if browser_client is None:
-            return {
-                "available": False,
-                "active": False,
-                "state": "disabled",
-            }
-        try:
-            return {
-                "available": True,
-                **await browser_client.status(),
-            }
-        except (BrowserStreamError, TimeoutError) as exc:
-            return {
-                "available": True,
-                "active": False,
-                "state": "unavailable",
-                "last_error": str(exc),
-            }
 
     async def build_overview_snapshot(days: int) -> dict[str, Any]:
         (
@@ -1484,13 +1459,10 @@ def register_admin_web_routes(
 
     async def system(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
-        system_data, browser_status = await asyncio.gather(
-            asyncio.to_thread(
-                portal_storage.portal_system,
-                int(guild_id),
-                limit=50,
-            ),
-            browser_snapshot(),
+        system_data = await asyncio.to_thread(
+            portal_storage.portal_system,
+            int(guild_id),
+            limit=50,
         )
         guild = bot.get_guild(int(guild_id))
         return web.json_response(
@@ -1498,7 +1470,6 @@ def register_admin_web_routes(
                 **context(principal),
                 **system_data,
                 "music": music_snapshot(),
-                "browser_stream": browser_status,
                 "runtime": {
                     "ready": bool(getattr(bot, "is_ready", lambda: False)()),
                     "guild_available": guild is not None,
@@ -1515,12 +1486,10 @@ def register_admin_web_routes(
 
     async def media_status(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
-        browser_status = await browser_snapshot()
         return web.json_response(
             {
                 **context(principal),
                 "music": music_snapshot(),
-                "browser_stream": browser_status,
             }
         )
 
@@ -1590,39 +1559,9 @@ def register_admin_web_routes(
                     "message": "Команда музыки выполнена.",
                     "music": music_snapshot(),
                 }
-            elif target == "browser":
-                client = getattr(bot, "browser_stream_client", None)
-                if client is None:
-                    raise BrowserStreamError(
-                        "Сервис браузерной трансляции не настроен."
-                    )
-                if action not in {"start", "stop", "leave"}:
-                    raise ValueError("media_action_invalid")
-                stream_url = (
-                    normalize_browser_stream_url(
-                        str(body.get("url") or ""),
-                    )
-                    if action == "start"
-                    else None
-                )
-                voice = getattr(principal.member, "voice", None)
-                voice_channel = getattr(voice, "channel", None)
-                result = {
-                    "ok": True,
-                    "message": "Команда трансляции выполнена.",
-                    "browser_stream": await client.command(
-                        action,
-                        url=stream_url,
-                        guild_id=int(guild_id),
-                        voice_channel_id=(
-                            int(getattr(voice_channel, "id", 0) or 0) or None
-                        ),
-                    ),
-                }
             else:
                 raise ValueError("media_target_invalid")
         except (
-            BrowserStreamError,
             MusicRuntimeError,
             ValueError,
             TypeError,

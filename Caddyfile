@@ -1,19 +1,39 @@
 {
 	admin off
 	servers {
-		protocols h1 h2
+		protocols h1 h2 h3
 	}
 }
 
 (tmod_backend) {
 	encode zstd gzip
-	reverse_proxy tmod-discord-bot:8787 {
-		health_uri /api/health
-		health_interval 30s
-		health_timeout 5s
+
+	@immutable_assets path /assets/*.woff2 /assets/*.mp3
+	header @immutable_assets Cache-Control "public, max-age=2592000, immutable"
+	@regular_assets path /assets/*
+	header @regular_assets Cache-Control "public, max-age=300, stale-while-revalidate=86400"
+	header /favicon.ico Cache-Control "public, max-age=86400"
+
+	handle_path /assets/* {
+		root * /srv/tmod
+		file_server
+	}
+	handle /favicon.ico {
+		rewrite * /favicon.svg
+		root * /srv/tmod
+		file_server
+	}
+	handle {
+		reverse_proxy tmod-discord-bot:8787 {
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
 		-Server
 	}
 }

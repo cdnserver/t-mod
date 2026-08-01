@@ -10,8 +10,6 @@ set BACKUP_DIR=%PERSISTENT_DIR%\backups
 set CADDY_DIR=%PERSISTENT_DIR%\caddy
 set CADDY_DATA_DIR=%CADDY_DIR%\data
 set CADDY_CONFIG_DIR=%CADDY_DIR%\config
-set BROWSER_STREAM_DATA_DIR=%PERSISTENT_DIR%\browser-stream
-set BROWSER_STREAM_ENV=%PERSISTENT_DIR%\browser-stream.env
 set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
 set SECRETS_DIR=%PERSISTENT_DIR%\secrets
 set MINECRAFT_RCON_SECRET=%SECRETS_DIR%\minecraft-rcon-password.txt
@@ -26,7 +24,6 @@ if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
 if not exist "%BACKUP_DIR%" mkdir "%BACKUP_DIR%"
 if not exist "%CADDY_DATA_DIR%" mkdir "%CADDY_DATA_DIR%"
 if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
-if not exist "%BROWSER_STREAM_DATA_DIR%" mkdir "%BROWSER_STREAM_DATA_DIR%"
 if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
 if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_minecraft_secrets_windows.ps1" -RconPath "%MINECRAFT_RCON_SECRET%" -SupervisorPath "%MINECRAFT_SUPERVISOR_SECRET%"
@@ -55,22 +52,6 @@ if errorlevel 1 (
   exit /b 1
 )
 call :ok ".env synchronized"
-
-set COMPOSE_PROFILES=
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_browser_stream_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env" -BrowserEnvPath "%BROWSER_STREAM_ENV%" -TemplateEnvPath "%~dp0discord-browser-stream\.env.example"
-if errorlevel 1 (
-  call :fail "Discord browser client configuration is incomplete"
-  call :warn "When enabled, fill the credentials in %BROWSER_STREAM_ENV%"
-  pause
-  exit /b 1
-)
-findstr /R /I /C:"^BROWSER_STREAM_ENABLED=true$" "%PERSISTENT_DIR%\.env" >nul
-if not errorlevel 1 (
-  set COMPOSE_PROFILES=browser-stream
-  call :ok "Discord browser client profile enabled"
-) else (
-  call :ok "Discord browser client profile disabled"
-)
 
 call :stage "03" "Direct HTTPS domain"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_direct_web_windows.ps1" -TargetEnvPath "%PERSISTENT_DIR%\.env" -PublicDomain "tvr.lat"
@@ -113,7 +94,6 @@ call :module "SGL Bureau"
 call :module "SGL Registry"
 call :module "SGL Audio"
 call :module "T-Mod Music"
-if defined COMPOSE_PROFILES call :module "Discord Browser Client"
 call :module "Zigmund AI"
 call :module "SGL Contracts"
 call :module "SQLite Migrator"
@@ -136,10 +116,11 @@ docker stop minecraft >nul 2>nul
 docker rm minecraft >nul 2>nul
 docker stop minecraft-supervisor >nul 2>nul
 docker rm minecraft-supervisor >nul 2>nul
-if not defined COMPOSE_PROFILES (
-  docker stop discord-browser-stream >nul 2>nul
-  docker rm discord-browser-stream >nul 2>nul
-)
+docker stop discord-browser-stream >nul 2>nul
+docker rm discord-browser-stream >nul 2>nul
+docker image rm tmod-browser-stream:latest >nul 2>nul
+if exist "%PERSISTENT_DIR%\browser-stream.env" del /Q "%PERSISTENT_DIR%\browser-stream.env" >nul 2>nul
+if exist "%PERSISTENT_DIR%\browser-stream" rmdir /S /Q "%PERSISTENT_DIR%\browser-stream" >nul 2>nul
 call :ok "Old containers stopped"
 
 call :stage "09" "Docker build"
@@ -154,7 +135,7 @@ if errorlevel 1 (
 call :ok "Docker image ready"
 
 call :stage "10" "Starting T-Mod and Minecraft"
-docker compose up -d --force-recreate
+docker compose up -d --force-recreate --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"
   echo.
@@ -169,10 +150,17 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
-call :stage "11" "Consensus health check"
+call :stage "11" "Minecraft RCON verification"
+call :check_minecraft_rcon
+if errorlevel 1 (
+  pause
+  exit /b 1
+)
+
+call :stage "12" "Consensus health check"
 call :check_consensus_health
 
-call :stage "12" "Status"
+call :stage "13" "Status"
 docker compose ps
 
 echo.
@@ -189,7 +177,6 @@ echo   MC:       mc.tvr.lat ^(Paper 26.1.2-74, 25565/TCP^)
 echo   MC data:  %MINECRAFT_DIR%
 echo   HTTPS:    Caddy on public ports 80/443
 echo   Origin:   http://127.0.0.1:8787 ^(never forward this port^)
-if defined COMPOSE_PROFILES echo   Screen:   Discord browser client enabled
 echo ============================================================
 echo.
 echo Recent bot logs:
@@ -202,6 +189,28 @@ echo Minecraft logs: docker logs -f minecraft
 echo.
 pause
 exit /b 0
+
+:check_minecraft_rcon
+for /l %%i in (1,1,60) do (
+  docker inspect --format "{{.State.Health.Status}}" minecraft 2>nul | findstr /I /X /C:"healthy" >nul
+  if not errorlevel 1 (
+    docker exec minecraft rcon-cli list >nul 2>nul
+    if not errorlevel 1 (
+      call :ok "Minecraft RCON secret accepted"
+      exit /b 0
+    )
+    call :fail "Minecraft is healthy, but RCON authentication failed."
+    call :warn "The generated secret and server.properties are not synchronized."
+    docker logs --tail 80 minecraft
+    exit /b 1
+  )
+  <nul set /p "=."
+  timeout /t 5 /nobreak >nul
+)
+echo.
+call :fail "Minecraft did not become healthy within 300 seconds."
+docker logs --tail 80 minecraft
+exit /b 1
 
 :check_consensus_health
 for /l %%i in (1,1,24) do (

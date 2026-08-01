@@ -1860,7 +1860,13 @@ td a {
   justify-self: start;
 }
 
-.media-layout,
+.media-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 980px;
+  gap: 14px;
+}
+
 .profile-layout {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1976,45 +1982,6 @@ td a {
 .volume-control input {
   width: 100%;
   accent-color: var(--mint);
-}
-
-.browser-preview {
-  display: grid;
-  min-height: 205px;
-  place-items: center;
-  align-content: center;
-  gap: 10px;
-  margin: 18px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 16px;
-  background:
-    radial-gradient(circle, rgba(141, 199, 255, 0.06), transparent 56%),
-    rgba(255, 255, 255, 0.018);
-  text-align: center;
-}
-
-.browser-preview > span {
-  color: var(--blue);
-  font-size: 28px;
-}
-
-.browser-preview strong {
-  max-width: 82%;
-  overflow: hidden;
-  font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-preview small {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.vertical-command {
-  grid-template-columns: 1fr;
 }
 
 .profile-identity {

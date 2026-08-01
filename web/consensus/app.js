@@ -77,7 +77,11 @@ function stableSignature(value) {
 
 function payloadSignature(payload) {
   if (!payload || typeof payload !== "object") return "";
-  const { updated_at: _updatedAt, ...stablePayload } = payload;
+  const {
+    updated_at: _updatedAt,
+    cache_state: _cacheState,
+    ...stablePayload
+  } = payload;
   return stableSignature(stablePayload);
 }
 
@@ -85,6 +89,15 @@ function setDataLoading(visible) {
   byId("data-loading").hidden = !visible;
   if (visible) dashboard.setAttribute("inert", "");
   else dashboard.removeAttribute("inert");
+}
+
+function requestTimeoutSignal(timeoutMs) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs);
+  return controller.signal;
 }
 
 function schedulePoll(delay = null) {
@@ -1154,6 +1167,7 @@ async function fetchState({ first = false, blocking = false } = {}) {
       headers: authHeaders(),
       credentials: "same-origin",
       cache: "no-store",
+      signal: requestTimeoutSignal(10000),
     });
     if (response.status === 401) {
       sessionStorage.removeItem("t-consensus-token");
@@ -1178,6 +1192,9 @@ async function fetchState({ first = false, blocking = false } = {}) {
     dashboard.hidden = false;
     loginError.textContent = "";
     setConnection("online", "обновляется");
+    if (!first && payload.cache_state === "stale") {
+      setTimeout(() => void fetchFreshState(), 0);
+    }
     if (
       first
       && Number.isInteger(requestedBillId)
@@ -1193,6 +1210,34 @@ async function fetchState({ first = false, blocking = false } = {}) {
   } finally {
     fetching = false;
     if (first || blocking) setDataLoading(false);
+  }
+}
+
+async function fetchFreshState() {
+  if (fetching || commanding || dashboard.hidden) return;
+  fetching = true;
+  try {
+    const params = new URLSearchParams();
+    if (selectedMode) params.set("mode", selectedMode);
+    params.set("fresh", "1");
+    const response = await fetch(`/api/state?${params.toString()}`, {
+      headers: authHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: requestTimeoutSignal(10000),
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const nextSignature = payloadSignature(payload);
+    if (nextSignature !== stateSignature) {
+      render(payload);
+      stateSignature = nextSignature;
+    }
+    setConnection("online", "обновляется");
+  } catch {
+    // Keep the instant stale projection; the normal poll remains active.
+  } finally {
+    fetching = false;
   }
 }
 
@@ -1222,6 +1267,7 @@ async function sendCommand(action, payload = {}) {
         bill_id: session?.current_bill?.id ?? null,
         payload,
       }),
+      signal: requestTimeoutSignal(90000),
     });
     const result = await response.json();
     if (!response.ok) {

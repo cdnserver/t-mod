@@ -43,6 +43,7 @@
     minecraftPath: "",
     minecraftParent: "",
     minecraftStorageLoaded: false,
+    minecraftRefreshing: false,
     minecraftNameAction: null,
     tabAttention: 0,
     tabUnread: 0,
@@ -902,11 +903,14 @@
   }
 
   async function loadMinecraft() {
-    if (!api.authorized || document.hidden) return;
+    if (!api.authorized || document.hidden || state.minecraftRefreshing) return;
+    state.minecraftRefreshing = true;
     try {
       renderMinecraft(await api.fetchJSON("/api/admin/reactor/minecraft"));
     } catch (error) {
       renderMinecraft({ configured: true, online: false, error: error.message });
+    } finally {
+      state.minecraftRefreshing = false;
     }
   }
 
@@ -1046,8 +1050,13 @@
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (!api.authorized) return;
-    await Promise.all([refreshAttention(false), loadEvents()]);
-    if (location.hash.startsWith("#/minecraft")) await switchMinecraftTab("overview");
+    const initialLoads = [refreshAttention(false), loadEvents()];
+    if (location.hash.startsWith("#/minecraft")) {
+      // Attention already carries the cached Minecraft status. Load storage in
+      // parallel instead of waiting for health and then querying RCON twice.
+      initialLoads.push(loadMinecraftFiles("", true));
+    }
+    await Promise.all(initialLoads);
     state.attentionTimer = setInterval(() => void refreshAttention(true), 30000);
     state.minecraftTimer = setInterval(() => {
       if (!location.hash.startsWith("#/minecraft") || document.hidden) return;

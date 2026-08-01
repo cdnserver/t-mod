@@ -41,11 +41,22 @@
     return node;
   };
 
+  function requestTimeoutSignal(timeoutMs) {
+    if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+      return AbortSignal.timeout(timeoutMs);
+    }
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), timeoutMs);
+    return controller.signal;
+  }
+
   async function request(path, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
     const response = await fetch(path, {
       credentials: "same-origin",
       cache: "no-store",
       ...options,
+      signal: options.signal || requestTimeoutSignal(method === "GET" ? 10000 : 90000),
       headers: {
         Accept: "application/json",
         ...(options.body
@@ -350,6 +361,25 @@
     );
     byId("editor-progress").textContent = `${progress}%`;
     byId("editor-progress-bar").style.width = `${progress}%`;
+    document.documentElement.style.setProperty(
+      "--editor-progress",
+      `${progress}%`,
+    );
+    const completedSteps = {
+      idea: requirements.idea && requirements.outcome,
+      draft: requirements.title && requirements.text,
+      execution: requirements.implementation && requirements.leadership,
+      review: Object.values(requirements).every(Boolean),
+    };
+    document.querySelectorAll("[data-editor-tab]").forEach((button) => {
+      const selected = button.dataset.editorTab === state.activeEditorTab;
+      button.classList.toggle(
+        "complete",
+        completedSteps[button.dataset.editorTab],
+      );
+      if (selected) button.setAttribute("aria-current", "step");
+      else button.removeAttribute("aria-current");
+    });
     byId("editor-state").textContent = !state.workspace
       ? "НЕТ ЧЕРНОВИКА"
       : progress === 100
@@ -609,7 +639,8 @@
     state.data = data;
     state.csrf = data.viewer.csrf_token;
     state.layout = Array.isArray(data.layout) ? data.layout : state.layout;
-    const signature = JSON.stringify(data);
+    const { cache_state: _cacheState, ...stableData } = data;
+    const signature = JSON.stringify(stableData);
     if (signature === state.renderSignature && !forceWorkspace) return false;
     state.renderSignature = signature;
     const name = data.viewer.name || "Участник";
@@ -665,6 +696,11 @@
     const urgent = (inbox.items || []).some((item) =>
       !item.read_at && item.severity === "critical"
     );
+    document.body.dataset.reactorState = urgent
+      ? "alert"
+      : consensus.active
+      ? "live"
+      : "stable";
     globalThis.TModTabSignal?.set(unread, {
       urgent,
       blink: unread > 0,
@@ -690,12 +726,24 @@
       byId("portal-gate").hidden = true;
       byId("portal-shell").hidden = false;
       requestAnimationFrame(() => byId("portal-shell").classList.add("ready"));
+      if (data.cache_state === "stale") {
+        setTimeout(() => void loadFreshHome(), 0);
+      }
     } catch (error) {
       if (silent) return;
       byId("portal-gate-message").textContent = error.status === 401
         ? "Сессия не найдена. Войдите по логину и восьмизначному PIN либо откройте персональную ссылку из Discord."
         : "Реактор временно не получил данные. Обновите страницу через несколько секунд.";
       byId("portal-login").hidden = error.status !== 401;
+    }
+  }
+
+  async function loadFreshHome() {
+    try {
+      const data = await request("/api/reactor/home?fresh=1");
+      render(data);
+    } catch {
+      // The stale snapshot remains usable; the regular smart refresh retries.
     }
   }
 
@@ -712,8 +760,29 @@
       state.bills = data.bills || [];
       renderBills();
       hydrateWorkspace(data.workspace || null);
+      if (data.cache_state === "stale") {
+        setTimeout(() => void loadFreshLegislation(), 0);
+      }
     } catch (error) {
       if (!silent) toast(error.message, "error");
+    }
+  }
+
+  async function loadFreshLegislation() {
+    try {
+      const data = await request("/api/reactor/legislation?fresh=1");
+      if (!state.data) return;
+      state.data.legislation = {
+        workspace: data.workspace,
+        bills: data.bills,
+        next_number: data.next_number,
+        queued: data.queued,
+      };
+      state.bills = data.bills || [];
+      renderBills();
+      hydrateWorkspace(data.workspace || null);
+    } catch {
+      // Keep the already rendered registry and retry on the next smart tick.
     }
   }
 

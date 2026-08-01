@@ -317,6 +317,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
             script = await client.get("/assets/app.js")
             self.assertEqual(script.status, 200)
+            self.assertIn("max-age=300", script.headers["Cache-Control"])
             script_text = await script.text()
             self.assertIn(
                 "document.body.dataset.outcome",
@@ -400,7 +401,26 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="treasury"', reactor_text)
             self.assertIn('id="legislation"', reactor_text)
             self.assertIn('id="editor-workspace"', reactor_text)
+            self.assertIn('href="/assets/portal-theme.css"', reactor_text)
+            self.assertIn('class="editor-console-bar"', reactor_text)
+            self.assertIn('class="preview-seal"', reactor_text)
             self.assertNotIn('data-portal-widget="market"', reactor_text)
+            portal_theme = await client.get("/assets/portal-theme.css")
+            self.assertEqual(portal_theme.status, 200)
+            portal_theme_text = await portal_theme.text()
+            self.assertIn('@font-face', portal_theme_text)
+            self.assertIn('font-family: "Unbounded"', portal_theme_text)
+            self.assertIn("@keyframes core-pulse", portal_theme_text)
+            self.assertIn(".preview-paper", portal_theme_text)
+            self.assertIn("@media (prefers-reduced-motion: reduce)", portal_theme_text)
+            self.assertNotRegex(
+                portal_theme_text,
+                r"font-size:\s*(?:7|8|9)px",
+            )
+            portal_font = await client.get("/assets/manrope-cyrillic.woff2")
+            self.assertEqual(portal_font.status, 200)
+            self.assertEqual(portal_font.content_type, "font/woff2")
+            self.assertIn("immutable", portal_font.headers["Cache-Control"])
             reactor_script = await client.get("/assets/reactor.js")
             self.assertEqual(reactor_script.status, 200)
             reactor_script_text = await reactor_script.text()
@@ -442,6 +462,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("pollGlobalActivity", admin_script_text)
             self.assertIn("playNotificationSound", admin_script_text)
             self.assertIn("activitySignature", admin_script_text)
+            self.assertIn("loadedSections: new Set()", admin_script_text)
+            self.assertIn(
+                'if (appState.section === "minecraft") await loadOverview()',
+                admin_script_text,
+            )
             self.assertIn("market-signal-list", admin_script_text)
             self.assertIn('!byId("admin-shell").hidden', admin_script_text)
             self.assertIn("!document.hidden", admin_script_text)
@@ -543,6 +568,14 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(allowed.status, 200)
             payload = await allowed.json()
             self.assertEqual(payload["session"]["plenary_number"], 6)
+            self.assertIn(
+                payload["cache_state"], {"fresh", "refreshed", "stale"}
+            )
+            self.assertEqual(
+                allowed.headers["X-T-Mod-Cache"], payload["cache_state"]
+            )
+            self.assertEqual(allowed.headers["Cache-Control"], "private, no-store")
+            self.assertIn("app;dur=", allowed.headers["Server-Timing"])
             self.assertEqual(allowed.headers["X-Frame-Options"], "DENY")
         finally:
             await client.close()
@@ -830,6 +863,14 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((await reactor_search.json())["items"])
             self.assertIn("items", await reactor_events.json())
             reactor_home_payload = await reactor_home.json()
+            self.assertIn(
+                reactor_home_payload["cache_state"],
+                {"fresh", "refreshed", "stale"},
+            )
+            self.assertEqual(
+                reactor_home.headers["X-T-Mod-Cache"],
+                reactor_home_payload["cache_state"],
+            )
             self.assertIn("consensus", reactor_home_payload)
             self.assertIn("treasury", reactor_home_payload)
             self.assertIn("legislation", reactor_home_payload)

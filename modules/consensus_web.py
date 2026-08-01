@@ -42,6 +42,7 @@ from modules.consensus_web_control import (
     execute_consensus_web_command,
 )
 from modules.tvrs_presentation import is_chair
+from modules.web_snapshot_cache import AsyncSnapshotCache
 from modules.reactor_web import register_reactor_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
@@ -714,17 +715,43 @@ async def _security_middleware(
     request: web.Request,
     handler: Any,
 ) -> web.StreamResponse:
+    started_at = time.perf_counter()
     try:
         response = await handler(request)
     except web.HTTPException as exc:
-        _apply_security_headers(exc)
+        _apply_security_headers(exc, request_path=request.path)
+        exc.headers["Server-Timing"] = (
+            f'app;dur={(time.perf_counter() - started_at) * 1000:.1f}'
+        )
         raise
-    _apply_security_headers(response)
+    _apply_security_headers(response, request_path=request.path)
+    response.headers["Server-Timing"] = (
+        f'app;dur={(time.perf_counter() - started_at) * 1000:.1f}'
+    )
     return response
 
 
-def _apply_security_headers(response: web.StreamResponse) -> None:
-    response.headers["Cache-Control"] = "no-store"
+def _apply_security_headers(
+    response: web.StreamResponse,
+    *,
+    request_path: str = "",
+) -> None:
+    path = str(request_path or "")
+    if path.startswith("/assets/"):
+        if path.endswith((".woff2", ".mp3")):
+            response.headers["Cache-Control"] = (
+                "public, max-age=2592000, immutable"
+            )
+        else:
+            response.headers["Cache-Control"] = (
+                "public, max-age=300, stale-while-revalidate=86400"
+            )
+    elif path == "/favicon.ico":
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    else:
+        # HTML and all personalized API projections must never be stored by a
+        # shared cache. Read projections use an in-process SWR cache instead.
+        response.headers["Cache-Control"] = "private, no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -752,6 +779,12 @@ def create_consensus_web_app(
         middlewares=[_security_middleware],
         client_max_size=client_max_size,
     )
+    state_cache = AsyncSnapshotCache[
+        tuple[str, int, str, bool], dict[str, Any]
+    ](
+        ttl_seconds=1.5,
+        max_stale_seconds=15,
+    )
 
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
@@ -773,12 +806,22 @@ def create_consensus_web_app(
             "tab-signal.js",
             "favicon.svg",
             "portal.css",
+            "portal-theme.css",
             "portal.js",
+            "manrope-cyrillic.woff2",
+            "manrope-latin.woff2",
+            "unbounded-cyrillic.woff2",
+            "unbounded-latin.woff2",
+            "source-serif-cyrillic.woff2",
+            "source-serif-latin.woff2",
             "login.css",
             "login.js",
         }:
             raise web.HTTPNotFound()
-        return web.FileResponse(_ASSET_DIR / name)
+        response = web.FileResponse(_ASSET_DIR / name)
+        if name.endswith(".woff2"):
+            response.content_type = "font/woff2"
+        return response
 
     async def login_page(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "login.html")
@@ -1003,20 +1046,34 @@ def create_consensus_web_app(
 
     async def state(request: web.Request) -> web.Response:
         principal, legacy_read_only = await authenticated_request(request)
-        return web.json_response(
-            await build_consensus_web_state(
+        requested_mode = str(request.query.get("mode") or "").strip().lower()
+        cache_key = (
+            requested_mode,
+            int(principal.user_id) if principal is not None else 0,
+            str(principal.csrf_token) if principal is not None else "legacy",
+            bool(legacy_read_only),
+        )
+        snapshot, cache_state = await state_cache.get(
+            cache_key,
+            lambda: build_consensus_web_state(
                 bot,
                 int(guild_id),
-                mode=request.query.get("mode"),
+                mode=requested_mode,
                 principal=principal,
                 legacy_read_only=legacy_read_only,
             ),
+            force=request.query.get("fresh") == "1",
+        )
+        response = web.json_response(
+            {**snapshot, "cache_state": cache_state},
             dumps=lambda value: json.dumps(
                 value,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
         )
+        response.headers["X-T-Mod-Cache"] = cache_state
+        return response
 
     async def bills(request: web.Request) -> web.Response:
         await authenticated_request(request)
@@ -1272,6 +1329,7 @@ def create_consensus_web_app(
                 principal=principal,
             ),
         }
+        state_cache.invalidate()
         _command_receipts[receipt_key] = (now + 300.0, response_payload)
         return web.json_response(response_payload)
 

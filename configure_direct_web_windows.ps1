@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $httpsRuleName = "T-Mod Direct HTTPS"
+$httpsUdpRuleName = "T-Mod Direct HTTPS HTTP3"
 $httpRuleName = "T-Mod ACME HTTP"
 $obsoleteRuleNames = @(
     "T-Mod Consensus via WireGuard",
@@ -62,7 +63,10 @@ function Test-FirewallRule {
         [string]$DisplayName,
 
         [Parameter(Mandatory = $true)]
-        [int]$Port
+        [int]$Port,
+
+        [ValidateSet("TCP", "UDP")]
+        [string]$Protocol = "TCP"
     )
 
     try {
@@ -79,7 +83,7 @@ function Test-FirewallRule {
         }
         $portFilter = $rule | Get-NetFirewallPortFilter |
             Where-Object {
-                $_.Protocol -eq "TCP" -and
+                $_.Protocol -eq $Protocol -and
                 [string]$_.LocalPort -eq [string]$Port
             }
         return [bool]$portFilter
@@ -139,6 +143,9 @@ function Set-FirewallRule {
         [Parameter(Mandatory = $true)]
         [int]$Port,
 
+        [ValidateSet("TCP", "UDP")]
+        [string]$Protocol = "TCP",
+
         [Parameter(Mandatory = $true)]
         [string]$Description
     )
@@ -150,7 +157,7 @@ function Set-FirewallRule {
         -Description $Description `
         -Direction Inbound `
         -Action Allow `
-        -Protocol TCP `
+        -Protocol $Protocol `
         -LocalPort $Port `
         -RemoteAddress Any `
         -Profile Any `
@@ -160,6 +167,7 @@ function Set-FirewallRule {
 $alreadyConfigured = (
     (Test-EnvConfiguration) -and
     (Test-FirewallRule -DisplayName $httpsRuleName -Port 443) -and
+    (Test-FirewallRule -DisplayName $httpsUdpRuleName -Port 443 -Protocol UDP) -and
     (Test-FirewallRule -DisplayName $httpRuleName -Port 80) -and
     (Test-ObsoleteFirewallRulesAbsent)
 )
@@ -193,6 +201,11 @@ if (!$alreadyConfigured) {
         -Port 443 `
         -Description "Public HTTPS entry for the T-Mod Caddy reverse proxy."
     Set-FirewallRule `
+        -DisplayName $httpsUdpRuleName `
+        -Port 443 `
+        -Protocol UDP `
+        -Description "Public HTTP/3 QUIC entry for the T-Mod Caddy reverse proxy."
+    Set-FirewallRule `
         -DisplayName $httpRuleName `
         -Port 80 `
         -Description "HTTP redirect and ACME certificate validation for T-Mod."
@@ -206,5 +219,5 @@ Write-Host "  [OK] Member Reactor: https://${PublicDomain}"
 Write-Host "  [OK] Nuclear Reactor: https://reactor.${PublicDomain}"
 Write-Host "  [OK] Consensus: https://consensus.${PublicDomain}"
 Write-Host "  [OK] Zigmund: https://zigmund.${PublicDomain}"
-Write-Host "  [OK] T-Mod firewall rules allow public web ports 80/TCP and 443/TCP."
+Write-Host "  [OK] T-Mod firewall rules allow 80/TCP, 443/TCP and 443/UDP (HTTP/3)."
 Write-Host "  [OK] Internal T-Mod port 8787 remains bound to localhost."

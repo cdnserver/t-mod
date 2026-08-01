@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
   <head>
     <meta charset="utf-8">
@@ -7,32 +7,49 @@
     <meta name="theme-color" content="#080b10">
     <title>Реактор — T-Mod</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <meta name="description" content="Казна и законодательное пространство участника Товарищества.">
+    <meta
+      name="description"
+      content="Казна и законодательное пространство участника Товарищества."
+    >
     <link rel="stylesheet" href="/assets/portal.css">
+    <link rel="stylesheet" href="/assets/portal-theme.css">
     <script src="/assets/tab-signal.js" defer></script>
     <script src="/assets/portal.js" defer></script>
   </head>
   <body>
-    <div class="portal-atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="portal-atmosphere" aria-hidden="true">
+      <i></i><i></i><i></i><b></b><span></span>
+    </div>
 
     <section id="portal-gate" class="portal-gate">
       <div class="portal-loader"><span>T</span><i></i></div>
       <small>PERSONAL REACTOR</small>
       <h1>Подключаем ваш контур</h1>
-      <p id="portal-gate-message">Проверяем сессию и собираем актуальное состояние Товарищества…</p>
-      <a id="portal-login" href="/login?next=/reactor" hidden>Войти по логину и PIN</a>
+      <p id="portal-gate-message">
+        Проверяем сессию и собираем актуальное состояние Товарищества…
+      </p>
+      <a id="portal-login" href="/login?next=/reactor" hidden
+      >Войти по логину и PIN</a>
     </section>
 
     <div id="portal-shell" class="portal-shell" hidden>
       <header class="portal-header">
-        <a class="portal-brand" href="/reactor"><span>⚛</span><strong>РЕАКТОР</strong><small>Личный Реактор участника</small></a>
+        <a class="portal-brand" href="/reactor"><span>⚛</span><strong
+          >РЕАКТОР</strong><small>Личный Реактор участника</small></a>
         <nav aria-label="Основная навигация">
           <a href="#treasury">Казна</a>
           <a href="#legislation">Законопроекты</a>
           <a class="nav-accent" href="#editor">Создать проект</a>
           <a href="https://consensus.tvr.lat/">Консенсус</a>
-          <a id="portal-admin-link" href="https://reactor.tvr.lat/admin" hidden>Ядерный Реактор</a>
-          <button id="portal-customize" type="button" aria-label="Настроить экран">Настроить</button>
+          <a id="portal-admin-link" href="https://reactor.tvr.lat/admin" hidden
+          >Ядерный Реактор</a>
+          <button
+            id="portal-customize"
+            type="button"
+            aria-label="Настроить экран"
+          >
+            Настроить
+          </button>
           <a class="portal-logout" href="/auth/logout">Выйти</a>
         </nav>
       </header>
@@ -40,32 +57,59 @@
       <main>
         <section class="portal-hero">
           <div class="portal-hero-copy">
-            <span class="portal-kicker"><i></i> КОНТУР ТОВАРИЩЕСТВА ПОДКЛЮЧЁН</span>
+            <span class="portal-kicker"><i></i> КОНТУР ТОВАРИЩЕСТВА
+              ПОДКЛЮЧЁН</span>
             <h1 id="portal-welcome">Ваш личный Реактор</h1>
-            <p>Следите за общей казной, изучайте решения и превращайте идеи в готовые законопроекты вместе с редактором T-Mod.</p>
+            <p>
+              Следите за общей казной, изучайте решения и превращайте идеи в
+              готовые законопроекты вместе с редактором T-Mod.
+            </p>
             <div class="portal-hero-actions">
               <a href="#editor">Подать законопроект <span>→</span></a>
               <a href="#legislation">Открыть реестр</a>
             </div>
           </div>
           <div class="portal-hero-state">
-            <div class="portal-core" aria-hidden="true"><span id="portal-avatar">T</span><i></i><i></i></div>
-            <div><small>СОСТОЯНИЕ КОНТУРА</small><strong>Синхронизирован</strong><span id="portal-sync-time">только что</span></div>
+            <div class="portal-core" aria-hidden="true">
+              <span id="portal-avatar">T</span><i></i><i></i><b></b><em></em>
+            </div>
+            <div class="portal-reactor-readout">
+              <small>СОСТОЯНИЕ КОНТУРА</small><strong><i></i>
+                Синхронизирован</strong><span id="portal-sync-time"
+              >только что</span>
+            </div>
+            <div class="portal-telemetry" aria-hidden="true">
+              <span><b>CORE</b> 98.7%</span><span><b>LINK</b> SECURE</span><span
+              ><b>SYNC</b> LIVE</span>
+            </div>
           </div>
         </section>
 
         <div id="portal-canvas" class="portal-canvas">
-          <article class="portal-widget identity-widget" data-portal-widget="identity">
-            <header><span>ВАШ КОНТУР</span><b id="portal-profile-status">активен</b></header>
+          <article
+            class="portal-widget identity-widget"
+            data-portal-widget="identity"
+          >
+            <header>
+              <span>ВАШ КОНТУР</span><b id="portal-profile-status">активен</b>
+            </header>
             <div class="identity-main">
               <span class="identity-avatar" id="identity-avatar">T</span>
-              <span><small>ПРАВОВОЙ СТАТУС</small><h2 id="identity-name">—</h2><p id="identity-legal">Прихожанин</p></span>
+              <span><small>ПРАВОВОЙ СТАТУС</small><h2 id="identity-name">
+                  —
+                </h2><p id="identity-legal">Прихожанин</p></span>
             </div>
             <div id="identity-positions" class="identity-positions"></div>
-            <p id="identity-note" class="identity-note">Настройки профиля доступны через /profile в Discord.</p>
+            <p id="identity-note" class="identity-note">
+              Настройки профиля доступны через /profile в Discord.
+            </p>
           </article>
 
-          <article id="treasury" class="portal-widget treasury-widget" data-portal-widget="treasury">
+          <article
+            id="treasury"
+            class="portal-widget treasury-widget"
+            data-portal-widget="treasury"
+          >
             <header><span>КАЗНА ТОВАРИЩЕСТВА</span><b>30 ДНЕЙ</b></header>
             <div class="treasury-balance">
               <small>РАСЧЁТНЫЙ БАЛАНС</small>
@@ -73,142 +117,415 @@
               <span id="treasury-freshness">Получаем последний отчёт…</span>
             </div>
             <div class="treasury-flow" aria-label="Движение средств">
-              <div><span>Поступления</span><strong id="treasury-income">—</strong><i class="income"><b id="treasury-income-bar"></b></i></div>
-              <div><span>Расходы</span><strong id="treasury-expense">—</strong><i class="expense"><b id="treasury-expense-bar"></b></i></div>
+              <div>
+                <span>Поступления</span><strong id="treasury-income"
+                >—</strong><i class="income"><b
+                    id="treasury-income-bar"
+                  ></b></i>
+              </div>
+              <div>
+                <span>Расходы</span><strong id="treasury-expense">—</strong><i
+                  class="expense"
+                ><b id="treasury-expense-bar"></b></i>
+              </div>
             </div>
             <footer>
-              <span><small>ЧИСТЫЙ ПОТОК</small><strong id="treasury-net">—</strong></span>
-              <span><small>ОПЕРАЦИЙ</small><strong id="treasury-operations">0</strong></span>
-              <span><small>ПОСЛЕ ОТЧЁТА</small><strong id="treasury-after-report">0</strong></span>
+              <span><small>ЧИСТЫЙ ПОТОК</small><strong id="treasury-net"
+                >—</strong></span>
+              <span><small>ОПЕРАЦИЙ</small><strong id="treasury-operations"
+                >0</strong></span>
+              <span><small>ПОСЛЕ ОТЧЁТА</small><strong
+                  id="treasury-after-report"
+                >0</strong></span>
             </footer>
           </article>
 
-          <article id="legislation" class="portal-widget legislation-widget" data-portal-widget="legislation">
+          <article
+            id="legislation"
+            class="portal-widget legislation-widget"
+            data-portal-widget="legislation"
+          >
             <header>
               <span>РЕЕСТР РЕШЕНИЙ</span>
               <b id="legislation-count">0 ПРОЕКТОВ</b>
             </header>
             <div class="legislation-heading">
-              <div><h2>Законопроекты Товарищества</h2><p>Полные тексты, авторы и путь каждого решения.</p></div>
-              <label class="legislation-search"><span>⌕</span><input id="legislation-search" type="search" placeholder="Номер, название или автор" autocomplete="off"></label>
+              <div>
+                <h2>Законопроекты Товарищества</h2>
+                <p>Полные тексты, авторы и путь каждого решения.</p>
+              </div>
+              <label class="legislation-search"><span>⌕</span><input
+                  id="legislation-search"
+                  type="search"
+                  placeholder="Номер, название или автор"
+                  autocomplete="off"
+                ></label>
             </div>
             <div id="legislation-list" class="legislation-list"></div>
-            <footer><button id="legislation-more" type="button">Показать больше</button><span id="legislation-meta">Актуальный реестр</span></footer>
+            <footer>
+              <button id="legislation-more" type="button">
+                Показать больше
+              </button><span id="legislation-meta">Актуальный реестр</span>
+            </footer>
           </article>
 
-          <article id="editor" class="portal-widget editor-widget" data-portal-widget="editor">
+          <article
+            id="editor"
+            class="portal-widget editor-widget"
+            data-portal-widget="editor"
+          >
             <header>
               <span>ЗАКОНОДАТЕЛЬНАЯ МАСТЕРСКАЯ</span>
               <b id="editor-state">НЕТ ЧЕРНОВИКА</b>
             </header>
             <div class="editor-titlebar">
-              <div><small>AI-ASSISTED DRAFTING</small><h2>От идеи до готового законопроекта</h2><p>ИИ помогает с формулировкой, но содержание и финальное решение всегда остаются за автором.</p></div>
-              <div class="editor-progress"><span><i id="editor-progress-bar"></i></span><strong id="editor-progress">0%</strong></div>
+              <div>
+                <small><i></i> LEGISLATIVE INTELLIGENCE / ONLINE</small><h2>
+                  Законодательный терминал
+                </h2>
+                <p>
+                  Соберите замысел, сформируйте юридически чистый текст и
+                  подготовьте исполнимое решение вместе с T-Mod.
+                </p>
+              </div>
+              <div class="editor-progress">
+                <div>
+                  <small>ГОТОВНОСТЬ ПРОЕКТА</small><strong id="editor-progress"
+                  >0%</strong>
+                </div><span><i id="editor-progress-bar"></i></span>
+              </div>
             </div>
 
             <div id="editor-empty" class="editor-empty">
-              <span class="editor-empty-mark">§</span>
-              <div><h3>Новая идея начинается здесь</h3><p>Откройте личный черновик. Он сохранится в базе и останется доступен после перезапуска или перехода в Discord.</p></div>
-              <button id="editor-create" class="portal-primary" type="button">Создать законопроект</button>
+              <span class="editor-empty-mark"><i>§</i><b></b></span>
+              <div>
+                <h3>Новая идея начинается здесь</h3>
+                <p>
+                  Откройте личный черновик. Он сохранится в базе и останется
+                  доступен после перезапуска или перехода в Discord.
+                </p>
+              </div>
+              <button id="editor-create" class="portal-primary" type="button">
+                <span>Открыть мастерскую</span><i>→</i>
+              </button>
             </div>
 
             <div id="editor-workspace" class="editor-workspace" hidden>
+              <div class="editor-console-bar" aria-hidden="true">
+                <span class="console-lights"><i></i><i></i><i></i></span>
+                <strong>TVRS / LEGISLATIVE WORKSPACE</strong>
+                <small><i></i> ЗАЩИЩЁННЫЙ ЧЕРНОВИК</small>
+              </div>
               <ol class="editor-steps" aria-label="Этапы подготовки">
-                <li><button class="active" type="button" data-editor-tab="idea"><span>01</span><b>Замысел</b><small>Что меняем</small></button></li>
-                <li><button type="button" data-editor-tab="draft"><span>02</span><b>Текст</b><small>Редакция акта</small></button></li>
-                <li><button type="button" data-editor-tab="execution"><span>03</span><b>Исполнение</b><small>После принятия</small></button></li>
-                <li><button type="button" data-editor-tab="review"><span>04</span><b>Проверка</b><small>Публикация</small></button></li>
+                <li>
+                  <button class="active" type="button" data-editor-tab="idea">
+                    <span>01</span><b>Замысел</b><small>Что меняем</small>
+                  </button>
+                </li>
+                <li>
+                  <button type="button" data-editor-tab="draft">
+                    <span>02</span><b>Текст</b><small>Редакция акта</small>
+                  </button>
+                </li>
+                <li>
+                  <button type="button" data-editor-tab="execution">
+                    <span>03</span><b>Исполнение</b><small>После
+                      принятия</small>
+                  </button>
+                </li>
+                <li>
+                  <button type="button" data-editor-tab="review">
+                    <span>04</span><b>Проверка</b><small>Публикация</small>
+                  </button>
+                </li>
               </ol>
 
               <div class="editor-body">
                 <section class="editor-form">
                   <div class="editor-pane active" data-editor-pane="idea">
-                    <div class="field-heading"><span>ШАГ 01</span><h3>Расскажите, что хотите изменить</h3><p>Можно писать обычным языком — редактор сам соберёт аккуратную структуру без технического мусора.</p></div>
-                    <label><span>Идея законопроекта <b>обязательно</b></span><textarea id="bill-idea" maxlength="1800" rows="5" placeholder="Например: создать единый справочник участников Товарищества…"></textarea><small data-counter-for="bill-idea">0 / 1800</small></label>
-                    <label><span>Какой результат должен получиться <b>обязательно</b></span><textarea id="bill-outcome" maxlength="1000" rows="4" placeholder="Что станет лучше после принятия?"></textarea><small data-counter-for="bill-outcome">0 / 1000</small></label>
-                    <label><span>Ограничения и исходные материалы</span><textarea id="bill-constraints" maxlength="1000" rows="3" placeholder="Ссылки, важные условия, то, чего нельзя менять…"></textarea><small data-counter-for="bill-constraints">0 / 1000</small></label>
-                    <div class="editor-actions"><button id="editor-ai" class="ai-action" type="button"><span>✦</span> Подготовить редакцию с ИИ</button><button type="button" data-editor-save>Сохранить</button></div>
+                    <div class="field-heading">
+                      <span>ШАГ 01</span><h3>
+                        Расскажите, что хотите изменить
+                      </h3>
+                      <p>
+                        Можно писать обычным языком — редактор сам соберёт
+                        аккуратную структуру без технического мусора.
+                      </p>
+                    </div>
+                    <label><span>Идея законопроекта <b
+                        >обязательно</b></span><textarea
+                        id="bill-idea"
+                        maxlength="1800"
+                        rows="5"
+                        placeholder="Например: создать единый справочник участников Товарищества…"
+                      ></textarea><small data-counter-for="bill-idea"
+                      >0 / 1800</small></label>
+                    <label><span>Какой результат должен получиться <b
+                        >обязательно</b></span><textarea
+                        id="bill-outcome"
+                        maxlength="1000"
+                        rows="4"
+                        placeholder="Что станет лучше после принятия?"
+                      ></textarea><small data-counter-for="bill-outcome"
+                      >0 / 1000</small></label>
+                    <label><span>Ограничения и исходные
+                        материалы</span><textarea
+                        id="bill-constraints"
+                        maxlength="1000"
+                        rows="3"
+                        placeholder="Ссылки, важные условия, то, чего нельзя менять…"
+                      ></textarea><small data-counter-for="bill-constraints"
+                      >0 / 1000</small></label>
+                    <div class="editor-actions">
+                      <button id="editor-ai" class="ai-action" type="button">
+                        <span>✦</span> Подготовить редакцию с ИИ
+                      </button>
+                      <button type="button" data-editor-save>Сохранить</button>
+                    </div>
                   </div>
 
                   <div class="editor-pane" data-editor-pane="draft" hidden>
-                    <div class="field-heading"><span>ШАГ 02</span><h3>Текст законопроекта</h3><p>Проверьте каждую формулировку. ИИ предлагает редакцию, но ничего не публикует самостоятельно.</p></div>
-                    <label><span>Название <b>обязательно</b></span><input id="bill-title" maxlength="180" placeholder="Короткое и понятное название"><small data-counter-for="bill-title">0 / 180</small></label>
-                    <label><span>Полный текст <b>обязательно</b></span><textarea id="bill-summary" maxlength="3000" rows="12" placeholder="Что именно предлагается принять…"></textarea><small data-counter-for="bill-summary">0 / 3000</small></label>
-                    <label><span>Материалы и ссылки</span><textarea id="bill-materials" maxlength="1000" rows="3" placeholder="Необязательные источники и документы"></textarea><small data-counter-for="bill-materials">0 / 1000</small></label>
-                    <div class="editor-actions"><button type="button" data-editor-back="idea">← К замыслу</button><button class="portal-primary" type="button" data-editor-save>Сохранить текст</button></div>
+                    <div class="field-heading">
+                      <span>ШАГ 02</span><h3>Текст законопроекта</h3>
+                      <p>
+                        Проверьте каждую формулировку. ИИ предлагает редакцию,
+                        но ничего не публикует самостоятельно.
+                      </p>
+                    </div>
+                    <label><span>Название <b>обязательно</b></span><input
+                        id="bill-title"
+                        maxlength="180"
+                        placeholder="Короткое и понятное название"
+                      ><small data-counter-for="bill-title"
+                      >0 / 180</small></label>
+                    <label><span>Полный текст <b>обязательно</b></span><textarea
+                        id="bill-summary"
+                        maxlength="3000"
+                        rows="12"
+                        placeholder="Что именно предлагается принять…"
+                      ></textarea><small data-counter-for="bill-summary"
+                      >0 / 3000</small></label>
+                    <label><span>Материалы и ссылки</span><textarea
+                        id="bill-materials"
+                        maxlength="1000"
+                        rows="3"
+                        placeholder="Необязательные источники и документы"
+                      ></textarea><small data-counter-for="bill-materials"
+                      >0 / 1000</small></label>
+                    <div class="editor-actions">
+                      <button type="button" data-editor-back="idea">
+                        ← К замыслу
+                      </button>
+                      <button
+                        class="portal-primary"
+                        type="button"
+                        data-editor-save
+                      >
+                        Сохранить текст
+                      </button>
+                    </div>
                   </div>
 
                   <div class="editor-pane" data-editor-pane="execution" hidden>
-                    <div class="field-heading"><span>ШАГ 03</span><h3>Что произойдёт после принятия</h3><p>Эти поля не засоряют нормативный текст и превращают решение в понятную работу для руководства.</p></div>
-                    <label><span>План исполнения <b>обязательно</b></span><textarea id="bill-implementation" maxlength="1800" rows="7" placeholder="Последовательность действий, ответственные направления, ожидаемый итог…"></textarea><small data-counter-for="bill-implementation">0 / 1800</small></label>
-                    <label><span>Действия руководства <b>обязательно</b></span><textarea id="bill-leadership" maxlength="1800" rows="7" placeholder="Конкретный чек-лист после принятия решения…"></textarea><small data-counter-for="bill-leadership">0 / 1800</small></label>
-                    <div class="editor-actions"><button type="button" data-editor-back="draft">← К тексту</button><button class="portal-primary" type="button" data-editor-save>Сохранить план</button></div>
+                    <div class="field-heading">
+                      <span>ШАГ 03</span><h3>Что произойдёт после принятия</h3>
+                      <p>
+                        Эти поля не засоряют нормативный текст и превращают
+                        решение в понятную работу для руководства.
+                      </p>
+                    </div>
+                    <label><span>План исполнения <b
+                        >обязательно</b></span><textarea
+                        id="bill-implementation"
+                        maxlength="1800"
+                        rows="7"
+                        placeholder="Последовательность действий, ответственные направления, ожидаемый итог…"
+                      ></textarea><small data-counter-for="bill-implementation"
+                      >0 / 1800</small></label>
+                    <label><span>Действия руководства <b
+                        >обязательно</b></span><textarea
+                        id="bill-leadership"
+                        maxlength="1800"
+                        rows="7"
+                        placeholder="Конкретный чек-лист после принятия решения…"
+                      ></textarea><small data-counter-for="bill-leadership"
+                      >0 / 1800</small></label>
+                    <div class="editor-actions">
+                      <button type="button" data-editor-back="draft">
+                        ← К тексту
+                      </button>
+                      <button
+                        class="portal-primary"
+                        type="button"
+                        data-editor-save
+                      >
+                        Сохранить план
+                      </button>
+                    </div>
                   </div>
 
                   <div class="editor-pane" data-editor-pane="review" hidden>
-                    <div class="field-heading"><span>ШАГ 04</span><h3>Финальная проверка</h3><p>После публикации проект попадёт в устойчивую очередь Discord и станет доступен в реестре.</p></div>
+                    <div class="field-heading">
+                      <span>ШАГ 04</span><h3>Финальная проверка</h3>
+                      <p>
+                        После публикации проект попадёт в устойчивую очередь
+                        Discord и станет доступен в реестре.
+                      </p>
+                    </div>
                     <div id="editor-checklist" class="editor-checklist"></div>
-                    <div class="editor-policy"><span>ОБЫЧНАЯ ПРОЦЕДУРА</span><p>Все новые проекты подаются без индивидуального веса и дополнительных категорий решений.</p></div>
-                    <div class="editor-actions split"><button id="editor-cancel" class="danger-action" type="button">Отменить черновик</button><button id="editor-publish" class="publish-action" type="button">Опубликовать законопроект <span>→</span></button></div>
+                    <div class="editor-policy">
+                      <span>ОБЫЧНАЯ ПРОЦЕДУРА</span><p>
+                        Все новые проекты подаются без индивидуального веса и
+                        дополнительных категорий решений.
+                      </p>
+                    </div>
+                    <div class="editor-actions split">
+                      <button
+                        id="editor-cancel"
+                        class="danger-action"
+                        type="button"
+                      >
+                        Отменить черновик
+                      </button>
+                      <button
+                        id="editor-publish"
+                        class="publish-action"
+                        type="button"
+                      >
+                        Опубликовать законопроект <span>→</span>
+                      </button>
+                    </div>
                   </div>
                 </section>
 
                 <aside class="editor-preview">
-                  <header><span>ПРЕДПРОСМОТР</span><b id="preview-number">№ —</b></header>
+                  <header>
+                    <span><i></i> ЖИВОЙ ДОКУМЕНТ</span><b id="preview-number"
+                    >№ —</b>
+                  </header>
                   <div class="preview-paper">
+                    <span class="preview-seal" aria-hidden="true">TVRS</span>
                     <small>ТОВАРИЩЕСТВО · ПРОЕКТ РЕШЕНИЯ</small>
                     <h3 id="preview-title">Название будущего законопроекта</h3>
-                    <p id="preview-summary">Здесь появится полный текст проекта. Заполните поля вручную или попросите ИИ подготовить первую редакцию.</p>
-                    <div id="preview-materials" hidden><strong>Материалы</strong><p></p></div>
-                    <div id="preview-implementation" hidden><strong>После принятия</strong><p></p></div>
+                    <p id="preview-summary">
+                      Здесь появится полный текст проекта. Заполните поля
+                      вручную или попросите ИИ подготовить первую редакцию.
+                    </p>
+                    <div id="preview-materials" hidden>
+                      <strong>Материалы</strong><p></p>
+                    </div>
+                    <div id="preview-implementation" hidden>
+                      <strong>После принятия</strong><p></p>
+                    </div>
                   </div>
-                  <footer><span id="preview-author">Автор: —</span><span>Обычная процедура</span></footer>
+                  <footer>
+                    <span id="preview-author">Автор: —</span><span>Обычная
+                      процедура</span>
+                  </footer>
                 </aside>
               </div>
             </div>
           </article>
 
-          <article class="portal-widget consensus-widget" data-portal-widget="consensus">
-            <header><span>КОНСЕНСУС</span><b id="consensus-state">ОЖИДАНИЕ</b></header>
+          <article
+            class="portal-widget consensus-widget"
+            data-portal-widget="consensus"
+          >
+            <header>
+              <span>КОНСЕНСУС</span><b id="consensus-state">ОЖИДАНИЕ</b>
+            </header>
             <div class="consensus-visual"><i></i><span>🏛</span></div>
             <h2 id="consensus-title">Сейчас заседания нет</h2>
-            <p id="consensus-detail">Следите за очередью и открытием пленарного консенсуса.</p>
+            <p id="consensus-detail">
+              Следите за очередью и открытием пленарного консенсуса.
+            </p>
             <a href="https://consensus.tvr.lat/">Открыть трансляцию →</a>
           </article>
 
-          <article class="portal-widget notifications-widget" data-portal-widget="notifications">
-            <header><span>ЦЕНТР УВЕДОМЛЕНИЙ</span><b id="portal-unread">0 НОВЫХ</b></header>
-            <div id="portal-notification-list" class="portal-notification-list"></div>
-            <button id="portal-read-all" type="button">Отметить всё прочитанным</button>
+          <article
+            class="portal-widget notifications-widget"
+            data-portal-widget="notifications"
+          >
+            <header>
+              <span>ЦЕНТР УВЕДОМЛЕНИЙ</span><b id="portal-unread">0 НОВЫХ</b>
+            </header>
+            <div id="portal-notification-list" class="portal-notification-list">
+            </div>
+            <button id="portal-read-all" type="button">
+              Отметить всё прочитанным
+            </button>
           </article>
         </div>
       </main>
     </div>
 
     <dialog id="portal-layout-dialog" class="portal-dialog">
-      <form method="dialog"><span><small>PERSONAL CANVAS</small><strong>Настройка экрана</strong></span><button value="cancel" aria-label="Закрыть">×</button></form>
+      <form method="dialog">
+        <span><small>PERSONAL CANVAS</small><strong>Настройка
+            экрана</strong></span><button value="cancel" aria-label="Закрыть">
+          ×
+        </button>
+      </form>
       <p>Выберите разделы, которые хотите видеть на личном холсте.</p>
       <div id="portal-layout-list"></div>
-      <button id="portal-layout-save" class="portal-primary" type="button">Сохранить экран</button>
+      <button id="portal-layout-save" class="portal-primary" type="button">
+        Сохранить экран
+      </button>
     </dialog>
 
     <dialog id="bill-dialog" class="portal-dialog bill-dialog">
-      <form method="dialog"><span><small id="bill-dialog-number">ЗАКОНОПРОЕКТ</small><strong id="bill-dialog-title">—</strong></span><button value="cancel" aria-label="Закрыть">×</button></form>
-      <div class="bill-dialog-meta"><span id="bill-dialog-author">—</span><b id="bill-dialog-status">—</b></div>
+      <form method="dialog">
+        <span><small id="bill-dialog-number">ЗАКОНОПРОЕКТ</small><strong
+            id="bill-dialog-title"
+          >—</strong></span><button value="cancel" aria-label="Закрыть">
+          ×
+        </button>
+      </form>
+      <div class="bill-dialog-meta">
+        <span id="bill-dialog-author">—</span><b id="bill-dialog-status">—</b>
+      </div>
       <article id="bill-dialog-summary"></article>
-      <section id="bill-dialog-execution" hidden><strong>После принятия</strong><p></p></section>
-      <section id="bill-dialog-leadership" hidden><strong>Действия руководства</strong><p></p></section>
-      <section id="bill-dialog-materials" hidden><strong>Материалы</strong><p></p></section>
-      <a id="bill-dialog-discord" target="_blank" rel="noopener" hidden>Открыть оригинал в Discord →</a>
+      <section id="bill-dialog-execution" hidden>
+        <strong>После принятия</strong><p></p>
+      </section>
+      <section id="bill-dialog-leadership" hidden>
+        <strong>Действия руководства</strong><p></p>
+      </section>
+      <section id="bill-dialog-materials" hidden>
+        <strong>Материалы</strong><p></p>
+      </section>
+      <a id="bill-dialog-discord" target="_blank" rel="noopener" hidden
+      >Открыть оригинал в Discord →</a>
     </dialog>
 
     <dialog id="confirm-dialog" class="portal-dialog confirm-dialog">
-      <form method="dialog"><span><small>ПОДТВЕРЖДЕНИЕ</small><strong id="confirm-title">Подтвердите действие</strong></span><button value="cancel" aria-label="Закрыть">×</button></form>
-      <div class="confirm-content"><span id="confirm-mark">§</span><p id="confirm-message"></p></div>
-      <div class="confirm-actions"><button id="confirm-cancel" type="button">Вернуться</button><button id="confirm-accept" class="portal-primary" type="button">Подтвердить</button></div>
+      <form method="dialog">
+        <span><small>ПОДТВЕРЖДЕНИЕ</small><strong id="confirm-title"
+          >Подтвердите действие</strong></span><button
+          value="cancel"
+          aria-label="Закрыть"
+        >
+          ×
+        </button>
+      </form>
+      <div class="confirm-content">
+        <span id="confirm-mark">§</span><p id="confirm-message"></p>
+      </div>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" type="button">Вернуться</button>
+        <button id="confirm-accept" class="portal-primary" type="button">
+          Подтвердить
+        </button>
+      </div>
     </dialog>
 
-    <div id="portal-busy" class="portal-busy" hidden><div><span>✦</span><strong id="portal-busy-title">Обновление данных</strong><small id="portal-busy-detail">Синхронизируем Реактор…</small></div></div>
+    <div id="portal-busy" class="portal-busy" hidden>
+      <div>
+        <span>✦</span><strong id="portal-busy-title"
+        >Обновление данных</strong><small id="portal-busy-detail"
+        >Синхронизируем Реактор…</small>
+      </div>
+    </div>
     <div id="portal-toast" class="portal-toast" hidden></div>
   </body>
 </html>

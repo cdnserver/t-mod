@@ -29,8 +29,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     volumes:
       - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "./web/consensus:/srv/tmod:ro"
       - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
       - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
 
@@ -53,7 +55,9 @@ services:
       ONLINE_MODE: "FALSE"
       ENABLE_RCON: "true"
       RCON_PASSWORD_FILE: "/run/secrets/minecraft_rcon_password"
-      OVERRIDE_SERVER_PROPERTIES: "false"
+      # Keep explicitly managed values (including the secret-file backed RCON
+      # password) synchronized while preserving properties without env values.
+      OVERRIDE_SERVER_PROPERTIES: "true"
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
       - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
@@ -97,35 +101,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  discord-browser-stream:
-    profiles:
-      - browser-stream
-    build:
-      context: ./discord-browser-stream
-    image: tmod-browser-stream:latest
-    container_name: discord-browser-stream
-    restart: unless-stopped
-    env_file:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/browser-stream.env"
-    expose:
-      - "8790"
-    volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/browser-stream:/data"
-    shm_size: "1gb"
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:8790/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
 
 networks:
   default:

@@ -16,7 +16,9 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("https://tvr.lat", launcher)
         self.assertNotIn("http://SERVER_LAN_IP:8787", launcher)
 
-    def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(self) -> None:
+    def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(
+        self,
+    ) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         secrets_script = (ROOT / "ensure_minecraft_secrets_windows.ps1").read_text(
             encoding="utf-8"
@@ -63,6 +65,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('"127.0.0.1:8787:8787"', compose)
         self.assertIn('"80:80"', compose)
         self.assertIn('"443:443"', compose)
+        self.assertIn('"443:443/udp"', compose)
+        self.assertIn('"./web/consensus:/srv/tmod:ro"', compose)
+        self.assertIn("protocols h1 h2 h3", caddyfile)
+        self.assertIn("handle_path /assets/*", caddyfile)
+        self.assertIn("root * /srv/tmod", caddyfile)
         self.assertIn("tmod-caddy", compose)
         self.assertIn("reverse_proxy tmod-discord-bot:8787", caddyfile)
         self.assertNotIn("cloudflare", caddyfile.lower())
@@ -76,15 +83,54 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("consensus.tvr.lat", caddyfile)
         self.assertIn("zigmund.tvr.lat", caddyfile)
         self.assertNotIn("mc.tvr.lat", caddyfile)
+        self.assertIn("T-Mod Direct HTTPS HTTP3", script)
+        self.assertIn("-Protocol UDP", script)
         self.assertIn('"25565:25565/tcp"', compose)
         self.assertIn("MINECRAFT_PUBLIC_ADDRESS=mc.tvr.lat", example)
         self.assertNotIn('RCON_PASSWORD: "', compose)
         self.assertIn("RCON_PASSWORD_FILE", compose)
+        self.assertIn('OVERRIDE_SERVER_PROPERTIES: "true"', compose)
         self.assertIn("minecraft-supervisor", compose)
         self.assertIn("minecraft-supervisor-token.txt", compose)
         self.assertIn('"/var/run/docker.sock:/var/run/docker.sock"', compose)
         bot_service = compose.split("  tmod-caddy:", 1)[0]
         self.assertNotIn("/var/run/docker.sock", bot_service)
+
+    def test_standard_launcher_verifies_minecraft_rcon_after_startup(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertIn('call :stage "11" "Minecraft RCON verification"', launcher)
+        self.assertIn("call :check_minecraft_rcon", launcher)
+        self.assertIn("docker exec minecraft rcon-cli list", launcher)
+        self.assertIn("Minecraft RCON secret accepted", launcher)
+        self.assertIn("server.properties are not synchronized", launcher)
+
+    def test_retired_browser_stream_is_removed_during_startup(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        admin_backend = (ROOT / "modules/consensus_admin_web.py").read_text(
+            encoding="utf-8"
+        )
+        admin_html = (ROOT / "web/consensus/admin.html").read_text(encoding="utf-8")
+        admin_js = (ROOT / "web/consensus/admin.js").read_text(encoding="utf-8")
+
+        self.assertIn("docker stop discord-browser-stream", launcher)
+        self.assertIn("docker rm discord-browser-stream", launcher)
+        self.assertIn("docker image rm tmod-browser-stream:latest", launcher)
+        self.assertIn('del /Q "%PERSISTENT_DIR%\\browser-stream.env"', launcher)
+        self.assertIn('rmdir /S /Q "%PERSISTENT_DIR%\\browser-stream"', launcher)
+        self.assertIn("--remove-orphans", launcher)
+        self.assertNotIn("COMPOSE_PROFILES=browser-stream", launcher)
+        self.assertNotIn("configure_browser_stream_windows.ps1", launcher)
+        self.assertNotIn("  discord-browser-stream:", compose)
+        self.assertNotIn("setup_browser_stream", main)
+        self.assertNotIn("browser_stream", admin_backend)
+        self.assertNotIn("browser-stream-form", admin_html)
+        self.assertNotIn('data-media-target="browser"', admin_html)
+        self.assertNotIn("data.browser_stream", admin_js)
+        self.assertFalse((ROOT / "modules/browser_stream.py").exists())
+        self.assertFalse((ROOT / "discord-browser-stream").exists())
 
 
 if __name__ == "__main__":

@@ -24,7 +24,6 @@ from modules.control_center import setup_control_center
 from modules.market import setup_market
 from modules.profile import setup_profile
 from modules.music_setup import setup_music
-from modules.browser_stream import setup_browser_stream
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.delivery_runtime import setup_delivery
@@ -986,8 +985,6 @@ boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
 boot_module("T-Mod Music")
 setup_music(bot, remember_command_activity)
-boot_module("Discord Browser Client")
-setup_browser_stream(bot, remember_command_activity)
 boot_module("SGL Bureau")
 setup_sgbureau(bot, remember_command_activity)
 boot_module("SGL Case Archive")

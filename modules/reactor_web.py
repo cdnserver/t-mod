@@ -389,6 +389,16 @@ def register_reactor_web_routes(
         ttl_seconds=8,
         max_stale_seconds=120,
     )
+    member_home_cache = AsyncSnapshotCache[
+        tuple[int, str], dict[str, Any]
+    ](
+        ttl_seconds=6,
+        max_stale_seconds=60,
+    )
+    legislation_cache = AsyncSnapshotCache[int, dict[str, Any]](
+        ttl_seconds=10,
+        max_stale_seconds=90,
+    )
 
     async def cached_health(*, force: bool = False) -> tuple[dict[str, Any], str]:
         return await health_cache.get(
@@ -550,8 +560,7 @@ def register_reactor_web_routes(
             "csrf_token": str(principal.csrf_token),
         }
 
-    async def member_home(request: web.Request) -> web.Response:
-        principal = await personal_request(request)
+    async def build_member_home(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         (
             (profile, _characters),
             notifications,
@@ -592,35 +601,61 @@ def register_reactor_web_routes(
             ),
         )
         positions = _member_positions(principal.member)
-        return web.json_response(
+        return {
+            "profile": asdict(profile) if profile is not None else None,
+            "legal_positions": positions,
+            "legal_status": positions[0]["label"] if positions else "Прихожанин",
+            "notifications": notifications,
+            "layout": layout,
+            "consensus": consensus,
+            "treasury": treasury,
+            "legislation": legislation,
+            "links": {
+                "consensus": "https://consensus.tvr.lat/",
+                "admin": "https://reactor.tvr.lat/admin"
+                if principal.administrator
+                else None,
+            },
+        }
+
+    async def member_home(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        snapshot, cache_state = await member_home_cache.get(
+            (int(principal.user_id), str(principal.csrf_token)),
+            lambda: build_member_home(principal),
+            force=request.query.get("fresh") == "1",
+        )
+        response = web.json_response(
             {
                 "viewer": viewer(principal),
-                "profile": asdict(profile) if profile is not None else None,
-                "legal_positions": positions,
-                "legal_status": positions[0]["label"] if positions else "Прихожанин",
-                "notifications": notifications,
-                "layout": layout,
-                "consensus": consensus,
-                "treasury": treasury,
-                "legislation": legislation,
-                "links": {
-                    "consensus": "https://consensus.tvr.lat/",
-                    "admin": "https://reactor.tvr.lat/admin"
-                    if principal.administrator
-                    else None,
-                },
+                **snapshot,
+                "cache_state": cache_state,
             }
         )
+        response.headers["X-T-Mod-Cache"] = cache_state
+        return response
 
     async def legislation_get(request: web.Request) -> web.Response:
         principal = await personal_request(request)
-        snapshot = await asyncio.to_thread(
-            legislation_snapshot,
-            int(guild_id),
+        snapshot, cache_state = await legislation_cache.get(
             int(principal.user_id),
-            limit=120,
+            lambda: asyncio.to_thread(
+                legislation_snapshot,
+                int(guild_id),
+                int(principal.user_id),
+                limit=120,
+            ),
+            force=request.query.get("fresh") == "1",
         )
-        return web.json_response({"viewer": viewer(principal), **snapshot})
+        response = web.json_response(
+            {
+                "viewer": viewer(principal),
+                **snapshot,
+                "cache_state": cache_state,
+            }
+        )
+        response.headers["X-T-Mod-Cache"] = cache_state
+        return response
 
     async def legislation_command(request: web.Request) -> web.Response:
         principal = await personal_request(request)
@@ -634,6 +669,8 @@ def register_reactor_web_routes(
                     int(principal.user_id),
                     str(principal.display_name),
                 )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate(int(principal.user_id))
                 return web.json_response(
                     {"ok": True, "created": created, "workspace": workspace}
                 )
@@ -653,6 +690,8 @@ def register_reactor_web_routes(
                         await refresh_bill_workspace_panel(bot, raw)
                     except Exception:  # noqa: BLE001 - draft is already durable
                         logger.exception("Could not refresh Discord bill editor panel")
+                member_home_cache.invalidate()
+                legislation_cache.invalidate(int(principal.user_id))
                 return web.json_response({"ok": True, "workspace": workspace})
             if action == "ai":
                 try:
@@ -677,6 +716,8 @@ def register_reactor_web_routes(
                         if code == "bill_editor_ai_not_configured"
                         else "ИИ не смог подготовить корректный текст. Черновик сохранён — попробуйте ещё раз."
                     )
+                    member_home_cache.invalidate()
+                    legislation_cache.invalidate(int(principal.user_id))
                     return web.json_response(
                         {
                             "error": code,
@@ -694,6 +735,8 @@ def register_reactor_web_routes(
                         await refresh_bill_workspace_panel(bot, raw)
                     except Exception:  # noqa: BLE001 - draft is already durable
                         logger.exception("Could not refresh Discord bill editor panel")
+                member_home_cache.invalidate()
+                legislation_cache.invalidate(int(principal.user_id))
                 return web.json_response(
                     {
                         "ok": True,
@@ -709,6 +752,8 @@ def register_reactor_web_routes(
                     str(principal.display_name),
                     body,
                 )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate(int(principal.user_id))
                 return web.json_response(
                     {"ok": True, "created": created, "bill": bill}
                 )
@@ -719,6 +764,8 @@ def register_reactor_web_routes(
                     int(principal.user_id),
                     body,
                 )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate(int(principal.user_id))
                 return web.json_response({"ok": True})
             return web.json_response(
                 {
@@ -762,6 +809,7 @@ def register_reactor_web_routes(
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        member_home_cache.invalidate()
         return web.json_response({"ok": True, "layout": layout})
 
     async def notifications(request: web.Request) -> web.Response:
@@ -786,6 +834,7 @@ def register_reactor_web_routes(
             int(principal.user_id),
             ids,
         )
+        member_home_cache.invalidate()
         return web.json_response({"ok": True, "updated": updated})
 
     async def attention(request: web.Request) -> web.Response:
