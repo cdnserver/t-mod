@@ -18,11 +18,21 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
 
     def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        secrets_script = (ROOT / "ensure_minecraft_secrets_windows.ps1").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("$bytes ^|", launcher)
-        self.assertEqual(launcher.count("[BitConverter]::ToString($bytes)"), 2)
+        self.assertIn("ensure_minecraft_secrets_windows.ps1", launcher)
+        self.assertIn("-RconPath", launcher)
+        self.assertIn("-SupervisorPath", launcher)
         self.assertIn("MINECRAFT_RCON_SECRET", launcher)
         self.assertIn("MINECRAFT_SUPERVISOR_SECRET", launcher)
+        self.assertIn("[BitConverter]::ToString($bytes)", secrets_script)
+        self.assertIn("$item.PSIsContainer", secrets_script)
+        self.assertIn("Replacing an empty or invalid", secrets_script)
+        self.assertIn("Move-Item", secrets_script)
+        self.assertIn("docker compose logs --no-color", launcher)
 
     def test_cloudflare_configuration_preserves_and_validates_config(self) -> None:
         script = (ROOT / "configure_cloudflare_tunnel_windows.ps1").read_text(

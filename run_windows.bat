@@ -29,24 +29,13 @@ if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
 if not exist "%BROWSER_STREAM_DATA_DIR%" mkdir "%BROWSER_STREAM_DATA_DIR%"
 if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
 if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
-if not exist "%MINECRAFT_RCON_SECRET%" (
-  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=[BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant(); [IO.File]::WriteAllText('%MINECRAFT_RCON_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
-  if errorlevel 1 (
-    call :fail "Failed to generate Minecraft RCON secret"
-    pause
-    exit /b 1
-  )
-  call :ok "Minecraft control secret generated outside Git"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_minecraft_secrets_windows.ps1" -RconPath "%MINECRAFT_RCON_SECRET%" -SupervisorPath "%MINECRAFT_SUPERVISOR_SECRET%"
+if errorlevel 1 (
+  call :fail "Failed to verify Minecraft control secrets"
+  pause
+  exit /b 1
 )
-if not exist "%MINECRAFT_SUPERVISOR_SECRET%" (
-  powershell -NoProfile -Command "$bytes=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($bytes); $rng.Dispose(); $secret=[BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant(); [IO.File]::WriteAllText('%MINECRAFT_SUPERVISOR_SECRET%', $secret, (New-Object Text.UTF8Encoding($false)))"
-  if errorlevel 1 (
-    call :fail "Failed to generate Minecraft supervisor secret"
-    pause
-    exit /b 1
-  )
-  call :ok "Minecraft supervisor secret generated outside Git"
-)
+call :ok "Minecraft control secrets verified outside Git"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
@@ -168,6 +157,12 @@ call :stage "10" "Starting T-Mod and Minecraft"
 docker compose up -d --force-recreate
 if errorlevel 1 (
   call :fail "Docker startup failed"
+  echo.
+  echo Minecraft supervisor status:
+  docker compose ps minecraft-supervisor
+  echo.
+  echo Minecraft supervisor logs:
+  docker compose logs --no-color --tail 80 minecraft-supervisor
   call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
   pause
   exit /b 1
