@@ -21,6 +21,10 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _MAX_FAILURES = 3
 _DUMMY_HASH: str | None = None
+WEB_GRANTABLE_SECTIONS = frozenset({
+    "overview", "modules", "audit", "treasury", "craft", "market", "bills",
+    "sgl", "members", "communications", "media", "discord", "system",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +311,39 @@ def web_session_version_matches(
     return row is not None and int(row["session_version"]) == int(session_version)
 
 
+def web_section_grants(guild_id: int, user_id: int | None = None) -> list[dict]:
+    with connect_readonly() as con:
+        if user_id is None:
+            rows = con.execute(
+                "SELECT * FROM web_section_grants WHERE guild_id = ? ORDER BY user_id, section",
+                (int(guild_id),),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM web_section_grants WHERE guild_id = ? AND user_id = ? ORDER BY section",
+                (int(guild_id), int(user_id)),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def web_set_section_grant(guild_id: int, user_id: int, section: str, *, enabled: bool, granted_by_id: int) -> None:
+    selected = str(section or "").strip().lower()
+    if selected not in WEB_GRANTABLE_SECTIONS or int(user_id) <= 0:
+        raise ValueError("web_section_grant_invalid")
+    with _db_lock, connect() as con:
+        if enabled:
+            con.execute(
+                "INSERT INTO web_section_grants(guild_id,user_id,section,granted_by_id,created_at) VALUES(?,?,?,?,?) ON CONFLICT(guild_id,user_id,section) DO UPDATE SET granted_by_id=excluded.granted_by_id, created_at=excluded.created_at",
+                (int(guild_id), int(user_id), selected, int(granted_by_id), utc_now_iso()),
+            )
+        else:
+            con.execute(
+                "DELETE FROM web_section_grants WHERE guild_id=? AND user_id=? AND section=?",
+                (int(guild_id), int(user_id), selected),
+            )
+        con.commit()
+
+
 __all__ = [
     "WebAuthenticationResult",
     "WebCredential",
@@ -317,4 +354,7 @@ __all__ = [
     "normalize_web_login",
     "normalize_web_pin",
     "web_session_version_matches",
+    "WEB_GRANTABLE_SECTIONS",
+    "web_section_grants",
+    "web_set_section_grant",
 ]

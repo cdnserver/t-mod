@@ -248,6 +248,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
 
+            CREATE TABLE IF NOT EXISTS web_section_grants (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                section TEXT NOT NULL,
+                granted_by_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, section)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_section_grants_user
+            ON web_section_grants(guild_id, user_id);
+
             CREATE TABLE IF NOT EXISTS reactor_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,

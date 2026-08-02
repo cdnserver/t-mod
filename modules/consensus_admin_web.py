@@ -30,6 +30,7 @@ from persistence import profile_repository as profile_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import voice_control_repository as voice_storage
 from persistence import web_portal_repository as portal_storage
+from persistence import web_auth_repository as web_auth_storage
 
 
 ADMIN_BROADCAST_TOPIC = "admin.broadcast.dm.v1"
@@ -337,7 +338,18 @@ def register_admin_web_routes(
                 ),
                 content_type="application/json",
             )
-        if not principal.administrator:
+        section_map = {
+            "overview": "overview", "actions": "audit", "finance": "treasury",
+            "crafts": "craft", "discord": "discord", "registry": "modules",
+            "market": "market", "bills": "bills", "sgl": "sgl", "members": "members",
+            "communications": "communications", "media": "media", "system": "system",
+        }
+        endpoint = request.path.removeprefix("/api/admin/").split("/", 1)[0]
+        section = section_map.get(endpoint, "overview")
+        grants = [] if principal.administrator else await asyncio.to_thread(
+            web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)
+        )
+        if not principal.administrator and section not in {row["section"] for row in grants}:
             raise web.HTTPForbidden(
                 text=json.dumps(
                     {
@@ -349,6 +361,43 @@ def register_admin_web_routes(
                 content_type="application/json",
             )
         return principal
+
+    async def access_control(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None or not principal.administrator:
+            raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
+        if request.method == "POST":
+            if not csrf_matches(request, principal):
+                raise web.HTTPForbidden(text='{"error":"csrf_failed"}', content_type="application/json")
+            body = await request.json()
+            try:
+                await asyncio.to_thread(
+                    web_auth_storage.web_set_section_grant,
+                    int(guild_id), int(body.get("user_id")), str(body.get("section")),
+                    enabled=bool(body.get("enabled", True)), granted_by_id=int(principal.user_id),
+                )
+            except (TypeError, ValueError):
+                return web.json_response({"error": "web_section_grant_invalid"}, status=400)
+        return web.json_response({
+            **context(principal),
+            "sections": sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS),
+            "grants": await asyncio.to_thread(web_auth_storage.web_section_grants, int(guild_id)),
+        })
+
+    async def access_self(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPForbidden(text='{"error":"personal_login_required"}', content_type="application/json")
+        sections = (
+            sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS)
+            if principal.administrator
+            else [row["section"] for row in await asyncio.to_thread(
+                web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)
+            )]
+        )
+        if not sections:
+            raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
+        return web.json_response({"sections": sections, "administrator": bool(principal.administrator)})
 
     def context(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         guild = bot.get_guild(int(guild_id))
@@ -1624,6 +1673,9 @@ def register_admin_web_routes(
         update_character_visibility,
     )
     app.router.add_get("/api/admin/system", system)
+    app.router.add_get("/api/admin/access", access_control)
+    app.router.add_post("/api/admin/access", access_control)
+    app.router.add_get("/api/admin/access/self", access_self)
     app.router.add_get("/api/admin/media", media_status)
     app.router.add_post("/api/admin/media/command", media_command)
 

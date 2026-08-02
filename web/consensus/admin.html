@@ -1272,6 +1272,15 @@
               </div>
               <span id="system-health-badge" class="health-pill">диагностика</span>
             </div>
+            <article class="panel">
+              <header class="panel-head"><div><span class="panel-kicker">DELEGATED ACCESS</span><h2>Доступ к разделам</h2></div></header>
+              <form id="section-access-form" class="filter-grid">
+                <label>Discord ID<input name="user_id" inputmode="numeric" required></label>
+                <label>Раздел<select name="section" id="section-access-select"></select></label>
+                <button class="primary-button" type="submit">Выдать доступ</button>
+              </form>
+              <div id="section-access-list" class="compact-list"></div>
+            </article>
 
             <div class="kpi-grid compact-kpis">
               <article class="kpi-card accent-mint">

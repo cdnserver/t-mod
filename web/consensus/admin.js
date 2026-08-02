@@ -158,6 +158,7 @@ const appState = {
   authTimer: null,
   loadingOverlayTimer: null,
   authorized: false,
+  allowedSections: [],
   authTransitioning: false,
   soundEnabled: true,
   soundUnlocked: false,
@@ -2433,6 +2434,7 @@ function renderSystem(data) {
   const audio = data.audio_generations || [];
   const workspaces = data.bill_workspaces || [];
   const sessions = data.consensus_sessions || [];
+  void loadSectionAccess();
   const openStatuses = new Set(["pending", "processing", "retry"]);
   const open = statusRows
     .filter((item) => openStatuses.has(item.status))
@@ -2547,6 +2549,19 @@ function renderSystem(data) {
         )
       : [node("div", { className: "empty-state", text: "Активных процессов нет." })],
   );
+}
+
+async function loadSectionAccess() {
+  try {
+    const data = await fetchJSON("/api/admin/access");
+    const select = byId("section-access-select");
+    select.replaceChildren(...data.sections.map((value) => node("option", { value, text: sectionMeta[value]?.[1] || value })));
+    replaceChildren("section-access-list", data.grants.length ? data.grants.map((grant) =>
+      compactItem(`${grant.user_id} · ${sectionMeta[grant.section]?.[1] || grant.section}`, "Точечный доступ", "Отозвать", async () => {
+        await postJSON("/api/admin/access", { user_id: grant.user_id, section: grant.section, enabled: false });
+        void loadSectionAccess();
+      })) : [node("div", { className: "empty-state", text: "Точечных доступов нет." })]);
+  } catch { byId("section-access-form").hidden = true; }
 }
 
 async function loadSystem(silent = false) {
@@ -2761,6 +2776,12 @@ async function pollGlobalActivity() {
 }
 
 function bindEvents() {
+  byId("section-access-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("section-access-form");
+    await postJSON("/api/admin/access", { user_id: Number(values.user_id), section: values.section, enabled: true });
+    void loadSectionAccess();
+  });
   document.querySelectorAll("[data-section]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.section));
   });
@@ -2917,7 +2938,21 @@ async function bootstrap() {
   bindEvents();
   appState.soundEnabled = storedSoundPreference();
   updateNotificationToggle();
-  const requestedRoute = parseAdminRoute();
+  let requestedRoute = parseAdminRoute();
+  try {
+    const access = await fetchJSON("/api/admin/access/self");
+    appState.allowedSections = access.sections || [];
+    document.querySelectorAll("[data-section]").forEach((button) => {
+      button.hidden = !appState.allowedSections.includes(button.dataset.section);
+    });
+    if (!appState.allowedSections.includes(requestedRoute.section)) {
+      requestedRoute = { section: appState.allowedSections[0], kind: "", key: "" };
+      history.replaceState(null, "", routeHash(requestedRoute));
+    }
+  } catch (error) {
+    handleError(error);
+    return;
+  }
   appState.section = requestedRoute.section;
   document.body.dataset.section = appState.section;
   document.querySelectorAll("[data-screen]").forEach((screen) => {
