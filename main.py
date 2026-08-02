@@ -28,7 +28,7 @@ from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.error_inbox import setup_error_inbox_runtime
 from modules.delivery_runtime import setup_delivery
-from modules.consensus_web import setup_consensus_web
+from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -433,6 +433,17 @@ class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
         setup_error_inbox_runtime(self.loop)
+        # Expose the health endpoint before Discord READY and command sync.
+        # Discord-dependent API routes already report a controlled temporary
+        # unavailability while the guild cache is still warming up.
+        try:
+            await ensure_consensus_web_server(self)
+        except Exception as exc:
+            print(
+                f"Consensus web panel early start failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         if _activity_queue is None:
             _activity_queue = asyncio.Queue(maxsize=ACTIVITY_QUEUE_MAXSIZE)
             self.loop.create_task(activity_writer_worker())

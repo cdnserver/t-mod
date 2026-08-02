@@ -82,6 +82,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("reverse_proxy tmod-discord-bot:8787", caddyfile)
         self.assertIn("response_header_timeout 15s", caddyfile)
         self.assertIn("Permissions-Policy", caddyfile)
+        self.assertIn("condition: service_started", compose)
+        self.assertIn("start_period: 90s", compose)
         self.assertNotIn("cloudflare", caddyfile.lower())
         self.assertIn(
             "CONSENSUS_WEB_PUBLIC_URL=https://consensus.tvr.lat",
@@ -112,6 +114,13 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("USER tmod", dockerfile)
         self.assertIn("COPY --chown=tmod:tmod . .", dockerfile)
+
+    def test_web_health_server_starts_before_discord_ready(self) -> None:
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        setup_hook = source.index("async def setup_hook")
+        early_web = source.index("await ensure_consensus_web_server(self)", setup_hook)
+        command_sync = source.index("self.tree.sync", setup_hook)
+        self.assertLess(early_web, command_sync)
 
     def test_standard_launcher_verifies_minecraft_rcon_after_startup(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
