@@ -1,10 +1,12 @@
 import tempfile
 import unittest
+import sqlite3
+import inspect
 from pathlib import Path
 
 import storage
 from persistence import reactor_repository as reactor
-from persistence.core import connect, utc_now_iso
+from persistence.core import connect, connect_readonly, utc_now_iso
 
 
 class ReactorRepositoryTests(unittest.TestCase):
@@ -69,6 +71,61 @@ class ReactorRepositoryTests(unittest.TestCase):
             1,
         )
         self.assertEqual(reactor.reactor_list_notifications(1, 2)["unread"], 0)
+
+    def test_notification_projection_is_synchronized_in_one_batch(self) -> None:
+        self.assertEqual(
+            reactor.reactor_sync_notifications(
+                1,
+                2,
+                "attention",
+                [
+                    {
+                        "severity": "warning",
+                        "title": "Первая задача",
+                        "body": "Нужна проверка.",
+                        "route": "#/attention/one",
+                        "dedupe_key": "one",
+                    },
+                    {
+                        "severity": "critical",
+                        "title": "Вторая задача",
+                        "body": "Нужно решение.",
+                        "route": "#/attention/two",
+                        "dedupe_key": "two",
+                    },
+                ],
+            ),
+            2,
+        )
+        self.assertEqual(reactor.reactor_list_notifications(1, 2)["unread"], 2)
+        reactor.reactor_sync_notifications(
+            1,
+            2,
+            "attention",
+            [
+                {
+                    "severity": "critical",
+                    "title": "Вторая задача",
+                    "body": "Нужно решение.",
+                    "dedupe_key": "two",
+                }
+            ],
+        )
+        inbox = reactor.reactor_list_notifications(1, 2)
+        self.assertEqual(inbox["unread"], 1)
+        self.assertEqual(inbox["items"][0]["title"], "Вторая задача")
+
+    def test_read_only_connection_rejects_writes(self) -> None:
+        with connect_readonly() as con:
+            self.assertEqual(con.execute("PRAGMA query_only").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                con.execute("DELETE FROM members")
+
+    def test_live_database_health_never_runs_full_integrity_scan(self) -> None:
+        health = reactor.reactor_database_health()
+        self.assertEqual(health["status"], "ok")
+        self.assertEqual(health["journal_mode"].lower(), "wal")
+        self.assertNotIn("quick_check", inspect.getsource(reactor.reactor_database_health))
 
         reactor.reactor_put_notification(
             guild_id=1,

@@ -5,7 +5,14 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from persistence.core import TVRSBill, _db_lock, _tvrs_bill_from_row, connect, utc_now_iso
+from persistence.core import (
+    TVRSBill,
+    _db_lock,
+    _tvrs_bill_from_row,
+    connect,
+    connect_readonly,
+    utc_now_iso,
+)
 from persistence.activity_repository import _record_bot_action, get_meta, set_meta, set_meta_value
 from persistence.outbox_repository import delivery_outbox_enqueue_in_connection
 
@@ -34,7 +41,7 @@ def _next_bill_number_in_connection(
 
 
 def tvrs_next_bill_number(guild_id: int, default_next: int = 9) -> int:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         return _next_bill_number_in_connection(
             con,
             int(guild_id),
@@ -1154,7 +1161,7 @@ def tvrs_consensus_commit_finish(
 
 
 def tvrs_consensus_active_sessions(guild_id: int | None = None) -> list[dict[str, Any]]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         if guild_id is None:
             rows = con.execute(
                 """
@@ -1291,7 +1298,7 @@ def tvrs_bill_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def tvrs_queue_bills(guild_id: int, limit: int = 100) -> list[dict[str, Any]]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         rows = con.execute(
             """
             SELECT * FROM tvrs_bills
@@ -1856,7 +1863,7 @@ def tvrs_public_bill_catalog(
 ) -> list[dict[str, Any]]:
     """Return public bill metadata with the latest fixed result, if any."""
     clean_limit = max(1, min(500, int(limit)))
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         rows = con.execute(
             """
             SELECT

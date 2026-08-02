@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 from persistence.activity_repository import _record_bot_action
 from persistence.finance_repository import _finance_enqueue_notifications, _finance_row
 
@@ -658,7 +658,7 @@ def craft_get_plan(plan_id: int, guild_id: int | None = None) -> dict[str, Any] 
 
 
 def craft_active_plans(guild_id: int, limit: int = 50) -> list[dict[str, Any]]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         rows = con.execute(
             """
             SELECT id FROM craft_plans
@@ -1690,7 +1690,7 @@ def craft_set_completion_message(plan_id: int, message_id: int) -> None:
 def craft_stats(guild_id: int, days: int = 30) -> dict[str, Any]:
     period_days = max(1, min(int(days), 3650))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         plans = con.execute(
             "SELECT * FROM craft_plans WHERE guild_id = ? AND created_at >= ? ORDER BY id",
             (guild_id, cutoff),

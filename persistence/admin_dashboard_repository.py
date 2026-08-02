@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from persistence.core import _db_lock, connect
+from persistence.core import connect_readonly
 
 
 def _window(days: int) -> tuple[int, str]:
@@ -23,7 +23,7 @@ def _page(limit: int, offset: int) -> tuple[int, int]:
 def admin_dashboard_counts(guild_id: int, *, days: int = 30) -> dict[str, Any]:
     selected_days, cutoff = _window(days)
     now = datetime.now(timezone.utc).isoformat()
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             """
             SELECT
@@ -113,7 +113,7 @@ def admin_audit_actions(
         needle = f"%{clean_query}%"
         params.extend([needle, needle, needle, needle])
     where = " AND ".join(clauses)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         total = int(
             con.execute(
                 f"SELECT COUNT(*) AS n FROM bot_actions WHERE {where}",
@@ -160,7 +160,7 @@ def admin_audit_actions(
 
 def admin_discord_stats(guild_id: int, *, days: int = 7) -> dict[str, Any]:
     selected_days, cutoff = _window(days)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         summary = con.execute(
             """
             SELECT COUNT(*) AS events,
@@ -275,7 +275,7 @@ def admin_discord_events(
         needle = f"%{clean_query}%"
         params.extend([needle, needle, needle, needle])
     where = " AND ".join(clauses)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         total = int(
             con.execute(
                 f"""
@@ -344,7 +344,7 @@ def admin_craft_events(
         needle = f"%{clean_query}%"
         params.extend([needle, needle, needle, needle])
     where = " AND ".join(clauses)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         total = int(
             con.execute(
                 f"""
@@ -433,7 +433,7 @@ def admin_finance_events(
         needle = f"%{clean_query}%"
         params.extend([needle, needle, needle, needle])
     where = " AND ".join(clauses)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         total = int(
             con.execute(
                 f"SELECT COUNT(*) AS n FROM finance_events AS e WHERE {where}",

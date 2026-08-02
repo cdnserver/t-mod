@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 def _market_optional_non_negative_int(value: Any) -> int | None:
     if value is None:
@@ -213,7 +213,7 @@ def market_record_sync_error(server_id: str, category: str, error: str) -> dict[
 
 
 def market_catalog_status(server_id: str, category: str = "items") -> dict[str, Any]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             "SELECT * FROM market_catalogs WHERE server_id = ? AND category = ?",
             (str(server_id).strip().upper(), str(category).strip().lower()),

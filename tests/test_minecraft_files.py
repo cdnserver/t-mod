@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import zipfile
+import stat
 from pathlib import Path
 
 from modules import minecraft_files as files
@@ -90,7 +91,18 @@ class MinecraftFilesTests(unittest.TestCase):
             config=self.config,
         )
         self.assertEqual(uploaded["path"], "plugins/Example.jar")
+        self.assertEqual(
+            stat.S_IMODE((plugins / "Example.jar").stat().st_mode),
+            0o644,
+        )
         self.assertTrue(files.minecraft_list_plugins(config=self.config)[0]["enabled"])
+
+        (plugins / "Example.jar").chmod(0o600)
+        self.assertEqual(files.minecraft_repair_plugin_permissions(config=self.config), 1)
+        self.assertEqual(
+            stat.S_IMODE((plugins / "Example.jar").stat().st_mode),
+            0o644,
+        )
 
         disabled = files.minecraft_set_plugin_state(
             "plugins/Example.jar",

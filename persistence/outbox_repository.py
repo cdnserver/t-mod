@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 OUTBOX_OPEN_STATUSES = frozenset({"pending", "processing", "retry"})
 CONSENSUS_TOPIC_PREFIX = "tvrs.consensus."
@@ -533,7 +533,7 @@ def delivery_outbox_next_due_delay(*, now: str | None = None) -> float | None:
 
 
 def delivery_outbox_counts() -> dict[str, int]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         rows = con.execute(
             "SELECT status, COUNT(*) AS n FROM delivery_outbox GROUP BY status"
         ).fetchall()

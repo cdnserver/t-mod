@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 from dataclasses import dataclass
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
 _LOGIN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
@@ -123,7 +123,7 @@ def _credential_from_row(row: sqlite3.Row | None) -> WebCredential | None:
 
 
 def get_web_credential(guild_id: int, user_id: int) -> WebCredential | None:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
             (int(guild_id), int(user_id)),
@@ -296,7 +296,7 @@ def web_session_version_matches(
     user_id: int,
     session_version: int,
 ) -> bool:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             """
             SELECT session_version FROM web_credentials

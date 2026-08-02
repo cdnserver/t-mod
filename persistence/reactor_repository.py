@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
 ADMIN_WIDGETS = (
@@ -54,7 +54,7 @@ def _clean_layout(surface: str, layout: Iterable[str]) -> list[str]:
 
 def reactor_get_layout(guild_id: int, user_id: int, surface: str) -> list[str]:
     selected_surface = _clean_surface(surface)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             """
             SELECT layout_json FROM reactor_preferences
@@ -200,7 +200,7 @@ def reactor_list_notifications(
     if unread_only:
         clauses.append("read_at IS NULL")
     where = " AND ".join(clauses)
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         unread = int(
             con.execute(
                 """
@@ -304,6 +304,89 @@ def reactor_resolve_notifications(
     return max(0, int(cursor.rowcount))
 
 
+def reactor_sync_notifications(
+    guild_id: int,
+    user_id: int,
+    kind: str,
+    notifications: Iterable[dict[str, Any]],
+) -> int:
+    """Upsert one projection and resolve stale entries in one transaction."""
+
+    clean_kind = str(kind or "system").strip().lower()[:80] or "system"
+    now = utc_now_iso()
+    prepared: list[tuple[Any, ...]] = []
+    active: list[str] = []
+    for item in notifications:
+        severity = str(item.get("severity") or "info").strip().lower()
+        title = str(item.get("title") or "").strip()[:180]
+        body = str(item.get("body") or "").strip()[:2000]
+        dedupe_key = str(item.get("dedupe_key") or "").strip()[:180]
+        if severity not in _SEVERITIES:
+            raise ValueError("reactor_notification_severity_invalid")
+        if not title or not body or not dedupe_key:
+            raise ValueError("reactor_notification_invalid")
+        active.append(dedupe_key)
+        prepared.append(
+            (
+                int(guild_id),
+                int(user_id),
+                severity,
+                clean_kind,
+                title,
+                body,
+                str(item.get("route") or "").strip()[:500] or None,
+                str(item.get("source_key") or "").strip()[:180] or None,
+                dedupe_key,
+                item.get("expires_at"),
+                now,
+                now,
+            )
+        )
+
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        if prepared:
+            con.executemany(
+                """
+                INSERT INTO reactor_notifications(
+                    guild_id, user_id, severity, kind, title, body, route,
+                    source_key, dedupe_key, expires_at, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id, dedupe_key) DO UPDATE SET
+                    severity = excluded.severity,
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    body = excluded.body,
+                    route = excluded.route,
+                    source_key = excluded.source_key,
+                    expires_at = excluded.expires_at,
+                    read_at = CASE
+                        WHEN reactor_notifications.title != excluded.title
+                          OR reactor_notifications.body != excluded.body
+                          OR reactor_notifications.severity != excluded.severity
+                        THEN NULL ELSE reactor_notifications.read_at END,
+                    updated_at = excluded.updated_at
+                """,
+                prepared,
+            )
+        params: list[Any] = [now, now, int(guild_id), int(user_id), clean_kind]
+        exclusion = ""
+        if active:
+            exclusion = f" AND dedupe_key NOT IN ({','.join('?' for _ in active)})"
+            params.extend(active)
+        con.execute(
+            f"""
+            UPDATE reactor_notifications SET read_at = ?, updated_at = ?
+            WHERE guild_id = ? AND user_id = ? AND kind = ?
+              AND read_at IS NULL{exclusion}
+            """,
+            params,
+        )
+        con.commit()
+    return len(prepared)
+
+
 def reactor_event_feed(
     guild_id: int,
     *,
@@ -311,7 +394,7 @@ def reactor_event_feed(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     page_limit = max(1, min(int(limit), 100))
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         rows = con.execute(
             """
             SELECT id, actor_id, actor_display, module, action_kind,
@@ -329,15 +412,21 @@ def reactor_event_feed(
 def reactor_database_health() -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     try:
-        with _db_lock, connect() as con:
+        with connect_readonly() as con:
             con.execute("SELECT 1").fetchone()
-            integrity = str(con.execute("PRAGMA quick_check").fetchone()[0])
-            actions = int(con.execute("SELECT COUNT(*) FROM bot_actions").fetchone()[0])
+            journal_mode = str(con.execute("PRAGMA journal_mode").fetchone()[0])
+            page_count = int(con.execute("PRAGMA page_count").fetchone()[0])
+            sequence = con.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'bot_actions'"
+            ).fetchone()
+            actions = int(sequence["seq"] or 0) if sequence is not None else 0
         elapsed = (datetime.now(timezone.utc) - started).total_seconds() * 1000
         return {
-            "status": "ok" if integrity == "ok" else "critical",
+            "status": "ok",
             "latency_ms": round(elapsed, 1),
-            "integrity": integrity,
+            "integrity": "available",
+            "journal_mode": journal_mode,
+            "page_count": page_count,
             "actions": actions,
         }
     except Exception as exc:  # health boundary must always return a payload
@@ -361,7 +450,7 @@ def reactor_global_search(
     needle = f"%{clean_query}%"
     per_kind = max(2, min(8, int(limit)))
     results: list[dict[str, Any]] = []
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         members = con.execute(
             """
             SELECT user_id, COALESCE(display_name, name, CAST(user_id AS TEXT)) AS title,
@@ -523,4 +612,5 @@ __all__ = [
     "reactor_put_notification",
     "reactor_resolve_notifications",
     "reactor_set_layout",
+    "reactor_sync_notifications",
 ]

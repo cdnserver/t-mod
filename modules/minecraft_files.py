@@ -468,6 +468,7 @@ def minecraft_write_text(
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
+        path.chmod(0o644)
     except Exception:
         Path(temporary_name).unlink(missing_ok=True)
         raise
@@ -491,6 +492,7 @@ def minecraft_make_directory(
     )
     try:
         target.mkdir()
+        target.chmod(0o755)
     except FileExistsError as exc:
         raise MinecraftFilesError(
             "minecraft_path_exists", "Такой файл или папка уже существует."
@@ -608,6 +610,30 @@ def minecraft_prepare_upload(
     return Path(name)
 
 
+def minecraft_repair_plugin_permissions(
+    *,
+    config: MinecraftFilesConfig | None = None,
+) -> int:
+    """Make panel-uploaded JARs readable by the non-root Paper process."""
+
+    selected = config or minecraft_files_config()
+    plugins = _ensure_root(selected) / "plugins"
+    if not plugins.is_dir():
+        return 0
+    plugins.chmod(0o755)
+    repaired = 0
+    for path in plugins.iterdir():
+        if path.is_symlink() or not path.is_file():
+            continue
+        lower = path.name.lower()
+        if not (lower.endswith(".jar") or lower.endswith(".jar.disabled")):
+            continue
+        if (path.stat().st_mode & 0o777) != 0o644:
+            path.chmod(0o644)
+            repaired += 1
+    return repaired
+
+
 def minecraft_finish_upload(
     directory_path: Any,
     filename: Any,
@@ -661,6 +687,9 @@ def minecraft_finish_upload(
     if target.exists():
         minecraft_trash_path(_relative(selected, target), config=selected)
     os.replace(temporary_path, target)
+    # mkstemp deliberately creates 0600 files.  Paper runs as a non-root user,
+    # so an uploaded JAR/config must be made readable after the atomic move.
+    target.chmod(0o644)
     return _entry(selected, target)
 
 
@@ -688,6 +717,7 @@ def minecraft_list_plugins(
     config: MinecraftFilesConfig | None = None,
 ) -> list[dict[str, Any]]:
     selected = config or minecraft_files_config()
+    minecraft_repair_plugin_permissions(config=selected)
     plugins = _ensure_root(selected) / "plugins"
     if not plugins.is_dir():
         return []
@@ -718,6 +748,7 @@ def minecraft_set_plugin_state(
         raise MinecraftFilesError(
             "minecraft_plugin_invalid", "Выбранный файл не является плагином."
         )
+    source.chmod(0o644)
     lower = source.name.lower()
     if enabled and lower.endswith(".jar.disabled"):
         target = source.with_name(source.name[:-9])
@@ -730,6 +761,7 @@ def minecraft_set_plugin_state(
             "minecraft_plugin_conflict", "Файл плагина с таким именем уже существует."
         )
     source.rename(target)
+    target.chmod(0o644)
     return {**_entry(selected, target), "enabled": bool(enabled)}
 
 
@@ -920,6 +952,7 @@ __all__ = [
     "minecraft_make_directory",
     "minecraft_prepare_upload",
     "minecraft_read_text",
+    "minecraft_repair_plugin_permissions",
     "minecraft_rename_path",
     "minecraft_restore_backup",
     "minecraft_restore_trash",

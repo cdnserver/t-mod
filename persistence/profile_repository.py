@@ -10,6 +10,7 @@ from persistence.core import (
     ProfileCharacter,
     _db_lock,
     connect,
+    connect_readonly,
     utc_now_iso,
 )
 
@@ -199,7 +200,7 @@ def get_profile_snapshot(
     guild_id: int,
     user_id: int,
 ) -> tuple[MemberProfile | None, list[ProfileCharacter]]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         profile_row = con.execute(
             "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
             (int(guild_id), int(user_id)),

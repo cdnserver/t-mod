@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
 OPEN_WORKSPACE_STATUSES = ("draft", "review")
@@ -25,7 +25,7 @@ def get_bill_workspace(workspace_id: int) -> dict[str, Any] | None:
 
 
 def get_open_bill_workspace(guild_id: int, author_id: int) -> dict[str, Any] | None:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         row = con.execute(
             """
             SELECT * FROM tvrs_bill_workspaces

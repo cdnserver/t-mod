@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from persistence.core import _db_lock, connect, utc_now_iso
+from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 from persistence.activity_repository import _record_bot_action
 
 FINANCE_SNAPSHOT_KINDS = {"daily", "interim"}
@@ -508,7 +508,7 @@ def finance_undo_last_action(
 
 
 def finance_get_latest_state(guild_id: int) -> dict[str, Any]:
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         latest = con.execute(
             "SELECT * FROM finance_events WHERE guild_id = ? ORDER BY id DESC LIMIT 1",
             (guild_id,),
@@ -607,7 +607,7 @@ def finance_search_events(
 def finance_stats(guild_id: int, days: int = 30) -> dict[str, Any]:
     period_days = max(1, min(int(days), 3650))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=period_days)).isoformat()
-    with _db_lock, connect() as con:
+    with connect_readonly() as con:
         active_rows = con.execute(
             """
             SELECT e.* FROM finance_events e

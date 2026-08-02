@@ -1,9 +1,11 @@
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/persistent/data"))
@@ -303,9 +305,38 @@ def connect() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.create_function("T_CASEFOLD", 1, _sqlite_casefold, deterministic=True)
     con.execute("PRAGMA journal_mode=WAL")
+    # NORMAL keeps WAL crash-safe while avoiding an fsync for every small bot
+    # transaction.  This matters especially on Docker Desktop bind mounts.
+    con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA temp_store=MEMORY")
+    con.execute("PRAGMA cache_size=-32768")
     return con
+
+
+@contextmanager
+def connect_readonly() -> Iterator[sqlite3.Connection]:
+    """Open an independent, non-blocking connection for web projections.
+
+    Writers are intentionally serialized by ``_db_lock``.  WAL readers do not
+    need that process-wide lock; putting them behind it made one slow dashboard
+    query stall every Reactor request.  ``query_only`` also makes accidental
+    writes from a projection fail immediately.
+    """
+
+    con = sqlite3.connect(DATABASE_FILE, timeout=3)
+    con.row_factory = sqlite3.Row
+    con.create_function("T_CASEFOLD", 1, _sqlite_casefold, deterministic=True)
+    con.execute("PRAGMA query_only=ON")
+    con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA busy_timeout=3000")
+    con.execute("PRAGMA temp_store=MEMORY")
+    con.execute("PRAGMA cache_size=-32768")
+    try:
+        yield con
+    finally:
+        con.close()
 
 
 def _table_columns(con: sqlite3.Connection, table: str) -> set[str]:
@@ -384,4 +415,4 @@ def _tvrs_bill_from_row(row: sqlite3.Row | None) -> TVRSBill | None:
         updated_at=str(row["updated_at"]),
     )
 
-__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'MemberProfile', 'ProfileCharacter', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']
+__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'MemberProfile', 'ProfileCharacter', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', 'connect_readonly', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']

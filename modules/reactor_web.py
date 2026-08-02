@@ -37,6 +37,7 @@ from modules.minecraft_files import (
     minecraft_make_directory,
     minecraft_prepare_upload,
     minecraft_read_text,
+    minecraft_repair_plugin_permissions,
     minecraft_rename_path,
     minecraft_restore_backup,
     minecraft_restore_trash,
@@ -234,7 +235,8 @@ async def _health_snapshot(
             "title": "SQLite",
             "status": str(database.get("status") or "critical"),
             "detail": (
-                f"quick_check: {database.get('integrity')} · {database.get('latency_ms')} мс"
+                f"{str(database.get('journal_mode') or 'БД').upper()} · "
+                f"ответ {database.get('latency_ms')} мс"
             ),
         },
         {
@@ -915,24 +917,21 @@ def register_reactor_web_routes(
         if attention_projection_signatures.get(user_id) != projection_signature:
             async with attention_projection_lock:
                 if attention_projection_signatures.get(user_id) != projection_signature:
-                    for item in payload["items"]:
-                        await asyncio.to_thread(
-                            reactor_storage.reactor_put_notification,
-                            guild_id=int(guild_id),
-                            user_id=user_id,
-                            severity=str(item["severity"]),
-                            kind="attention",
-                            title=str(item["title"]),
-                            body=str(item["detail"]),
-                            route=str(item["route"]),
-                            dedupe_key=str(item["key"]),
-                        )
                     await asyncio.to_thread(
-                        reactor_storage.reactor_resolve_notifications,
+                        reactor_storage.reactor_sync_notifications,
                         int(guild_id),
                         user_id,
                         "attention",
-                        [str(item["key"]) for item in payload["items"]],
+                        [
+                            {
+                                "severity": str(item["severity"]),
+                                "title": str(item["title"]),
+                                "body": str(item["detail"]),
+                                "route": str(item["route"]),
+                                "dedupe_key": str(item["key"]),
+                            }
+                            for item in payload["items"]
+                        ],
                     )
                     attention_projection_signatures[user_id] = projection_signature
         payload["layout"] = await asyncio.to_thread(
@@ -1391,6 +1390,8 @@ def register_reactor_web_routes(
             )
         action = str(body.get("action") or "")
         try:
+            if action in {"start", "restart"}:
+                await asyncio.to_thread(minecraft_repair_plugin_permissions)
             result = await asyncio.to_thread(minecraft_execute, action, body)
         except MinecraftControlError as exc:
             return web.json_response(
