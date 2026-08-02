@@ -287,7 +287,14 @@ async def _edit_prompt_message(bot: commands.Bot, prompt: dict[str, Any]) -> Non
         return
     channel = await _get_channel(bot, int(prompt["channel_id"]))
     message = await channel.fetch_message(int(message_id))
-    event = storage.finance_get_event(int(prompt["event_id"])) if prompt.get("event_id") else None
+    event = (
+        await asyncio.to_thread(
+            storage.finance_get_event,
+            int(prompt["event_id"]),
+        )
+        if prompt.get("event_id")
+        else None
+    )
     await message.edit(
         embed=daily_prompt_embed(prompt, event),
         view=FinanceDailyPromptView(disabled=str(prompt.get("status")) == "filled"),

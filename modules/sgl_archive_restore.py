@@ -296,7 +296,10 @@ async def _complete_restoration(
 ) -> None:
     webhook: discord.Webhook | None = None
     try:
-        messages = storage.list_sgl_archive_messages(archive.id)
+        messages = await asyncio.to_thread(
+            storage.list_sgl_archive_messages,
+            archive.id,
+        )
         await verify_archive_files(archive)
         try:
             webhook = await channel.create_webhook(
@@ -330,7 +333,10 @@ async def _complete_restoration(
                 webhook=webhook, target=target, message=message, guild=guild
             )
 
-        storage.mark_sgl_archive_restoration_complete(restoration.id)
+        await asyncio.to_thread(
+            storage.mark_sgl_archive_restoration_complete,
+            restoration.id,
+        )
         await channel.send(
             embed=discord.Embed(
                 title="✅ Восстановление завершено",
@@ -344,8 +350,10 @@ async def _complete_restoration(
             allowed_mentions=discord.AllowedMentions.none(),
         )
     except Exception as exc:
-        storage.mark_sgl_archive_restoration_error(
-            restoration.id, f"{type(exc).__name__}: {exc}"
+        await asyncio.to_thread(
+            storage.mark_sgl_archive_restoration_error,
+            restoration.id,
+            f"{type(exc).__name__}: {exc}",
         )
         try:
             await channel.send(
@@ -388,7 +396,10 @@ async def start_case_restoration(
     archive: storage.SGLCaseArchive,
     actor: discord.Member,
 ) -> tuple[discord.TextChannel, bool]:
-    active = storage.get_active_sgl_archive_restoration(archive.id)
+    active = await asyncio.to_thread(
+        storage.get_active_sgl_archive_restoration,
+        archive.id,
+    )
     if active is not None:
         existing = guild.get_channel(active.restored_channel_id)
         if isinstance(existing, discord.TextChannel):
@@ -401,9 +412,15 @@ async def start_case_restoration(
                 await existing.delete(reason="Replace interrupted SGL restoration")
             except discord.NotFound:
                 pass
-            storage.mark_sgl_archive_restoration_deleted(active.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_restoration_deleted,
+                active.id,
+            )
         else:
-            storage.mark_sgl_archive_restoration_deleted(active.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_restoration_deleted,
+                active.id,
+            )
 
     category = await _resolve_category(guild, bot, SGBUREAU_ARCHIVE_CATEGORY_ID)
     if category is None:
@@ -423,7 +440,8 @@ async def start_case_restoration(
         datetime.now(timezone.utc) + timedelta(hours=SGBUREAU_RESTORE_TTL_HOURS)
     ).isoformat()
     try:
-        restoration = storage.create_sgl_archive_restoration(
+        restoration = await asyncio.to_thread(
+            storage.create_sgl_archive_restoration,
             archive_id=archive.id,
             guild_id=guild.id,
             restored_channel_id=channel.id,
@@ -447,13 +465,18 @@ async def start_case_restoration(
             allowed_mentions=discord.AllowedMentions.none(),
         )
     except Exception as exc:
-        storage.mark_sgl_archive_restoration_error(
-            restoration.id, f"header_failed:{type(exc).__name__}:{exc}"
+        await asyncio.to_thread(
+            storage.mark_sgl_archive_restoration_error,
+            restoration.id,
+            f"header_failed:{type(exc).__name__}:{exc}",
         )
         try:
             await channel.delete(reason="SGL restoration could not start")
         finally:
-            storage.mark_sgl_archive_restoration_deleted(restoration.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_restoration_deleted,
+                restoration.id,
+            )
         raise
     task = bot.loop.create_task(
         _complete_restoration(bot, guild, channel, archive, restoration)

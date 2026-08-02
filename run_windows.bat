@@ -14,7 +14,11 @@ set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
 set SECRETS_DIR=%PERSISTENT_DIR%\secrets
 set MINECRAFT_RCON_SECRET=%SECRETS_DIR%\minecraft-rcon-password.txt
 set MINECRAFT_SUPERVISOR_SECRET=%SECRETS_DIR%\minecraft-supervisor-token.txt
+set MINECRAFT_SECRETS_MARKER=%TEMP%\tmod-minecraft-secrets-changed.flag
+set MINECRAFT_SECRETS_CHANGED=0
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
+set TMOD_RELEASE=unknown
+for /f "delims=" %%H in ('git -C "%~dp0" rev-parse --short=12 HEAD 2^>nul') do set TMOD_RELEASE=%%H
 
 call :banner
 
@@ -26,12 +30,13 @@ if not exist "%CADDY_DATA_DIR%" mkdir "%CADDY_DATA_DIR%"
 if not exist "%CADDY_CONFIG_DIR%" mkdir "%CADDY_CONFIG_DIR%"
 if not exist "%MINECRAFT_DIR%" mkdir "%MINECRAFT_DIR%"
 if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_minecraft_secrets_windows.ps1" -RconPath "%MINECRAFT_RCON_SECRET%" -SupervisorPath "%MINECRAFT_SUPERVISOR_SECRET%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_minecraft_secrets_windows.ps1" -RconPath "%MINECRAFT_RCON_SECRET%" -SupervisorPath "%MINECRAFT_SUPERVISOR_SECRET%" -ChangedMarkerPath "%MINECRAFT_SECRETS_MARKER%"
 if errorlevel 1 (
   call :fail "Failed to verify Minecraft control secrets"
   pause
   exit /b 1
 )
+if exist "%MINECRAFT_SECRETS_MARKER%" set MINECRAFT_SECRETS_CHANGED=1
 call :ok "Minecraft control secrets verified outside Git"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
@@ -107,21 +112,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call :stage "08" "Stopping old containers"
+call :stage "08" "Retired service cleanup"
 docker stop sgl-discord-bot >nul 2>nul
 docker rm sgl-discord-bot >nul 2>nul
-docker stop tmod-discord-bot >nul 2>nul
-docker rm tmod-discord-bot >nul 2>nul
-docker stop minecraft >nul 2>nul
-docker rm minecraft >nul 2>nul
-docker stop minecraft-supervisor >nul 2>nul
-docker rm minecraft-supervisor >nul 2>nul
 docker stop discord-browser-stream >nul 2>nul
 docker rm discord-browser-stream >nul 2>nul
 docker image rm tmod-browser-stream:latest >nul 2>nul
 if exist "%PERSISTENT_DIR%\browser-stream.env" del /Q "%PERSISTENT_DIR%\browser-stream.env" >nul 2>nul
 if exist "%PERSISTENT_DIR%\browser-stream" rmdir /S /Q "%PERSISTENT_DIR%\browser-stream" >nul 2>nul
-call :ok "Old containers stopped"
+call :ok "Retired services cleaned without stopping live Minecraft"
 
 call :stage "09" "Docker build"
 set COMPOSE_BAKE=true
@@ -135,7 +134,16 @@ if errorlevel 1 (
 call :ok "Docker image ready"
 
 call :stage "10" "Starting T-Mod and Minecraft"
-docker compose up -d --force-recreate --remove-orphans
+if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
+  call :warn "Minecraft control secret changed; one controlled restart is required"
+  docker compose up -d --force-recreate minecraft minecraft-supervisor
+  if errorlevel 1 (
+    call :fail "Minecraft secret synchronization restart failed"
+    pause
+    exit /b 1
+  )
+)
+docker compose up -d --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"
   echo.

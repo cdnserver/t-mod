@@ -127,7 +127,7 @@ class TVRSUniversalityTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(modal=type(modal).__name__):
                 self.assertLessEqual(len(modal.title), 45)
                 self.assertLessEqual(len(modal.children), 5)
-                self.assertTrue(all(len(item.label) <= 45 for item in modal.children))
+                self.assertTrue(all(len(item._underlying.label) <= 45 for item in modal.children))
                 self.assertTrue(
                     all(item.placeholder is None or len(item.placeholder) <= 100 for item in modal.children)
                 )

@@ -44,6 +44,7 @@
     minecraftParent: "",
     minecraftStorageLoaded: false,
     minecraftRefreshing: false,
+    minecraftOperationTimer: null,
     minecraftNameAction: null,
     tabAttention: 0,
     tabUnread: 0,
@@ -183,7 +184,7 @@
   }
 
   async function refreshAttention(silent = true) {
-    if (!api.authorized) return;
+    if (!api.authorized || (silent && document.hidden)) return;
     try {
       const data = await api.fetchJSON("/api/admin/reactor/attention");
       const signature = JSON.stringify((data.items || []).map((item) => [item.key, item.count, item.severity]));
@@ -409,6 +410,8 @@
   }
 
   function renderMinecraft(data) {
+    const operation = data.lifecycle?.operation || data.operation || null;
+    const operationActive = operation && ["queued", "running"].includes(operation.status);
     const signature = JSON.stringify({
       configured: data.configured,
       online: data.online,
@@ -417,20 +420,31 @@
       players_max: data.players_max,
       players: data.players,
       error: data.error,
+      state: data.state,
+      operation,
     });
     if (signature === state.minecraftSignature) return false;
     state.minecraftSignature = signature;
     const online = Boolean(data.online);
-    const stateLabel = online ? "ONLINE" : data.configured ? "OFFLINE" : "НЕ НАСТРОЕН";
+    const operationLabels = {
+      start: "ЗАПУСКАЕТСЯ",
+      stop: "ОСТАНАВЛИВАЕТСЯ",
+      restart: "ПЕРЕЗАПУСК",
+    };
+    const stateLabel = operationActive
+      ? (operationLabels[operation.action] || "ВЫПОЛНЯЕТСЯ")
+      : online ? "ONLINE" : data.state === "error" ? "ОШИБКА" : data.configured ? "OFFLINE" : "НЕ НАСТРОЕН";
     ["minecraft-peek-state", "minecraft-status-pill"].forEach((id) => {
       const node = byId(id);
       if (!node) return;
       node.textContent = stateLabel;
-      node.className = id.endsWith("pill") ? `health-pill${online ? "" : " warning"}` : "";
+      node.className = id.endsWith("pill") ? `health-pill${online && !operationActive ? "" : " warning"}` : "";
     });
     if (byId("minecraft-address")) byId("minecraft-address").textContent = data.address || "mc.tvr.lat";
     if (byId("minecraft-players")) byId("minecraft-players").textContent = online ? `${data.players_online || 0} / ${data.players_max || 0}` : "— / —";
-    const detail = online ? "Игровой мир отвечает через внутренний RCON." : data.error || "Сервис ожидает настройки.";
+    const detail = operationActive
+      ? `Операция «${operation.action || "изменение состояния"}» выполняется в фоне. Панель обновится автоматически.`
+      : online ? "Игровой мир отвечает через внутренний RCON." : data.error || "Сервис ожидает настройки.";
     if (byId("minecraft-detail")) byId("minecraft-detail").textContent = detail;
     if (byId("minecraft-peek-body")) byId("minecraft-peek-body").textContent = online ? `Игроков онлайн: ${data.players_online || 0}. Мир доступен по адресу ${data.address || "mc.tvr.lat"}.` : detail;
     if (byId("minecraft-player-list")) {
@@ -902,16 +916,40 @@
     if (selected === "logs") await loadMinecraftLog();
   }
 
-  async function loadMinecraft() {
+  async function loadMinecraft(force = false) {
     if (!api.authorized || document.hidden || state.minecraftRefreshing) return;
     state.minecraftRefreshing = true;
     try {
-      renderMinecraft(await api.fetchJSON("/api/admin/reactor/minecraft"));
+      const data = await api.fetchJSON(`/api/admin/reactor/minecraft${force ? "?fresh=1" : ""}`);
+      renderMinecraft(data);
+      return data;
     } catch (error) {
       renderMinecraft({ configured: true, online: false, error: error.message });
     } finally {
       state.minecraftRefreshing = false;
     }
+  }
+
+  function followMinecraftOperation() {
+    clearInterval(state.minecraftOperationTimer);
+    let attempts = 0;
+    state.minecraftOperationTimer = setInterval(async () => {
+      attempts += 1;
+      const data = await loadMinecraft(true);
+      if (!data) {
+        if (attempts >= 35) {
+          clearInterval(state.minecraftOperationTimer);
+          state.minecraftOperationTimer = null;
+        }
+        return;
+      }
+      const operation = data?.lifecycle?.operation || data?.operation;
+      const active = operation && ["queued", "running"].includes(operation.status);
+      if (!active || attempts >= 35) {
+        clearInterval(state.minecraftOperationTimer);
+        state.minecraftOperationTimer = null;
+      }
+    }, 1500);
   }
 
   async function minecraftCommand(action, payload = {}) {
@@ -927,7 +965,8 @@
     try {
       const result = await api.postJSON("/api/admin/reactor/minecraft", { action, ...payload, confirmed: true });
       api.showToast(result.response || "Команда Minecraft принята.", false, { title: "Minecraft", icon: "▣" });
-      await loadMinecraft();
+      if (["start", "stop", "restart"].includes(action)) followMinecraftOperation();
+      await loadMinecraft(true);
       return result;
     } catch (error) {
       api.showToast(error.message || "Minecraft не принял команду.", true);
@@ -1042,6 +1081,14 @@
         if (location.hash.startsWith("#/minecraft")) void switchMinecraftTab(state.minecraftTab);
       }
     });
+    window.addEventListener("pagehide", () => {
+      clearTimeout(state.searchTimer);
+      clearInterval(state.attentionTimer);
+      clearInterval(state.minecraftTimer);
+      clearInterval(state.minecraftOperationTimer);
+      state.eventSource?.close();
+      state.eventSource = null;
+    }, { once: true });
   }
 
   async function start() {
@@ -1057,7 +1104,9 @@
       initialLoads.push(loadMinecraftFiles("", true));
     }
     await Promise.all(initialLoads);
-    state.attentionTimer = setInterval(() => void refreshAttention(true), 30000);
+    state.attentionTimer = setInterval(() => {
+      if (!document.hidden) void refreshAttention(true);
+    }, 30000);
     state.minecraftTimer = setInterval(() => {
       if (!location.hash.startsWith("#/minecraft") || document.hidden) return;
       void loadMinecraft();

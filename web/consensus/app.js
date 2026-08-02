@@ -36,6 +36,7 @@ let selectedMode = initialQuery.get("mode")
 let requestedBillId = Number(initialQuery.get("bill") || 0);
 let state = null;
 let pollTimer = null;
+let clockTimer = null;
 let fetching = false;
 let commanding = false;
 let stateSignature = "";
@@ -102,9 +103,10 @@ function requestTimeoutSignal(timeoutMs) {
 
 function schedulePoll(delay = null) {
   clearTimeout(pollTimer);
-  const nextDelay = delay ?? (document.hidden ? 15000 : state?.active ? 2500 : 8000);
+  if (document.hidden) return;
+  const nextDelay = delay ?? (state?.active ? 2500 : 8000);
   pollTimer = setTimeout(async () => {
-    if (!dashboard.hidden) await fetchState();
+    if (!document.hidden && !dashboard.hidden) await fetchState();
     schedulePoll();
   }, nextDelay);
 }
@@ -1340,7 +1342,7 @@ document.querySelectorAll("#bill-library-filters [data-filter]").forEach((button
   });
 });
 
-setInterval(() => {
+clockTimer = setInterval(() => {
   text("clock", new Date().toLocaleTimeString("ru-RU"));
   if (state?.session) {
     const timer = formatTimer(state.session.timer_deadline);
@@ -1354,6 +1356,11 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && !dashboard.hidden) {
     void fetchState();
     schedulePoll();
+  } else if (document.hidden) {
+    clearTimeout(pollTimer);
   }
 });
-window.addEventListener("beforeunload", () => clearTimeout(pollTimer));
+window.addEventListener("pagehide", () => {
+  clearTimeout(pollTimer);
+  clearInterval(clockTimer);
+}, { once: true });

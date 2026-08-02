@@ -131,6 +131,34 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS runtime_error_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                component TEXT NOT NULL,
+                level TEXT NOT NULL,
+                exception_type TEXT,
+                details TEXT NOT NULL,
+                traceback_text TEXT,
+                environment TEXT NOT NULL,
+                release TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                pending INTEGER NOT NULL DEFAULT 1,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                last_error TEXT,
+                github_issue_number INTEGER,
+                github_issue_url TEXT,
+                last_published_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_runtime_error_inbox_pending
+            ON runtime_error_inbox(pending, next_attempt_at, last_published_at);
+
             CREATE TABLE IF NOT EXISTS members (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

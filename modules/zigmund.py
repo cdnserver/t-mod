@@ -266,10 +266,11 @@ class PublishZigmundView(discord.ui.View):
     @discord.ui.button(label=t("zigmund.preview.publish_button"), style=discord.ButtonStyle.secondary)
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         path = Path(self.file_path)
-        if not path.exists():
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
             await interaction.response.send_message(t("zigmund.errors.file_missing"), ephemeral=True)
             return
-        data = path.read_bytes()
         file = discord.File(io.BytesIO(data), filename=path.name, spoiler=ZIGMUND_SEND_AS_SPOILER)
         embed = discord.Embed(
             title=t("zigmund.channel.title"),

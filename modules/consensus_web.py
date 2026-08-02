@@ -755,6 +755,9 @@ def _apply_security_headers(
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), geolocation=(), payment=(), usb=()"
+    )
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; "
         "style-src 'self' "
@@ -801,6 +804,7 @@ def create_consensus_web_app(
             "egg.js",
             "zigmund-murchalki.mp3",
             "admin.css",
+            "fonts.css",
             "admin.js",
             "reactor.js",
             "tab-signal.js",
@@ -893,7 +897,10 @@ def create_consensus_web_app(
             if request.query.get("next") in {"/admin", "/reactor"}
             else f"/?mode={mode}"
         )
-        response = web.HTTPFound(location=destination)
+        response = web.Response(
+            status=302,
+            headers={"Location": destination},
+        )
         set_session_cookie(
             response,
             token,
@@ -1019,7 +1026,10 @@ def create_consensus_web_app(
             lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
             session_version=int(result.credential.session_version),
         )
-        response = web.HTTPSeeOther(location=next_path)
+        response = web.Response(
+            status=303,
+            headers={"Location": next_path},
+        )
         set_session_cookie(
             response,
             token,
@@ -1037,7 +1047,10 @@ def create_consensus_web_app(
             if host == "tvr.lat"
             else "/"
         )
-        response = web.HTTPFound(location=destination)
+        response = web.Response(
+            status=302,
+            headers={"Location": destination},
+        )
         clear_session_cookie(
             response,
             secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),

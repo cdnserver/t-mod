@@ -314,6 +314,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po='",
                 index.headers["Content-Security-Policy"],
             )
+            self.assertEqual(
+                index.headers["Permissions-Policy"],
+                "camera=(), geolocation=(), payment=(), usb=()",
+            )
+            self.assertIn('href="/assets/fonts.css"', index_text)
 
             script = await client.get("/assets/app.js")
             self.assertEqual(script.status, 200)
@@ -324,6 +329,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 script_text,
             )
             self.assertIn("if (!document.hidden && !dashboard.hidden)", script_text)
+            self.assertIn("if (document.hidden) return", script_text)
+            self.assertIn('window.addEventListener("pagehide"', script_text)
             self.assertIn("payloadSignature", script_text)
             self.assertIn('id="data-loading"', index_text)
             self.assertIn("requestedBillId", script_text)
@@ -392,6 +399,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="gate-state"', admin_text)
             self.assertIn('class="gate-check"', admin_text)
             self.assertIn('id="toast-title"', admin_text)
+            self.assertIn('href="/assets/fonts.css"', admin_text)
 
             reactor = await client.get("/reactor")
             self.assertEqual(reactor.status, 200)
@@ -433,6 +441,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "/api/admin/reactor/minecraft/backups",
                 reactor_script_text,
             )
+            self.assertIn("silent && document.hidden", reactor_script_text)
+            self.assertIn('window.addEventListener("pagehide"', reactor_script_text)
             self.assertIn("switchMinecraftTab", reactor_script_text)
             self.assertNotIn("innerHTML", reactor_script_text)
             tab_signal = await client.get("/assets/tab-signal.js")
@@ -483,11 +493,16 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("@media (hover: hover)", admin_stylesheet_text)
             self.assertIn("@media (max-width: 480px)", admin_stylesheet_text)
             self.assertIn("overflow-x: hidden", admin_stylesheet_text)
-            self.assertIn("Segoe UI Variable Display", admin_stylesheet_text)
+            self.assertIn('"Unbounded"', admin_stylesheet_text)
             self.assertIn(".signal-card", admin_stylesheet_text)
             self.assertIn(".toast-copy", admin_stylesheet_text)
             self.assertIn("@keyframes gateOrbit", admin_stylesheet_text)
             self.assertNotIn("Georgia", admin_stylesheet_text)
+            shared_fonts = await client.get("/assets/fonts.css")
+            self.assertEqual(shared_fonts.status, 200)
+            shared_fonts_text = await shared_fonts.text()
+            self.assertIn('font-family: "Manrope"', shared_fonts_text)
+            self.assertIn('font-family: "Unbounded"', shared_fonts_text)
             self.assertNotRegex(
                 admin_stylesheet_text,
                 r"font-size:\s*(?:7|8|9|10)px",

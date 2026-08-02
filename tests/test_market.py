@@ -378,7 +378,7 @@ class MarketStorageTests(unittest.TestCase):
             item_row = storage.market_get_item("RU15", 39)
             modal = MarketAlertModal(100, item_row, query=None, back_to_tvrs=False, alert=alert)
             self.assertEqual(len(modal.children), 2)
-            self.assertTrue(all(len(str(field.label)) <= 45 for field in modal.children))
+            self.assertTrue(all(len(str(field._underlying.label)) <= 45 for field in modal.children))
             alerts_view = MarketAlertsView(100, alerts)
             item_view = MarketItemView(100, 39, query=None, alert=alert)
             self.assertLessEqual(len(alerts_view.children), 25)

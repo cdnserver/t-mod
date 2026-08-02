@@ -3,11 +3,19 @@ param(
     [string]$RconPath,
 
     [Parameter(Mandatory = $true)]
-    [string]$SupervisorPath
+    [string]$SupervisorPath,
+
+    [string]$ChangedMarkerPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:SecretChanged = $false
+
+if (-not [string]::IsNullOrWhiteSpace($ChangedMarkerPath) -and
+    (Test-Path -LiteralPath $ChangedMarkerPath)) {
+    Remove-Item -LiteralPath $ChangedMarkerPath -Force
+}
 
 function Ensure-SecretFile {
     param(
@@ -68,7 +76,16 @@ function Ensure-SecretFile {
         }
     }
     Write-Host "[OK] Generated a new $Label secret outside Git"
+    $script:SecretChanged = $true
 }
 
 Ensure-SecretFile -Path $RconPath -Label "Minecraft RCON"
 Ensure-SecretFile -Path $SupervisorPath -Label "Minecraft supervisor"
+
+if ($script:SecretChanged -and -not [string]::IsNullOrWhiteSpace($ChangedMarkerPath)) {
+    [IO.File]::WriteAllText(
+        $ChangedMarkerPath,
+        "changed",
+        (New-Object Text.UTF8Encoding($false))
+    )
+}

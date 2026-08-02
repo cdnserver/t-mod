@@ -10,6 +10,7 @@ from typing import Any
 import discord
 
 from modules.control_center_runtime import resolve_registered_channel
+from modules.error_inbox import capture_runtime_event
 
 
 _last_sent: dict[tuple[int, str], float] = {}
@@ -25,9 +26,19 @@ async def log_technical_event(
     dedupe_key: str | None = None,
     cooldown_seconds: int = 300,
     mention_everyone: bool = False,
+    exception: BaseException | None = None,
+    component: str | None = None,
 ) -> bool:
     del bot  # Reserved for future gateway-based delivery.
     key = (guild.id, dedupe_key or title)
+    await capture_runtime_event(
+        title=title,
+        details=details,
+        component=component or str(dedupe_key or "technical-log").partition(":")[0],
+        level=level,
+        fingerprint_hint=dedupe_key,
+        exception=exception,
+    )
     now = asyncio.get_running_loop().time()
     previous = _last_sent.get(key)
     if previous is not None and now - previous < cooldown_seconds:

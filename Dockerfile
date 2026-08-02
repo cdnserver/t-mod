@@ -24,10 +24,19 @@ RUN apt-get update \
     && fc-cache -f -v \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --system --gid 10001 tmod \
+    && useradd --system --uid 10001 --gid tmod --home-dir /tmp/tmod tmod \
+    && mkdir -p /tmp/tmod /app/data /app/persistent \
+    && chown -R tmod:tmod /tmp/tmod /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY --chown=tmod:tmod . .
+
+ENV HOME=/tmp/tmod
+
+USER tmod
 
 EXPOSE 8787
 

@@ -146,8 +146,31 @@ def _member_treasury_summary(guild_id: int) -> dict[str, Any]:
     }
 
 
-async def _health_snapshot(bot: discord.Client, guild_id: int) -> dict[str, Any]:
-    database, outbox, catalogs, minecraft = await asyncio.gather(
+async def _minecraft_status_snapshot() -> dict[str, Any]:
+    """Bound Minecraft probes so they can never stall the whole Reactor."""
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(minecraft_status),
+            timeout=3.0,
+        )
+    except TimeoutError:
+        return {
+            "configured": True,
+            "online": False,
+            "state": "unknown",
+            "address": "mc.tvr.lat",
+            "error": "Проверка Minecraft превысила 3 секунды; повторяем в фоне.",
+        }
+
+
+async def _health_snapshot(
+    bot: discord.Client,
+    guild_id: int,
+    *,
+    minecraft_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    database, outbox, catalogs = await asyncio.gather(
         asyncio.to_thread(reactor_storage.reactor_database_health),
         asyncio.to_thread(outbox_storage.delivery_outbox_counts),
         asyncio.gather(
@@ -160,7 +183,11 @@ async def _health_snapshot(bot: discord.Client, guild_id: int) -> dict[str, Any]
                 for category in ("items", "vehicles", "clothes")
             )
         ),
-        asyncio.to_thread(minecraft_status),
+    )
+    minecraft = (
+        minecraft_snapshot
+        if minecraft_snapshot is not None
+        else await _minecraft_status_snapshot()
     )
     guild = bot.get_guild(int(guild_id))
     latency = getattr(bot, "latency", None)
@@ -385,6 +412,10 @@ def register_reactor_web_routes(
         ttl_seconds=12,
         max_stale_seconds=180,
     )
+    minecraft_cache = AsyncSnapshotCache[str, dict[str, Any]](
+        ttl_seconds=2,
+        max_stale_seconds=60,
+    )
     attention_cache = AsyncSnapshotCache[str, dict[str, Any]](
         ttl_seconds=8,
         max_stale_seconds=120,
@@ -400,10 +431,27 @@ def register_reactor_web_routes(
         max_stale_seconds=90,
     )
 
+    async def cached_minecraft(
+        *, force: bool = False
+    ) -> tuple[dict[str, Any], str]:
+        return await minecraft_cache.get(
+            "status",
+            _minecraft_status_snapshot,
+            force=force,
+        )
+
+    async def build_health() -> dict[str, Any]:
+        minecraft, _ = await cached_minecraft()
+        return await _health_snapshot(
+            bot,
+            int(guild_id),
+            minecraft_snapshot=minecraft,
+        )
+
     async def cached_health(*, force: bool = False) -> tuple[dict[str, Any], str]:
         return await health_cache.get(
             "health",
-            lambda: _health_snapshot(bot, int(guild_id)),
+            build_health,
             force=force,
         )
 
@@ -987,10 +1035,9 @@ def register_reactor_web_routes(
 
     async def minecraft_get(request: web.Request) -> web.Response:
         principal = await admin_request(request)
-        snapshot, cache_state = await cached_health(
+        status, cache_state = await cached_minecraft(
             force=request.query.get("fresh") == "1",
         )
-        status = dict(snapshot.get("minecraft") or {})
         return web.json_response(
             {
                 "viewer": viewer(principal),
@@ -1139,7 +1186,8 @@ def register_reactor_web_routes(
             filename = ""
             size = 0
             temporary = await asyncio.to_thread(minecraft_prepare_upload)
-            with temporary.open("wb") as handle:
+            handle = await asyncio.to_thread(temporary.open, "wb")
+            try:
                 async for field in reader:
                     if field.name == "path":
                         directory = (await field.text()).strip()
@@ -1156,14 +1204,16 @@ def register_reactor_web_routes(
                                 "Загружайте файлы по одному.",
                             )
                         filename = str(field.filename or "")
-                        while chunk := await field.read_chunk(size=64 * 1024):
+                        while chunk := await field.read_chunk(size=256 * 1024):
                             size += len(chunk)
                             if size > config.max_upload_bytes:
                                 raise MinecraftFilesError(
                                     "minecraft_upload_too_large",
                                     "Файл превышает лимит загрузки.",
                                 )
-                            handle.write(chunk)
+                            await asyncio.to_thread(handle.write, chunk)
+            finally:
+                await asyncio.to_thread(handle.close)
             if not filename:
                 raise MinecraftFilesError(
                     "minecraft_upload_file_required",
@@ -1182,7 +1232,7 @@ def register_reactor_web_routes(
             return minecraft_error(exc)
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                await asyncio.to_thread(temporary.unlink, missing_ok=True)
         result = {"ok": True, "action": "upload", "item": item}
         await record_minecraft_action(
             principal,
@@ -1350,9 +1400,10 @@ def register_reactor_web_routes(
         await record_minecraft_action(
             principal,
             action,
-            summary=f"Minecraft: выполнена команда {action}",
+            summary=f"Minecraft: принята команда {action}",
         )
         remember_minecraft_receipt(receipt, result)
+        minecraft_cache.invalidate()
         health_cache.invalidate()
         attention_cache.invalidate()
         return web.json_response(result)

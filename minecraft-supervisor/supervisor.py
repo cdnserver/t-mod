@@ -7,6 +7,8 @@ import json
 import os
 import secrets
 import socket
+import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
@@ -21,9 +23,23 @@ TOKEN_FILE = Path(
 )
 PORT = int(os.getenv("MINECRAFT_SUPERVISOR_PORT", "8791"))
 ALLOWED_ACTIONS = frozenset({"start", "stop", "restart"})
+try:
+    STOP_GRACE_SECONDS = max(
+        1,
+        min(30, int(os.getenv("MINECRAFT_STOP_GRACE_SECONDS", "10"))),
+    )
+except (TypeError, ValueError):
+    STOP_GRACE_SECONDS = 10
+
+_operation_lock = threading.Lock()
+_operation: dict[str, object] | None = None
 
 
 class SupervisorError(RuntimeError):
+    pass
+
+
+class SupervisorBusyError(SupervisorError):
     pass
 
 
@@ -37,9 +53,14 @@ def read_token() -> str:
     return token
 
 
-def docker_request(method: str, path: str) -> tuple[int, object]:
+def docker_request(
+    method: str,
+    path: str,
+    *,
+    timeout_seconds: float = 3.0,
+) -> tuple[int, object]:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(45)
+    client.settimeout(max(0.5, float(timeout_seconds)))
     try:
         client.connect(SOCKET_PATH)
         request = (
@@ -74,13 +95,17 @@ def container_status() -> dict[str, object]:
     if status != 200 or not isinstance(payload, dict):
         raise SupervisorError(f"Docker returned status {status}")
     state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
-    return {
+    result: dict[str, object] = {
         "container": CONTAINER_NAME,
         "state": str(state.get("Status") or "unknown"),
         "running": bool(state.get("Running")),
         "started_at": str(state.get("StartedAt") or ""),
         "finished_at": str(state.get("FinishedAt") or ""),
     }
+    operation = operation_status()
+    if operation is not None:
+        result["operation"] = operation
+    return result
 
 
 def lifecycle(action: str) -> dict[str, object]:
@@ -88,10 +113,14 @@ def lifecycle(action: str) -> dict[str, object]:
         raise SupervisorError("Action is not allowed")
     suffix = {
         "start": "/start",
-        "stop": "/stop?t=30",
-        "restart": "/restart?t=30",
+        "stop": f"/stop?t={STOP_GRACE_SECONDS}",
+        "restart": f"/restart?t={STOP_GRACE_SECONDS}",
     }[action]
-    status, payload = docker_request("POST", container_path(suffix))
+    status, payload = docker_request(
+        "POST",
+        container_path(suffix),
+        timeout_seconds=STOP_GRACE_SECONDS + 8,
+    )
     if status not in {204, 304}:
         detail = payload.get("message") if isinstance(payload, dict) else payload
         raise SupervisorError(
@@ -100,6 +129,108 @@ def lifecycle(action: str) -> dict[str, object]:
     result = container_status()
     result.update({"ok": True, "action": action})
     return result
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def operation_status() -> dict[str, object] | None:
+    with _operation_lock:
+        return dict(_operation) if _operation is not None else None
+
+
+def _run_lifecycle(operation_id: str, action: str) -> None:
+    global _operation
+    with _operation_lock:
+        if _operation is None or _operation.get("id") != operation_id:
+            return
+        _operation.update({"status": "running", "started_at": _utc_now()})
+    try:
+        result = lifecycle(action)
+    except Exception as exc:  # keep the supervisor alive after Docker failures
+        with _operation_lock:
+            if _operation is not None and _operation.get("id") == operation_id:
+                _operation.update(
+                    {
+                        "status": "failed",
+                        "finished_at": _utc_now(),
+                        "error": str(exc)[:500],
+                    }
+                )
+        return
+    with _operation_lock:
+        if _operation is not None and _operation.get("id") == operation_id:
+            _operation.update(
+                {
+                    "status": "completed",
+                    "finished_at": _utc_now(),
+                    "result_state": str(result.get("state") or "unknown"),
+                }
+            )
+
+
+def schedule_lifecycle(action: str) -> dict[str, object]:
+    """Accept a lifecycle operation without blocking the Reactor HTTP request."""
+
+    global _operation
+    if action not in ALLOWED_ACTIONS:
+        raise SupervisorError("Action is not allowed")
+    with _operation_lock:
+        active = _operation is not None and _operation.get("status") in {
+            "queued",
+            "running",
+        }
+        if active:
+            if _operation is not None and _operation.get("action") == action:
+                return {
+                    "ok": True,
+                    "accepted": True,
+                    "duplicate": True,
+                    "action": action,
+                    "state": str(_operation.get("state") or "changing"),
+                    "operation": dict(_operation),
+                }
+            raise SupervisorBusyError("Another Minecraft lifecycle operation is active")
+        public_state = {
+            "start": "starting",
+            "stop": "stopping",
+            "restart": "restarting",
+        }[action]
+        operation_id = secrets.token_hex(8)
+        _operation = {
+            "id": operation_id,
+            "action": action,
+            "status": "queued",
+            "state": public_state,
+            "accepted_at": _utc_now(),
+        }
+        snapshot = dict(_operation)
+    try:
+        threading.Thread(
+            target=_run_lifecycle,
+            args=(operation_id, action),
+            name=f"minecraft-{action}-{operation_id}",
+            daemon=True,
+        ).start()
+    except RuntimeError as exc:
+        with _operation_lock:
+            if _operation is not None and _operation.get("id") == operation_id:
+                _operation.update(
+                    {
+                        "status": "failed",
+                        "finished_at": _utc_now(),
+                        "error": str(exc)[:500],
+                    }
+                )
+        raise SupervisorError("Lifecycle worker could not be started") from exc
+    return {
+        "ok": True,
+        "accepted": True,
+        "action": action,
+        "state": public_state,
+        "operation": snapshot,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -146,7 +277,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path != f"/v1/{action}" or action not in ALLOWED_ACTIONS:
                 self.respond(404, {"error": "not_found"})
                 return
-            self.respond(200, lifecycle(action))
+            self.respond(202, schedule_lifecycle(action))
+        except SupervisorBusyError as exc:
+            self.respond(
+                409,
+                {"error": "operation_in_progress", "message": str(exc)},
+            )
         except SupervisorError as exc:
             self.respond(503, {"error": "supervisor_unavailable", "message": str(exc)})
 

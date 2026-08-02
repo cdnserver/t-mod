@@ -26,6 +26,7 @@ from modules.profile import setup_profile
 from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
+from modules.error_inbox import setup_error_inbox_runtime
 from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import setup_consensus_web
 
@@ -431,6 +432,7 @@ async def apply_bot_status() -> None:
 class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
+        setup_error_inbox_runtime(self.loop)
         if _activity_queue is None:
             _activity_queue = asyncio.Queue(maxsize=ACTIVITY_QUEUE_MAXSIZE)
             self.loop.create_task(activity_writer_worker())
@@ -718,6 +720,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             ),
             dedupe_key=f"app-command:{type(error).__name__}:{getattr(interaction.command, 'qualified_name', 'unknown')}",
             cooldown_seconds=60,
+            exception=error,
+            component="discord.app-command",
         )
     message = t("errors.generic_interaction_error_with_id", error_id=error_id)
     try:

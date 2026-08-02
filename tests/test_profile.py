@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import discord
 from discord.ext import commands
@@ -21,6 +21,8 @@ from modules.profile import (
     ProfileQuietHoursView,
     ProfileSettingsView,
     ProfileStatusView,
+    WebAccessModal,
+    _edit_profile_web_access,
     profile_embed,
     profile_settings_embed,
     parse_profile_clock,
@@ -509,6 +511,77 @@ class ProfileUiTests(unittest.TestCase):
         reset = bot.tree.get_command("reset")
         self.assertIsNotNone(reset)
         self.assertEqual(reset.parameters, [])
+
+    def test_reset_modal_creates_an_editable_ephemeral_response(self) -> None:
+        class Response:
+            def __init__(self) -> None:
+                self.done = False
+                self.deferred: list[dict[str, object]] = []
+
+            def is_done(self) -> bool:
+                return self.done
+
+            async def defer(self, **kwargs: object) -> None:
+                self.done = True
+                self.deferred.append(dict(kwargs))
+
+        async def verify() -> None:
+            member = SimpleNamespace(id=20, guild=SimpleNamespace(id=10))
+            modal = WebAccessModal(20, member, None)
+            modal.login._value = "senator"
+            modal.pin._value = "12345678"
+            modal.pin_repeat._value = "12345678"
+            response = Response()
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=20),
+                response=response,
+                edit_original_response=AsyncMock(),
+                followup=SimpleNamespace(send=AsyncMock()),
+            )
+            with (
+                patch(
+                    "modules.profile.web_auth_storage.configure_web_credential"
+                ) as configure,
+                patch(
+                    "modules.profile.web_auth_storage.get_web_credential",
+                    return_value=None,
+                ),
+            ):
+                await modal.on_submit(interaction)
+
+            self.assertEqual(
+                response.deferred,
+                [{"ephemeral": True, "thinking": True}],
+            )
+            configure.assert_called_once_with(10, 20, "senator", "12345678")
+            interaction.edit_original_response.assert_awaited_once()
+
+        asyncio.run(verify())
+
+    def test_missing_ephemeral_message_falls_back_to_fresh_private_panel(self) -> None:
+        async def verify() -> None:
+            not_found = discord.NotFound(
+                SimpleNamespace(status=404, reason="Not Found"),
+                {"message": "Unknown Message", "code": 10008},
+            )
+            interaction = SimpleNamespace(
+                response=SimpleNamespace(is_done=lambda: True),
+                edit_original_response=AsyncMock(side_effect=not_found),
+                followup=SimpleNamespace(send=AsyncMock()),
+            )
+            member = SimpleNamespace(id=20, guild=SimpleNamespace(id=10))
+            with patch(
+                "modules.profile.web_auth_storage.get_web_credential",
+                return_value=None,
+            ):
+                await _edit_profile_web_access(interaction, 20, member)
+
+            interaction.followup.send.assert_awaited_once()
+            sent = interaction.followup.send.await_args.kwargs
+            self.assertTrue(sent["ephemeral"])
+            self.assertEqual(sent["embed"].title, "Веб-доступ T-Mod")
+
+        asyncio.run(verify())
 
 
 if __name__ == "__main__":

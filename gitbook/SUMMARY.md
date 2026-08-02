@@ -63,6 +63,7 @@
 
 * [Обслуживание Товарищества](responsible/tvrs-care.md)
 * [Исправление данных SGL](responsible/sgl-care.md)
+* [Автоматический Error Inbox](responsible/error-inbox.md)
 
 ## Помощь
 

@@ -521,7 +521,8 @@ async def create_sgl_case_channel(
     if category is None:
         raise RuntimeError(t("sgbureau.case.errors.category_not_found", category_id=SGBUREAU_CATEGORY_ID))
 
-    reserved = storage.reserve_sgl_case(
+    reserved = await asyncio.to_thread(
+        storage.reserve_sgl_case,
         guild_id=guild.id,
         client_id=client.id,
         client_display=client.display_name,
@@ -555,10 +556,18 @@ async def create_sgl_case_channel(
             reason=t("sgbureau.case.audit_newcase_reason", case_number=format_case_number(reserved.case_number)),
         )
     except discord.HTTPException as exc:
-        storage.mark_sgl_case_error(reserved.id, f"channel_create_failed:{str(exc)[:200]}")
+        await asyncio.to_thread(
+            storage.mark_sgl_case_error,
+            reserved.id,
+            f"channel_create_failed:{str(exc)[:200]}",
+        )
         raise RuntimeError(t("sgbureau.case.errors.channel_create_failed", error=str(exc)[:180])) from exc
 
-    case = storage.attach_sgl_case_channel(reserved.id, channel.id)
+    case = await asyncio.to_thread(
+        storage.attach_sgl_case_channel,
+        reserved.id,
+        channel.id,
+    )
     if case is None:
         raise RuntimeError(t("sgbureau.case.errors.db_case_attach_failed"))
 
@@ -685,7 +694,11 @@ async def reorder_case_channels(guild: discord.Guild, bot: commands.Bot, categor
     category = await resolve_category(guild, bot, category_id)
     if category is None:
         return
-    cases = [case for case in storage.list_sgl_cases_with_channels(guild.id) if case.channel_id]
+    stored_cases = await asyncio.to_thread(
+        storage.list_sgl_cases_with_channels,
+        guild.id,
+    )
+    cases = [case for case in stored_cases if case.channel_id]
     channel_to_case = {int(case.channel_id): case for case in cases if case.channel_id}
     case_channels = []
     for channel in category.text_channels:
@@ -786,7 +799,12 @@ async def archive_case_channel(bot: commands.Bot, guild: discord.Guild, case: st
 
     try:
         await channel.edit(category=archive_category, sync_permissions=False, reason=t("sgbureau.case.audit_archive_reason", case_number=format_case_number(case.case_number)))
-        archived = storage.mark_sgl_case_archived(guild.id, channel.id, archive_category.id)
+        archived = await asyncio.to_thread(
+            storage.mark_sgl_case_archived,
+            guild.id,
+            channel.id,
+            archive_category.id,
+        )
         if archived is not None:
             await refresh_case_channel(guild, bot, archived, SGBUREAU_ARCHIVE_CATEGORY_ID)
         try:
@@ -807,7 +825,11 @@ async def archive_case_later(bot: commands.Bot, guild_id: int, channel_id: int, 
     guild = bot.get_guild(guild_id)
     if guild is None:
         return
-    case = storage.get_sgl_case_by_channel(guild_id, channel_id)
+    case = await asyncio.to_thread(
+        storage.get_sgl_case_by_channel,
+        guild_id,
+        channel_id,
+    )
     if case is None or case.status != "closed" or case.archived_at:
         return
     await archive_case_channel(bot, guild, case)
@@ -815,7 +837,11 @@ async def archive_case_later(bot: commands.Bot, guild_id: int, channel_id: int, 
 
 async def schedule_pending_case_archives(bot: commands.Bot) -> None:
     for guild in bot.guilds:
-        for case in storage.list_sgl_closed_cases_pending_archive(guild.id):
+        cases = await asyncio.to_thread(
+            storage.list_sgl_closed_cases_pending_archive,
+            guild.id,
+        )
+        for case in cases:
             delay = SGBUREAU_ARCHIVE_AFTER_SECONDS
             if case.closed_at:
                 try:
@@ -893,7 +919,8 @@ class AddNewsModal(discord.ui.Modal):
             return
 
         try:
-            record_id = storage.record_bureau_announcement(
+            record_id = await asyncio.to_thread(
+                storage.record_bureau_announcement,
                 guild_id=interaction.guild.id,
                 author_id=interaction.user.id,
                 author_display=interaction.user.display_name,
@@ -930,7 +957,11 @@ class CaseInitView(discord.ui.View):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -955,11 +986,20 @@ class ServiceTypeSelect(discord.ui.Select):
         if interaction.guild is None or interaction.channel_id is None:
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
-        profiles = storage.list_client_profiles_for_user(interaction.guild.id, case.client_id, limit=20)
+        profiles = await asyncio.to_thread(
+            storage.list_client_profiles_for_user,
+            interaction.guild.id,
+            case.client_id,
+            limit=20,
+        )
         if profiles:
             await interaction.response.send_message(t("sgbureau.registry.profile_select_intro"), ephemeral=True, view=ExistingProfileView(self.case_number, request_type, profiles))
         else:
@@ -993,7 +1033,11 @@ class ClientParamsModal(discord.ui.Modal):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1029,7 +1073,8 @@ class ClientParamsModal(discord.ui.Modal):
             return
 
         service_text = t(f"sgbureau.case.service_value.{self.request_type}")
-        updated = storage.update_sgl_case_params(
+        updated = await asyncio.to_thread(
+            storage.update_sgl_case_params,
             guild_id=interaction.guild.id,
             channel_id=interaction.channel_id,
             request_type=service_text,
@@ -1045,7 +1090,8 @@ class ClientParamsModal(discord.ui.Modal):
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
 
-        storage.save_client_profile(
+        await asyncio.to_thread(
+            storage.save_client_profile,
             guild_id=interaction.guild.id,
             discord_user_id=case.client_id,
             client_nick=nick,
@@ -1075,7 +1121,11 @@ class ExistingProfileSelect(discord.ui.Select):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member) or interaction.channel_id is None:
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None or case.case_number != self.case_number:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1084,7 +1134,8 @@ class ExistingProfileSelect(discord.ui.Select):
             await interaction.response.send_message(t("sgbureau.registry.profile_not_found"), ephemeral=True)
             return
         # Save request type first so it matches selection
-        updated = storage.update_sgl_case_params(
+        updated = await asyncio.to_thread(
+            storage.update_sgl_case_params,
             guild_id=interaction.guild.id,
             channel_id=interaction.channel_id,
             request_type=t(f"sgbureau.case.service_value.{self.request_type}"),
@@ -1099,7 +1150,8 @@ class ExistingProfileSelect(discord.ui.Select):
         if updated is None:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
-        storage.save_client_profile(
+        await asyncio.to_thread(
+            storage.save_client_profile,
             guild_id=interaction.guild.id, discord_user_id=case.client_id, client_nick=profile.client_nick, static_id=profile.static_id,
             bank_account=profile.bank_account, phone=profile.phone, passport_url=profile.passport_url, last_case_id=updated.id,
         )
@@ -1135,7 +1187,11 @@ class CloseCaseModal(discord.ui.Modal):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None or case.case_number != self.case_number:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1158,7 +1214,8 @@ class CloseCaseModal(discord.ui.Modal):
             msg = await portfolio_channel.send(embed=build_portfolio_embed(case, description), allowed_mentions=discord.AllowedMentions.none())
             portfolio_message_id = msg.id
 
-        closed = storage.close_sgl_case(
+        closed = await asyncio.to_thread(
+            storage.close_sgl_case,
             guild_id=interaction.guild.id,
             channel_id=interaction.channel_id,
             actor_id=interaction.user.id,
@@ -1197,7 +1254,11 @@ class CaseLinkModal(discord.ui.Modal):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None or case.case_number != self.case_number:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1208,7 +1269,14 @@ class CaseLinkModal(discord.ui.Modal):
         if not URL_RE.match(clean_link):
             await interaction.followup.send(t("sgbureau.case.errors.link_url"), ephemeral=True)
             return
-        updated = storage.set_sgl_case_link(interaction.guild.id, interaction.channel_id, clean_link, interaction.user.id, interaction.user.display_name)
+        updated = await asyncio.to_thread(
+            storage.set_sgl_case_link,
+            interaction.guild.id,
+            interaction.channel_id,
+            clean_link,
+            interaction.user.id,
+            interaction.user.display_name,
+        )
         if updated is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1217,7 +1285,12 @@ class CaseLinkModal(discord.ui.Modal):
             msg = await interaction.channel.send(embed=build_clink_embed(updated, clean_link, interaction.user), allowed_mentions=discord.AllowedMentions.none())
             try:
                 await msg.pin(reason=t("sgbureau.case.audit_pin_link_reason", case_number=format_case_number(updated.case_number)))
-                storage.set_sgl_case_link_message(interaction.guild.id, interaction.channel_id, msg.id)
+                await asyncio.to_thread(
+                    storage.set_sgl_case_link_message,
+                    interaction.guild.id,
+                    interaction.channel_id,
+                    msg.id,
+                )
             except discord.HTTPException:
                 await interaction.followup.send(t("sgbureau.case.link_pin_failed"), ephemeral=True)
         await interaction.followup.send(t("sgbureau.sg.link_saved", case_number=format_case_number(updated.case_number)), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
@@ -1240,7 +1313,11 @@ class ReceiptModal(discord.ui.Modal):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None or case.case_number != self.case_number:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1268,7 +1345,8 @@ class ReceiptModal(discord.ui.Modal):
             await interaction.followup.send(t("sgbureau.receipt.errors.duty_bigger_than_total", total=format_money(total), duty=format_money(duty)), ephemeral=True)
             return
 
-        receipt = storage.create_sgl_receipt(
+        receipt = await asyncio.to_thread(
+            storage.create_sgl_receipt,
             guild_id=interaction.guild.id,
             case=case,
             created_by_id=interaction.user.id,
@@ -1293,7 +1371,11 @@ class ReceiptModal(discord.ui.Modal):
             view=ReceiptSubmitProofsView(self.bot),
             allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
         )
-        storage.set_sgl_receipt_invoice_message(receipt.id, msg.id)
+        await asyncio.to_thread(
+            storage.set_sgl_receipt_invoice_message,
+            receipt.id,
+            msg.id,
+        )
         await interaction.followup.send(t("sgbureau.receipt.created_private", receipt_id=receipt.id), ephemeral=True)
 
 
@@ -1312,11 +1394,19 @@ class ReceiptProofsModal(discord.ui.Modal):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        receipt = storage.get_sgl_receipt_by_invoice_message(interaction.guild.id, self.invoice_message_id)
+        receipt = await asyncio.to_thread(
+            storage.get_sgl_receipt_by_invoice_message,
+            interaction.guild.id,
+            self.invoice_message_id,
+        )
         if receipt is None:
             await interaction.followup.send(t("sgbureau.receipt.errors.receipt_not_found"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_number(interaction.guild.id, receipt.case_number)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_number,
+            interaction.guild.id,
+            receipt.case_number,
+        )
         if case is None or case.channel_id != interaction.channel_id:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1334,7 +1424,8 @@ class ReceiptProofsModal(discord.ui.Modal):
         if errors:
             await interaction.followup.send("\n".join(f"• {x}" for x in errors), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
             return
-        updated = storage.submit_sgl_receipt_proofs_by_invoice_message(
+        updated = await asyncio.to_thread(
+            storage.submit_sgl_receipt_proofs_by_invoice_message,
             guild_id=interaction.guild.id,
             invoice_message_id=self.invoice_message_id,
             services_url=services_url,
@@ -1357,7 +1448,11 @@ class ReceiptProofsModal(discord.ui.Modal):
                         view=ReceiptConfirmView(self.bot),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
-                    storage.set_sgl_receipt_confirmation_message(updated.id, confirm_msg.id)
+                    await asyncio.to_thread(
+                        storage.set_sgl_receipt_confirmation_message,
+                        updated.id,
+                        confirm_msg.id,
+                    )
                     dm_sent = True
                 except discord.HTTPException:
                     dm_sent = False
@@ -1384,11 +1479,19 @@ class ReceiptSubmitProofsView(discord.ui.View):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member) or interaction.message is None:
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
-        receipt = storage.get_sgl_receipt_by_invoice_message(interaction.guild.id, interaction.message.id)
+        receipt = await asyncio.to_thread(
+            storage.get_sgl_receipt_by_invoice_message,
+            interaction.guild.id,
+            interaction.message.id,
+        )
         if receipt is None:
             await interaction.response.send_message(t("sgbureau.receipt.errors.receipt_not_found"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_number(interaction.guild.id, receipt.case_number)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_number,
+            interaction.guild.id,
+            receipt.case_number,
+        )
         if case is None:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -1411,15 +1514,26 @@ class ReceiptConfirmView(discord.ui.View):
         await interaction.response.defer(ephemeral=interaction.guild is not None)
 
         if interaction.guild is not None:
-            receipt = storage.get_sgl_receipt_by_confirmation_message(interaction.guild.id, interaction.message.id)
+            receipt = await asyncio.to_thread(
+                storage.get_sgl_receipt_by_confirmation_message,
+                interaction.guild.id,
+                interaction.message.id,
+            )
         else:
-            receipt = storage.get_sgl_receipt_by_confirmation_message_any(interaction.message.id)
+            receipt = await asyncio.to_thread(
+                storage.get_sgl_receipt_by_confirmation_message_any,
+                interaction.message.id,
+            )
         if receipt is None:
             await interaction.followup.send(t("sgbureau.receipt.errors.receipt_not_found"), ephemeral=interaction.guild is not None)
             return
 
         guild = interaction.guild or self.bot.get_guild(receipt.guild_id)
-        case = storage.get_sgl_case_by_number(receipt.guild_id, receipt.case_number)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_number,
+            receipt.guild_id,
+            receipt.case_number,
+        )
         if case is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=interaction.guild is not None)
             return
@@ -1431,7 +1545,8 @@ class ReceiptConfirmView(discord.ui.View):
             await interaction.followup.send(t("sgbureau.receipt.errors.only_lead_lawyer_confirm"), ephemeral=interaction.guild is not None)
             return
 
-        updated = storage.confirm_sgl_receipt_by_confirmation_message_any(
+        updated = await asyncio.to_thread(
+            storage.confirm_sgl_receipt_by_confirmation_message_any,
             confirmation_message_id=interaction.message.id,
             actor_id=interaction.user.id,
             actor_display=getattr(interaction.user, "display_name", str(interaction.user)),
@@ -1674,7 +1789,8 @@ class AdminEditModal(discord.ui.Modal):
             if self.mode == "edit":
                 field = str(self.field.value).strip()
                 value = str(self.value.value)
-                record = storage.admin_update_record(
+                record = await asyncio.to_thread(
+                    storage.admin_update_record,
                     guild_id=interaction.guild.id,
                     target=target,
                     identifier=identifier,
@@ -1687,8 +1803,16 @@ class AdminEditModal(discord.ui.Modal):
                     await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
                     return
                 # If case was edited, try refreshing the channel name.
-                if (storage.normalize_admin_target(target) or "") == "case":
-                    case = storage.get_sgl_case_by_number(interaction.guild.id, int(str(identifier).replace("SGL-", "").lstrip("0") or "0"))
+                normalized_target = await asyncio.to_thread(
+                    storage.normalize_admin_target,
+                    target,
+                )
+                if (normalized_target or "") == "case":
+                    case = await asyncio.to_thread(
+                        storage.get_sgl_case_by_number,
+                        interaction.guild.id,
+                        int(str(identifier).replace("SGL-", "").lstrip("0") or "0"),
+                    )
                     if case:
                         schedule_case_refresh(interaction.client, interaction.guild, case)
                 await interaction.followup.send(admin_short_result(target, identifier, field), ephemeral=True)
@@ -1698,11 +1822,22 @@ class AdminEditModal(discord.ui.Modal):
             if confirm not in {"DELETE", "УДАЛИТЬ"}:
                 await interaction.followup.send(t("sgbureau.admin.confirm_failed"), ephemeral=True)
                 return
-            record = storage.admin_delete_record(guild_id=interaction.guild.id, target=target, identifier=identifier, actor_id=interaction.user.id, actor_display=interaction.user.display_name)
+            record = await asyncio.to_thread(
+                storage.admin_delete_record,
+                guild_id=interaction.guild.id,
+                target=target,
+                identifier=identifier,
+                actor_id=interaction.user.id,
+                actor_display=interaction.user.display_name,
+            )
             if record is None:
                 await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
                 return
-            if (storage.normalize_admin_target(target) or "") == "case":
+            normalized_target = await asyncio.to_thread(
+                storage.normalize_admin_target,
+                target,
+            )
+            if (normalized_target or "") == "case":
                 channel_id = record.get("channel_id")
                 if channel_id:
                     channel = interaction.guild.get_channel(int(channel_id))
@@ -1715,7 +1850,9 @@ class AdminEditModal(discord.ui.Modal):
         except ValueError as exc:
             code = str(exc)
             if code == "field_not_allowed":
-                fields = ", ".join(storage.admin_allowed_fields(target)) or t("common.no_data")
+                fields = ", ".join(
+                    await asyncio.to_thread(storage.admin_allowed_fields, target)
+                ) or t("common.no_data")
                 await interaction.followup.send(t("sgbureau.admin.field_not_allowed", fields=fields), ephemeral=True)
             else:
                 await interaction.followup.send(t("sgbureau.admin.bad_request", error=code), ephemeral=True)
@@ -1863,12 +2000,36 @@ class RegistryDetailView(SGRequesterView):
 async def show_registry_page(interaction: discord.Interaction, requester_id: int, kind: str, page: int, query: str | None, new_response: bool = False) -> None:
     assert interaction.guild is not None
     if kind == "lawyers":
-        total = storage.count_lawyer_profiles(interaction.guild.id, query)
-        items = storage.list_lawyer_profiles_page(interaction.guild.id, page=page, per_page=10, query=query)
+        total, items = await asyncio.gather(
+            asyncio.to_thread(
+                storage.count_lawyer_profiles,
+                interaction.guild.id,
+                query,
+            ),
+            asyncio.to_thread(
+                storage.list_lawyer_profiles_page,
+                interaction.guild.id,
+                page=page,
+                per_page=10,
+                query=query,
+            ),
+        )
     else:
         kind = "clients"
-        total = storage.count_client_profiles(interaction.guild.id, query)
-        items = storage.list_client_profiles_page(interaction.guild.id, page=page, per_page=10, query=query)
+        total, items = await asyncio.gather(
+            asyncio.to_thread(
+                storage.count_client_profiles,
+                interaction.guild.id,
+                query,
+            ),
+            asyncio.to_thread(
+                storage.list_client_profiles_page,
+                interaction.guild.id,
+                page=page,
+                per_page=10,
+                query=query,
+            ),
+        )
     pages = page_count(total)
     page = min(max(0, page), pages - 1)
     embed = build_registry_page_embed(kind, interaction.guild.id, page, query, items, total)
@@ -2171,7 +2332,8 @@ class SGCaseCreationView(SGRequesterView):
                 ephemeral=True,
             )
             return
-        cases = storage.list_sgl_cases_for_client(
+        cases = await asyncio.to_thread(
+            storage.list_sgl_cases_for_client,
             interaction.guild.id,
             target.id,
             limit=25,
@@ -2234,7 +2396,12 @@ class SGUserOverviewView(discord.ui.View):
         if target is None:
             await interaction.response.send_message(t("sgbureau.sg.user_not_found", user_id=self.target_user_id), ephemeral=True)
             return
-        cases = storage.list_sgl_cases_for_client(interaction.guild.id, target.id, limit=25)
+        cases = await asyncio.to_thread(
+            storage.list_sgl_cases_for_client,
+            interaction.guild.id,
+            target.id,
+            limit=25,
+        )
         await interaction.response.edit_message(embed=build_user_overview_embed(target, cases), view=self, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -2407,7 +2574,12 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                 return
             await interaction.response.defer(ephemeral=True)
             if user is not None:
-                cases = storage.list_sgl_cases_for_client(interaction.guild.id, user.id, limit=25)
+                cases = await asyncio.to_thread(
+                    storage.list_sgl_cases_for_client,
+                    interaction.guild.id,
+                    user.id,
+                    limit=25,
+                )
                 await interaction.followup.send(
                     embed=build_user_overview_embed(user, cases),
                     view=SGUserOverviewView(bot, interaction.user.id, user.id),
@@ -2417,7 +2589,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                 return
 
             assert case_number is not None
-            case = storage.get_sgl_case_by_number(interaction.guild.id, int(case_number))
+            case = await asyncio.to_thread(
+                storage.get_sgl_case_by_number,
+                interaction.guild.id,
+                int(case_number),
+            )
             if case is None:
                 await interaction.followup.send(t("sgbureau.sg.errors.case_not_found", case_number=format_case_number(int(case_number))), ephemeral=True)
                 return
@@ -2430,7 +2606,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             return
 
         # Without arguments, /sg is a case management command and must be used inside a case channel.
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id or 0)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id or 0,
+        )
         if case is None:
             if interaction.channel_id == SGBUREAU_COMMAND_CHANNEL_ID:
                 if not is_bureau_staff(interaction.user):
@@ -2487,7 +2667,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             await interaction.followup.send(t("sgbureau.initiate.channels_missing", channels=", ".join(missing)), ephemeral=True)
             return
 
-        seed_status = storage.set_sgl_case_seed(interaction.guild.id, int(cs))
+        seed_status = await asyncio.to_thread(
+            storage.set_sgl_case_seed,
+            interaction.guild.id,
+            int(cs),
+        )
         await start_channel.send(embed=build_initiate_intro_embed(), allowed_mentions=discord.AllowedMentions.none())
         await costs_channel.send(build_initiate_costs_message(), allowed_mentions=discord.AllowedMentions.none())
         await interaction.followup.send(t("sgbureau.initiate.success", start_channel_id=start_channel.id, costs_channel_id=costs_channel.id, cs=cs, seed_status=seed_status), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
@@ -2526,11 +2710,18 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if not await ensure_command_channel(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        target_clean = storage.normalize_admin_target(target) or target
+        target_clean = (
+            await asyncio.to_thread(storage.normalize_admin_target, target)
+        ) or target
         action_clean = str(action or "").strip().lower()
         try:
             if action_clean == "view":
-                record = storage.admin_get_record(interaction.guild.id, target_clean, identifier)
+                record = await asyncio.to_thread(
+                    storage.admin_get_record,
+                    interaction.guild.id,
+                    target_clean,
+                    identifier,
+                )
                 if record is None:
                     await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
                     return
@@ -2541,7 +2732,8 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                 if not field:
                     await interaction.followup.send(t("sgbureau.admin.field_required"), ephemeral=True)
                     return
-                record = storage.admin_update_record(
+                record = await asyncio.to_thread(
+                    storage.admin_update_record,
                     guild_id=interaction.guild.id,
                     target=target_clean,
                     identifier=identifier,
@@ -2555,7 +2747,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                     return
                 if target_clean == "case":
                     parsed = int(str(identifier).replace("SGL-", "").lstrip("0") or "0")
-                    case = storage.get_sgl_case_by_number(interaction.guild.id, parsed)
+                    case = await asyncio.to_thread(
+                        storage.get_sgl_case_by_number,
+                        interaction.guild.id,
+                        parsed,
+                    )
                     if case:
                         schedule_case_refresh(bot, interaction.guild, case)
                 await interaction.followup.send(embed=build_admin_record_embed(target_clean, identifier, record), content=admin_short_result(target_clean, identifier, field), ephemeral=True)
@@ -2565,7 +2761,14 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                 if str(confirm or "").strip().upper() not in {"DELETE", "УДАЛИТЬ"}:
                     await interaction.followup.send(t("sgbureau.admin.confirm_failed"), ephemeral=True)
                     return
-                record = storage.admin_delete_record(guild_id=interaction.guild.id, target=target_clean, identifier=identifier, actor_id=interaction.user.id, actor_display=interaction.user.display_name)
+                record = await asyncio.to_thread(
+                    storage.admin_delete_record,
+                    guild_id=interaction.guild.id,
+                    target=target_clean,
+                    identifier=identifier,
+                    actor_id=interaction.user.id,
+                    actor_display=interaction.user.display_name,
+                )
                 if record is None:
                     await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
                     return
@@ -2585,7 +2788,12 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         except ValueError as exc:
             code = str(exc)
             if code == "field_not_allowed":
-                fields = ", ".join(storage.admin_allowed_fields(target_clean)) or t("common.no_data")
+                fields = ", ".join(
+                    await asyncio.to_thread(
+                        storage.admin_allowed_fields,
+                        target_clean,
+                    )
+                ) or t("common.no_data")
                 await interaction.followup.send(t("sgbureau.admin.field_not_allowed", fields=fields), ephemeral=True)
             else:
                 await interaction.followup.send(t("sgbureau.admin.bad_request", error=code), ephemeral=True)
@@ -2607,13 +2815,28 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         kind_clean = (kind or "").strip().lower()
         await interaction.response.defer(ephemeral=True)
         if kind_clean in {"lawyer", "lawyers", "адвокат", "адвокаты", "a"}:
-            items = storage.search_lawyer_profiles(interaction.guild.id, query, limit=25)
+            items = await asyncio.to_thread(
+                storage.search_lawyer_profiles,
+                interaction.guild.id,
+                query,
+                limit=25,
+            )
             await interaction.followup.send(embed=build_registry_embed("lawyer", query, items), ephemeral=True)
         else:
             if not query:
-                items = storage.list_client_profiles_for_user(interaction.guild.id, interaction.user.id, limit=25)
+                items = await asyncio.to_thread(
+                    storage.list_client_profiles_for_user,
+                    interaction.guild.id,
+                    interaction.user.id,
+                    limit=25,
+                )
             else:
-                items = storage.search_client_profiles(interaction.guild.id, query, limit=25)
+                items = await asyncio.to_thread(
+                    storage.search_client_profiles,
+                    interaction.guild.id,
+                    query,
+                    limit=25,
+                )
             await interaction.followup.send(embed=build_registry_embed("client", query, items), ephemeral=True)
 
     @bot.tree.command(name=SG_LAWYERADD_COMMAND_NAME, description=SG_LAWYERADD_COMMAND_DESCRIPTION)
@@ -2628,7 +2851,17 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if not is_bureau_staff(interaction.user):
             await interaction.response.send_message(t("sgbureau.errors.no_permission"), ephemeral=True)
             return
-        profile_id = storage.save_lawyer_profile(guild_id=interaction.guild.id, discord_user_id=(user.id if user else None), lawyer_nick=nickname.strip(), static_id=safe_optional(static_id), bank_account=safe_optional(bank), phone=safe_optional(phone), email=safe_optional(email), notes=safe_optional(notes))
+        profile_id = await asyncio.to_thread(
+            storage.save_lawyer_profile,
+            guild_id=interaction.guild.id,
+            discord_user_id=(user.id if user else None),
+            lawyer_nick=nickname.strip(),
+            static_id=safe_optional(static_id),
+            bank_account=safe_optional(bank),
+            phone=safe_optional(phone),
+            email=safe_optional(email),
+            notes=safe_optional(notes),
+        )
         await interaction.response.send_message(t("sgbureau.registry.lawyer_saved", profile_id=profile_id), ephemeral=True)
 
     # Legacy /sg_newcase hidden. Use /sg user:@client -> Create case.
@@ -2655,7 +2888,8 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             await interaction.followup.send(t("sgbureau.case.errors.category_not_found", category_id=SGBUREAU_CATEGORY_ID), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
             return
 
-        reserved = storage.reserve_sgl_case(
+        reserved = await asyncio.to_thread(
+            storage.reserve_sgl_case,
             guild_id=interaction.guild.id,
             client_id=client.id,
             client_display=client.display_name,
@@ -2688,11 +2922,19 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
                 reason=t("sgbureau.case.audit_newcase_reason", case_number=format_case_number(reserved.case_number)),
             )
         except discord.HTTPException as exc:
-            storage.mark_sgl_case_error(reserved.id, f"channel_create_failed:{str(exc)[:200]}")
+            await asyncio.to_thread(
+                storage.mark_sgl_case_error,
+                reserved.id,
+                f"channel_create_failed:{str(exc)[:200]}",
+            )
             await interaction.followup.send(t("sgbureau.case.errors.channel_create_failed", error=str(exc)[:180]), ephemeral=True)
             return
 
-        case = storage.attach_sgl_case_channel(reserved.id, channel.id)
+        case = await asyncio.to_thread(
+            storage.attach_sgl_case_channel,
+            reserved.id,
+            channel.id,
+        )
         if case is None:
             await interaction.followup.send(t("sgbureau.case.errors.db_case_attach_failed"), ephemeral=True)
             return
@@ -2710,7 +2952,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
         await interaction.response.defer(thinking=False, ephemeral=False)
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -2721,7 +2967,14 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if not URL_RE.match(clean_link):
             await interaction.followup.send(t("sgbureau.case.errors.link_url"), ephemeral=True)
             return
-        updated = storage.set_sgl_case_link(interaction.guild.id, interaction.channel_id, clean_link, interaction.user.id, interaction.user.display_name)
+        updated = await asyncio.to_thread(
+            storage.set_sgl_case_link,
+            interaction.guild.id,
+            interaction.channel_id,
+            clean_link,
+            interaction.user.id,
+            interaction.user.display_name,
+        )
         if updated is None:
             await interaction.followup.send(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -2730,7 +2983,12 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         schedule_case_refresh(bot, interaction.guild, updated)
         try:
             await msg.pin(reason=t("sgbureau.case.audit_pin_link_reason", case_number=format_case_number(updated.case_number)))
-            storage.set_sgl_case_link_message(interaction.guild.id, interaction.channel_id, msg.id)
+            await asyncio.to_thread(
+                storage.set_sgl_case_link_message,
+                interaction.guild.id,
+                interaction.channel_id,
+                msg.id,
+            )
         except discord.HTTPException:
             await interaction.followup.send(t("sgbureau.case.link_pin_failed"), ephemeral=True)
 
@@ -2741,7 +2999,11 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if interaction.guild is None or not isinstance(interaction.user, discord.Member) or interaction.channel_id is None:
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
             return
@@ -2758,14 +3020,25 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         content = (message.content or "").strip()
         if not content or content.startswith("/"):
             return
-        case = storage.get_sgl_case_by_channel(message.guild.id, message.channel.id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            message.guild.id,
+            message.channel.id,
+        )
         if case is None:
             return
         if case.status != "awaiting_situation":
             return
         if not can_work_with_case(message.author, case):
             return
-        updated = storage.update_sgl_case_situation(message.guild.id, message.channel.id, content, message.author.id, message.author.display_name)
+        updated = await asyncio.to_thread(
+            storage.update_sgl_case_situation,
+            message.guild.id,
+            message.channel.id,
+            content,
+            message.author.id,
+            message.author.display_name,
+        )
         if updated is None:
             return
         schedule_case_refresh(bot, message.guild, updated)

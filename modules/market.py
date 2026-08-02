@@ -43,6 +43,7 @@ from modules.majestic_api import (
     MajesticApiConfigurationError,
     MajesticApiDisabledError,
     MajesticApiError,
+    MajesticApiRateLimitError,
     MajesticApiResponseError,
     get_majestic_api_client,
 )
@@ -1308,6 +1309,7 @@ async def market_worker(bot: commands.Bot) -> None:
     client = get_majestic_api_client()
     while not bot.is_closed():
         started = asyncio.get_running_loop().time()
+        rate_limit_delay = 0.0
         snapshot_changes: list[MarketSnapshotChange] = []
         if client.config.enabled and client.config.api_keys:
             for category, catalog in market_catalogs.items():
@@ -1340,6 +1342,37 @@ async def market_worker(bot: commands.Bot) -> None:
                 except asyncio.CancelledError:
                     raise
                 except (MajesticApiDisabledError, MajesticApiConfigurationError):
+                    break
+                except MajesticApiRateLimitError as exc:
+                    rate_limit_delay = max(
+                        1.0,
+                        float(
+                            exc.retry_after_seconds
+                            or client.config.window_seconds
+                        ),
+                    )
+                    await asyncio.to_thread(
+                        storage.market_record_sync_error,
+                        MARKET_SERVER_ID,
+                        category,
+                        f"{type(exc).__name__}: {str(exc)[:350]}",
+                    )
+                    for guild in bot.guilds:
+                        await log_technical_event(
+                            bot,
+                            guild,
+                            title="Majestic API · пауза по лимиту",
+                            details=(
+                                f"{MARKET_SERVER_ID}/{category}: лимит запросов исчерпан. "
+                                f"Следующая попытка не раньше чем через "
+                                f"{int(rate_limit_delay)} сек.; локальный каталог работает."
+                            ),
+                            level="warning",
+                            dedupe_key="market-sync:rate-limit",
+                            cooldown_seconds=900,
+                        )
+                    # The quota is shared by all market categories. Continuing
+                    # this cycle would only create more rejected requests.
                     break
                 except Exception as exc:
                     traceback.print_exc()
@@ -1385,7 +1418,9 @@ async def market_worker(bot: commands.Bot) -> None:
                     mention_everyone=True,
                 )
         elapsed = asyncio.get_running_loop().time() - started
-        await asyncio.sleep(max(1.0, MARKET_REFRESH_SECONDS - elapsed))
+        await asyncio.sleep(
+            max(1.0, MARKET_REFRESH_SECONDS - elapsed, rate_limit_delay)
+        )
 
 
 async def _send_market_response(

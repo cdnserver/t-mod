@@ -161,7 +161,7 @@ class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(len(modal.title), 45)
                 self.assertLessEqual(len(modal.children), 5)
                 for item in modal.children:
-                    self.assertLessEqual(len(item.label), 45)
+                    self.assertLessEqual(len(item._underlying.label), 45)
                     if item.placeholder is not None:
                         self.assertLessEqual(len(item.placeholder), 100)
 

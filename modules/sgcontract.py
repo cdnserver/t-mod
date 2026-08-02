@@ -385,7 +385,11 @@ class SGLContractModal(discord.ui.Modal):
         if interaction.guild is None or interaction.channel_id is None:
             await interaction.response.send_message(t("sgbureau.contract.errors.guild_only"), ephemeral=True)
             return
-        case = storage.get_sgl_case_by_channel(interaction.guild.id, interaction.channel_id)
+        case = await asyncio.to_thread(
+            storage.get_sgl_case_by_channel,
+            interaction.guild.id,
+            interaction.channel_id,
+        )
         if case is None or case.case_number != self.case_number:
             await interaction.response.send_message(t("sgbureau.contract.errors.not_case_channel"), ephemeral=True)
             return

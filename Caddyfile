@@ -28,12 +28,20 @@
 			health_uri /api/health
 			health_interval 30s
 			health_timeout 5s
+			fail_duration 30s
+			max_fails 3
+			lb_try_duration 5s
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 15s
+			}
 		}
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()"
 		-Server
 	}
 }

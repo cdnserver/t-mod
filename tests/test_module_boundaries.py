@@ -34,6 +34,10 @@ class PersistenceBoundaryTests(unittest.TestCase):
                     offenders.append(path.name)
         self.assertEqual(offenders, [])
 
+    def test_runtime_xml_dependency_uses_safe_parser_defaults(self) -> None:
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("lxml>=6.1.1,<7", requirements)
+
     def test_feature_modules_use_bounded_repositories(self) -> None:
         offenders: list[str] = []
         for path in sorted((ROOT / "modules").glob("*.py")):
@@ -47,6 +51,59 @@ class PersistenceBoundaryTests(unittest.TestCase):
                     offenders.append(path.name)
         self.assertEqual(offenders, [])
 
+
+class AsyncIoBoundaryTests(unittest.TestCase):
+    def test_repository_calls_never_block_async_discord_handlers(self) -> None:
+        """SQLite/file repositories must run outside the Discord event loop."""
+
+        offenders: list[str] = []
+        repository_aliases = {"storage", "_storage", "_tvrs_storage"}
+        worker_helpers = {"to_thread", "run_blocking_cancellation_safe"}
+        for path in sorted((ROOT / "modules").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            parents: dict[ast.AST, ast.AST] = {}
+            for node in ast.walk(tree):
+                for child in ast.iter_child_nodes(node):
+                    parents[child] = node
+
+            for function in ast.walk(tree):
+                if not isinstance(function, ast.AsyncFunctionDef):
+                    continue
+                for call in ast.walk(function):
+                    if not (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and isinstance(call.func.value, ast.Name)
+                        and call.func.value.id in repository_aliases
+                    ):
+                        continue
+                    current: ast.AST | None = call
+                    protected = False
+                    while current is not None and current is not function:
+                        current = parents.get(current)
+                        if not isinstance(current, ast.Call):
+                            continue
+                        target = current.func
+                        helper_name = (
+                            target.attr
+                            if isinstance(target, ast.Attribute)
+                            else target.id
+                            if isinstance(target, ast.Name)
+                            else ""
+                        )
+                        if helper_name in worker_helpers:
+                            protected = True
+                            break
+                    if not protected:
+                        offenders.append(
+                            f"{path.name}:{call.lineno}:{call.func.value.id}."
+                            f"{call.func.attr}"
+                        )
+        self.assertEqual(
+            offenders,
+            [],
+            "repository call can block the async event loop",
+        )
 
 class TvrsBoundaryTests(unittest.TestCase):
     EXPECTED_MODULES = {

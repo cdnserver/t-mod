@@ -22,10 +22,10 @@
   --section-accent: var(--mint);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --font-sans:
-    "Segoe UI Variable Text", "SF Pro Text", Inter, Roboto, "Segoe UI",
+    "Manrope", "Segoe UI Variable Text", "SF Pro Text", Inter, Roboto, "Segoe UI",
     Arial, sans-serif;
   --font-display:
-    "Segoe UI Variable Display", "SF Pro Display", Inter, Roboto, "Segoe UI",
+    "Unbounded", "Manrope", "Segoe UI Variable Display", "SF Pro Display", Inter, Roboto, "Segoe UI",
     Arial, sans-serif;
   --font-mono:
     "Cascadia Code", "SFMono-Regular", "Roboto Mono", Consolas, monospace;
@@ -4489,10 +4489,10 @@ body[data-reactor-state="critical"] .backdrop-glow.glow-two {
   --radius-md: 13px;
   --sidebar: 268px;
   --font-sans:
-    "Segoe UI Variable Text", Aptos, "SF Pro Text", Inter, Roboto, "Segoe UI",
+    "Manrope", "Segoe UI Variable Text", Aptos, "SF Pro Text", Inter, Roboto, "Segoe UI",
     Arial, sans-serif;
   --font-display:
-    Bahnschrift, "Segoe UI Variable Display", Aptos Display, "SF Pro Display",
+    "Unbounded", "Manrope", Bahnschrift, "Segoe UI Variable Display", Aptos Display, "SF Pro Display",
     Inter, Roboto, "Segoe UI", Arial, sans-serif;
 }
 

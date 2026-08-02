@@ -70,7 +70,10 @@ async def resolve_operations_category(guild: discord.Guild) -> discord.CategoryC
     category = guild.get_channel(OPERATIONS_CATEGORY_ID) if OPERATIONS_CATEGORY_ID else None
     if isinstance(category, discord.CategoryChannel):
         return category
-    stored = storage.get_meta(f"control_center_category_id:{guild.id}")
+    stored = await asyncio.to_thread(
+        storage.get_meta,
+        f"control_center_category_id:{guild.id}",
+    )
     if stored and str(stored).isdigit():
         category = guild.get_channel(int(stored))
         if isinstance(category, discord.CategoryChannel):
@@ -78,12 +81,20 @@ async def resolve_operations_category(guild: discord.Guild) -> discord.CategoryC
     for candidate in guild.categories:
         name = str(candidate.name).strip().lower()
         if name in {"администрирование tvrs", "операционный центр tvrs", "управление tvrs"}:
-            storage.set_meta_value(f"control_center_category_id:{guild.id}", str(candidate.id))
+            await asyncio.to_thread(
+                storage.set_meta_value,
+                f"control_center_category_id:{guild.id}",
+                str(candidate.id),
+            )
             return candidate
     if not OPERATIONS_AUTO_CREATE_CHANNELS:
         return None
     created = await guild.create_category("Администрирование TVRS", reason="Структура операционного центра T-Mod")
-    storage.set_meta_value(f"control_center_category_id:{guild.id}", str(created.id))
+    await asyncio.to_thread(
+        storage.set_meta_value,
+        f"control_center_category_id:{guild.id}",
+        str(created.id),
+    )
     return created
 
 
@@ -98,13 +109,20 @@ async def resolve_control_channel(
     candidate_ids: list[int] = []
     if spec.configured_id > 0:
         candidate_ids.append(spec.configured_id)
-    stored = storage.get_meta(_channel_meta_key(guild.id, key))
+    stored = await asyncio.to_thread(
+        storage.get_meta,
+        _channel_meta_key(guild.id, key),
+    )
     if stored and str(stored).isdigit():
         candidate_ids.append(int(stored))
     for channel_id in candidate_ids:
         channel = guild.get_channel(channel_id)
         if isinstance(channel, discord.TextChannel):
-            storage.set_meta_value(_channel_meta_key(guild.id, key), str(channel.id))
+            await asyncio.to_thread(
+                storage.set_meta_value,
+                _channel_meta_key(guild.id, key),
+                str(channel.id),
+            )
             return channel
 
     category = await resolve_operations_category(guild)
@@ -113,7 +131,11 @@ async def resolve_control_channel(
     expected = _normalise_channel_name(spec.name)
     for channel in category.text_channels:
         if _normalise_channel_name(channel.name) == expected:
-            storage.set_meta_value(_channel_meta_key(guild.id, key), str(channel.id))
+            await asyncio.to_thread(
+                storage.set_meta_value,
+                _channel_meta_key(guild.id, key),
+                str(channel.id),
+            )
             return channel
     if not should_create:
         return None
@@ -147,7 +169,11 @@ async def resolve_control_channel(
         overwrites=overwrites,
         reason="Структура операционного центра T-Mod",
     )
-    storage.set_meta_value(_channel_meta_key(guild.id, key), str(channel.id))
+    await asyncio.to_thread(
+        storage.set_meta_value,
+        _channel_meta_key(guild.id, key),
+        str(channel.id),
+    )
     return channel
 
 
@@ -261,7 +287,11 @@ async def ensure_panel_message(
             view=view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
-    storage.set_meta_value(_panel_meta_key(channel.guild.id, key), str(message.id))
+    await asyncio.to_thread(
+        storage.set_meta_value,
+        _panel_meta_key(channel.guild.id, key),
+        str(message.id),
+    )
     return message
 
 

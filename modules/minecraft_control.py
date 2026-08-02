@@ -100,16 +100,22 @@ def minecraft_supervisor(action: str) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {_supervisor_token()}"},
     )
     try:
-        timeout = 5 if selected == "status" else 45
+        timeout = 2 if selected == "status" else 5
         with urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
-    except (
-        HTTPError,
-        URLError,
-        OSError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-    ) as exc:
+    except HTTPError as exc:
+        detail = ""
+        try:
+            error_payload = json.loads(exc.read().decode("utf-8"))
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("message") or "").strip()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        message = detail or f"HTTP {exc.code}"
+        raise MinecraftControlError(
+            f"Контроллер Minecraft отклонил запрос: {message[:300]}"
+        ) from exc
+    except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MinecraftControlError(
             "Контроллер жизненного цикла Minecraft недоступен."
         ) from exc
@@ -143,17 +149,20 @@ def _read_packet(sock: socket.socket) -> tuple[int, int, str]:
     return request_id, packet_type, body[8:-2].decode("utf-8", errors="replace")
 
 
-def minecraft_rcon(command: str) -> str:
+def minecraft_rcon(command: str, *, timeout_seconds: float | None = None) -> str:
     config = minecraft_config()
     if not config.configured:
         raise MinecraftControlError("Minecraft RCON ещё не настроен.")
     password = _read_password(config)
+    timeout = config.timeout_seconds
+    if timeout_seconds is not None:
+        timeout = max(0.5, min(config.timeout_seconds, float(timeout_seconds)))
     try:
         with socket.create_connection(
             (config.host, config.port),
-            timeout=config.timeout_seconds,
+            timeout=timeout,
         ) as sock:
-            sock.settimeout(config.timeout_seconds)
+            sock.settimeout(timeout)
             sock.sendall(_packet(1001, 3, password))
             auth_id, auth_type, _ = _read_packet(sock)
             if auth_id == 1001 and auth_type == 0:
@@ -188,20 +197,62 @@ def minecraft_status() -> dict[str, Any]:
             "state": "disabled",
             "address": os.getenv("MINECRAFT_PUBLIC_ADDRESS", "mc.tvr.lat"),
         }
+    lifecycle: dict[str, Any] = {}
+    lifecycle_error = ""
     try:
-        raw = minecraft_rcon("list")
+        lifecycle = minecraft_supervisor("status")
     except MinecraftControlError as exc:
-        lifecycle: dict[str, Any] = {}
-        try:
-            lifecycle = minecraft_supervisor("status")
-        except MinecraftControlError:
-            pass
+        lifecycle_error = str(exc)
+
+    operation = lifecycle.get("operation")
+    operation_active = isinstance(operation, dict) and operation.get("status") in {
+        "queued",
+        "running",
+    }
+    operation_failed = (
+        isinstance(operation, dict) and operation.get("status") == "failed"
+    )
+    if lifecycle and not lifecycle.get("running"):
+        state = (
+            str(operation.get("state") or "changing")
+            if operation_active and isinstance(operation, dict)
+            else "error"
+            if operation_failed
+            else str(lifecycle.get("state") or "offline")
+        )
+        operation_error = (
+            str(operation.get("error") or "неизвестная ошибка")[:300]
+            if operation_failed and isinstance(operation, dict)
+            else ""
+        )
         return {
             "configured": True,
             "online": False,
-            "state": str(lifecycle.get("state") or "offline"),
+            "state": state,
             "address": os.getenv("MINECRAFT_PUBLIC_ADDRESS", "mc.tvr.lat"),
-            "error": str(exc),
+            "error": (
+                "Операция с сервером выполняется."
+                if operation_active
+                else f"Операция Minecraft не выполнена: {operation_error}"
+                if operation_failed
+                else "Minecraft-контейнер остановлен."
+            ),
+            "lifecycle": lifecycle,
+        }
+    try:
+        raw = minecraft_rcon("list", timeout_seconds=1.5)
+    except MinecraftControlError as exc:
+        state = (
+            str(operation.get("state") or "changing")
+            if operation_active and isinstance(operation, dict)
+            else str(lifecycle.get("state") or "offline")
+        )
+        return {
+            "configured": True,
+            "online": False,
+            "state": state,
+            "address": os.getenv("MINECRAFT_PUBLIC_ADDRESS", "mc.tvr.lat"),
+            "error": str(exc) if not lifecycle_error else f"{exc} {lifecycle_error}",
             "lifecycle": lifecycle,
         }
     match = _LIST_PATTERN.search(raw)
@@ -225,6 +276,7 @@ def minecraft_status() -> dict[str, Any]:
         "players_max": maximum,
         "players": players,
         "raw": raw[:500],
+        "lifecycle": lifecycle,
     }
 
 
@@ -281,24 +333,12 @@ def minecraft_execute(action: str, payload: dict[str, Any]) -> dict[str, Any]:
                 minecraft_rcon("save-all flush")
             except MinecraftControlError:
                 pass
-        try:
-            lifecycle = minecraft_supervisor(selected)
-        except MinecraftControlError:
-            if selected != "restart":
-                raise
-            try:
-                response = minecraft_rcon("stop")
-            except MinecraftControlError:
-                response = (
-                    "Остановка принята; контейнер автоматически поднимет сервер снова."
-                )
-            lifecycle = {"state": "restarting", "fallback": "rcon"}
-        else:
-            response = {
-                "start": "Minecraft-контейнер запущен.",
-                "stop": "Minecraft-контейнер остановлен.",
-                "restart": "Minecraft-контейнер перезапущен.",
-            }[selected]
+        lifecycle = minecraft_supervisor(selected)
+        response = {
+            "start": "Запуск Minecraft принят. Состояние обновится автоматически.",
+            "stop": "Остановка Minecraft принята. Состояние обновится автоматически.",
+            "restart": "Перезапуск Minecraft принят. Состояние обновится автоматически.",
+        }[selected]
         return {
             "ok": True,
             "action": selected,

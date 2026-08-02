@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     env_file:
       - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+    environment:
+      TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
@@ -16,16 +18,24 @@ services:
     networks:
       - default
       - minecraft-control
-    depends_on:
-      minecraft-supervisor:
-        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=2)"
+      interval: 15s
+      timeout: 4s
+      retries: 6
+      start_period: 45s
 
   tmod-caddy:
     image: caddy:2.10.2-alpine
     container_name: tmod-caddy
     restart: unless-stopped
     depends_on:
-      - tmod-discord-bot
+      tmod-discord-bot:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -49,7 +59,7 @@ services:
       PAPER_BUILD: "74"
       MEMORY: "4G"
       TZ: "Europe/Riga"
-      MOTD: "mc.tvr.lat | By Alexey Neblagodarniy Ueban (Scammer)"
+      MOTD: "T-Mod • mc.tvr.lat • Товарищество"
       VIEW_DISTANCE: "8"
       SIMULATION_DISTANCE: "6"
       ONLINE_MODE: "FALSE"
@@ -79,6 +89,7 @@ services:
     environment:
       MINECRAFT_CONTAINER_NAME: "minecraft"
       MINECRAFT_SUPERVISOR_TOKEN_FILE: "/run/secrets/minecraft_supervisor_token"
+      MINECRAFT_STOP_GRACE_SECONDS: "10"
     expose:
       - "8791"
     volumes:

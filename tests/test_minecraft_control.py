@@ -65,6 +65,10 @@ class MinecraftControlTests(unittest.TestCase):
     def test_status_parses_players_and_unconfigured_mode_is_safe(self) -> None:
         with (
             patch(
+                "modules.minecraft_control.minecraft_supervisor",
+                return_value={"state": "running", "running": True},
+            ),
+            patch(
                 "modules.minecraft_control.minecraft_rcon",
                 return_value="There are 2 of a max of 20 players online: Alice, Bob",
             ),
@@ -85,6 +89,63 @@ class MinecraftControlTests(unittest.TestCase):
             unavailable = minecraft.minecraft_status()
         self.assertFalse(unavailable["configured"])
         self.assertFalse(unavailable["online"])
+
+    def test_status_skips_rcon_when_container_is_stopped(self) -> None:
+        config = minecraft.MinecraftConfig(
+            "minecraft",
+            25575,
+            Path("/configured/by-test"),
+            3.0,
+        )
+        with (
+            patch("modules.minecraft_control.minecraft_config", return_value=config),
+            patch.object(
+                minecraft.MinecraftConfig,
+                "configured",
+                new_callable=lambda: property(lambda _: True),
+            ),
+            patch(
+                "modules.minecraft_control.minecraft_supervisor",
+                return_value={"state": "exited", "running": False},
+            ),
+            patch("modules.minecraft_control.minecraft_rcon") as rcon,
+        ):
+            status = minecraft.minecraft_status()
+        self.assertFalse(status["online"])
+        self.assertEqual(status["state"], "exited")
+        rcon.assert_not_called()
+
+    def test_status_exposes_active_lifecycle_operation(self) -> None:
+        config = minecraft.MinecraftConfig(
+            "minecraft",
+            25575,
+            Path("/configured/by-test"),
+            3.0,
+        )
+        lifecycle = {
+            "state": "exited",
+            "running": False,
+            "operation": {
+                "action": "restart",
+                "status": "running",
+                "state": "restarting",
+            },
+        }
+        with (
+            patch("modules.minecraft_control.minecraft_config", return_value=config),
+            patch.object(
+                minecraft.MinecraftConfig,
+                "configured",
+                new_callable=lambda: property(lambda _: True),
+            ),
+            patch(
+                "modules.minecraft_control.minecraft_supervisor",
+                return_value=lifecycle,
+            ),
+        ):
+            status = minecraft.minecraft_status()
+        self.assertEqual(status["state"], "restarting")
+        self.assertIn("выполняется", status["error"])
 
     def test_execute_uses_allowlist_and_validates_player_names(self) -> None:
         commands: list[str] = []
@@ -152,6 +213,28 @@ class MinecraftControlTests(unittest.TestCase):
         self.assertTrue(stopped["ok"])
         self.assertEqual(lifecycle_actions, ["start", "stop"])
         self.assertIn("save-all flush", rcon_commands)
+
+    def test_restart_never_falls_back_to_an_untracked_rcon_stop(self) -> None:
+        commands: list[str] = []
+
+        def rcon(command: str) -> str:
+            commands.append(command)
+            return "OK"
+
+        with (
+            patch("modules.minecraft_control.minecraft_rcon", side_effect=rcon),
+            patch(
+                "modules.minecraft_control.minecraft_supervisor",
+                side_effect=minecraft.MinecraftControlError("controller unavailable"),
+            ),
+            self.assertRaisesRegex(
+                minecraft.MinecraftControlError,
+                "controller unavailable",
+            ),
+        ):
+            minecraft.minecraft_execute("restart", {})
+
+        self.assertNotIn("stop", commands)
 
 
 if __name__ == "__main__":

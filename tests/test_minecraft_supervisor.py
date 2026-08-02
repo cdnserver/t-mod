@@ -1,5 +1,6 @@
 import importlib.util
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -37,7 +38,7 @@ class MinecraftSupervisorTests(unittest.TestCase):
     def test_lifecycle_is_hard_limited_to_bundled_container(self) -> None:
         calls: list[tuple[str, str]] = []
 
-        def request(method: str, path: str):
+        def request(method: str, path: str, **_):
             calls.append((method, path))
             if method == "GET":
                 return 200, {"State": {"Status": "running", "Running": True}}
@@ -47,9 +48,47 @@ class MinecraftSupervisorTests(unittest.TestCase):
             result = supervisor.lifecycle("restart")
 
         self.assertTrue(result["ok"])
-        self.assertEqual(calls[0], ("POST", "/containers/minecraft/restart?t=30"))
+        self.assertEqual(
+            calls[0],
+            (
+                "POST",
+                f"/containers/minecraft/restart?t={supervisor.STOP_GRACE_SECONDS}",
+            ),
+        )
         with self.assertRaisesRegex(supervisor.SupervisorError, "not allowed"):
             supervisor.lifecycle("delete")
+
+    def test_lifecycle_is_scheduled_without_waiting_for_docker(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def lifecycle(action: str) -> dict[str, object]:
+            entered.set()
+            release.wait(2)
+            return {"ok": True, "action": action, "state": "running"}
+
+        with (
+            patch.object(supervisor, "_operation", None),
+            patch.object(supervisor, "lifecycle", side_effect=lifecycle),
+        ):
+            result = supervisor.schedule_lifecycle("restart")
+            self.assertTrue(result["accepted"])
+            self.assertTrue(entered.wait(0.5))
+            operation = supervisor.operation_status()
+            self.assertIn(operation["status"], {"queued", "running"})
+            duplicate = supervisor.schedule_lifecycle("restart")
+            self.assertTrue(duplicate["duplicate"])
+            with self.assertRaises(supervisor.SupervisorBusyError):
+                supervisor.schedule_lifecycle("stop")
+            release.set()
+
+    def test_docker_status_probe_uses_short_timeout(self) -> None:
+        fake_socket = unittest.mock.MagicMock()
+        fake_socket.connect.side_effect = OSError("socket unavailable")
+        with patch.object(supervisor.socket, "socket", return_value=fake_socket):
+            with self.assertRaises(supervisor.SupervisorError):
+                supervisor.docker_request("GET", "/version", timeout_seconds=1.25)
+        fake_socket.settimeout.assert_called_once_with(1.25)
 
     def test_token_must_be_present_and_sufficiently_long(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

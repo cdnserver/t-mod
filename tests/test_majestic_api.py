@@ -38,12 +38,17 @@ class FakeSession:
         pass
 
 
-def enabled_config(*, keys: tuple[str, ...] = ("super-secret",), cache_ttl: int = 60) -> MajesticApiConfig:
+def enabled_config(
+    *,
+    keys: tuple[str, ...] = ("super-secret",),
+    cache_ttl: int = 60,
+    max_retries: int = 0,
+) -> MajesticApiConfig:
     return MajesticApiConfig(
         enabled=True,
         api_keys=keys,
         cache_ttl_seconds=cache_ttl,
-        max_retries=0,
+        max_retries=max_retries,
     )
 
 
@@ -101,6 +106,28 @@ class MajesticApiClientTests(unittest.TestCase):
             client.marketplace("vehicles", 3, use_cache=False)
         self.assertEqual(caught.exception.retry_after_seconds, 12)
         self.assertNotIn("super-secret", str(caught.exception))
+
+    def test_429_is_retried_after_the_server_requested_delay(self) -> None:
+        session = FakeSession(
+            FakeResponse(
+                429,
+                {"errorDescription": "TOO_MANY_REQUESTS"},
+                headers={"Retry-After": "2"},
+            ),
+            FakeResponse(200, {"ok": True}),
+        )
+        sleeps: list[float] = []
+        client = MajesticApiClient(
+            enabled_config(max_retries=1),
+            session=session,
+            sleeper=sleeps.append,
+        )
+
+        payload = client.marketplace("items", "RU15", use_cache=False)
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sleeps, [2.0])
 
     def test_only_primary_key_is_used_and_limit_is_shared(self) -> None:
         session = FakeSession(FakeResponse(200, {"ok": True}))

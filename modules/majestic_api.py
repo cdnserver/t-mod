@@ -590,6 +590,12 @@ class MajesticApiClient:
                     continue
                 raise MajesticApiTransportError(f"Majestic API недоступен: {type(exc).__name__}") from exc
 
+            if response.status_code == 429 and attempt < self.config.max_retries:
+                self._sleep(
+                    self._retry_after(response)
+                    or self.config.retry_backoff_seconds * (attempt + 1)
+                )
+                continue
             if response.status_code >= 500 and attempt < self.config.max_retries:
                 self._sleep(self.config.retry_backoff_seconds * (attempt + 1))
                 continue

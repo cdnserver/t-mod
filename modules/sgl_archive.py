@@ -108,6 +108,18 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_has_content(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    source.replace(target)
+
+
+def _attachment_file_state(path: Path) -> tuple[Path, int]:
+    return path.resolve(), path.stat().st_size
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".part")
     temporary.write_text(
@@ -196,28 +208,28 @@ async def _archive_attachment(
     # from Attachment.size and some assets return 415 through the proxy. The
     # original CDN URL is the canonical source; the proxy is only a fallback
     # for older assets whose original URL is no longer available.
-    if not target.is_file() or target.stat().st_size <= 0:
+    if not await asyncio.to_thread(_file_has_content, target):
         temporary = target.with_suffix(target.suffix + ".part")
         failures: list[str] = []
         for use_cached, variant in ((False, "original_cdn"), (True, "media_proxy")):
-            temporary.unlink(missing_ok=True)
+            await asyncio.to_thread(temporary.unlink, missing_ok=True)
             try:
                 await attachment.save(temporary, use_cached=use_cached)
-                if not temporary.is_file() or temporary.stat().st_size <= 0:
+                if not await asyncio.to_thread(_file_has_content, temporary):
                     raise IOError("empty_attachment_response")
-                temporary.replace(target)
+                await asyncio.to_thread(_replace_file, temporary, target)
                 download_variant = variant
                 break
             except Exception as exc:
-                temporary.unlink(missing_ok=True)
+                await asyncio.to_thread(temporary.unlink, missing_ok=True)
                 failures.append(f"{variant}:{type(exc).__name__}:{str(exc)[:300]}")
         else:
             raise IOError(
                 f"attachment_download_failed:{attachment.id}:" + " | ".join(failures)
             )
 
-    root = storage.sgl_archive_root().resolve()
-    resolved = target.resolve()
+    root = (await asyncio.to_thread(storage.sgl_archive_root)).resolve()
+    resolved, stored_size = await asyncio.to_thread(_attachment_file_state, target)
     if root not in resolved.parents:
         raise ValueError("sgl_archive_attachment_path_escape")
     sha256 = await asyncio.to_thread(_hash_file, target)
@@ -226,7 +238,7 @@ async def _archive_attachment(
         "filename": str(attachment.filename),
         "content_type": attachment.content_type,
         "description": getattr(attachment, "description", None),
-        "size": int(target.stat().st_size),
+        "size": int(stored_size),
         "discord_reported_size": expected_size,
         "download_variant": download_variant,
         "spoiler": bool(attachment.is_spoiler()),
@@ -349,7 +361,11 @@ async def capture_case_channel(
     await _ensure_complete_history_permissions(channel)
 
     started_at = datetime.now(timezone.utc).isoformat()
-    directory = storage.sgl_archive_case_directory(guild.id, case_number)
+    directory = await asyncio.to_thread(
+        storage.sgl_archive_case_directory,
+        guild.id,
+        case_number,
+    )
     messages: list[dict[str, Any]] = []
     seen_message_ids: set[int] = set()
     containers: list[dict[str, Any]] = [
@@ -397,7 +413,8 @@ async def capture_case_channel(
         "containers": containers,
         "capture_warnings": warnings,
     }
-    archive = storage.save_sgl_case_archive_snapshot(
+    archive = await asyncio.to_thread(
+        storage.save_sgl_case_archive_snapshot,
         guild_id=guild.id,
         case_id=case.id if case else None,
         case_number=case_number,
@@ -467,12 +484,19 @@ async def verify_archive_files(
 ) -> None:
     """Verify structure synchronously and hashes without blocking Discord heartbeats."""
 
-    source_messages = list(messages) if messages is not None else [
-        {"attachments": _json_list(item.attachments_json)}
-        for item in storage.list_sgl_archive_messages(archive.id)
-    ]
+    if messages is not None:
+        source_messages = list(messages)
+    else:
+        stored_messages = await asyncio.to_thread(
+            storage.list_sgl_archive_messages,
+            archive.id,
+        )
+        source_messages = [
+            {"attachments": _json_list(item.attachments_json)}
+            for item in stored_messages
+        ]
     validate_archive_files(archive, messages=source_messages)
-    root = storage.sgl_archive_root().resolve()
+    root = (await asyncio.to_thread(storage.sgl_archive_root)).resolve()
     for message in source_messages:
         for attachment in message.get("attachments") or []:
             expected = str(attachment.get("sha256") or "")
@@ -493,7 +517,11 @@ async def snapshot_and_delete_case_channel(
     case: storage.SGLCase | None,
     case_number: int,
 ) -> storage.SGLCaseArchive:
-    archive = storage.get_sgl_case_archive_by_source(channel.guild.id, channel.id)
+    archive = await asyncio.to_thread(
+        storage.get_sgl_case_archive_by_source,
+        channel.guild.id,
+        channel.id,
+    )
     try:
         if archive is None or archive.status not in {"ready", "sealed"}:
             archive = await capture_case_channel(
@@ -513,13 +541,20 @@ async def snapshot_and_delete_case_channel(
             )
         except discord.NotFound:
             pass
-        sealed = storage.mark_sgl_archive_source_deleted(archive.id)
+        sealed = await asyncio.to_thread(
+            storage.mark_sgl_archive_source_deleted,
+            archive.id,
+        )
         if sealed is None:
             raise RuntimeError("sgl_archive_seal_failed")
         return sealed
     except Exception as exc:
         if archive is not None:
-            storage.mark_sgl_archive_error(archive.id, f"{type(exc).__name__}: {exc}")
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_error,
+                archive.id,
+                f"{type(exc).__name__}: {exc}",
+            )
         await log_technical_event(
             bot,
             channel.guild,
@@ -536,14 +571,21 @@ async def snapshot_and_delete_case_channel(
 
 
 async def _reconcile_deleted_sources(bot: commands.Bot, guild: discord.Guild) -> None:
-    for archive in storage.list_sgl_archives_pending_source_reconcile(guild.id):
+    archives = await asyncio.to_thread(
+        storage.list_sgl_archives_pending_source_reconcile,
+        guild.id,
+    )
+    for archive in archives:
         cached = guild.get_channel(archive.original_channel_id)
         if cached is not None:
             continue
         try:
             await bot.fetch_channel(archive.original_channel_id)
         except discord.NotFound:
-            storage.mark_sgl_archive_source_deleted(archive.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_source_deleted,
+                archive.id,
+            )
         except (discord.Forbidden, discord.HTTPException):
             # A permission problem or a transient Discord failure is not proof
             # that the source channel was deleted.
@@ -553,7 +595,10 @@ async def _reconcile_deleted_sources(bot: commands.Bot, guild: discord.Guild) ->
 async def _purge_expired_restorations(bot: commands.Bot, guild: discord.Guild) -> None:
     from modules.sgl_archive_restore import restoration_is_running
 
-    for restoration in storage.list_expired_sgl_archive_restorations():
+    restorations = await asyncio.to_thread(
+        storage.list_expired_sgl_archive_restorations,
+    )
+    for restoration in restorations:
         if restoration.guild_id != guild.id:
             continue
         if restoration_is_running(restoration.id):
@@ -571,7 +616,10 @@ async def _purge_expired_restorations(bot: commands.Bot, guild: discord.Guild) -
                         )
                 except discord.NotFound:
                     pass
-            storage.mark_sgl_archive_restoration_deleted(restoration.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_restoration_deleted,
+                restoration.id,
+            )
         except (discord.Forbidden, discord.HTTPException) as exc:
             await log_technical_event(
                 bot,
@@ -602,16 +650,26 @@ async def run_sgl_archive_maintenance_once(bot: commands.Bot) -> None:
             )
             continue
 
-        initial = (
-            SGBUREAU_ARCHIVE_INITIAL_PURGE
-            and not storage.is_sgl_archive_backfill_complete(guild.id, category.id)
+        backfill_complete = await asyncio.to_thread(
+            storage.is_sgl_archive_backfill_complete,
+            guild.id,
+            category.id,
         )
+        initial = SGBUREAU_ARCHIVE_INITIAL_PURGE and not backfill_complete
         failures = 0
         deleted = 0
         for channel in list(category.text_channels):
-            if storage.get_active_sgl_restoration_by_channel(guild.id, channel.id):
+            if await asyncio.to_thread(
+                storage.get_active_sgl_restoration_by_channel,
+                guild.id,
+                channel.id,
+            ):
                 continue
-            case = storage.get_sgl_case_by_channel(guild.id, channel.id)
+            case = await asyncio.to_thread(
+                storage.get_sgl_case_by_channel,
+                guild.id,
+                channel.id,
+            )
             if not initial and (case is None or not archive_due(case.archived_at)):
                 continue
             case_number = (
@@ -643,7 +701,11 @@ async def run_sgl_archive_maintenance_once(bot: commands.Bot) -> None:
                 failures += 1
 
         if initial and failures == 0:
-            storage.mark_sgl_archive_backfill_complete(guild.id, category.id)
+            await asyncio.to_thread(
+                storage.mark_sgl_archive_backfill_complete,
+                guild.id,
+                category.id,
+            )
             await log_technical_event(
                 bot,
                 guild,
@@ -721,8 +783,10 @@ def setup_sgl_archive(
             )
             return
 
-        archive = storage.get_sgl_case_archive(
-            interaction.guild.id, int(case_number)
+        archive = await asyncio.to_thread(
+            storage.get_sgl_case_archive,
+            interaction.guild.id,
+            int(case_number),
         )
         if archive is None or archive.source_deleted_at is None:
             await interaction.response.send_message(

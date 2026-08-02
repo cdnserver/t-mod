@@ -668,11 +668,22 @@ async def _edit_profile_web_access(
         member.guild.id,
         member.id,
     )
-    await interaction.edit_original_response(
-        content=None,
-        embed=profile_web_access_embed(member, credential),
-        view=ProfileWebAccessView(requester_id, member, credential),
-    )
+    payload = {
+        "content": None,
+        "embed": profile_web_access_embed(member, credential),
+        "view": ProfileWebAccessView(requester_id, member, credential),
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+    try:
+        await interaction.edit_original_response(**payload)
+    except discord.NotFound as exc:
+        # A modal opened directly by /reset has no component message to update.
+        # Discord may also invalidate an old ephemeral message between submit
+        # and render. In both cases the saved credential is still valid, so
+        # render a fresh private panel instead of reporting a failed reset.
+        if int(getattr(exc, "code", 0) or 0) != 10008:
+            raise
+        await interaction.followup.send(ephemeral=True, **payload)
 
 
 async def _edit_profile_microphone(
@@ -890,7 +901,9 @@ class WebAccessModal(ProfileModal, title="Веб-доступ T-Mod"):
                 ephemeral=True,
             )
             return
-        await interaction.response.defer()
+        # Modal submissions created directly by /reset do not have an original
+        # message. A thinking response creates one that can be safely edited.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             await asyncio.to_thread(
                 web_auth_storage.configure_web_credential,
