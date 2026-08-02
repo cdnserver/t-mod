@@ -4,6 +4,10 @@ services:
     image: tmod-discord-bot:latest
     container_name: tmod-discord-bot
     restart: unless-stopped
+    # Docker Desktop exposes Windows NTFS bind mounts as root-owned. The image
+    # stays non-root by default, while this Windows deployment override keeps
+    # SQLite and persistent output writable.
+    user: "0:0"
     env_file:
       - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
     environment:

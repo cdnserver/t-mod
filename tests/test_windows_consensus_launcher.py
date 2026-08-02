@@ -110,6 +110,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("/var/run/docker.sock", bot_service)
         self.assertNotIn("minecraft-supervisor:\n        condition", bot_service)
         self.assertIn("/api/health", bot_service)
+        self.assertIn('user: "0:0"', bot_service)
 
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("USER tmod", dockerfile)
