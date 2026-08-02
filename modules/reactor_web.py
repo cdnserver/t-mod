@@ -68,6 +68,7 @@ from persistence import outbox_repository as outbox_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import tvrs_repository as tvrs_storage
+from persistence import web_auth_repository as web_auth_storage
 
 
 AuthenticatedRequest = Callable[
@@ -485,7 +486,15 @@ def register_reactor_web_routes(
 
     async def admin_request(request: web.Request) -> ConsensusWebPrincipal:
         principal = await personal_request(request)
-        if not principal.administrator:
+        minecraft_granted = False
+        if not principal.administrator and "/minecraft" in request.path:
+            grants = await asyncio.to_thread(
+                web_auth_storage.web_section_grants,
+                int(guild_id),
+                int(principal.user_id),
+            )
+            minecraft_granted = any(row["section"] == "minecraft" for row in grants)
+        if not principal.administrator and not minecraft_granted:
             raise web.HTTPForbidden(
                 text=json.dumps({"error": "administrator_required"}),
                 content_type="application/json",

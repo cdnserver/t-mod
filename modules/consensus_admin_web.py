@@ -397,7 +397,11 @@ def register_admin_web_routes(
         )
         if not sections:
             raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
-        return web.json_response({"sections": sections, "administrator": bool(principal.administrator)})
+        return web.json_response({
+            **context(principal),
+            "sections": sections,
+            "administrator": bool(principal.administrator),
+        })
 
     def context(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         guild = bot.get_guild(int(guild_id))

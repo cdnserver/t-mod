@@ -474,7 +474,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("activitySignature", admin_script_text)
             self.assertIn("loadedSections: new Set()", admin_script_text)
             self.assertIn(
-                'if (appState.section === "minecraft") await loadOverview()',
+                'fetchJSON("/api/admin/access/self")',
                 admin_script_text,
             )
             self.assertIn("market-signal-list", admin_script_text)

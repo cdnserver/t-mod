@@ -23,7 +23,7 @@ _MAX_FAILURES = 3
 _DUMMY_HASH: str | None = None
 WEB_GRANTABLE_SECTIONS = frozenset({
     "overview", "modules", "audit", "treasury", "craft", "market", "bills",
-    "sgl", "members", "communications", "media", "discord", "system",
+    "sgl", "members", "communications", "media", "discord", "system", "minecraft",
 })
 
 

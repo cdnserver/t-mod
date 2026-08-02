@@ -2949,6 +2949,7 @@ async function bootstrap() {
       requestedRoute = { section: appState.allowedSections[0], kind: "", key: "" };
       history.replaceState(null, "", routeHash(requestedRoute));
     }
+    if (requestedRoute.section === "minecraft") showApplication(access);
   } catch (error) {
     handleError(error);
     return;
@@ -2968,7 +2969,9 @@ async function bootstrap() {
   // longer wait for the heavy overview before loading their actual content.
   // Minecraft is rendered by reactor.js and needs one lightweight cached
   // overview request to establish the shared authenticated shell first.
-  if (appState.section === "minecraft") await loadOverview();
+  if (appState.section === "minecraft") {
+    // access/self already established the authenticated shell without exposing overview data.
+  }
   else await loadCurrentSection();
   if (!byId("admin-shell").hidden && requestedRoute.kind && requestedRoute.key) {
     await openLinkedRecord(requestedRoute);
