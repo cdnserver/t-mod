@@ -126,7 +126,11 @@
     });
   }
 
-  window.TModReactor = Object.freeze({ confirm: confirmAction, navigate });
+  window.TModReactor = Object.freeze({
+    confirm: confirmAction,
+    navigate,
+    activateMinecraft: () => switchMinecraftTab(state.minecraftTab),
+  });
 
   function attentionRow(item) {
     const row = el("button", `attention-row ${item.severity || "info"}`);
@@ -1077,7 +1081,7 @@
     });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
-        void refreshAttention(true);
+        if (api.administrator) void refreshAttention(true);
         if (location.hash.startsWith("#/minecraft")) void switchMinecraftTab(state.minecraftTab);
       }
     });
@@ -1097,16 +1101,20 @@
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (!api.authorized) return;
-    const initialLoads = [refreshAttention(false), loadEvents()];
+    const initialLoads = api.administrator
+      ? [refreshAttention(false), loadEvents()]
+      : [];
     if (location.hash.startsWith("#/minecraft")) {
       // Attention already carries the cached Minecraft status. Load storage in
       // parallel instead of waiting for health and then querying RCON twice.
-      initialLoads.push(loadMinecraftFiles("", true));
+      initialLoads.push(loadMinecraft(), loadMinecraftFiles("", true));
     }
     await Promise.all(initialLoads);
-    state.attentionTimer = setInterval(() => {
-      if (!document.hidden) void refreshAttention(true);
-    }, 30000);
+    if (api.administrator) {
+      state.attentionTimer = setInterval(() => {
+        if (!document.hidden) void refreshAttention(true);
+      }, 30000);
+    }
     state.minecraftTimer = setInterval(() => {
       if (!location.hash.startsWith("#/minecraft") || document.hidden) return;
       void loadMinecraft();

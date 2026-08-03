@@ -1272,14 +1272,30 @@
               </div>
               <span id="system-health-badge" class="health-pill">диагностика</span>
             </div>
-            <article class="panel">
-              <header class="panel-head"><div><span class="panel-kicker">DELEGATED ACCESS</span><h2>Доступ к разделам</h2></div></header>
-              <form id="section-access-form" class="filter-grid">
-                <label>Discord ID<input name="user_id" inputmode="numeric" required></label>
-                <label>Раздел<select name="section" id="section-access-select"></select></label>
-                <button class="primary-button" type="submit">Выдать доступ</button>
+            <article id="section-access-card" class="panel access-control-card">
+              <div class="access-control-glow" aria-hidden="true"></div>
+              <header class="access-control-head">
+                <span class="access-control-symbol" aria-hidden="true">⌁</span>
+                <div>
+                  <span class="panel-kicker">DELEGATED ACCESS</span>
+                  <h2>Контуры доступа</h2>
+                  <p>Откройте участнику только нужную часть Ядерного Реактора — без прав полного администратора.</p>
+                </div>
+                <span id="section-access-count" class="access-count">0 активных</span>
+              </header>
+              <form id="section-access-form" class="access-control-form">
+                <label>
+                  <span>Discord ID участника</span>
+                  <div class="access-field"><i>@</i><input name="user_id" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="721577061143019555" autocomplete="off" required></div>
+                </label>
+                <label>
+                  <span>Разрешённый раздел</span>
+                  <div class="access-field"><i>◇</i><select name="section" id="section-access-select" required></select></div>
+                </label>
+                <button class="access-submit" type="submit"><span>Выдать доступ</span><i>→</i></button>
               </form>
-              <div id="section-access-list" class="compact-list"></div>
+              <div class="access-control-caption"><i></i><span>Получатель увидит только выданные разделы и получит личное уведомление от T-Mod.</span></div>
+              <div id="section-access-list" class="access-grant-grid"></div>
             </article>
 
             <div class="kpi-grid compact-kpis">

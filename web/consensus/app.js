@@ -143,6 +143,7 @@ function visualStage(session) {
   const stage = String(session?.stage || "idle");
   return [
     "registration",
+    "presentation",
     "voting",
     "finalizing",
     "discussion_type",
@@ -936,11 +937,22 @@ function renderControls(data) {
   if (capabilities.has("start_vote") || capabilities.has("resend_invitations")) {
     const { group, actions } = controlGroup("Регистрация", "Приглашения и переход к первому проекту");
     if (capabilities.has("start_vote")) {
-      actions.append(actionButton("Начать голосование", "start_vote", {}, { kind: "primary", currentRoster: true }));
+      actions.append(actionButton("Представить первый проект", "start_vote", {}, { kind: "primary", currentRoster: true }));
     }
     if (capabilities.has("resend_invitations")) {
       actions.append(actionButton("Повторить приглашения", "resend_invitations"));
     }
+    container.append(group);
+  }
+
+  if (capabilities.has("open_vote")) {
+    const { group, actions } = controlGroup(
+      "Законопроект представлен",
+      "Сенаторы видят текст, но кнопки выбора появятся только после открытия воута.",
+    );
+    actions.append(
+      actionButton("Поставить на воут", "open_vote", {}, { kind: "primary" }),
+    );
     container.append(group);
   }
 

@@ -12,6 +12,7 @@ LEGACY_CONSENSUS_ENGINE_VERSION = 2
 CONSENSUS_ACTIVE_STAGES = frozenset(
     {
         "registration",
+        "presentation",
         "voting",
         "finalizing",
         "discussion_type",
@@ -23,6 +24,7 @@ CONSENSUS_ACTIVE_STAGES = frozenset(
 CONSENSUS_TERMINAL_STAGES = frozenset({"finished", "cancelled"})
 CONSENSUS_STAGE_LABELS = {
     "registration": "регистрация",
+    "presentation": "представление законопроекта",
     "voting": "голосование",
     "finalizing": "фиксация результата",
     "discussion_type": "выбор типа дискуссии",
@@ -33,13 +35,14 @@ CONSENSUS_STAGE_LABELS = {
     "cancelled": "отменён",
 }
 CONSENSUS_TRANSITIONS = {
-    "registration": frozenset({"voting", "cancelled", "finished"}),
+    "registration": frozenset({"presentation", "voting", "cancelled", "finished"}),
+    "presentation": frozenset({"voting", "paused", "cancelled", "finished"}),
     "voting": frozenset({"discussion_type", "paused", "finalizing", "cancelled", "finished"}),
     "finalizing": frozenset({"after_result", "cancelled"}),
     "discussion_type": frozenset({"discussion", "voting", "paused", "finalizing", "cancelled", "finished"}),
     "discussion": frozenset({"voting", "paused", "finalizing", "cancelled", "finished"}),
-    "paused": frozenset({"voting", "discussion_type", "discussion", "after_result", "finalizing", "cancelled", "finished"}),
-    "after_result": frozenset({"voting", "paused", "finished", "cancelled"}),
+    "paused": frozenset({"presentation", "voting", "discussion_type", "discussion", "after_result", "finalizing", "cancelled", "finished"}),
+    "after_result": frozenset({"presentation", "voting", "paused", "finished", "cancelled"}),
     "finished": frozenset(),
     "cancelled": frozenset(),
 }
@@ -451,7 +454,13 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
     if snapshot_finished and stage not in CONSENSUS_TERMINAL_STAGES:
         raise ConsensusStateError("Активная сессия ошибочно помечена завершённой.")
     current_bill = snapshot.get("current_bill")
-    stages_requiring_bill = {"voting", "finalizing", "discussion_type", "discussion"}
+    stages_requiring_bill = {
+        "presentation",
+        "voting",
+        "finalizing",
+        "discussion_type",
+        "discussion",
+    }
     if stage in stages_requiring_bill and not isinstance(current_bill, dict):
         raise ConsensusStateError(f"Для этапа {stage} отсутствует текущий законопроект.")
     if isinstance(current_bill, dict):

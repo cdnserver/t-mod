@@ -144,8 +144,13 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
         cases: list[LiveConsensusSession] = []
         registration = _session(stage="registration")
         cases.append(registration)
+        presentation = _session(stage="presentation")
+        cases.append(presentation)
         voting = _session(stage="voting")
         cases.append(voting)
+        paused_presentation = _session(stage="paused")
+        paused_presentation.previous_stage = "presentation"
+        cases.append(paused_presentation)
         paused_vote = _session(stage="paused")
         paused_vote.previous_stage = "voting"
         cases.append(paused_vote)
@@ -188,6 +193,31 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
                         verify_discord_messages=False,
                         retry_permanent_failures=True,
                     )
+
+    async def test_presentation_recovery_never_opens_voting_notifications(self) -> None:
+        current = _session(stage="presentation")
+        with (
+            patch(
+                "modules.tvrs_recovery._outbox_storage.delivery_outbox_ensure_current",
+                return_value=({"status": "pending"}, True),
+            ),
+            patch(
+                "modules.tvrs_recovery._enqueue_semantic_delivery",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "modules.tvrs_recovery.build_control_notice_deliveries"
+            ) as voting_notices,
+        ):
+            await reconcile_current_consensus_deliveries(
+                SimpleNamespace(add_view=lambda *args, **kwargs: None),  # type: ignore[arg-type]
+                SimpleNamespace(id=77),  # type: ignore[arg-type]
+                current,
+                verify_discord_messages=False,
+                retry_permanent_failures=True,
+            )
+
+        voting_notices.assert_not_called()
 
     async def test_corrupt_discussion_projection_is_blocked_without_builder_exception(self) -> None:
         current = _session(stage="discussion")

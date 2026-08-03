@@ -638,6 +638,26 @@ class TVRSHostVoteView(TVRSBaseView):
         if session and session.stage == "finalizing":
             self._add_button("Повторить фиксацию", discord.ButtonStyle.primary, self.retry_finalization, row=0)
             return
+        if session and session.stage == "presentation":
+            self._add_button(
+                "Поставить на воут",
+                discord.ButtonStyle.success,
+                self.open_vote,
+                row=0,
+            )
+            self._add_button(
+                "Пауза",
+                discord.ButtonStyle.secondary,
+                self.pause,
+                row=0,
+            )
+            self._add_button(
+                "Завершить консенсус",
+                discord.ButtonStyle.danger,
+                self.finish_session_btn,
+                row=0,
+            )
+            return
         if session and session.stage == "paused":
             self._add_button("Продолжить", discord.ButtonStyle.success, self.resume, row=0)
             self._add_button("Завершить консенсус", discord.ButtonStyle.danger, self.finish_session_btn, row=0)
@@ -732,6 +752,10 @@ class TVRSHostVoteView(TVRSBaseView):
             await interaction.edit_original_response(embed=build_live_vote_embed(session), view=TVRSHostVoteView(session.session_key), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
         except discord.DiscordException:
             pass
+
+    async def open_vote(self, interaction: discord.Interaction) -> None:
+        from modules.tvrs_vote_opening import open_vote_from_interaction
+        await open_vote_from_interaction(interaction, self.session_key, self.bill_id)
 
     async def host_no(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None

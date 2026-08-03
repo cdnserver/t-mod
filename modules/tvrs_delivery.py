@@ -154,10 +154,10 @@ def build_control_dm_deliveries(
     """Create deterministic registration/vote DM intents."""
 
     clean_phase = str(phase).strip().lower()
-    if clean_phase not in {"registration", "voting"}:
+    if clean_phase not in {"registration", "presentation", "voting"}:
         raise ValueError("tvrs_control_delivery_phase_invalid")
     selected_bill_id = int(bill_id or (session.current_bill or {}).get("id") or 0)
-    if clean_phase == "voting" and selected_bill_id <= 0:
+    if clean_phase in {"presentation", "voting"} and selected_bill_id <= 0:
         raise ValueError("tvrs_control_delivery_bill_required")
     participants = (
         [item for item in session.participants.values() if not item.confirmed]
@@ -169,7 +169,7 @@ def build_control_dm_deliveries(
         if participant.user_id == session.leader_id:
             continue
         clean_generation = str(generation or "").strip()
-        if clean_phase == "voting":
+        if clean_phase in {"presentation", "voting"}:
             # A recovery label may repeat on every restart, while a bill must
             # never reuse another bill's idempotency key.
             discriminator = str(selected_bill_id)
@@ -264,10 +264,10 @@ def build_phase_announcement_delivery(
     """
 
     clean_phase = str(phase).strip().lower()
-    if clean_phase not in {"registration", "voting"}:
+    if clean_phase not in {"registration", "presentation", "voting"}:
         raise ValueError("tvrs_phase_announcement_phase_invalid")
     selected_bill_id = int(bill_id or (session.current_bill or {}).get("id") or 0)
-    if clean_phase == "voting" and selected_bill_id <= 0:
+    if clean_phase in {"presentation", "voting"} and selected_bill_id <= 0:
         raise ValueError("tvrs_phase_announcement_bill_required")
     participants = (
         [item for item in session.participants.values() if not item.confirmed]
@@ -279,7 +279,11 @@ def build_phase_announcement_delivery(
         for item in participants
         if int(item.user_id) != int(session.leader_id)
     ]
-    discriminator = str(selected_bill_id) if clean_phase == "voting" else "initial"
+    discriminator = (
+        str(selected_bill_id)
+        if clean_phase in {"presentation", "voting"}
+        else "initial"
+    )
     bill = dict(session.current_bill or {})
     return {
         "topic": TVRS_PHASE_ANNOUNCEMENT_TOPIC,

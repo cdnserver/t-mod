@@ -66,7 +66,13 @@ async def collect_consensus_operational_state(
             and (not item.dm_message_id or item.dm_failed)
         ]
     elif (
-        session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        session.stage in {
+            "presentation",
+            "voting",
+            "paused",
+            "discussion_type",
+            "discussion",
+        }
         and session.current_bill is not None
         and bill_id > 0
     ):

@@ -273,7 +273,7 @@ class ConsensusCoordinator:
                 repaired.append("partial_timer_state")
 
             if (
-                session.stage in {"registration", "after_result"}
+                session.stage in {"registration", "presentation", "after_result"}
                 and session.current_bill is None
                 and session.votes
             ):
@@ -300,7 +300,7 @@ class ConsensusCoordinator:
                     repaired.append("stale_discussion_state")
 
             if (
-                session.stage in {"registration", "after_result"}
+                session.stage in {"registration", "presentation", "after_result"}
                 and session.current_bill is None
                 and session.pending_action is not None
             ):
@@ -446,6 +446,75 @@ class ConsensusCoordinator:
         candidate.revision = int(persisted.get("revision") or candidate.revision + 1)
         self._restore_checkpoint(session, session_to_snapshot(candidate))
         return receipt
+
+    def present_bill_atomically(
+        self,
+        session: LiveConsensusSession,
+        bill: dict[str, Any],
+        *,
+        actor: ConsensusActor,
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Bind the next bill without opening voting controls."""
+
+        if session.stage not in {"registration", "after_result"}:
+            raise ConsensusStateError("Нельзя представить следующий проект на текущем этапе.")
+        if session.current_bill is not None:
+            raise ConsensusStateError("Предыдущий проект ещё не закрыт.")
+        if not session.quorum_ready():
+            raise ConsensusStateError("Подтверждённый кворум не набран.")
+
+        candidate = session_from_snapshot(session_to_snapshot(session))
+        candidate.current_bill = dict(bill)
+        candidate.votes.clear()
+        candidate.pending_action = None
+        candidate.discussion_channel_id = None
+        candidate.discussion_initiator_id = None
+        candidate.discussion_type = None
+        candidate.discussion_allowed_user_ids.clear()
+        previous, _ = transition_session(candidate, "presentation")
+        details = {
+            "bill_id": int(bill.get("id") or 0),
+            "bill_number": int(bill.get("bill_number") or 0),
+        }
+        receipt = self.repository.commit_begin_bill(
+            candidate,
+            expected_revision=int(session.revision),
+            bill_id=int(bill.get("id") or 0),
+            event_type="bill_presented",
+            actor=actor,
+            details={**details, "stage_from": previous},
+            deliveries=deliveries,
+        )
+        persisted = dict(receipt.get("session") or {})
+        candidate.revision = int(persisted.get("revision") or candidate.revision + 1)
+        self._restore_checkpoint(session, session_to_snapshot(candidate))
+        return receipt
+
+    def open_voting(
+        self,
+        session: LiveConsensusSession,
+        *,
+        actor: ConsensusActor,
+        deliveries: Iterable[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically open voting and publish all voting controls."""
+
+        if session.stage != "presentation" or session.current_bill is None:
+            raise ConsensusStateError("Законопроект сейчас нельзя поставить на воут.")
+        with self.mutation(session):
+            previous, _ = transition_session(session, "voting")
+            return self.save_with_deliveries(
+                session,
+                "bill_voting_opened",
+                actor=actor,
+                stage_from=previous,
+                details={
+                    "bill_id": int(session.current_bill.get("id") or 0),
+                    "bill_number": int(session.current_bill.get("bill_number") or 0),
+                },
+                deliveries=deliveries,
+            )
 
     def claim_finalization(
         self,
@@ -687,7 +756,13 @@ class ConsensusCoordinator:
     ) -> None:
         if session.stage == "paused":
             return
-        if session.stage not in {"voting", "discussion_type", "discussion", "after_result"}:
+        if session.stage not in {
+            "presentation",
+            "voting",
+            "discussion_type",
+            "discussion",
+            "after_result",
+        }:
             raise ConsensusStateError("На текущем этапе консенсус нельзя поставить на паузу.")
         with self.mutation(session):
             session.previous_stage = session.stage
@@ -710,12 +785,23 @@ class ConsensusCoordinator:
         if session.stage != "paused":
             raise ConsensusStateError("Консенсус не находится на паузе.")
         target = str(session.previous_stage or "")
-        allowed_targets = {"voting", "discussion_type", "discussion", "after_result"}
+        allowed_targets = {
+            "presentation",
+            "voting",
+            "discussion_type",
+            "discussion",
+            "after_result",
+        }
         if target not in allowed_targets:
             raise ConsensusStateError(
                 "Не удалось определить этап для продолжения. Откройте аварийное восстановление."
             )
-        if target in {"voting", "discussion_type", "discussion"} and session.current_bill is None:
+        if target in {
+            "presentation",
+            "voting",
+            "discussion_type",
+            "discussion",
+        } and session.current_bill is None:
             raise ConsensusStateError(
                 "Нельзя возобновить голосование: текущий законопроект отсутствует."
             )

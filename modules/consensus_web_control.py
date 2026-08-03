@@ -49,6 +49,7 @@ from modules.tvrs_presentation import (
     consensus_result_bill_id,
     is_chair,
 )
+from modules.tvrs_vote_opening import open_current_bill_vote
 
 
 class ConsensusWebCommandError(ConsensusStateError):
@@ -124,6 +125,8 @@ def _stage_capabilities(
         )
         if simulation:
             capabilities.extend(["confirm_next", "confirm_all"])
+    elif stage == "presentation":
+        capabilities.extend(["open_vote", "pause", "finish_session"])
     elif stage == "voting":
         capabilities.extend(
             [
@@ -337,7 +340,18 @@ async def _execute_live(
             expected_stage="registration",
             expected_revision=revision,
         )
-        return "Голосование по первому проекту начато."
+        return "Первый законопроект представлен. Воут пока закрыт."
+
+    if action == "open_vote":
+        await open_current_bill_vote(
+            bot,
+            guild,
+            session,
+            expected_bill_id=expected_bill_id,
+            expected_revision=revision,
+            actor=actor,
+        )
+        return "Воут открыт; кнопки голосования отправлены участникам."
 
     if action == "resend_invitations":
         async with session_lock(session.guild_id):
@@ -542,7 +556,7 @@ async def _execute_live(
             expected_result_bill_id=expected_result_bill_id,
             expected_revision=revision,
         )
-        return "Открыт следующий законопроект."
+        return "Следующий законопроект представлен; воут пока закрыт."
 
     if action == "finish_session":
         _require_confirmation(payload, "завершить заседание")
@@ -607,6 +621,8 @@ async def _execute_simulation(
         simulation.confirm_all()
     elif action == "start_vote":
         simulation.begin_voting()
+    elif action == "open_vote":
+        simulation.open_voting()
     elif action == "leader_vote":
         simulation.cast_leader_vote(str(payload.get("vote") or ""))
     elif action == "fake_vote":

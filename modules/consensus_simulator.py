@@ -342,13 +342,21 @@ class ConsensusSimulation:
         self._record("Все фейковые участники подтвердили участие")
 
     def begin_voting(self) -> None:
-        self.coordinator.begin_bill_atomically(
+        self.coordinator.present_bill_atomically(
             self.session,
             self._bill(),
             actor=self.actor,
             deliveries=(),
         )
-        self._record(f"Начато голосование по проекту №{self.bill_number}")
+        self._record(f"Представлен проект №{self.bill_number}; воут закрыт")
+
+    def open_voting(self) -> None:
+        self.coordinator.open_voting(
+            self.session,
+            actor=self.actor,
+            deliveries=(),
+        )
+        self._record(f"Открыт воут по проекту №{self.bill_number}")
 
     def cast_leader_vote(self, vote: str) -> None:
         should_finalize = self.coordinator.cast_vote(
@@ -594,7 +602,7 @@ class ConsensusSimulation:
 
     def next_bill(self) -> None:
         self.bill_number += 1
-        self.coordinator.begin_bill_atomically(
+        self.coordinator.present_bill_atomically(
             self.session,
             self._bill(),
             actor=self.actor,
@@ -706,7 +714,13 @@ def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed
             value=f"**{str(bill.get('title') or 'Учебный проект')}**\n{str(bill.get('summary') or '')}"[:1024],
             inline=False,
         )
-    if session.stage in {"voting", "discussion_type", "discussion", "paused"} and session.current_bill:
+    if session.stage in {
+        "presentation",
+        "voting",
+        "discussion_type",
+        "discussion",
+        "paused",
+    } and session.current_bill:
         calculation = calculate_consensus(session)
         embed.add_field(
             name="Текущий расчёт",
@@ -835,6 +849,15 @@ class ConsensusSimulationView(discord.ui.View):
                 simulation.begin_voting,
                 disabled=not simulation.session.quorum_ready(),
             )
+            self._add("Завершить", "⏹️", discord.ButtonStyle.danger, simulation.finish)
+        elif stage == "presentation":
+            self._add(
+                "Поставить на воут",
+                "🗳️",
+                discord.ButtonStyle.success,
+                simulation.open_voting,
+            )
+            self._add("Пауза", "⏸️", discord.ButtonStyle.secondary, simulation.pause)
             self._add("Завершить", "⏹️", discord.ButtonStyle.danger, simulation.finish)
         elif stage == "voting":
             self._add("За", "✅", discord.ButtonStyle.success, lambda: simulation.cast_leader_vote("yes"))

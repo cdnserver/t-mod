@@ -303,8 +303,16 @@ class TVRSFormattingContractTests(unittest.TestCase):
         self.assertIn(":control:2", registration[0]["supersede_key"])
 
         session.participants[2].confirmed = True
-        session.stage = "voting"
+        session.stage = "presentation"
         session.current_bill = {"id": 10, "bill_number": 9, "title": "Надёжная доставка"}
+        presentation = build_control_dm_deliveries(session, phase="presentation")
+        self.assertEqual(len(presentation), 2)
+        self.assertTrue(
+            all(item["payload"]["phase"] == "presentation" for item in presentation)
+        )
+        self.assertIn(":presentation:10:", presentation[0]["dedupe_key"])
+
+        session.stage = "voting"
         voting = build_control_dm_deliveries(session, phase="voting")
         self.assertEqual(len(voting), 2)
         self.assertTrue(all(item["payload"]["bill_id"] == 10 for item in voting))
@@ -415,6 +423,60 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
             priority=int(job.get("priority") or 0),
             supersede_key=job.get("supersede_key"),
         )
+
+    async def test_presented_bill_reuses_panel_without_voting_buttons(self) -> None:
+        current = make_session()
+        current.stage = "presentation"
+        current.current_bill = {
+            "id": 10,
+            "bill_number": 9,
+            "title": "Проект до воута",
+        }
+        current.participants[2].vote_message_id = 7002
+        current.participants[2].vote_bill_id = 10
+        registry.add(current)
+        job = build_control_dm_deliveries(current, phase="presentation")[0]
+        panel = SimpleNamespace(id=7002, edit=AsyncMock())
+        dm_channel = SimpleNamespace(
+            id=500,
+            fetch_message=AsyncMock(return_value=panel),
+        )
+        member = SimpleNamespace(
+            dm_channel=dm_channel,
+            create_dm=AsyncMock(return_value=dm_channel),
+            send=AsyncMock(),
+        )
+        guild = SimpleNamespace(
+            get_member=lambda user_id: member if user_id == 2 else None,
+            fetch_member=AsyncMock(return_value=member),
+        )
+        bot = SimpleNamespace(
+            get_guild=lambda guild_id: guild if guild_id == 77 else None
+        )
+
+        with (
+            patch(
+                "modules.tvrs_control._outbox_storage.delivery_outbox_is_current_supersession",
+                return_value=True,
+            ),
+            patch(
+                "modules.tvrs_control._consensus.save",
+                return_value={"revision": 2},
+            ),
+            patch(
+                "modules.tvrs_presentation.queue_short_lines",
+                return_value="Очередь пуста.",
+            ),
+        ):
+            receipt = await deliver_consensus_control_dm(self.message(job), bot)
+
+        self.assertEqual(receipt.message_id, 7002)
+        panel.edit.assert_awaited_once()
+        kwargs = panel.edit.await_args.kwargs
+        self.assertIsNone(kwargs["view"])
+        self.assertIn("Голосование откроет ведущий", kwargs["content"])
+        self.assertIn("Воут ещё не открыт", kwargs["embed"].fields[2].value)
+        member.send.assert_not_awaited()
 
     async def test_vote_reuses_one_panel_and_sends_one_visible_notice(self) -> None:
         current = make_session()

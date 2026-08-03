@@ -352,6 +352,10 @@ class TVRSConsensusAdminView(_ChairRecoveryView):
             session
             and session.current_bill
             and session.stage in {"voting", "paused", "discussion_type", "discussion"}
+            and not (
+                session.stage == "paused"
+                and session.previous_stage == "presentation"
+            )
         )
         accepted = discord.ui.Button(
             label="Устно: принят",

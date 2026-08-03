@@ -34,6 +34,23 @@ from persistence import web_auth_repository as web_auth_storage
 
 
 ADMIN_BROADCAST_TOPIC = "admin.broadcast.dm.v1"
+ADMIN_SECTION_LABELS = {
+    "overview": "Обзор системы",
+    "modules": "Все системы T-Mod",
+    "audit": "Аудит действий",
+    "treasury": "Казна",
+    "craft": "Крафты",
+    "market": "Рынок RU15",
+    "bills": "Законопроекты",
+    "sgl": "Бюро СГЛ",
+    "members": "Участники",
+    "communications": "Уведомления",
+    "media": "Музыка и голос",
+    "profile": "Мой профиль",
+    "discord": "Discord-аудит",
+    "system": "Технический контур",
+    "minecraft": "Minecraft",
+}
 
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
@@ -339,13 +356,33 @@ def register_admin_web_routes(
                 content_type="application/json",
             )
         section_map = {
-            "overview": "overview", "actions": "audit", "finance": "treasury",
-            "crafts": "craft", "discord": "discord", "registry": "modules",
-            "market": "market", "bills": "bills", "sgl": "sgl", "members": "members",
-            "communications": "communications", "media": "media", "system": "system",
+            "overview": "overview",
+            "actions": "audit",
+            "finance": "treasury",
+            "crafts": "craft",
+            "discord": "discord",
+            "registry": "modules",
+            "market": "market",
+            "bills": "bills",
+            "sgl": "sgl",
+            "members": "members",
+            "communications": "communications",
+            "media": "media",
+            "profile": "profile",
+            "system": "system",
         }
         endpoint = request.path.removeprefix("/api/admin/").split("/", 1)[0]
         section = section_map.get(endpoint, "overview")
+        if endpoint == "link":
+            section = {
+                "craft-plan": "craft",
+                "bill": "bills",
+                "sgl-case": "sgl",
+                "member": "members",
+                "market": "market",
+                "audit": "audit",
+                "discord-event": "discord",
+            }.get(str(request.match_info.get("kind") or ""), "overview")
         grants = [] if principal.administrator else await asyncio.to_thread(
             web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)
         )
@@ -353,8 +390,8 @@ def register_admin_web_routes(
             raise web.HTTPForbidden(
                 text=json.dumps(
                     {
-                        "error": "administrator_required",
-                        "message": "Админ-центр доступен только администраторам.",
+                        "error": "section_access_required",
+                        "message": "Для этого раздела доступ не выдан.",
                     },
                     ensure_ascii=False,
                 ),
@@ -369,19 +406,139 @@ def register_admin_web_routes(
         if request.method == "POST":
             if not csrf_matches(request, principal):
                 raise web.HTTPForbidden(text='{"error":"csrf_failed"}', content_type="application/json")
-            body = await request.json()
             try:
-                await asyncio.to_thread(
+                body = await request.json()
+            except (json.JSONDecodeError, TypeError):
+                body = None
+            if not isinstance(body, dict):
+                return web.json_response({"error": "invalid_payload"}, status=400)
+            member = None
+            try:
+                user_id = int(body.get("user_id"))
+                section = str(body.get("section") or "").strip().lower()
+                enabled = body.get("enabled", True) is True
+                if enabled:
+                    guild = bot.get_guild(int(guild_id))
+                    member = guild.get_member(user_id) if guild is not None else None
+                    if member is None and guild is not None:
+                        try:
+                            member = await guild.fetch_member(user_id)
+                        except discord.DiscordException:
+                            member = None
+                    if member is None:
+                        return web.json_response(
+                            {
+                                "error": "member_not_found",
+                                "message": "Участник с таким Discord ID не найден на сервере.",
+                            },
+                            status=404,
+                        )
+                changed = await asyncio.to_thread(
                     web_auth_storage.web_set_section_grant,
-                    int(guild_id), int(body.get("user_id")), str(body.get("section")),
-                    enabled=bool(body.get("enabled", True)), granted_by_id=int(principal.user_id),
+                    int(guild_id),
+                    user_id,
+                    section,
+                    enabled=enabled,
+                    granted_by_id=int(principal.user_id),
                 )
             except (TypeError, ValueError):
-                return web.json_response({"error": "web_section_grant_invalid"}, status=400)
+                return web.json_response(
+                    {
+                        "error": "web_section_grant_invalid",
+                        "message": "Проверьте Discord ID и выбранный раздел.",
+                    },
+                    status=400,
+                )
+            dm_sent = False
+            if enabled and changed and member is not None:
+                label = ADMIN_SECTION_LABELS.get(section, section)
+                embed = discord.Embed(
+                    title="Доступ к Ядерному Реактору",
+                    description=(
+                        f"Вам открыт раздел **{label}**.\n\n"
+                        "Войдите с вашим логином и восьмизначным PIN."
+                    ),
+                    color=0x68E0B7,
+                    url=f"https://reactor.tvr.lat/admin#/{section}",
+                )
+                embed.add_field(
+                    name="Открыть раздел",
+                    value=f"[reactor.tvr.lat → {label}](https://reactor.tvr.lat/admin#/{section})",
+                    inline=False,
+                )
+                embed.set_footer(text=f"Доступ выдал {principal.display_name} · T-Mod")
+                try:
+                    await member.send(
+                        embed=embed,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    dm_sent = True
+                except discord.DiscordException:
+                    dm_sent = False
+            await asyncio.to_thread(
+                activity_storage.bot_record_action,
+                guild_id=int(guild_id),
+                actor_id=int(principal.user_id),
+                actor_display=str(principal.display_name),
+                module="admin",
+                action_kind="web_section_grant" if enabled else "web_section_revoke",
+                target_type="member",
+                target_id=user_id,
+                summary=(
+                    f"Выдан доступ к разделу {section}"
+                    if enabled
+                    else f"Отозван доступ к разделу {section}"
+                ),
+                payload={"section": section, "dm_sent": dm_sent},
+                reversible=False,
+            )
+            if enabled and not changed:
+                result_message = "Этот доступ уже был выдан ранее."
+            elif enabled and dm_sent:
+                result_message = "Доступ выдан, уведомление отправлено в ЛС."
+            elif enabled:
+                result_message = (
+                    "Доступ выдан, но отправить уведомление в ЛС не удалось."
+                )
+            elif changed:
+                result_message = "Доступ отозван."
+            else:
+                result_message = "Этот доступ уже был отозван ранее."
+        else:
+            result_message = None
+            changed = False
+            dm_sent = False
+        guild = bot.get_guild(int(guild_id))
+        grants = await asyncio.to_thread(
+            web_auth_storage.web_section_grants,
+            int(guild_id),
+        )
+        projected_grants = []
+        for grant in grants:
+            grant_member = guild.get_member(int(grant["user_id"])) if guild else None
+            projected_grants.append(
+                {
+                    **grant,
+                    "member_name": str(
+                        getattr(grant_member, "display_name", "")
+                        or f"Discord {grant['user_id']}"
+                    ),
+                    "section_label": ADMIN_SECTION_LABELS.get(
+                        str(grant["section"]), str(grant["section"])
+                    ),
+                }
+            )
         return web.json_response({
             **context(principal),
-            "sections": sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS),
-            "grants": await asyncio.to_thread(web_auth_storage.web_section_grants, int(guild_id)),
+            "sections": [
+                {"id": section, "label": ADMIN_SECTION_LABELS[section]}
+                for section in ADMIN_SECTION_LABELS
+                if section in web_auth_storage.WEB_GRANTABLE_SECTIONS
+            ],
+            "grants": projected_grants,
+            "changed": changed,
+            "dm_sent": dm_sent,
+            "message": result_message,
         })
 
     async def access_self(request: web.Request) -> web.Response:
@@ -409,7 +566,7 @@ def register_admin_web_routes(
             "viewer": {
                 "id": int(principal.user_id),
                 "name": str(principal.display_name),
-                "administrator": True,
+                "administrator": bool(principal.administrator),
                 "csrf_token": str(principal.csrf_token),
                 "roles": [
                     {

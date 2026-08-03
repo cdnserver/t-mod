@@ -96,7 +96,7 @@ def build_consensus_recovery_plan(
     safe_repair_codes = warning_codes.intersection(_SAFE_REPAIR_CODES)
     if (
         "orphan_pending_action" in safe_repair_codes
-        and session.stage not in {"registration", "after_result"}
+        and session.stage not in {"registration", "presentation", "after_result"}
     ):
         safe_repair_codes.remove("orphan_pending_action")
     if safe_repair_codes:
@@ -123,7 +123,13 @@ def build_consensus_recovery_plan(
             "Восстановить фоновый таймер из сохранённого срока.",
         )
 
-    quorum_stage = session.stage in {"voting", "discussion_type", "discussion", "paused"}
+    quorum_stage = session.stage in {
+        "presentation",
+        "voting",
+        "discussion_type",
+        "discussion",
+        "paused",
+    }
     if quorum_stage and (
         live.voice_channel_available is False or live.quorum_ready is False
     ):

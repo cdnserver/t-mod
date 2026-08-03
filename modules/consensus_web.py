@@ -430,6 +430,7 @@ def _session_payload(
         "stage": str(session.stage),
         "stage_label": {
             "registration": "Регистрация",
+            "presentation": "Представление законопроекта",
             "voting": "Голосование",
             "finalizing": "Фиксация результата",
             "discussion_type": "Выбор дискуссии",
@@ -1018,7 +1019,15 @@ def create_consensus_web_app(
                 location=f"/login?{urlencode({'next': next_path, 'error': 'invalid'})}"
             )
         if next_path == "/admin" and not bool(member.guild_permissions.administrator):
-            raise web.HTTPSeeOther(location="/login?next=%2Fadmin&error=administrator")
+            grants = await asyncio.to_thread(
+                credential_storage.web_section_grants,
+                int(guild_id),
+                int(member.id),
+            )
+            if not grants:
+                raise web.HTTPSeeOther(
+                    location="/login?next=%2Fadmin&error=administrator"
+                )
         attempts.clear()
         token, _ = create_session_token(
             guild_id=int(guild_id),

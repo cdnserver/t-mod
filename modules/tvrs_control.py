@@ -47,7 +47,6 @@ from modules.tvrs_embeds import build_discussion_embed
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     build_control_dm_deliveries,
-    build_control_notice_deliveries,
     build_phase_announcement_delivery,
     delivery_marker,
     find_delivery_marker,
@@ -129,10 +128,19 @@ def _control_delivery_matches(
         return False
     if phase == "registration":
         return session.stage == "registration" and not participant.confirmed
+    if phase == "presentation":
+        return (
+            participant.confirmed
+            and (session.stage == "presentation" or session.stage == "paused" and session.previous_stage == "presentation")
+            and int((session.current_bill or {}).get("id") or 0) == int(bill_id)
+        )
     return (
         phase == "voting"
         and participant.confirmed
         and session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        and not (
+            session.stage == "paused" and session.previous_stage == "presentation"
+        )
         and int((session.current_bill or {}).get("id") or 0) == int(bill_id)
     )
 
@@ -222,7 +230,7 @@ async def _deliver_consensus_control_dm(
         raise DeliveryPermanentFailure("tvrs_control_payload_invalid") from exc
     if payload_version != 1:
         raise DeliveryPermanentFailure("tvrs_control_payload_version_unsupported")
-    if guild_id <= 0 or user_id <= 0 or phase not in {"registration", "voting"}:
+    if guild_id <= 0 or user_id <= 0 or phase not in {"registration", "presentation", "voting"}:
         raise DeliveryPermanentFailure("tvrs_control_payload_invalid")
 
     session = await _active_delivery_session(guild_id, session_key)
@@ -259,17 +267,26 @@ async def _deliver_consensus_control_dm(
                 timestamp=now_local(),
             )
             embed.add_field(name="Очередь законопроектов", value=queue, inline=False)
-            view: discord.ui.View = TVRSConfirmView(session_key, user_id)
+            view: discord.ui.View | None = TVRSConfirmView(session_key, user_id)
             content: str | None = "Подтвердите участие в консенсусе."
             existing_message_id = int(participant.dm_message_id or 0)
         else:
             embed = await asyncio.to_thread(build_dm_vote_embed, session, participant)
-            view = (
-                TVRSPermanentVoteView(session_key, user_id, bill_id=bill_id)
-                if participant.permanent
-                else TVRSVoteView(session_key, user_id, bill_id=bill_id)
+            view = None
+            if phase == "voting":
+                view = (
+                    TVRSPermanentVoteView(session_key, user_id, bill_id=bill_id)
+                    if participant.permanent
+                    else TVRSVoteView(session_key, user_id, bill_id=bill_id)
+                )
+            content = (
+                str(payload.get("content") or "").strip()[:1000]
+                or (
+                    "Законопроект представлен. Голосование откроет ведущий."
+                    if phase == "presentation"
+                    else None
+                )
             )
-            content = str(payload.get("content") or "").strip()[:1000] or None
             existing_message_id = int(
                 participant.vote_message_id or participant.dm_message_id or 0
             )
@@ -531,12 +548,18 @@ async def deliver_consensus_phase_announcement(
     channel_id = int(payload.get("channel_id") or 0)
     phase = str(payload.get("phase") or "")
     bill_id = int(payload.get("bill_id") or 0)
-    if guild_id <= 0 or channel_id <= 0 or phase not in {"registration", "voting"}:
+    if guild_id <= 0 or channel_id <= 0 or phase not in {"registration", "presentation", "voting"}:
         raise DeliveryPermanentFailure("tvrs_phase_announcement_payload_invalid")
     session = await _active_delivery_session(guild_id, session_key)
     if session is None or session.finished:
         return DeliveryReceipt()
     if phase == "registration" and session.stage != "registration":
+        return DeliveryReceipt()
+    if phase == "presentation" and (
+        session.stage != "presentation"
+        and not (session.stage == "paused" and session.previous_stage == "presentation")
+        or int((session.current_bill or {}).get("id") or 0) != bill_id
+    ):
         return DeliveryReceipt()
     if phase == "voting" and (
         session.stage not in {"voting", "paused", "discussion_type", "discussion"}
@@ -566,6 +589,14 @@ async def deliver_consensus_phase_announcement(
         description = (
             "Подтвердите участие в личном пульте. Если ЛС закрыты, нажмите кнопку "
             "под этим сообщением — действия на сервере полностью равнозначны ЛС."
+        )
+    elif phase == "presentation":
+        title = "📖 Законопроект представлен"
+        description = (
+            f"Законопроект №{format_bill_number(int(payload.get('bill_number') or 0))}: "
+            f"**{str(payload.get('bill_title') or 'Законопроект')[:220]}**\n"
+            "Изучите проект в личном пульте. Кнопки голосования появятся после "
+            "команды ведущего «Поставить на воут»."
         )
     else:
         title = "⚖️ Открыто новое голосование"
@@ -723,14 +754,26 @@ async def enqueue_current_control_projection(
 
     if int(guild.id) != int(session.guild_id) or session.finished:
         return 0
-    if session.stage not in {"voting", "paused", "discussion_type", "discussion"}:
+    if session.stage not in {
+        "presentation",
+        "voting",
+        "paused",
+        "discussion_type",
+        "discussion",
+    }:
         return 0
     bill_id = int((session.current_bill or {}).get("id") or 0)
     if bill_id <= 0:
         return 0
+    phase = (
+        "presentation"
+        if session.stage == "presentation"
+        or (session.stage == "paused" and session.previous_stage == "presentation")
+        else "voting"
+    )
     deliveries = build_control_dm_deliveries(
         session,
-        phase="voting",
+        phase=phase,
         bill_id=bill_id,
         generation=f"projection-r{int(session.revision)}-{session.stage}",
     )
@@ -841,14 +884,8 @@ async def begin_next_bill_vote(
                 bill = bills[0]
                 deliveries = build_control_dm_deliveries(
                     session,
-                    phase="voting",
+                    phase="presentation",
                     bill_id=int(bill["id"]),
-                )
-                deliveries.extend(
-                    build_control_notice_deliveries(
-                        session,
-                        bill_id=int(bill["id"]),
-                    )
                 )
                 # The candidate bill is not bound to the live session until
                 # the atomic commit. Build the server fallback from a temporary
@@ -859,14 +896,14 @@ async def begin_next_bill_vote(
                     deliveries.append(
                         build_phase_announcement_delivery(
                             session,
-                            phase="voting",
+                            phase="presentation",
                             bill_id=int(bill["id"]),
                         )
                     )
                 finally:
                     session.current_bill = previous_bill
                 await run_blocking_cancellation_safe(
-                    _consensus.begin_bill_atomically,
+                    _consensus.present_bill_atomically,
                     session,
                     bill,
                     actor=ConsensusActor(session.leader_id, session.leader_display),
@@ -918,7 +955,13 @@ async def begin_next_bill_vote(
             if (
                 _consensus_registry.find(session.session_key) is session
                 and not session.finished
-                and session.stage in {"voting", "paused", "discussion_type", "discussion"}
+                and session.stage in {
+                    "presentation",
+                    "voting",
+                    "paused",
+                    "discussion_type",
+                    "discussion",
+                }
                 and int((session.current_bill or {}).get("id") or 0) == started_bill_id
             ):
                 session.host_message_obj = msg

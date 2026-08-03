@@ -159,6 +159,7 @@ const appState = {
   loadingOverlayTimer: null,
   authorized: false,
   allowedSections: [],
+  administrator: false,
   authTransitioning: false,
   soundEnabled: true,
   soundUnlocked: false,
@@ -591,6 +592,7 @@ function showApplication(payload) {
     if (!appState.authTransitioning) gate.hidden = true;
   }
   if (payload?.viewer) {
+    appState.administrator = payload.viewer.administrator === true;
     appState.csrfToken = payload.viewer.csrf_token || appState.csrfToken;
     setText("viewer-name", payload.viewer.name || "Администратор");
     setText(
@@ -720,6 +722,10 @@ function cardLinkButton(route, label = "Ссылка") {
 
 async function switchSection(section, updateHash = true) {
   if (!sectionMeta[section]) section = "overview";
+  if (appState.allowedSections.length && !appState.allowedSections.includes(section)) {
+    showToast("Для этого раздела доступ не выдан.", true);
+    return;
+  }
   appState.section = section;
   document.body.dataset.section = section;
   appState.detailRoute = null;
@@ -2434,7 +2440,8 @@ function renderSystem(data) {
   const audio = data.audio_generations || [];
   const workspaces = data.bill_workspaces || [];
   const sessions = data.consensus_sessions || [];
-  void loadSectionAccess();
+  byId("section-access-card").hidden = data.viewer?.administrator !== true;
+  if (data.viewer?.administrator === true) void loadSectionAccess();
   const openStatuses = new Set(["pending", "processing", "retry"]);
   const open = statusRows
     .filter((item) => openStatuses.has(item.status))
@@ -2555,13 +2562,59 @@ async function loadSectionAccess() {
   try {
     const data = await fetchJSON("/api/admin/access");
     const select = byId("section-access-select");
-    select.replaceChildren(...data.sections.map((value) => node("option", { value, text: sectionMeta[value]?.[1] || value })));
-    replaceChildren("section-access-list", data.grants.length ? data.grants.map((grant) =>
-      compactItem(`${grant.user_id} · ${sectionMeta[grant.section]?.[1] || grant.section}`, "Точечный доступ", "Отозвать", async () => {
-        await postJSON("/api/admin/access", { user_id: grant.user_id, section: grant.section, enabled: false });
-        void loadSectionAccess();
-      })) : [node("div", { className: "empty-state", text: "Точечных доступов нет." })]);
-  } catch { byId("section-access-form").hidden = true; }
+    select.replaceChildren(
+      ...data.sections.map((section) =>
+        node("option", { value: section.id, text: section.label })),
+    );
+    setText("section-access-count", `${data.grants.length} активных`);
+    replaceChildren(
+      "section-access-list",
+      data.grants.length
+        ? data.grants.map((grant) => {
+            const revoke = node("button", {
+              className: "access-revoke",
+              type: "button",
+              text: "Отозвать",
+            });
+            revoke.addEventListener("click", async () => {
+              try {
+                const result = await postJSON("/api/admin/access", {
+                  user_id: grant.user_id,
+                  section: grant.section,
+                  enabled: false,
+                });
+                showToast(result.message || "Доступ отозван.");
+                await loadSectionAccess();
+              } catch (error) {
+                handleError(error);
+              }
+            });
+            return node("article", { className: "access-grant" }, [
+              node("span", {
+                className: "access-grant-avatar",
+                text: String(grant.member_name || "T").charAt(0).toUpperCase(),
+              }),
+              node("div", { className: "access-grant-copy" }, [
+                node("strong", {
+                  text: grant.member_name || `Discord ${grant.user_id}`,
+                }),
+                node("small", {
+                  text: `${grant.section_label} · ${grant.user_id}`,
+                }),
+              ]),
+              revoke,
+            ]);
+          })
+        : [
+            node("div", {
+              className: "empty-state",
+              text: "Точечных доступов пока нет.",
+            }),
+          ],
+    );
+  } catch (error) {
+    handleError(error);
+  }
 }
 
 async function loadSystem(silent = false) {
@@ -2718,6 +2771,9 @@ async function loadCurrentSection() {
   if (appState.section === "profile") await loadProfile();
   if (appState.section === "discord") await loadDiscord();
   if (appState.section === "system") await loadSystem();
+  if (appState.section === "minecraft") {
+    await globalThis.TModReactor?.activateMinecraft?.();
+  }
 }
 
 async function refreshCurrentSection(silent = false, forceFresh = false) {
@@ -2762,6 +2818,7 @@ async function pollGlobalActivity() {
   if (
     ["overview", "audit", "craft", "discord"].includes(appState.section)
     || !appState.authorized
+    || !appState.allowedSections.includes("overview")
   ) {
     return;
   }
@@ -2779,8 +2836,28 @@ function bindEvents() {
   byId("section-access-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = formValues("section-access-form");
-    await postJSON("/api/admin/access", { user_id: Number(values.user_id), section: values.section, enabled: true });
-    void loadSectionAccess();
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const result = await postJSON("/api/admin/access", {
+        user_id: Number(values.user_id),
+        section: values.section,
+        enabled: true,
+      });
+      showToast(result.message || "Доступ выдан.", false, {
+        title: result.dm_sent
+          ? "Доступ и уведомление готовы"
+          : "Доступ готов",
+        icon: "⌁",
+        sound: "success",
+      });
+      event.currentTarget.reset();
+      await loadSectionAccess();
+    } catch (error) {
+      handleError(error);
+    } finally {
+      button.disabled = false;
+    }
   });
   document.querySelectorAll("[data-section]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.section));
@@ -2949,6 +3026,7 @@ async function bootstrap() {
       requestedRoute = { section: appState.allowedSections[0], kind: "", key: "" };
       history.replaceState(null, "", routeHash(requestedRoute));
     }
+    appState.section = requestedRoute.section;
     if (requestedRoute.section === "minecraft") showApplication(access);
   } catch (error) {
     handleError(error);
@@ -3010,6 +3088,9 @@ window.TModAdmin = Object.freeze({
   },
   get authorized() {
     return appState.authorized;
+  },
+  get administrator() {
+    return appState.administrator;
   },
 });
 

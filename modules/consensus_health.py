@@ -94,7 +94,13 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Подтвердить ведущего или передать ведение подтверждённому председателю.",
         )
 
-    needs_bill = session.stage in {"voting", "finalizing", "discussion_type", "discussion"}
+    needs_bill = session.stage in {
+        "presentation",
+        "voting",
+        "finalizing",
+        "discussion_type",
+        "discussion",
+    }
     if needs_bill and session.current_bill is None:
         add(
             "bill_missing",
@@ -125,7 +131,13 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
         )
 
     if session.stage == "paused":
-        resumable_stages = {"voting", "discussion_type", "discussion", "after_result"}
+        resumable_stages = {
+            "presentation",
+            "voting",
+            "discussion_type",
+            "discussion",
+            "after_result",
+        }
         if session.previous_stage not in resumable_stages:
             add(
                 "pause_target_invalid",
@@ -133,7 +145,12 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
                 "Пауза не содержит корректного этапа для продолжения.",
                 "Председателю выбрать безопасное завершение либо сверить последний переход в журнале.",
             )
-        paused_needs_bill = session.previous_stage in {"voting", "discussion_type", "discussion"}
+        paused_needs_bill = session.previous_stage in {
+            "presentation",
+            "voting",
+            "discussion_type",
+            "discussion",
+        }
         if paused_needs_bill and session.current_bill is None:
             add(
                 "paused_bill_missing",
@@ -170,7 +187,7 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Найдены голоса с неизвестным значением.",
             "Остановить автоматическую фиксацию и восстановить корректный снимок.",
         )
-    if session.stage in {"registration", "after_result"} and session.votes:
+    if session.stage in {"registration", "presentation", "after_result"} and session.votes:
         add(
             "stale_votes",
             "warning",

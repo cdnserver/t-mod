@@ -79,6 +79,28 @@ class WebAuthRepositoryTests(unittest.TestCase):
         self.assertTrue(web_auth.delete_web_credential(10, 20))
         self.assertFalse(web_auth.web_session_version_matches(10, 20, second.session_version))
 
+    def test_section_grants_are_idempotent_and_revocable(self) -> None:
+        self.assertTrue(
+            web_auth.web_set_section_grant(
+                10, 20, "minecraft", enabled=True, granted_by_id=99
+            )
+        )
+        self.assertFalse(
+            web_auth.web_set_section_grant(
+                10, 20, "minecraft", enabled=True, granted_by_id=99
+            )
+        )
+        self.assertEqual(
+            [item["section"] for item in web_auth.web_section_grants(10, 20)],
+            ["minecraft"],
+        )
+        self.assertTrue(
+            web_auth.web_set_section_grant(
+                10, 20, "minecraft", enabled=False, granted_by_id=99
+            )
+        )
+        self.assertEqual(web_auth.web_section_grants(10, 20), [])
+
 
 if __name__ == "__main__":
     unittest.main()

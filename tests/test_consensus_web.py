@@ -232,6 +232,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         principal = self._principal()
         expected = {
             "registration": {"start_vote", "resend_invitations", "cancel_session"},
+            "presentation": {"open_vote", "pause", "finish_session"},
             "voting": {
                 "leader_vote",
                 "set_timer",
@@ -477,6 +478,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 'fetchJSON("/api/admin/access/self")',
                 admin_script_text,
             )
+            self.assertIn("TModReactor?.activateMinecraft", admin_script_text)
             self.assertIn("market-signal-list", admin_script_text)
             self.assertIn('!byId("admin-shell").hidden', admin_script_text)
             self.assertIn("!document.hidden", admin_script_text)
@@ -694,6 +696,21 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(not_admin.status, 303)
             self.assertIn("error=administrator", not_admin.headers["Location"])
+
+            storage.web_set_section_grant(
+                77,
+                42,
+                "craft",
+                enabled=True,
+                granted_by_id=1,
+            )
+            delegated = await client.post(
+                "/auth/login?next=/admin",
+                data={"login": "operator", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(delegated.status, 303)
+            self.assertEqual(delegated.headers["Location"], "/admin")
         finally:
             await client.close()
 
@@ -790,8 +807,29 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(denied.status, 403)
             self.assertEqual(
                 (await denied.json())["error"],
-                "administrator_required",
+                "section_access_required",
             )
+
+            storage.web_set_section_grant(
+                77,
+                2,
+                "craft",
+                enabled=True,
+                granted_by_id=1,
+            )
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=regular_member),
+            ):
+                delegated_craft = await client.get("/api/admin/crafts")
+                delegated_finance = await client.get("/api/admin/finance")
+                delegated_access = await client.get("/api/admin/access/self")
+            self.assertEqual(delegated_craft.status, 200)
+            self.assertFalse(
+                (await delegated_craft.json())["viewer"]["administrator"]
+            )
+            self.assertEqual(delegated_finance.status, 403)
+            self.assertEqual((await delegated_access.json())["sections"], ["craft"])
 
             with patch(
                 "modules.consensus_web.resolve_principal",
@@ -900,6 +938,58 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 (await missing_link.json())["error"],
                 "linked_record_not_found",
             )
+        finally:
+            await client.close()
+
+    async def test_section_access_notifies_recipient_by_dm(self) -> None:
+        recipient = SimpleNamespace(
+            id=2,
+            display_name="Получатель",
+            send=AsyncMock(),
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda user_id: recipient if int(user_id) == 2 else None,
+            fetch_member=AsyncMock(return_value=recipient),
+        )
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal()),
+            ):
+                response = await client.post(
+                    "/api/admin/access",
+                    headers={"X-CSRF-Token": "csrf-test-token"},
+                    json={"user_id": 2, "section": "minecraft", "enabled": True},
+                )
+            self.assertEqual(response.status, 200)
+            payload = await response.json()
+            self.assertTrue(payload["changed"])
+            self.assertTrue(payload["dm_sent"])
+            self.assertEqual(payload["grants"][0]["section_label"], "Minecraft")
+            recipient.send.assert_awaited_once()
+            embed = recipient.send.await_args.kwargs["embed"]
+            self.assertIn("Minecraft", embed.description)
+
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal()),
+            ):
+                duplicate = await client.post(
+                    "/api/admin/access",
+                    headers={"X-CSRF-Token": "csrf-test-token"},
+                    json={"user_id": 2, "section": "minecraft", "enabled": True},
+                )
+            duplicate_payload = await duplicate.json()
+            self.assertFalse(duplicate_payload["changed"])
+            self.assertFalse(duplicate_payload["dm_sent"])
+            self.assertIn("уже был выдан", duplicate_payload["message"])
+            recipient.send.assert_awaited_once()
         finally:
             await client.close()
 
@@ -1326,6 +1416,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
         simulation.confirm_all()
         simulation.begin_voting()
+        simulation.open_voting()
         simulation.cast_leader_vote("yes")
         register_consensus_simulation(simulation)
 
@@ -1439,6 +1530,39 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(message, "Команда симулятора выполнена.")
         self.assertTrue(simulation.session.quorum_ready())
+
+        await execute_consensus_web_command(  # type: ignore[arg-type]
+            self.bot,
+            self.bot.get_guild(77),
+            principal,
+            mode="simulation",
+            action="start_vote",
+            session_key=simulation.session.session_key,
+            revision=simulation.session.revision,
+            bill_id=0,
+            payload={},
+        )
+        self.assertEqual(simulation.session.stage, "presentation")
+        self.assertIn(
+            "open_vote",
+            consensus_web_capabilities(
+                mode="simulation",
+                session=simulation.session,
+                principal=principal,
+            ),
+        )
+        await execute_consensus_web_command(  # type: ignore[arg-type]
+            self.bot,
+            self.bot.get_guild(77),
+            principal,
+            mode="simulation",
+            action="open_vote",
+            session_key=simulation.session.session_key,
+            revision=simulation.session.revision,
+            bill_id=int(simulation.session.current_bill["id"]),
+            payload={},
+        )
+        self.assertEqual(simulation.session.stage, "voting")
 
     def test_public_https_url_replaces_local_display_address(self) -> None:
         with patch(

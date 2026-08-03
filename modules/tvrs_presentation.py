@@ -442,6 +442,43 @@ def build_live_vote_embed(session: LiveConsensusSession) -> discord.Embed:
         embed.set_footer(text="Повторное нажатие не создаст второй результат")
         return embed
     bill = session.current_bill or {}
+    if session.stage == "presentation":
+        bill_number = format_bill_number(int(bill.get("bill_number", 0) or 0))
+        embed = discord.Embed(
+            title=f"📖 Представление законопроекта • №{bill_number}",
+            description=f"**{clip_text(bill.get('title'), 220)}**",
+            color=TVRS_EMBED_COLOR,
+            timestamp=now_local(),
+        )
+        embed.add_field(
+            name="📄 Суть законопроекта",
+            value=clip_text(bill.get("summary"), 950),
+            inline=False,
+        )
+        embed.add_field(
+            name="📎 Материалы",
+            value=materials_text(bill.get("materials")),
+            inline=False,
+        )
+        embed.add_field(
+            name="Статус",
+            value=(
+                "Сенаторы уже видят проект, но голосование **ещё не открыто**. "
+                "Нажмите **«Поставить на воут»**, когда обсуждение завершено."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📚 Далее в очереди",
+            value=queue_short_lines(
+                session.guild_id,
+                limit=5,
+                skip_bill_id=int(bill.get("id") or 0),
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Панель ведущего • воут откроется только по вашей команде")
+        return embed
     calc = calculate_consensus(session)
     voted, total, vote_pct = vote_progress(session)
     bill_number = format_bill_number(int(bill.get("bill_number", 0) or 0))
@@ -503,6 +540,43 @@ def build_dm_vote_embed(session: LiveConsensusSession, participant: LiveParticip
         embed.add_field(name="Ваш статус", value="Голос принят. Ожидайте итог.", inline=False)
         return embed
     bill = session.current_bill or {}
+    if session.stage == "presentation":
+        bill_number = format_bill_number(int(bill.get("bill_number", 0) or 0))
+        embed = discord.Embed(
+            title=f"📖 Законопроект представлен • №{bill_number}",
+            description=f"**{clip_text(bill.get('title'), 220)}**",
+            color=TVRS_EMBED_COLOR,
+            timestamp=now_local(),
+        )
+        embed.add_field(
+            name="📄 Суть",
+            value=clip_text(bill.get("summary"), 950),
+            inline=False,
+        )
+        embed.add_field(
+            name="📎 Материалы",
+            value=materials_text(bill.get("materials")),
+            inline=False,
+        )
+        embed.add_field(
+            name="Голосование",
+            value=(
+                "⏳ **Воут ещё не открыт.** Изучите законопроект — кнопки «За», "
+                "«Против» и «Воздержаться» появятся после команды ведущего."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Очередь после текущего",
+            value=queue_short_lines(
+                session.guild_id,
+                limit=4,
+                skip_bill_id=int(bill.get("id") or 0),
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Личный пульт • голосование пока заблокировано ведущим")
+        return embed
     calc = calculate_consensus(session)
     voted, total, vote_pct = vote_progress(session)
     bill_number = format_bill_number(int(bill.get("bill_number", 0) or 0))
@@ -565,7 +639,9 @@ async def edit_or_send_vote_dm(guild: discord.Guild, session: LiveConsensusSessi
         except discord.DiscordException:
             p.dm_failed = True
             return
-    view: discord.ui.View = TVRSPermanentVoteView(session.session_key, p.user_id) if p.permanent else TVRSVoteView(session.session_key, p.user_id)
+    view: discord.ui.View | None = None
+    if session.stage == "voting":
+        view = TVRSPermanentVoteView(session.session_key, p.user_id) if p.permanent else TVRSVoteView(session.session_key, p.user_id)
     embed = build_dm_vote_embed(session, p)
     if p.vote_message_id:
         try:

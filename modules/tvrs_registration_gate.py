@@ -115,7 +115,12 @@ class TVRSStartCurrentRosterConfirmView(TVRSBaseView):
         )
         editor = getattr(interaction, "edit_original_response", None)
         if callable(editor):
-            if session.stage in {"voting", "discussion_type", "discussion"}:
+            if session.stage == "presentation":
+                message = (
+                    "Первый законопроект представлен текущему составу. "
+                    "Голосование откроется после кнопки «Поставить на воут»."
+                )
+            elif session.stage in {"voting", "discussion_type", "discussion"}:
                 message = "Голосование запущено текущим подтверждённым составом."
             elif session.stage == "paused":
                 message = session.paused_reason or "Запуск приостановлен: проверьте кворум."

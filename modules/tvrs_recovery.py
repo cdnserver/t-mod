@@ -556,11 +556,25 @@ async def reconcile_current_consensus_deliveries(
                     message_id,
                 )
     elif (
-        session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        session.stage in {
+            "presentation",
+            "voting",
+            "paused",
+            "discussion_type",
+            "discussion",
+        }
         and session.current_bill is not None
         and bill_id > 0
     ):
-        phase = "voting"
+        phase = (
+            "presentation"
+            if session.stage == "presentation"
+            or (
+                session.stage == "paused"
+                and session.previous_stage == "presentation"
+            )
+            else "voting"
+        )
         candidates = [
             item
             for item in session.confirmed_participants()
@@ -584,10 +598,13 @@ async def reconcile_current_consensus_deliveries(
                 continue
             # Non-voting stages must be projected once after restart so stale
             # voting buttons are removed even when the receipt still exists.
-            if not exists or (verify_discord_messages and session.stage != "voting"):
+            if not exists or (
+                verify_discord_messages
+                and session.stage not in {"presentation", "voting"}
+            ):
                 missing.add(participant.user_id)
                 continue
-            if verify_discord_messages:
+            if verify_discord_messages and session.stage == "voting":
                 try:
                     register_restored_view(
                         bot,
@@ -638,7 +655,24 @@ async def reconcile_current_consensus_deliveries(
             )
         )
     elif (
+        session.stage == "presentation"
+        and session.current_bill is not None
+        and bill_id > 0
+    ):
+        queued += int(
+            await _enqueue_semantic_delivery(
+                build_phase_announcement_delivery(
+                    session,
+                    phase="presentation",
+                    bill_id=bill_id,
+                )
+            )
+        )
+    elif (
         session.stage in {"voting", "paused", "discussion_type", "discussion"}
+        and not (
+            session.stage == "paused" and session.previous_stage == "presentation"
+        )
         and session.current_bill is not None
         and bill_id > 0
     ):

@@ -250,7 +250,11 @@ def build_observer_embed(session: LiveConsensusSession) -> discord.Embed:
             name=f"Текущий проект №{format_bill_number(int(bill.get('bill_number') or 0))}",
             value=(
                 f"**{clip_text(bill.get('title'), 220)}**\n"
-                f"Проголосовали: **{len(session.votes)}/{len(session.confirmed_participants())}**"
+                + (
+                    "Воут: **ожидает команды ведущего**"
+                    if session.stage == "presentation"
+                    else f"Проголосовали: **{len(session.votes)}/{len(session.confirmed_participants())}**"
+                )
             )[:1024],
             inline=False,
         )

@@ -154,6 +154,7 @@ def evaluate_consensus_preflight(
 def consensus_step_index(stage: str) -> int:
     return {
         "registration": 1,
+        "presentation": 2,
         "voting": 2,
         "discussion_type": 2,
         "discussion": 2,

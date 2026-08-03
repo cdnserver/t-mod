@@ -542,7 +542,7 @@ def tvrs_consensus_commit_begin_bill(
     details: dict[str, Any] | None = None,
     deliveries: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Atomically activate a bill, persist the voting stage and enqueue DMs."""
+    """Atomically bind a bill, persist its opening stage and enqueue projections."""
 
     session_key = str(snapshot.get("session_key") or "").strip()
     guild_id = int(snapshot.get("guild_id") or 0)
@@ -551,7 +551,8 @@ def tvrs_consensus_commit_begin_bill(
     current_bill = snapshot.get("current_bill") if isinstance(snapshot.get("current_bill"), dict) else {}
     if not session_key or guild_id <= 0 or expected < 1 or selected_bill_id <= 0:
         raise ValueError("consensus_begin_bill_identity_required")
-    if str(snapshot.get("stage") or "") != "voting" or int(current_bill.get("id") or 0) != selected_bill_id:
+    target_stage = str(snapshot.get("stage") or "")
+    if target_stage not in {"presentation", "voting"} or int(current_bill.get("id") or 0) != selected_bill_id:
         raise ValueError("consensus_begin_bill_snapshot_invalid")
 
     now = utc_now_iso()
@@ -565,7 +566,7 @@ def tvrs_consensus_commit_begin_bill(
             con.rollback()
             raise RuntimeError("consensus_session_not_persisted")
         if (
-            str(persisted["stage"] or "") == "voting"
+            str(persisted["stage"] or "") == target_stage
             and int(persisted["current_bill_id"] or 0) == selected_bill_id
             and int(persisted["revision"] or 0) == expected + 1
         ):
@@ -607,11 +608,19 @@ def tvrs_consensus_commit_begin_bill(
         session_update = con.execute(
             """
             UPDATE tvrs_consensus_sessions
-            SET stage = 'voting', current_bill_id = ?, snapshot_json = ?, revision = ?, updated_at = ?
+            SET stage = ?, current_bill_id = ?, snapshot_json = ?, revision = ?, updated_at = ?
             WHERE session_key = ? AND revision = ? AND finished_at IS NULL
               AND current_bill_id IS NULL
             """,
-            (selected_bill_id, snapshot_json, new_revision, now, session_key, expected),
+            (
+                target_stage,
+                selected_bill_id,
+                snapshot_json,
+                new_revision,
+                now,
+                session_key,
+                expected,
+            ),
         )
         if session_update.rowcount != 1:
             con.rollback()
@@ -621,7 +630,7 @@ def tvrs_consensus_commit_begin_bill(
             INSERT INTO tvrs_consensus_events(
                 session_key, guild_id, event_type, actor_id, actor_display,
                 stage_from, stage_to, details_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, 'voting', ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_key,
@@ -630,6 +639,7 @@ def tvrs_consensus_commit_begin_bill(
                 actor_id,
                 actor_display,
                 str(persisted["stage"] or ""),
+                target_stage,
                 json.dumps(details or {}, ensure_ascii=False, sort_keys=True),
                 now,
             ),
