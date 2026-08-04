@@ -27,12 +27,20 @@ const CATEGORY_LABELS = {
   significant: "Значимое",
   supreme: "Верховное",
 };
+const VOTE_LABELS = {
+  yes: "За",
+  no: "Против",
+  abstain: "Воздержаться",
+};
 
 const initialQuery = new URLSearchParams(window.location.search);
 let token = sessionStorage.getItem("t-consensus-token") || "";
 let selectedMode = initialQuery.get("mode")
   || sessionStorage.getItem("t-consensus-mode")
   || "";
+let selectedExperience = initialQuery.get("view")
+  || sessionStorage.getItem("t-consensus-experience")
+  || "ballot";
 let requestedBillId = Number(initialQuery.get("bill") || 0);
 let state = null;
 let pollTimer = null;
@@ -54,6 +62,14 @@ let visualOutcomeKey = "";
 let verdictAnimationTimer = null;
 let billDialogReturnFocus = null;
 let libraryDialogReturnFocus = null;
+let pendingBallotVote = null;
+let ballotNoticeTimer = null;
+let renderedBallotVote = "";
+let ballotAudioContext = null;
+let ballotSoundReady = false;
+let ballotSoundEnabled = localStorage.getItem("t-consensus-sound") !== "off";
+let observedSoundBill = "";
+let observedSoundStage = "";
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -62,6 +78,66 @@ function text(id, value) {
 function setConnection(mode, label) {
   connectionDot.className = `connection-dot ${mode}`;
   connectionText.textContent = label;
+}
+
+function renderSoundToggle() {
+  const button = byId("ballot-sound-toggle");
+  button.classList.toggle("muted", !ballotSoundEnabled);
+  button.setAttribute("aria-pressed", String(ballotSoundEnabled));
+  button.title = ballotSoundEnabled
+    ? ballotSoundReady ? "Звуки заседания включены" : "Нажмите, чтобы проверить звук"
+    : "Звуки заседания выключены";
+  button.querySelector("span").textContent = ballotSoundEnabled ? "♪" : "×";
+  button.querySelector("b").textContent = ballotSoundEnabled ? "Звук" : "Тихо";
+}
+
+function ensureBallotAudio() {
+  if (!ballotSoundEnabled) return null;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return null;
+  if (!ballotAudioContext) ballotAudioContext = new AudioContext();
+  if (ballotAudioContext.state === "suspended") void ballotAudioContext.resume();
+  ballotSoundReady = true;
+  renderSoundToggle();
+  return ballotAudioContext;
+}
+
+function playConsensusCue(kind) {
+  const context = ensureBallotAudio();
+  if (!context || !ballotSoundEnabled) return;
+  const notes = kind === "vote-open" ? [659.25, 880] : [392, 523.25];
+  const start = context.currentTime + 0.015;
+  notes.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const noteStart = start + index * 0.095;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, noteStart);
+    gain.gain.setValueAtTime(0.0001, noteStart);
+    gain.gain.exponentialRampToValueAtTime(0.035, noteStart + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.13);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(noteStart);
+    oscillator.stop(noteStart + 0.15);
+  });
+}
+
+function maybePlayConsensusCue(session, bill) {
+  const billKey = session && bill
+    ? `${session.key || "session"}:${bill.id || bill.bill_number || "bill"}`
+    : "";
+  const stage = String(session?.stage || "");
+  if (observedSoundBill && billKey && billKey !== observedSoundBill) {
+    playConsensusCue("new-bill");
+  } else if (
+    observedSoundStage
+    && observedSoundStage !== "voting"
+    && stage === "voting"
+  ) {
+    playConsensusCue("vote-open");
+  }
+  observedSoundBill = billKey;
+  observedSoundStage = stage;
 }
 
 function clearNode(node) {
@@ -831,10 +907,187 @@ function renderViewer(data) {
     ? "ведущий"
     : viewer.chair
       ? "председатель"
+      : viewer.participant
+        ? "участник голосования"
       : viewer.legacy_read_only
         ? "только просмотр"
         : "наблюдатель";
   text("viewer-role", role);
+}
+
+function renderExperience(data) {
+  const viewer = data.viewer || {};
+  const available = Boolean(
+    selectedMode === "live"
+    && viewer.authenticated
+    && viewer.ballot_available,
+  );
+  const switcher = byId("experience-switch");
+  switcher.hidden = !available;
+  if (!available) selectedExperience = "broadcast";
+  if (!new Set(["broadcast", "ballot"]).has(selectedExperience)) {
+    selectedExperience = "ballot";
+  }
+  switcher.querySelectorAll("[data-experience]").forEach((button) => {
+    const active = button.dataset.experience === selectedExperience;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const ballotMode = available && selectedExperience === "ballot";
+  document.body.classList.toggle("ballot-screen-mode", ballotMode);
+  byId("ballot-screen").hidden = !ballotMode;
+  return { available, ballotMode };
+}
+
+function selectExperience(experience) {
+  const apply = () => {
+    selectedExperience = experience;
+    sessionStorage.setItem("t-consensus-experience", selectedExperience);
+    if (state) render(state);
+  };
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (typeof document.startViewTransition === "function" && !reducedMotion) {
+    document.startViewTransition(apply);
+  } else {
+    apply();
+  }
+}
+
+function renderBallotPhases(session, vote) {
+  const stage = String(session?.stage || "");
+  const phaseIndex = stage === "presentation"
+    ? 0
+    : stage === "voting"
+      ? vote ? 2 : 1
+      : stage === "finalizing" || stage === "discussion" || stage === "discussion_type" || stage === "paused"
+        ? vote ? 2 : 1
+        : ["after_result", "finished"].includes(stage)
+          ? 3
+          : -1;
+  byId("ballot-phase-rail").querySelectorAll("[data-phase]").forEach((step, index) => {
+    step.classList.toggle("done", phaseIndex > index);
+    step.classList.toggle("active", phaseIndex === index);
+  });
+  return phaseIndex;
+}
+
+function ballotStageCopy(session, viewer) {
+  if (!session) return ["Ожидание", "Бюллетень не сформирован", "Следующее заседание ещё не открыто."];
+  if (!viewer.confirmed) return ["Нет допуска", "Участие не подтверждено", "Подтвердите участие через личную панель Discord."];
+  if (session.stage === "presentation") {
+    return ["Представление", "Ведущий представляет проект", "Текст уже доступен. Кнопки откроются после команды «Поставить на воут». "];
+  }
+  if (session.stage === "voting" && viewer.can_vote) {
+    return ["Воут открыт", viewer.vote ? "Ваш голос сохранён" : "Выберите решение", viewer.vote ? "До фиксации результата выбор можно изменить." : "Нажмите вариант и подтвердите его в защищённом окне."];
+  }
+  if (["discussion", "discussion_type", "paused"].includes(session.stage)) {
+    return ["Пауза", "Голосование приостановлено", session.pause_reason || "Дождитесь возвращения заседания к этапу голосования."];
+  }
+  if (session.stage === "finalizing") {
+    return ["Фиксация", "Бюллетень закрыт", "T-Mod фиксирует результат. Изменить голос уже нельзя."];
+  }
+  if (["after_result", "finished"].includes(session.stage)) {
+    return ["Зафиксирован", viewer.vote ? "Ваш голос учтён" : "Голосование завершено", "Результат сохранён в протоколе заседания."];
+  }
+  return [session.stage_label || "Ожидание", "Бюллетень закрыт", "Голосование сейчас недоступно."];
+}
+
+function showBallotNotice(message, kind = "success") {
+  const notice = byId("ballot-notice");
+  clearTimeout(ballotNoticeTimer);
+  notice.textContent = message;
+  notice.className = `ballot-notice ${kind}`;
+  notice.hidden = false;
+  ballotNoticeTimer = setTimeout(() => {
+    notice.hidden = true;
+  }, 5000);
+}
+
+function renderBallot(data) {
+  const session = data.session;
+  const viewer = data.viewer || {};
+  const bill = session?.current_bill || null;
+  const result = currentResult(session, bill);
+  const [stageLabel, title, detail] = ballotStageCopy(session, viewer);
+  const canVote = Boolean(viewer.can_vote && session?.stage === "voting" && bill);
+  const vote = String(viewer.vote || "");
+  const ballotScreen = byId("ballot-screen");
+  const phaseIndex = renderBallotPhases(session, vote);
+  if (viewer.ballot_available) maybePlayConsensusCue(session, bill);
+  ballotScreen.dataset.phase = String(Math.max(0, phaseIndex));
+  ballotScreen.dataset.vote = vote || "none";
+  byId("ballot-bill-card").dataset.number = bill ? formatNumber(bill.bill_number) : "000";
+
+  text("ballot-eyebrow", session ? `ПЛЕНАРНЫЙ КОНСЕНСУС · ${session.plenary_number}` : "ПЕРСОНАЛЬНЫЙ КОНТУР ГОЛОСОВАНИЯ");
+  text("ballot-heading", session ? "Персональный бюллетень" : "Бюллетень ожидает заседание");
+  text("ballot-session-detail", session ? `Ведущий: ${session.leader.name} · ${session.stage_label}` : "Когда заседание начнётся, проект появится здесь автоматически.");
+  text("ballot-identity", `${viewer.name || "Участник"} · личность подтверждена`);
+  text("ballot-bill-number", bill ? `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}` : "ПРОЕКТ НЕ ВЫБРАН");
+  text("ballot-bill-title", bill?.title || "Между законопроектами");
+  text("ballot-bill-author", bill?.author?.name || "—");
+  text("ballot-bill-category", categoryLabel(bill?.decision_category));
+  text("ballot-bill-threshold", formatPercent(result?.required_percent || session?.rules?.acceptance_percent));
+  text("ballot-bill-summary", bill?.summary || "Текст появится после представления законопроекта.");
+  text("ballot-stage", stageLabel);
+  byId("ballot-stage").className = `ballot-stage ${canVote ? "open" : vote ? "recorded" : "waiting"}`;
+  text("ballot-console-title", title);
+  text("ballot-console-detail", detail);
+  text("ballot-lock-indicator", canVote ? "открыт" : "закрыт");
+  byId("ballot-lock-indicator").className = `ballot-lock-indicator ${canVote ? "open" : "locked"}`;
+
+  const expected = Number(session?.voting?.expected || 0);
+  const received = Number(session?.voting?.received || 0);
+  const progress = expected > 0 ? Math.max(0, Math.min(100, received / expected * 100)) : 0;
+  text("ballot-progress-label", `${received} / ${expected}`);
+  byId("ballot-progress-bar").style.width = `${progress}%`;
+
+  const openBill = byId("ballot-open-bill");
+  openBill.disabled = !bill;
+  openBill.onclick = bill ? () => showBillDialog(bill, result) : null;
+  const sourceLink = byId("ballot-source-link");
+  sourceLink.hidden = !bill?.source_url;
+  if (bill?.source_url) sourceLink.href = bill.source_url;
+
+  document.querySelectorAll("#ballot-choices [data-vote]").forEach((button) => {
+    const selected = button.dataset.vote === vote;
+    button.disabled = !canVote || commanding;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  text("ballot-vote-value", vote ? `Ваш выбор: ${VOTE_LABELS[vote] || vote}` : "Голос ещё не подан");
+  text(
+    "ballot-receipt-detail",
+    vote && session
+      ? `Сохранено в журнале T-Mod · проект ${formatNumber(bill?.bill_number)} · r${session.revision}`
+      : "После выбора здесь появится защищённая квитанция",
+  );
+  const receipt = byId("ballot-receipt");
+  if (vote && vote !== renderedBallotVote) {
+    receipt.classList.remove("recorded", "seal-arrival");
+    void receipt.offsetWidth;
+    receipt.classList.add("recorded", "seal-arrival");
+  } else {
+    receipt.classList.toggle("recorded", Boolean(vote));
+  }
+  renderedBallotVote = vote;
+}
+
+function openVoteConfirmation(vote) {
+  if (!state?.viewer?.can_vote || commanding || !VOTE_LABELS[vote]) return;
+  pendingBallotVote = vote;
+  text("vote-confirm-choice", `«${VOTE_LABELS[vote]}»`);
+  const dialog = byId("vote-confirm-dialog");
+  dialog.dataset.vote = vote;
+  text("vote-confirm-submit", `Подтвердить: ${VOTE_LABELS[vote]}`);
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeVoteConfirmation() {
+  const dialog = byId("vote-confirm-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  pendingBallotVote = null;
 }
 
 function actionButton(label, action, payload = {}, options = {}) {
@@ -889,7 +1142,9 @@ function controlGroup(title, description = "") {
 function renderControls(data) {
   const panel = byId("operator-panel");
   const container = byId("operator-controls");
-  const capabilities = new Set(data.capabilities || []);
+  const capabilities = new Set(
+    (data.capabilities || []).filter((action) => action !== "participant_vote"),
+  );
   const viewer = data.viewer || {};
   const session = data.session;
   panel.hidden = capabilities.size === 0;
@@ -1071,9 +1326,18 @@ function render(data) {
   renderMode(data);
   renderViewer(data);
   applyVisualState(data);
-  const observerMode = !(data.capabilities || []).length;
+  const experience = renderExperience(data);
+  const privilegedControls = (data.capabilities || []).some(
+    (action) => action !== "participant_vote",
+  );
+  const observerMode = selectedMode === "simulation"
+    ? !privilegedControls
+    : experience.available
+      ? !experience.ballotMode
+      : !privilegedControls;
   document.body.classList.toggle("observer-screen-mode", observerMode);
   byId("observer-screen").hidden = !observerMode;
+  renderBallot(data);
   renderControls(data);
   const session = data.session;
   const active = Boolean(data.active && session);
@@ -1286,20 +1550,32 @@ async function sendCommand(action, payload = {}) {
     const result = await response.json();
     if (!response.ok) {
       showCommandMessage(result.message || "Команда не выполнена.", "error");
+      if (["participant_vote", "leader_vote"].includes(action)) {
+        showBallotNotice(result.message || "Голос не принят. Бюллетень обновляется.", "error");
+      }
       if (response.status === 401 || response.status === 403) await fetchState();
       else setTimeout(fetchState, 150);
       return;
     }
     render(result.state);
     showCommandMessage(result.message || "Команда выполнена.");
+    if (["participant_vote", "leader_vote"].includes(action)) {
+      showBallotNotice(result.message || "Голос принят.");
+    }
     setConnection("online", "обновляется");
   } catch (error) {
     showCommandMessage("Связь прервалась. Состояние будет проверено автоматически.", "error");
     setConnection("offline", "проверка состояния");
+    if (["participant_vote", "leader_vote"].includes(action)) {
+      showBallotNotice("Связь прервалась. Не повторяйте выбор — T-Mod проверит запись автоматически.", "error");
+    }
     setTimeout(fetchState, 500);
   } finally {
     commanding = false;
-    if (state) renderControls(state);
+    if (state) {
+      renderControls(state);
+      renderBallot(state);
+    }
   }
 }
 
@@ -1319,6 +1595,37 @@ document.querySelectorAll("#mode-switch button").forEach((button) => {
     await fetchState({ blocking: true });
   });
 });
+
+document.querySelectorAll("#experience-switch [data-experience]").forEach((button) => {
+  button.addEventListener("click", () => {
+    selectExperience(button.dataset.experience || "broadcast");
+  });
+});
+
+document.querySelectorAll("#ballot-choices [data-vote]").forEach((button) => {
+  button.addEventListener("click", () => openVoteConfirmation(button.dataset.vote || ""));
+});
+byId("vote-confirm-cancel").addEventListener("click", closeVoteConfirmation);
+byId("vote-confirm-submit").addEventListener("click", async () => {
+  const vote = pendingBallotVote;
+  if (!vote) return;
+  closeVoteConfirmation();
+  const action = state?.viewer?.leader ? "leader_vote" : "participant_vote";
+  await sendCommand(action, { vote });
+});
+byId("vote-confirm-dialog").addEventListener("click", (event) => {
+  if (event.target === byId("vote-confirm-dialog")) closeVoteConfirmation();
+});
+
+byId("ballot-sound-toggle").addEventListener("click", () => {
+  ballotSoundEnabled = !ballotSoundEnabled;
+  localStorage.setItem("t-consensus-sound", ballotSoundEnabled ? "on" : "off");
+  renderSoundToggle();
+  if (ballotSoundEnabled) playConsensusCue("new-bill");
+});
+document.addEventListener("pointerdown", () => {
+  if (ballotSoundEnabled && !ballotSoundReady) ensureBallotAudio();
+}, { once: true, passive: true });
 
 document.querySelectorAll("#observer-tabs [data-tab]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1363,6 +1670,7 @@ clockTimer = setInterval(() => {
   }
 }, 1000);
 
+renderSoundToggle();
 fetchState({ first: true }).finally(() => schedulePoll());
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && !dashboard.hidden) {

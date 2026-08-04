@@ -564,6 +564,33 @@ async def build_consensus_web_state(
     available_modes = ["live"]
     if simulation is not None:
         available_modes.append("simulation")
+    viewer_participant = (
+        session.participants.get(int(principal.user_id))
+        if principal is not None and session is not None
+        else None
+    )
+    viewer_vote_source = (
+        session.results[-1].votes
+        if session is not None
+        and session.stage in {"after_result", "finished"}
+        and session.results
+        else (session.votes if session is not None else {})
+    )
+    viewer_vote = (
+        str(viewer_vote_source.get(int(principal.user_id)) or "") or None
+        if principal is not None
+        and session is not None
+        and viewer_participant is not None
+        else None
+    )
+    viewer_can_vote = bool(
+        not selected_simulation
+        and session is not None
+        and session.stage == "voting"
+        and session.current_bill is not None
+        and viewer_participant is not None
+        and viewer_participant.confirmed
+    )
     state: dict[str, Any] = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "guild": {
@@ -615,6 +642,18 @@ async def build_consensus_web_state(
                 and session is not None
                 and int(session.leader_id) == int(principal.user_id)
             ),
+            "participant": viewer_participant is not None,
+            "confirmed": bool(viewer_participant and viewer_participant.confirmed),
+            "participant_kind": (
+                str(viewer_participant.kind) if viewer_participant is not None else None
+            ),
+            "ballot_available": bool(
+                not selected_simulation
+                and viewer_participant is not None
+                and viewer_participant.confirmed
+            ),
+            "can_vote": viewer_can_vote,
+            "vote": viewer_vote,
             "csrf_token": principal.csrf_token if principal else None,
         },
         "capabilities": consensus_web_capabilities(

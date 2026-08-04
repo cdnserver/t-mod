@@ -8,7 +8,8 @@ import traceback
 import discord
 from discord.ext import commands
 
-from modules.consensus_core import LiveConsensusSession
+from modules.consensus_core import ConsensusStateError, LiveConsensusSession
+from modules.consensus_health import assess_consensus_health
 from modules.consensus_service import ConsensusActor
 from modules.technical_log import log_technical_event
 from modules.tvrs_config import TVRS_PERMANENT_CHAIR_ID
@@ -24,6 +25,12 @@ async def retry_pending_finalization_once(
 ) -> bool:
     if session.stage != "finalizing":
         return True
+    health = assess_consensus_health(session)
+    if health.critical:
+        codes = ", ".join(item.code for item in health.critical)
+        raise ConsensusStateError(
+            f"Автоматическая фиксация остановлена проверкой целостности: {codes}."
+        )
     from modules.tvrs_decision import (
         apply_veto_for_actor,
         finalize_current_vote,
@@ -54,8 +61,15 @@ async def retry_pending_finalization_once(
             note=str(pending.get("oral_note") or "Устное решение"),
             expected_bill_id=int(pending.get("bill_id") or 0),
         )
-    else:
+    elif pending.get("kind") == "vote":
         await finalize_current_vote(bot, guild, session, forced=bool(pending.get("forced")))
+    else:
+        # Never guess how a durable transaction should be completed. A damaged
+        # or legacy snapshot must remain untouched until an administrator can
+        # compare it with the event journal.
+        raise ConsensusStateError(
+            "Невозможно восстановить фиксацию: тип решения отсутствует или неизвестен."
+        )
     return session.stage != "finalizing"
 
 
@@ -80,6 +94,20 @@ def schedule_finalization_retry(
                         return
                 except asyncio.CancelledError:
                     raise
+                except ConsensusStateError as exc:
+                    await log_technical_event(
+                        bot,
+                        guild,
+                        title="Фиксация консенсуса остановлена защитой",
+                        details=(
+                            f"Сессия: `{session.session_key[:120]}`\n"
+                            f"Ошибка: `{str(exc)[:700]}`\n"
+                            "Автоматические повторы прекращены. Проверьте сессию через пульт восстановления."
+                        ),
+                        dedupe_key=f"consensus-finalization-integrity:{session.session_key}",
+                        cooldown_seconds=300,
+                    )
+                    return
                 except Exception as exc:
                     traceback.print_exc()
                     await log_technical_event(

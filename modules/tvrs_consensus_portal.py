@@ -684,6 +684,13 @@ class TVRSParticipantPortalView(_RequesterPortalView):
         elif session and participant and session.stage == "voting":
             self._add_action("За", "✅", discord.ButtonStyle.success, self.vote_yes, row=0)
             self._add_action("Против", "❌", discord.ButtonStyle.danger, self.vote_no, row=0)
+            self._add_action(
+                "Воздержаться",
+                "➖",
+                discord.ButtonStyle.secondary,
+                self.vote_abstain,
+                row=0,
+            )
             if participant.kind == "senator" and not session.discussion_initiator_id:
                 self._add_action("Дискуссия", "💬", discord.ButtonStyle.secondary, self.discussion, row=0)
             if participant.permanent:
@@ -696,7 +703,7 @@ class TVRSParticipantPortalView(_RequesterPortalView):
 
             self.add_item(
                 discord.ui.Button(
-                    label="Веб-наблюдение",
+                    label="Веб-бюллетень",
                     emoji="🖥️",
                     style=discord.ButtonStyle.link,
                     url=consensus_web_entry_url(
@@ -761,6 +768,9 @@ class TVRSParticipantPortalView(_RequesterPortalView):
 
     async def vote_no(self, interaction: discord.Interaction) -> None:
         await self._vote(interaction, "no")
+
+    async def vote_abstain(self, interaction: discord.Interaction) -> None:
+        await self._vote(interaction, "abstain")
 
     async def discussion(self, interaction: discord.Interaction) -> None:
         from modules.tvrs_consensus_views import TVRSVoteView

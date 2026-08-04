@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import sqlite3
 import tempfile
 import threading
@@ -1200,7 +1199,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(_consensus_registry.get(77))
         self.assertEqual([message_id for _, message_id in added_views], [9002])
 
-    async def test_finalizing_session_is_reconciled_instead_of_cancelled_by_default(self) -> None:
+    async def test_finalizing_session_is_never_cancelled_automatically_on_boot(self) -> None:
         current = session()
         current.stage = "finalizing"
         current.current_bill = {"id": 10, "bill_number": 9, "title": "Вето"}
@@ -1218,13 +1217,10 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         guild = SimpleNamespace(id=77)
         bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
 
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch(
-                "modules.tvrs_recovery.reconcile_restored_consensus_session",
-                new=AsyncMock(),
-            ) as reconcile,
-        ):
+        with patch(
+            "modules.tvrs_recovery.reconcile_restored_consensus_session",
+            new=AsyncMock(),
+        ) as reconcile:
             restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
 
         self.assertEqual(restored, 1)
@@ -1233,6 +1229,42 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             StorageConsensusRepository().active_snapshots(77)[0]["stage"],
             "finalizing",
         )
+
+    async def test_malformed_session_is_preserved_for_manual_recovery_on_boot(self) -> None:
+        current = session()
+        StorageConsensusRepository().save(
+            current,
+            "session_created",
+            actor=ConsensusActor(1, "Ведущий"),
+        )
+        with storage._db_lock, storage.connect() as con:
+            con.execute(
+                "UPDATE tvrs_consensus_sessions SET snapshot_json = ? WHERE session_key = ?",
+                ("{broken", current.session_key),
+            )
+            con.commit()
+        guild = SimpleNamespace(id=77)
+        bot = SimpleNamespace(
+            get_guild=lambda guild_id: guild if guild_id == 77 else None,
+            is_closed=lambda: False,
+        )
+
+        with patch(
+            "modules.tvrs_recovery.log_technical_event",
+            new=AsyncMock(),
+        ) as technical_log:
+            restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
+
+        self.assertEqual(restored, 0)
+        snapshots = StorageConsensusRepository().active_snapshots(77)
+        self.assertEqual(len(snapshots), 1)
+        self.assertTrue(snapshots[0]["corrupt_snapshot_json"])
+        self.assertNotIn(
+            "session_quarantined",
+            {item["event_type"] for item in storage.tvrs_consensus_events(current.session_key)},
+        )
+        technical_log.assert_awaited_once()
+        self.assertIn(77, _consensus_recovery_tasks)
 
     async def test_concurrent_ready_events_reconcile_one_guild_only_once(self) -> None:
         current = session()

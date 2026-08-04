@@ -102,7 +102,15 @@ def consensus_web_capabilities(
     if session is None:
         return ["open_registration"] if is_chair(principal.member) else []
     if not _is_live_leader(session, principal):
-        return []
+        participant = session.participants.get(int(principal.user_id))
+        return (
+            ["participant_vote"]
+            if stage == "voting"
+            and participant is not None
+            and participant.confirmed
+            and session.current_bill is not None
+            else []
+        )
     return _stage_capabilities(
         stage,
         permanent=principal.user_id == TVRS_PERMANENT_CHAIR_ID,
@@ -205,6 +213,28 @@ def _validate_generation(
         )
 
 
+def _validate_ballot_generation(
+    session: LiveConsensusSession,
+    *,
+    session_key: str,
+    bill_id: int | None,
+) -> None:
+    """Protect a ballot without conflicting with votes from other members."""
+
+    if str(session.session_key) != str(session_key):
+        raise ConsensusWebCommandError(
+            "stale_session",
+            "Открыт бюллетень другого заседания. Панель уже обновляется.",
+            status=409,
+        )
+    if bill_id is None or int(bill_id) != consensus_bill_id(session):
+        raise ConsensusWebCommandError(
+            "stale_bill",
+            "Этот бюллетень относится к уже сменившемуся законопроекту.",
+            status=409,
+        )
+
+
 async def execute_consensus_web_command(
     bot: discord.Client,
     guild: discord.Guild,
@@ -277,6 +307,71 @@ async def _execute_live(
             "Активный консенсус не найден.",
             status=409,
         )
+    if action == "participant_vote":
+        _validate_ballot_generation(
+            session,
+            session_key=session_key,
+            bill_id=bill_id,
+        )
+        if "participant_vote" not in consensus_web_capabilities(
+            mode="live",
+            session=session,
+            principal=principal,
+        ):
+            raise ConsensusWebCommandError(
+                "vote_forbidden",
+                "Вы не входите в подтверждённый состав этого голосования.",
+                status=403,
+            )
+        vote = str(payload.get("vote") or "").strip().lower()
+        if vote not in {"yes", "no", "abstain"}:
+            raise ConsensusWebCommandError(
+                "invalid_vote",
+                "Выберите «за», «против» или «воздержаться».",
+            )
+        expected_bill_id = consensus_bill_id(session)
+        actor = ConsensusActor(principal.user_id, principal.display_name)
+        async with session_lock(session.guild_id):
+            if (
+                session.stage != "voting"
+                or str(session.session_key) != str(session_key)
+                or consensus_bill_id(session) != expected_bill_id
+            ):
+                raise ConsensusWebCommandError(
+                    "stale_ballot",
+                    "Голосование уже изменилось. Бюллетень обновляется.",
+                    status=409,
+                )
+            participant = session.participants.get(int(principal.user_id))
+            if participant is None or not participant.confirmed:
+                raise ConsensusWebCommandError(
+                    "vote_forbidden",
+                    "Вы не входите в подтверждённый состав этого голосования.",
+                    status=403,
+                )
+            should_finalize = await run_blocking_cancellation_safe(
+                coordinator.cast_vote,
+                session,
+                int(principal.user_id),
+                vote,
+                actor=actor,
+            )
+        if should_finalize:
+            await finalize_current_vote(
+                bot,
+                guild,
+                session,
+                forced=False,
+                expected_bill_id=expected_bill_id,
+            )
+        else:
+            try:
+                await update_host_vote_message(bot, guild, session)
+            except discord.DiscordException:
+                # The vote is already durable. A Discord projection outage must
+                # not turn a successful browser ballot into an HTTP failure.
+                pass
+        return "Ваш голос принят и синхронизирован с Discord."
     if not _is_live_leader(session, principal):
         raise ConsensusWebCommandError(
             "forbidden",

@@ -111,6 +111,14 @@
             <small>Рабочий консенсус и симуляция никогда не смешиваются</small>
           </div>
           <div class="mode-actions">
+            <div id="experience-switch" class="experience-switch" hidden aria-label="Режим участия">
+              <button type="button" data-experience="broadcast">
+                <span aria-hidden="true">◉</span> Трансляция
+              </button>
+              <button type="button" data-experience="ballot">
+                <span aria-hidden="true">✓</span> Мой бюллетень
+              </button>
+            </div>
             <button id="open-bill-library" class="library-button" type="button">
               Законопроекты
             </button>
@@ -128,6 +136,114 @@
             но не меняет базу, очередь и реальные голоса.
           </span>
         </aside>
+
+        <section id="ballot-screen" class="ballot-screen" aria-label="Персональный бюллетень" hidden>
+          <div class="ballot-aurora" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <header class="ballot-header">
+            <div>
+              <div id="ballot-eyebrow" class="eyebrow">ПЕРСОНАЛЬНЫЙ КОНТУР ГОЛОСОВАНИЯ</div>
+              <h1 id="ballot-heading">Ваш бюллетень</h1>
+              <p id="ballot-session-detail">Ожидаем сведения о текущем заседании.</p>
+            </div>
+            <div class="ballot-security">
+              <span class="ballot-security-mark" aria-hidden="true">T</span>
+              <span>
+                <strong>Защищённая сессия</strong>
+                <small id="ballot-identity">личность проверяется</small>
+              </span>
+              <button id="ballot-sound-toggle" class="ballot-sound-toggle" type="button" aria-pressed="true" title="Звуки заседания включены">
+                <span aria-hidden="true">♪</span><b>Звук</b>
+              </button>
+            </div>
+          </header>
+
+          <div id="ballot-phase-rail" class="ballot-phase-rail" aria-label="Этапы бюллетеня">
+            <span data-phase="presented"><i>01</i><b>Проект представлен</b></span>
+            <span data-phase="opened"><i>02</i><b>Воут открыт</b></span>
+            <span data-phase="recorded"><i>03</i><b>Голос принят</b></span>
+            <span data-phase="result"><i>04</i><b>Результат</b></span>
+          </div>
+
+          <div class="ballot-grid">
+            <article id="ballot-bill-card" class="ballot-bill-card" data-number="000">
+              <div class="ballot-bill-topline">
+                <span id="ballot-bill-number">ПРОЕКТ НЕ ВЫБРАН</span>
+                <span id="ballot-stage" class="ballot-stage waiting">ожидание</span>
+              </div>
+              <h2 id="ballot-bill-title">Между законопроектами</h2>
+              <div class="ballot-bill-meta">
+                <span><small>Автор</small><strong id="ballot-bill-author">—</strong></span>
+                <span><small>Тип решения</small><strong id="ballot-bill-category">—</strong></span>
+                <span><small>Порог</small><strong id="ballot-bill-threshold">—</strong></span>
+              </div>
+              <div class="ballot-bill-text">
+                <span>Суть предложения</span>
+                <p id="ballot-bill-summary">Текст появится после представления законопроекта.</p>
+              </div>
+              <div class="ballot-bill-actions">
+                <button id="ballot-open-bill" class="subtle-button" type="button" disabled>
+                  Открыть полный текст
+                </button>
+                <a id="ballot-source-link" class="text-link" href="#" target="_blank" rel="noreferrer" hidden>
+                  Оригинал в Discord ↗
+                </a>
+              </div>
+              <div class="ballot-progress" aria-label="Ход голосования">
+                <div>
+                  <span>Получено голосов</span>
+                  <strong id="ballot-progress-label">0 / 0</strong>
+                </div>
+                <div class="ballot-progress-track" aria-hidden="true"><span id="ballot-progress-bar"></span></div>
+                <small>Направления других голосов скрыты до фиксации результата</small>
+              </div>
+            </article>
+
+            <aside class="ballot-console">
+              <div class="ballot-console-head">
+                <div>
+                  <span>ВАШЕ РЕШЕНИЕ</span>
+                  <h2 id="ballot-console-title">Бюллетень закрыт</h2>
+                </div>
+                <span id="ballot-lock-indicator" class="ballot-lock-indicator locked">закрыт</span>
+              </div>
+              <p id="ballot-console-detail" class="ballot-console-detail">
+                Голосование ещё не открыто ведущим.
+              </p>
+
+              <div id="ballot-choices" class="ballot-choices" role="group" aria-label="Варианты голоса">
+                <button type="button" class="ballot-choice yes" data-vote="yes">
+                  <span class="ballot-choice-icon" aria-hidden="true">✓</span>
+                  <span><strong>За</strong><small>Поддержать законопроект</small></span>
+                  <i aria-hidden="true"></i>
+                </button>
+                <button type="button" class="ballot-choice no" data-vote="no">
+                  <span class="ballot-choice-icon" aria-hidden="true">×</span>
+                  <span><strong>Против</strong><small>Отклонить законопроект</small></span>
+                  <i aria-hidden="true"></i>
+                </button>
+                <button type="button" class="ballot-choice abstain" data-vote="abstain">
+                  <span class="ballot-choice-icon" aria-hidden="true">—</span>
+                  <span><strong>Воздержаться</strong><small>Не поддерживать ни одну сторону</small></span>
+                  <i aria-hidden="true"></i>
+                </button>
+              </div>
+
+              <div id="ballot-receipt" class="ballot-receipt" aria-live="polite">
+                <span class="ballot-receipt-icon" aria-hidden="true">◇</span>
+                <span>
+                  <strong id="ballot-vote-value">Голос ещё не подан</strong>
+                  <small id="ballot-receipt-detail">После выбора здесь появится защищённая квитанция</small>
+                </span>
+              </div>
+              <div id="ballot-notice" class="ballot-notice" role="status" hidden></div>
+              <p class="ballot-privacy">
+                Ваш выбор виден только вам до завершения голосования. Discord и веб используют одну запись T-Mod.
+              </p>
+            </aside>
+          </div>
+        </section>
 
         <section id="observer-screen" class="observer-screen" aria-label="Экран наблюдения" hidden>
           <header class="observer-session">
@@ -392,6 +508,22 @@
         </footer>
       </div>
     </main>
+
+    <dialog id="vote-confirm-dialog" class="vote-confirm-dialog" aria-labelledby="vote-confirm-title">
+      <article>
+        <div class="vote-confirm-mark" aria-hidden="true">T</div>
+        <div class="eyebrow">ПОДТВЕРЖДЕНИЕ БЮЛЛЕТЕНЯ</div>
+        <h2 id="vote-confirm-title">Подтвердите решение</h2>
+        <p>
+          Вы выбрали <strong id="vote-confirm-choice">—</strong>. Голос будет сразу
+          сохранён в T-Mod и синхронизирован с панелью Discord.
+        </p>
+        <div class="vote-confirm-actions">
+          <button id="vote-confirm-cancel" type="button" class="subtle-button">Вернуться</button>
+          <button id="vote-confirm-submit" type="button" class="vote-confirm-submit">Подтвердить голос</button>
+        </div>
+      </article>
+    </dialog>
 
     <dialog id="bill-dialog" class="bill-dialog" aria-labelledby="bill-dialog-title">
       <article>

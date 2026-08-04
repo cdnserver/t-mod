@@ -33,6 +33,7 @@ from modules.consensus_web_auth import (
     create_entry_ticket,
 )
 from modules.consensus_web_control import (
+    ConsensusWebCommandError,
     consensus_web_capabilities,
     execute_consensus_web_command,
 )
@@ -228,6 +229,34 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("open_registration", state["capabilities"])
         self.assertNotIn("confirm_participant", state["capabilities"])
 
+    async def test_confirmed_member_receives_private_web_ballot_state(self) -> None:
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(user_id=4),
+        )
+
+        self.assertTrue(state["viewer"]["participant"])
+        self.assertTrue(state["viewer"]["confirmed"])
+        self.assertTrue(state["viewer"]["ballot_available"])
+        self.assertTrue(state["viewer"]["can_vote"])
+        self.assertEqual(state["viewer"]["vote"], "no")
+        self.assertEqual(state["capabilities"], ["participant_vote"])
+        self.assertNotIn("'vote':", str(state["session"]["participants"]))
+
+    async def test_nonmember_remains_broadcast_only(self) -> None:
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(user_id=99),
+        )
+
+        self.assertFalse(state["viewer"]["participant"])
+        self.assertFalse(state["viewer"]["ballot_available"])
+        self.assertFalse(state["viewer"]["can_vote"])
+        self.assertIsNone(state["viewer"]["vote"])
+        self.assertEqual(state["capabilities"], [])
+
     def test_leader_capability_matrix_covers_every_live_stage(self) -> None:
         principal = self._principal()
         expected = {
@@ -265,6 +294,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
+        self.session.stage = "voting"
         observer = self._principal(user_id=4)
         self.assertEqual(
             consensus_web_capabilities(
@@ -272,8 +302,95 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 session=self.session,
                 principal=observer,
             ),
-            [],
+            ["participant_vote"],
         )
+
+    async def test_participant_vote_uses_shared_coordinator_without_revision_conflict(self) -> None:
+        principal = self._principal(user_id=4)
+
+        def cast_vote(session, user_id, vote, *, actor):
+            self.assertEqual(user_id, 4)
+            self.assertEqual(actor.user_id, 4)
+            session.votes[user_id] = vote
+            session.revision += 1
+            return False
+
+        with (
+            patch(
+                "modules.consensus_web_control.coordinator.cast_vote",
+                side_effect=cast_vote,
+            ) as mutation,
+            patch(
+                "modules.consensus_web_control.update_host_vote_message",
+                new=AsyncMock(),
+            ),
+        ):
+            message = await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                self.bot.get_guild(77),
+                principal,
+                mode="live",
+                action="participant_vote",
+                session_key=self.session.session_key,
+                revision=self.session.revision - 100,
+                bill_id=self.bill.id,
+                payload={"vote": "yes"},
+            )
+
+        self.assertEqual(message, "Ваш голос принят и синхронизирован с Discord.")
+        self.assertEqual(self.session.votes[4], "yes")
+        mutation.assert_called_once()
+
+    async def test_last_web_vote_runs_normal_vote_finalization(self) -> None:
+        principal = self._principal(user_id=4)
+        finalization = AsyncMock()
+
+        with (
+            patch(
+                "modules.consensus_web_control.coordinator.cast_vote",
+                return_value=True,
+            ),
+            patch(
+                "modules.consensus_web_control.finalize_current_vote",
+                new=finalization,
+            ),
+        ):
+            await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                self.bot.get_guild(77),
+                principal,
+                mode="live",
+                action="participant_vote",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={"vote": "abstain"},
+            )
+
+        finalization.assert_awaited_once_with(
+            self.bot,
+            self.bot.get_guild(77),
+            self.session,
+            forced=False,
+            expected_bill_id=self.bill.id,
+        )
+
+    async def test_web_vote_rejects_ballot_from_previous_bill(self) -> None:
+        with self.assertRaises(ConsensusWebCommandError) as raised:
+            await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                self.bot.get_guild(77),
+                self._principal(user_id=4),
+                mode="live",
+                action="participant_vote",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id + 100,
+                payload={"vote": "yes"},
+            )
+
+        self.assertEqual(raised.exception.code, "stale_bill")
+        self.assertEqual(self.session.votes[4], "no")
 
     def test_entry_ticket_is_single_use_and_guild_scoped(self) -> None:
         ticket = create_entry_ticket(guild_id=77, user_id=1)
@@ -299,6 +416,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             index_text = await index.text()
             self.assertIn("T·Consensus", index_text)
             self.assertIn('id="observer-screen"', index_text)
+            self.assertIn('id="experience-switch"', index_text)
+            self.assertIn('id="ballot-screen"', index_text)
+            self.assertIn('id="ballot-choices"', index_text)
+            self.assertIn('id="ballot-sound-toggle"', index_text)
+            self.assertIn('id="vote-confirm-dialog"', index_text)
             self.assertIn('id="atmosphere"', index_text)
             self.assertIn('id="result-announcer"', index_text)
             self.assertIn('id="bill-dialog"', index_text)
@@ -335,6 +457,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("payloadSignature", script_text)
             self.assertIn('id="data-loading"', index_text)
             self.assertIn("requestedBillId", script_text)
+            self.assertIn('"participant_vote"', script_text)
+            self.assertIn("renderBallot", script_text)
+            self.assertIn("maybePlayConsensusCue", script_text)
+            self.assertNotIn("innerHTML", script_text)
             self.assertIn('id="copy-bill-link"', index_text)
             stylesheet = await client.get("/assets/style.css")
             self.assertEqual(stylesheet.status, 200)
@@ -352,6 +478,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("color-scheme: dark", stylesheet_text)
             self.assertIn("background-color: #080b0c", stylesheet_text)
             self.assertIn("min-height: 100dvh", stylesheet_text)
+            self.assertIn(".experience-switch", stylesheet_text)
+            self.assertIn(".ballot-screen", stylesheet_text)
+            self.assertIn(".ballot-choice", stylesheet_text)
 
             login_page = await client.get("/login")
             self.assertEqual(login_page.status, 200)

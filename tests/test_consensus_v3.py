@@ -208,7 +208,18 @@ class ConsensusV3UiTests(unittest.TestCase):
                 view = TVRSParticipantPortalView(current.session_key, 3)
                 embed = build_participant_portal_embed(current, 3)
             labels = {str(item.label) for item in view.children}
-            self.assertTrue({"За", "Против", "Дискуссия", "Обновить", "Обзор"} <= labels)
+            self.assertTrue(
+                {
+                    "За",
+                    "Против",
+                    "Воздержаться",
+                    "Дискуссия",
+                    "Обновить",
+                    "Обзор",
+                    "Веб-бюллетень",
+                }
+                <= labels
+            )
             self.assertIn("Личный пульт V3", embed.footer.text)
             self.assertLessEqual(len(view.children), 25)
 

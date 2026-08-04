@@ -262,6 +262,22 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
                 "Фиксация относится не к текущему законопроекту.",
                 "Остановить повторы и сверить атомарную транзакцию результата.",
             )
+        actor_id = as_int(pending.get("actor_id"))
+        actor = session.participants.get(actor_id) if actor_id is not None else None
+        if kind in {"veto", "oral"} and (actor is None or actor.kind != "chair"):
+            add(
+                "finalization_actor_invalid",
+                "critical",
+                "Сохранённое особое решение не принадлежит председателю состава.",
+                "Не продолжать фиксацию; сверить автора операции с журналом событий.",
+            )
+        if kind == "veto" and actor is not None and not actor.permanent:
+            add(
+                "veto_actor_not_permanent",
+                "critical",
+                "Сохранённое вето принадлежит председателю без права постоянного вето.",
+                "Не применять вето; сверить автора операции с журналом событий.",
+            )
         if kind == "oral" and (
             str(pending.get("oral_status") or "") not in {"accepted", "rejected"}
             or not str(pending.get("oral_note") or "").strip()

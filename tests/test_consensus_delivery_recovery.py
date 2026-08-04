@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
-from modules.consensus_core import LiveConsensusSession, LiveParticipant, LiveResult
+from modules.consensus_core import (
+    ConsensusStateError,
+    LiveConsensusSession,
+    LiveParticipant,
+    LiveResult,
+)
+from modules.consensus_finalization_recovery import retry_pending_finalization_once
 from modules.consensus_runtime import registry
 from modules.delivery_outbox import (
     DeliveryDeferred,
@@ -1004,6 +1010,51 @@ class ConsensusDeliveryRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(changed)
         retry.assert_not_awaited()
+
+    async def test_direct_retry_never_guesses_damaged_finalization_claim(self) -> None:
+        damaged_claims = (
+            {"kind": "unknown", "bill_id": 10},
+            {"kind": "vote", "bill_id": 999},
+            {"kind": "veto", "bill_id": 10, "actor_id": 2},
+            {
+                "kind": "oral",
+                "bill_id": 10,
+                "actor_id": 2,
+                "oral_status": "accepted",
+                "oral_note": "Решено устно",
+            },
+        )
+
+        for pending in damaged_claims:
+            with self.subTest(pending=pending):
+                current = _session(stage="finalizing")
+                current.pending_action = dict(pending)
+                with (
+                    patch(
+                        "modules.tvrs_decision.apply_veto_for_actor",
+                        new=AsyncMock(),
+                    ) as veto,
+                    patch(
+                        "modules.tvrs_decision.finalize_current_vote",
+                        new=AsyncMock(),
+                    ) as vote,
+                    patch(
+                        "modules.tvrs_decision.record_oral_result",
+                        new=AsyncMock(),
+                    ) as oral,
+                ):
+                    with self.assertRaises(ConsensusStateError):
+                        await retry_pending_finalization_once(
+                            SimpleNamespace(),  # type: ignore[arg-type]
+                            SimpleNamespace(id=77),  # type: ignore[arg-type]
+                            current,
+                        )
+
+                veto.assert_not_awaited()
+                vote.assert_not_awaited()
+                oral.assert_not_awaited()
+                self.assertEqual(current.stage, "finalizing")
+                self.assertEqual(current.pending_action, pending)
 
 
 if __name__ == "__main__":

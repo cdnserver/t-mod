@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -856,34 +855,6 @@ async def restore_tvrs_consensus_sessions(
         guild = bot.get_guild(guild_id)
         if guild is None:
             continue
-        if (
-            str(snapshot.get("stage") or "") == "finalizing"
-            and str(os.getenv("TMOD_CANCEL_FINALIZING_CONSENSUS_ON_BOOT", "false")).lower()
-            in {"1", "true", "yes", "on"}
-        ):
-            session_key = str(snapshot.get("session_key") or "")
-            print(
-                "Consensus snapshot quarantined on boot: "
-                f"guild={guild_id} session={session_key[:120]} stage=finalizing"
-            )
-            await asyncio.to_thread(
-                _consensus_repository.quarantine,
-                session_key,
-                "Emergency boot quarantine: session was stuck in finalizing; rerun consensus manually.",
-            )
-            await log_technical_event(
-                bot,
-                guild,
-                title="Консенсус аварийно отменён при запуске",
-                details=(
-                    f"Сессия: `{session_key[:120] or 'unknown'}`\n"
-                    "Причина: сессия была в `finalizing` и могла продолжить retry-loop. "
-                    "Проведите консенсус заново."
-                ),
-                dedupe_key=f"consensus-finalizing-boot-quarantine:{guild_id}",
-                cooldown_seconds=300,
-            )
-            continue
         session = _consensus_registry.get(guild_id)
         if session is None:
             try:
@@ -898,26 +869,22 @@ async def restore_tvrs_consensus_sessions(
                 AttributeError,
             ) as exc:
                 print(
-                    "Consensus snapshot quarantined: "
+                    "Consensus snapshot requires manual recovery: "
                     f"guild={guild_id} error={type(exc).__name__}: {str(exc)[:300]}"
-                )
-                await asyncio.to_thread(
-                    _consensus_repository.quarantine,
-                    str(snapshot.get("session_key") or ""),
-                    f"{type(exc).__name__}: {exc}",
                 )
                 await log_technical_event(
                     bot,
                     guild,
-                    title="Сессия консенсуса изолирована",
+                    title="Сессия консенсуса сохранена для ручного восстановления",
                     details=(
                         f"Сессия: `{str(snapshot.get('session_key') or 'неизвестно')[:120]}`\n"
                         f"Причина: `{type(exc).__name__}: {str(exc)[:700]}`\n"
-                        "Текущий законопроект возвращён в очередь. Можно начать новое заседание."
+                        "Бот не изменял заседание и законопроект. Проверьте снимок и журнал событий вручную."
                     ),
-                    dedupe_key=f"consensus-quarantine:{guild_id}",
+                    dedupe_key=f"consensus-snapshot-integrity:{guild_id}",
                     cooldown_seconds=300,
                 )
+                schedule_consensus_recovery_retry(bot, guild_id)
                 continue
         if session is None:
             continue
