@@ -218,6 +218,7 @@ async def apply_veto_for_actor(
         if session.current_bill is None:
             raise ConsensusStateError("Текущий законопроект уже закрыт; вето не применено.")
         bill = dict(session.current_bill)
+        retry_error: str | None = None
         try:
             retry = await run_blocking_cancellation_safe(
                 storage.tvrs_create_retry_bill,
@@ -225,9 +226,12 @@ async def apply_veto_for_actor(
                 int(actor.user_id or 0),
                 actor.display_name,
             )
-        except Exception:
-            schedule_finalization_retry(bot, guild, session)
-            raise
+        except Exception as exc:
+            # Veto finalization must not be held hostage by the auxiliary
+            # retry-bill clone.  If cloning fails permanently, keeping the
+            # session in "finalizing" only creates an endless recovery loop.
+            retry = None
+            retry_error = f"{type(exc).__name__}: {str(exc)[:500]}"
         result = LiveResult(
             bill_id=int(bill["id"]),
             bill_number=int(bill["bill_number"]),
@@ -270,6 +274,7 @@ async def apply_veto_for_actor(
                 details={
                     "veto_by_id": actor.user_id,
                     "retry_bill_number": result.retry_bill_number,
+                    "retry_bill_error": retry_error,
                 },
                 deliveries=deliveries,
             )

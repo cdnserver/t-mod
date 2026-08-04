@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -854,6 +855,34 @@ async def restore_tvrs_consensus_sessions(
             continue
         guild = bot.get_guild(guild_id)
         if guild is None:
+            continue
+        if (
+            str(snapshot.get("stage") or "") == "finalizing"
+            and str(os.getenv("TMOD_CANCEL_FINALIZING_CONSENSUS_ON_BOOT", "true")).lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            session_key = str(snapshot.get("session_key") or "")
+            print(
+                "Consensus snapshot quarantined on boot: "
+                f"guild={guild_id} session={session_key[:120]} stage=finalizing"
+            )
+            await asyncio.to_thread(
+                _consensus_repository.quarantine,
+                session_key,
+                "Emergency boot quarantine: session was stuck in finalizing; rerun consensus manually.",
+            )
+            await log_technical_event(
+                bot,
+                guild,
+                title="Консенсус аварийно отменён при запуске",
+                details=(
+                    f"Сессия: `{session_key[:120] or 'unknown'}`\n"
+                    "Причина: сессия была в `finalizing` и могла продолжить retry-loop. "
+                    "Проведите консенсус заново."
+                ),
+                dedupe_key=f"consensus-finalizing-boot-quarantine:{guild_id}",
+                cooldown_seconds=300,
+            )
             continue
         session = _consensus_registry.get(guild_id)
         if session is None:
