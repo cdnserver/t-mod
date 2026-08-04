@@ -1737,7 +1737,12 @@ def _apply_consensus_result_dedup_in_connection(
     return summary
 
 
-def _apply_consensus_v2_reset_in_connection(con: sqlite3.Connection, reset_id: str) -> dict[str, int | str]:
+def _apply_consensus_v2_reset_in_connection(
+    con: sqlite3.Connection,
+    reset_id: str,
+    *,
+    destructive: bool = False,
+) -> dict[str, int | str]:
     meta_key = _consensus_reset_meta_key(reset_id)
     existing = con.execute("SELECT value FROM meta WHERE key = ?", (meta_key,)).fetchone()
     if existing is not None:
@@ -1748,6 +1753,23 @@ def _apply_consensus_v2_reset_in_connection(con: sqlite3.Connection, reset_id: s
         "results": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_live_results").fetchone()["n"]),
         "sessions": int(con.execute("SELECT COUNT(*) AS n FROM tvrs_consensus_sessions").fetchone()["n"]),
     }
+    if (
+        not destructive
+        and str(reset_id) == "2026-07-16-clean-consensus-v2"
+        and any(counts.values())
+    ):
+        # A missing migration marker is not proof that current consensus data
+        # is legacy.  The meta table can be repaired or partially lost while
+        # all domain tables remain valid.  Startup must therefore fail safe:
+        # preserve existing decisions and recreate the marker.  The explicit
+        # maintenance API below (or a deliberately new migration id) is the
+        # only path allowed to erase this data.
+        summary: dict[str, int | str] = {
+            "status": "preserved_existing_data",
+            **counts,
+        }
+        set_meta(con, meta_key, json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return summary
     con.execute("DELETE FROM tvrs_consensus_events")
     con.execute("DELETE FROM tvrs_consensus_sessions")
     con.execute("DELETE FROM tvrs_votes")
@@ -1770,7 +1792,11 @@ def tvrs_apply_consensus_v2_reset(reset_id: str | None = None) -> dict[str, int 
     reset_id = str(reset_id or _core.CONSENSUS_V2_RESET_ID)
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
-        result = _apply_consensus_v2_reset_in_connection(con, reset_id)
+        result = _apply_consensus_v2_reset_in_connection(
+            con,
+            reset_id,
+            destructive=True,
+        )
         con.commit()
         return result
 

@@ -858,7 +858,7 @@ async def restore_tvrs_consensus_sessions(
             continue
         if (
             str(snapshot.get("stage") or "") == "finalizing"
-            and str(os.getenv("TMOD_CANCEL_FINALIZING_CONSENSUS_ON_BOOT", "true")).lower()
+            and str(os.getenv("TMOD_CANCEL_FINALIZING_CONSENSUS_ON_BOOT", "false")).lower()
             in {"1", "true", "yes", "on"}
         ):
             session_key = str(snapshot.get("session_key") or "")

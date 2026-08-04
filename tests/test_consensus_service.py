@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -572,14 +573,39 @@ class ConsensusStorageIdempotencyTests(unittest.TestCase):
             title="Проект с вето",
             summary="Описание",
             materials=None,
+            editor_workspace_id=987,
         )
         first = storage.tvrs_create_retry_bill(bill.id, 1, "ППС")
         second = storage.tvrs_create_retry_bill(bill.id, 1, "ППС")
         self.assertIsNotNone(first)
         self.assertEqual(first["id"], second["id"])  # type: ignore[index]
         self.assertEqual(first["status"], "pending_veto")  # type: ignore[index]
+        self.assertIsNone(first["editor_workspace_id"])  # type: ignore[index]
+        self.assertEqual(storage.tvrs_get_bill_dict_by_id(bill.id)["editor_workspace_id"], 987)  # type: ignore[index]
         self.assertNotIn(int(first["id"]), {int(item["id"]) for item in storage.tvrs_queue_bills(77)})  # type: ignore[index]
         self.assertEqual(len(storage.tvrs_recent_bills(77)), 2)
+
+    def test_startup_recreates_missing_reset_marker_without_erasing_consensus(self) -> None:
+        bill = storage.tvrs_create_bill(
+            guild_id=77,
+            channel_id=100,
+            author_id=1,
+            author_display="Автор",
+            title="Сохранить после ремонта meta",
+            summary="Стартовая миграция не должна удалять актуальные данные.",
+            materials=None,
+        )
+        marker = f"migration:consensus-reset:{storage.CONSENSUS_V2_RESET_ID}"
+        with storage.connect() as con:
+            con.execute("DELETE FROM meta WHERE key = ?", (marker,))
+            con.commit()
+
+        storage.init_db()
+
+        self.assertIsNotNone(storage.tvrs_get_bill_dict_by_id(bill.id))
+        restored_marker = storage.get_meta(marker)
+        self.assertIsNotNone(restored_marker)
+        self.assertEqual(json.loads(restored_marker)["status"], "preserved_existing_data")
 
     def test_veto_retry_becomes_visible_only_with_atomic_result_commit(self) -> None:
         coordinator, current, bill, _ = self._prepared_finalization(kind="veto")
@@ -1173,6 +1199,40 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored, 1)
         self.assertIsNotNone(_consensus_registry.get(77))
         self.assertEqual([message_id for _, message_id in added_views], [9002])
+
+    async def test_finalizing_session_is_reconciled_instead_of_cancelled_by_default(self) -> None:
+        current = session()
+        current.stage = "finalizing"
+        current.current_bill = {"id": 10, "bill_number": 9, "title": "Вето"}
+        current.pending_action = {
+            "kind": "veto",
+            "bill_id": 10,
+            "actor_id": 1,
+            "actor_display": "Председатель",
+        }
+        StorageConsensusRepository().save(
+            current,
+            "veto_claimed",
+            actor=ConsensusActor(1, "Председатель"),
+        )
+        guild = SimpleNamespace(id=77)
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "modules.tvrs_recovery.reconcile_restored_consensus_session",
+                new=AsyncMock(),
+            ) as reconcile,
+        ):
+            restored = await restore_tvrs_consensus_sessions(bot)  # type: ignore[arg-type]
+
+        self.assertEqual(restored, 1)
+        reconcile.assert_awaited_once()
+        self.assertEqual(
+            StorageConsensusRepository().active_snapshots(77)[0]["stage"],
+            "finalizing",
+        )
 
     async def test_concurrent_ready_events_reconcile_one_guild_only_once(self) -> None:
         current = session()

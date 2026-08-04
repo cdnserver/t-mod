@@ -1342,6 +1342,7 @@ def tvrs_mark_bill_status(bill_id: int, status: str, result_summary: str | None 
 
 
 def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display: str | None) -> dict[str, Any] | None:
+    """Create one retry attempt without reusing the editor's one-to-one workspace."""
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
@@ -1382,7 +1383,7 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
                 status, created_at, updated_at, original_bill_id, attempt
             )
             VALUES(
-                ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                 'pending_veto', ?, ?, ?, ?
             )
             """,
@@ -1398,7 +1399,6 @@ def tvrs_create_retry_bill(original_bill_id: int, author_id: int, author_display
                 "ordinary",
                 original_dict.get("implementation_plan"),
                 original_dict.get("leadership_actions"),
-                original_dict.get("editor_workspace_id"),
                 now,
                 now,
                 root_bill_id,
