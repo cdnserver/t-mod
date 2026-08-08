@@ -106,6 +106,35 @@ class DatabaseGuardTests(unittest.TestCase):
         )
         self.assertEqual(report["created"], [])
 
+    def test_startup_reuses_recent_validated_pre_update_backup(self) -> None:
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        backup = database_guard.create_database_backup("pre-update", now=now)
+
+        recovery = database_guard.ensure_startup_recovery_point(
+            now=now + timedelta(minutes=10),
+        )
+
+        self.assertTrue(recovery["reused"])
+        self.assertEqual(recovery["name"], backup["name"])
+        self.assertFalse(
+            any(
+                item["kind"] == "startup"
+                for item in database_guard.list_database_backups(limit=20)
+            )
+        )
+
+    def test_startup_creates_new_snapshot_when_previous_one_is_stale(self) -> None:
+        now = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        database_guard.create_database_backup(
+            "pre-update",
+            now=now - timedelta(hours=13),
+        )
+
+        recovery = database_guard.ensure_startup_recovery_point(now=now)
+
+        self.assertFalse(recovery["reused"])
+        self.assertEqual(recovery["kind"], "startup")
+
     def test_retention_prunes_oldest_snapshots_per_kind(self) -> None:
         base = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
         for offset in range(4):

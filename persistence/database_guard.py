@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -119,12 +120,33 @@ def _validate_kind(kind: str) -> str:
     return selected
 
 
-def _integrity_result(path: Path, *, full: bool = False) -> dict[str, Any]:
+def _integrity_result(
+    path: Path,
+    *,
+    full: bool = False,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     started = _utc_now()
+    deadline = (
+        time.monotonic() + max(0.1, float(timeout_seconds))
+        if timeout_seconds is not None
+        else None
+    )
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=30) as con:
+    connection_timeout = 30.0 if timeout_seconds is None else min(5.0, max(0.1, float(timeout_seconds)))
+    with sqlite3.connect(uri, uri=True, timeout=connection_timeout) as con:
+        if deadline is not None:
+            con.set_progress_handler(
+                lambda: 1 if time.monotonic() >= deadline else 0,
+                1_000,
+            )
         pragma = "PRAGMA integrity_check" if full else "PRAGMA quick_check"
-        rows = [str(row[0]) for row in con.execute(pragma).fetchall()]
+        try:
+            rows = [str(row[0]) for row in con.execute(pragma).fetchall()]
+        except sqlite3.OperationalError as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("database_integrity_check_timeout") from exc
+            raise
     elapsed_ms = round((_utc_now() - started).total_seconds() * 1000, 1)
     ok = rows == ["ok"]
     return {
@@ -164,6 +186,7 @@ def create_database_backup(
     *,
     note: str | None = None,
     now: datetime | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Create, validate and atomically publish one consistent snapshot."""
 
@@ -181,16 +204,44 @@ def create_database_backup(
     final_path = config.backup_dir / f"tmod-{selected_kind}-{stamp}.db"
     temporary = config.backup_dir / f".{final_path.name}.partial"
     temporary.unlink(missing_ok=True)
+    deadline = (
+        time.monotonic() + max(0.1, float(timeout_seconds))
+        if timeout_seconds is not None
+        else None
+    )
+
+    def backup_progress(_: int, __: int, ___: int) -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("database_backup_timeout")
 
     try:
         with _core._db_lock:
-            with sqlite3.connect(_core.DATABASE_FILE, timeout=30) as source:
-                with sqlite3.connect(temporary, timeout=30) as target:
-                    source.backup(target, pages=256, sleep=0.01)
+            connection_timeout = (
+                30.0
+                if timeout_seconds is None
+                else min(5.0, max(0.1, float(timeout_seconds)))
+            )
+            with sqlite3.connect(
+                _core.DATABASE_FILE,
+                timeout=connection_timeout,
+            ) as source:
+                with sqlite3.connect(temporary, timeout=connection_timeout) as target:
+                    source.backup(
+                        target,
+                        pages=256,
+                        progress=backup_progress,
+                        sleep=0.05,
+                    )
                     target.execute("PRAGMA journal_mode=DELETE")
+        remaining = (
+            None
+            if deadline is None
+            else max(0.1, deadline - time.monotonic())
+        )
         integrity = _integrity_result(
             temporary,
             full=selected_kind in {"daily", "manual", "pre-update"},
+            timeout_seconds=remaining,
         )
         if not integrity["ok"]:
             raise sqlite3.DatabaseError(
@@ -217,6 +268,54 @@ def create_database_backup(
     _atomic_json(_state_path(config), state)
     prune_database_backups()
     return payload
+
+
+@_serialized
+def ensure_startup_recovery_point(
+    *,
+    note: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Reuse a fresh validated snapshot or create one with a hard time budget."""
+
+    current = (now or _utc_now()).astimezone(timezone.utc)
+    reuse_minutes = _env_int(
+        "TMOD_DB_STARTUP_REUSE_MINUTES",
+        12 * 60,
+        minimum=5,
+        maximum=24 * 60,
+    )
+    for item in list_database_backups(limit=20):
+        created_at = _parse_timestamp(item.get("created_at"))
+        integrity = item.get("integrity") or {}
+        path = Path(str(item.get("path") or ""))
+        age = current - created_at if created_at is not None else None
+        if (
+            created_at is not None
+            and age is not None
+            and timedelta(0) <= age <= timedelta(minutes=reuse_minutes)
+            and path.is_file()
+            and bool(integrity.get("ok"))
+        ):
+            return {
+                **item,
+                "reused": True,
+                "reuse_reason": "fresh_validated_backup",
+            }
+
+    timeout_seconds = _env_int(
+        "TMOD_DB_STARTUP_BACKUP_TIMEOUT_SECONDS",
+        20,
+        minimum=5,
+        maximum=300,
+    )
+    created = create_database_backup(
+        "startup",
+        note=note,
+        now=current,
+        timeout_seconds=float(timeout_seconds),
+    )
+    return {**created, "reused": False}
 
 
 def list_database_backups(*, limit: int = 50) -> list[dict[str, Any]]:
@@ -392,6 +491,7 @@ __all__ = [
     "create_database_backup",
     "database_guard_config",
     "database_protection_snapshot",
+    "ensure_startup_recovery_point",
     "list_database_backups",
     "prune_database_backups",
     "restore_database_backup",
