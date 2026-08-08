@@ -328,6 +328,8 @@ def init_db() -> None:
                 organization_id INTEGER NOT NULL,
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL DEFAULT 'lspd',
+                visibility_scope TEXT NOT NULL DEFAULT 'workspace'
+                    CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
                 title TEXT NOT NULL,
                 source_kind TEXT NOT NULL DEFAULT 'memo'
                     CHECK(source_kind IN ('document', 'forum', 'memo', 'regulation', 'manual', 'url')),
@@ -1651,7 +1653,28 @@ def init_db() -> None:
             "faction_code",
             "TEXT NOT NULL DEFAULT 'lspd'",
         )
+        atlas_scope_missing = not any(
+            str(row["name"]) == "visibility_scope"
+            for row in con.execute("PRAGMA table_info(atlas_knowledge_sources)").fetchall()
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "visibility_scope",
+            "TEXT NOT NULL DEFAULT 'workspace'",
+        )
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
+        if atlas_scope_missing:
+            # Existing material remains private. Marking it pending replaces
+            # old Qdrant payloads with the new access-scope token on startup.
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = CASE WHEN status = 'archived' THEN status ELSE 'pending' END,
+                    qdrant_point_id = NULL,
+                    last_error = NULL
+                """
+            )
 
         con.execute(
             """
@@ -1690,6 +1713,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_scope
             ON atlas_knowledge_sources(
                 organization_id, server_code, faction_code, status, id DESC
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_visibility
+            ON atlas_knowledge_sources(
+                visibility_scope, server_code, faction_code, organization_id,
+                status, id DESC
             );
 
             CREATE INDEX IF NOT EXISTS idx_activity_events_guild_at

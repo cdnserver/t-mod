@@ -104,15 +104,15 @@ def consensus_web_capabilities(
                 permanent=bool(participant and participant.permanent),
                 simulation=True,
             )
-            if simulation.has_real_roster:
+            if not simulation.has_fake_roster:
                 capabilities = [
                     item
                     for item in capabilities
                     if item
                     not in {"confirm_next", "confirm_all", "fake_vote", "fake_scenario"}
                 ]
-                if stage == "registration":
-                    capabilities.append("resend_invitations")
+            if simulation.has_real_roster and stage == "registration":
+                capabilities.append("resend_invitations")
             return capabilities
         participant = session.participants.get(int(principal.user_id))
         return (

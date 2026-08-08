@@ -10,7 +10,14 @@ import storage
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from docx import Document
-from modules.atlas_ai import AtlasAIError, _chunks, atlas_ensure_collection, atlas_search
+from modules.atlas_ai import (
+    AtlasAIError,
+    _chunks,
+    atlas_ensure_collection,
+    atlas_index_source,
+    atlas_probe_collection,
+    atlas_search,
+)
 from modules.atlas_knowledge import AtlasKnowledgeFileError, atlas_extract_knowledge_file
 from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
@@ -119,6 +126,9 @@ class AtlasRepositoryTests(unittest.TestCase):
                 title="Чужой источник",
                 content="Этот пользователь не состоит в выбранной организации Atlas.",
             )
+        rebuild_sources = atlas_repository.atlas_indexable_knowledge_sources()
+        self.assertEqual([item["id"] for item in rebuild_sources], [first["id"]])
+        self.assertEqual(rebuild_sources[0]["content_text"], first["content_text"])
 
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -151,6 +161,71 @@ class AtlasRepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "atlas_faction_invalid"):
             atlas_repository.atlas_normalize_scope("phoenix-15", "unknown")
 
+    def test_knowledge_visibility_combines_shared_and_isolates_private_data(self) -> None:
+        owner = atlas_repository.atlas_dashboard(77, 42, "Владелец")
+        guest = atlas_repository.atlas_dashboard(77, 84, "Другая организация")
+        owner_id = int(owner["organization"]["id"])
+        guest_id = int(guest["organization"]["id"])
+
+        created = {}
+        for scope, faction in (
+            ("global", "lspd"),
+            ("server", "lspd"),
+            ("faction", "lspd"),
+            ("workspace", "lspd"),
+        ):
+            created[scope] = atlas_repository.atlas_add_knowledge(
+                owner_id,
+                42,
+                title=scope,
+                content=f"Проверенный материал области {scope}, достаточно длинный для Atlas.",
+                server_code="phoenix-15",
+                faction_code=faction,
+                visibility_scope=scope,
+            )
+
+        gov_ids = {
+            int(item["id"])
+            for item in atlas_repository.atlas_knowledge_sources(
+                guest_id,
+                server_code="phoenix-15",
+                faction_code="gov",
+            )
+        }
+        self.assertEqual(
+            gov_ids,
+            {int(created["global"]["id"]), int(created["server"]["id"])},
+        )
+
+        guest_lspd_ids = {
+            int(item["id"])
+            for item in atlas_repository.atlas_knowledge_sources(
+                guest_id,
+                server_code="phoenix-15",
+                faction_code="lspd",
+            )
+        }
+        self.assertIn(int(created["faction"]["id"]), guest_lspd_ids)
+        self.assertNotIn(int(created["workspace"]["id"]), guest_lspd_ids)
+
+        owner_lspd_ids = {
+            int(item["id"])
+            for item in atlas_repository.atlas_knowledge_sources(
+                owner_id,
+                server_code="phoenix-15",
+                faction_code="lspd",
+            )
+        }
+        self.assertEqual(owner_lspd_ids, {int(item["id"]) for item in created.values()})
+        with self.assertRaisesRegex(ValueError, "atlas_knowledge_scope_invalid"):
+            atlas_repository.atlas_add_knowledge(
+                owner_id,
+                42,
+                title="Ошибка",
+                content="Материал с неизвестной областью доступа не должен сохраниться.",
+                visibility_scope="unknown",
+            )
+
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     def test_chunker_is_bounded_and_preserves_overlap(self) -> None:
@@ -159,7 +234,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(chunks), 48)
         self.assertTrue(all(len(chunk) <= 1000 for chunk in chunks))
 
-    async def test_search_always_applies_organization_filter(self) -> None:
+    async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
         response = {
             "result": {
                 "points": [
@@ -178,7 +253,17 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         payload = request.await_args.kwargs["payload"]
         self.assertEqual(
             payload["filter"]["must"][0],
-            {"key": "organization_id", "match": {"value": 77}},
+            {
+                "key": "access_scope",
+                "match": {
+                    "any": [
+                        "global",
+                        "server:phoenix-15",
+                        "faction:phoenix-15:lspd",
+                        "workspace:77:phoenix-15:lspd",
+                    ]
+                },
+            },
         )
         self.assertEqual(result[0]["source_id"], 4)
 
@@ -193,14 +278,37 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 faction_code="lspd",
             )
 
-        self.assertEqual(
-            request.await_args.kwargs["payload"]["filter"]["must"],
-            [
-                {"key": "organization_id", "match": {"value": 77}},
-                {"key": "server_code", "match": {"value": "phoenix-15"}},
-                {"key": "faction_code", "match": {"value": "lspd"}},
-            ],
-        )
+        scopes = request.await_args.kwargs["payload"]["filter"]["must"][0]
+        self.assertEqual(scopes["key"], "access_scope")
+        self.assertIn("server:phoenix-15", scopes["match"]["any"])
+        self.assertIn("faction:phoenix-15:lspd", scopes["match"]["any"])
+        self.assertIn("workspace:77:phoenix-15:lspd", scopes["match"]["any"])
+
+    async def test_index_payload_contains_one_canonical_access_scope(self) -> None:
+        source = {
+            "id": 5,
+            "organization_id": 77,
+            "server_code": "phoenix-15",
+            "faction_code": "gov",
+            "visibility_scope": "server",
+            "title": "Общий регламент",
+            "content_text": "Проверенный общий материал Phoenix длиной больше двадцати символов.",
+        }
+        with patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai.atlas_ensure_collection",
+            AsyncMock(),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {}}),
+        ) as request:
+            await atlas_index_source(source)
+
+        point = request.await_args.kwargs["payload"]["points"][0]
+        self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
+        self.assertEqual(point["payload"]["visibility_scope"], "server")
 
     async def test_collection_is_created_only_when_missing(self) -> None:
         missing = AtlasAIError("upstream_not_found", "missing")
@@ -214,6 +322,43 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         with patch("modules.atlas_ai._json_request", denied), self.assertRaises(AtlasAIError):
             await atlas_ensure_collection(1536)
         self.assertEqual(denied.await_count, 1)
+
+    async def test_search_converts_qdrant_gridstore_panic_into_recovery_state(self) -> None:
+        corrupted = AtlasAIError(
+            "qdrant_index_corrupted",
+            "Service internal error: task panicked with OutputTooSmall",
+            retryable=True,
+        )
+        with patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(side_effect=corrupted),
+        ), self.assertRaises(AtlasAIError) as raised:
+            await atlas_search(77, "порядок задержания")
+
+        self.assertEqual(raised.exception.code, "atlas_index_recovery_required")
+        self.assertTrue(raised.exception.retryable)
+        self.assertIn("Материалы сохранены", str(raised.exception))
+
+    async def test_collection_probe_detects_missing_and_corrupt_payload(self) -> None:
+        missing = AsyncMock(side_effect=AtlasAIError("upstream_not_found", "missing"))
+        with patch("modules.atlas_ai._json_request", missing):
+            self.assertEqual((await atlas_probe_collection())["status"], "missing")
+
+        corrupted = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 1}},
+                AtlasAIError(
+                    "qdrant_index_corrupted",
+                    "Gridstore OutputTooSmall",
+                    retryable=True,
+                ),
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", corrupted):
+            self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
 
 
 class AtlasKnowledgeFileTests(unittest.TestCase):
@@ -332,6 +477,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         form = FormData()
         form.add_field("server_code", "phoenix-15")
         form.add_field("faction_code", "gov")
+        form.add_field("visibility_scope", "server")
         form.add_field("source_kind", "regulation")
         form.add_field(
             "file",
@@ -354,8 +500,57 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     )
                     payload = await listed.json()
             self.assertEqual(payload["items"][0]["faction_code"], "gov")
+            self.assertEqual(payload["items"][0]["visibility_scope"], "server")
             self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
             self.assertEqual(payload["items"][0]["status"], "indexed")
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
+    async def test_startup_rebuilds_corrupt_search_index_from_saved_sources(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-rebuild-test.db"
+        storage.init_db()
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Администратор")
+        source = atlas_repository.atlas_add_knowledge(
+            int(dashboard["organization"]["id"]),
+            42,
+            title="Сохранённый регламент",
+            content="Проверенный регламент остаётся в Atlas и восстанавливает поисковый индекс.",
+        )
+
+        async def authenticate(_request):
+            return None, False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        probe = AsyncMock(return_value={"status": "corrupted", "points_count": None})
+        reset = AsyncMock(return_value=None)
+        index = AsyncMock(return_value=["restored-point"])
+        try:
+            with patch("modules.atlas_web.atlas_probe_collection", probe), patch(
+                "modules.atlas_web.atlas_reset_collection", reset
+            ), patch("modules.atlas_web.atlas_index_source", index):
+                async with TestClient(TestServer(app)):
+                    await asyncio.sleep(0.05)
+
+            reset.assert_awaited_once()
+            index.assert_awaited_once()
+            self.assertEqual(index.await_args.args[0]["id"], source["id"])
+            rebuilt = atlas_repository.atlas_knowledge_sources(
+                int(dashboard["organization"]["id"])
+            )[0]
+            self.assertEqual(rebuilt["status"], "indexed")
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

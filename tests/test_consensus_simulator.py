@@ -125,7 +125,7 @@ class ConsensusSimulationTests(unittest.TestCase):
             }
         )
 
-    def test_real_roster_uses_real_registration_and_ballot_controls(self) -> None:
+    def test_real_roster_fills_remaining_seats_with_controlled_fakes(self) -> None:
         invitees = (
             LiveParticipant(201, "Сенатор Один", "<@201>", "senator"),
             LiveParticipant(202, "Сенатор Два", "<@202>", "senator"),
@@ -137,15 +137,30 @@ class ConsensusSimulationTests(unittest.TestCase):
             invited_participants=invitees,
         )
 
-        self.assertEqual(set(simulation.session.participants), {100, 201, 202})
+        self.assertEqual(len(simulation.session.participants), 6)
+        self.assertTrue({100, 201, 202}.issubset(simulation.session.participants))
+        self.assertEqual(
+            {
+                participant.voting_block
+                for participant in simulation.session.participants.values()
+                if participant.voting_block
+            },
+            {"first", "second", "third"},
+        )
+        self.assertEqual(
+            sum(user_id < 0 for user_id in simulation.session.participants),
+            3,
+        )
         self.assertFalse(simulation.session.participants[100].permanent)
         registration = ConsensusSimulationView(simulation)
         labels = {str(item.label) for item in registration.children}
         self.assertIn("Повторить приглашения", labels)
-        self.assertNotIn("Подтвердить всех", labels)
+        self.assertIn("Подтвердить фейков", labels)
 
         simulation.confirm_participant(201)
         simulation.confirm_participant(202)
+        self.assertFalse(simulation.session.quorum_ready())
+        simulation.confirm_next()
         self.assertTrue(simulation.session.quorum_ready())
         simulation.begin_voting()
         preview = SimulationParticipantView(simulation, 201)
@@ -159,6 +174,53 @@ class ConsensusSimulationTests(unittest.TestCase):
         )
         simulation.cast_participant_vote(201, "yes")
         self.assertEqual(simulation.session.votes[201], "yes")
+
+    def test_fake_actions_never_confirm_or_vote_for_selected_real_users(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Ведущий",
+            invited_participants=(
+                LiveParticipant(201, "Сенатор Один", "<@201>", "senator"),
+            ),
+        )
+
+        simulation.confirm_all()
+        self.assertFalse(simulation.session.participants[201].confirmed)
+        self.assertTrue(
+            all(
+                participant.confirmed
+                for participant in simulation.session.participants.values()
+                if participant.user_id < 0
+            )
+        )
+        simulation.begin_voting()
+        simulation.open_voting()
+        simulation.apply_fake_scenario("accepted")
+        self.assertNotIn(201, simulation.session.votes)
+
+    def test_real_chair_replaces_matching_fake_voting_block(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Ведущий",
+            invited_participants=(
+                LiveParticipant(
+                    201,
+                    "Первый сопредседатель",
+                    "<@201>",
+                    "chair",
+                    voting_block="first",
+                ),
+            ),
+        )
+
+        block_holders = [
+            participant
+            for participant in simulation.session.participants.values()
+            if participant.voting_block == "first"
+        ]
+        self.assertEqual([participant.user_id for participant in block_holders], [201])
 
     def test_every_stage_fits_discord_component_and_embed_limits(self) -> None:
         async def inspect() -> None:

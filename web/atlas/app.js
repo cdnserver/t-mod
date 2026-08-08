@@ -167,6 +167,25 @@ function scopeLabel() {
   return `${selectedServer().label} · ${selectedFaction().label}`;
 }
 
+function knowledgeScopeLabel(scope) {
+  return {
+    global: "Весь Atlas",
+    server: "Весь сервер",
+    faction: "Организация",
+    workspace: "Рабочая группа",
+  }[scope] || "Рабочая группа";
+}
+
+function sourceVisibleHere(item) {
+  const scope = item.visibility_scope || "workspace";
+  if (scope === "global") return true;
+  if (scope === "server") return item.server_code === appState.serverCode;
+  if (scope === "faction") {
+    return item.server_code === appState.serverCode && item.faction_code === appState.factionCode;
+  }
+  return item.server_code === appState.serverCode && item.faction_code === appState.factionCode;
+}
+
 function fillSelect(select, items, selected) {
   clear(select);
   items.filter((item) => item.enabled !== false).forEach((item) => {
@@ -200,7 +219,7 @@ function knowledgeSourceCard(item) {
   const card = element("article", "knowledge-source-card");
   const icon = element("i", "", item.original_filename ? "⇧" : "≡");
   const copy = element("span");
-  const details = [item.source_kind || "материал", item.original_filename || "текст"];
+  const details = [knowledgeScopeLabel(item.visibility_scope), item.source_kind || "материал", item.original_filename || "текст"];
   if (item.updated_at) details.push(new Date(item.updated_at).toLocaleDateString("ru-RU"));
   copy.append(element("b", "", item.title), element("small", "", details.join(" · ")));
   const [statusClass, statusText] = sourceStatus(item);
@@ -212,7 +231,7 @@ function knowledgeSourceCard(item) {
 
 function renderKnowledgeSources(items) {
   const selected = (Array.isArray(items) ? items : []).filter(
-    (item) => item.server_code === appState.serverCode && item.faction_code === appState.factionCode,
+    sourceVisibleHere,
   );
   const list = byId("knowledge-source-list");
   clear(list);
@@ -330,16 +349,16 @@ function openDocumentDialog(template = null) {
 async function reload() {
   const data = await api("/api/atlas/bootstrap");
   if (data.preview) appState.data = data;
-  else render(data);
+  else {
+    render(data);
+    await loadKnowledgeSources();
+  }
 }
 
 async function loadKnowledgeSources() {
   const query = new URLSearchParams({ server_code: appState.serverCode, faction_code: appState.factionCode });
   const result = await api(`/api/atlas/knowledge?${query}`);
-  const other = (appState.data?.knowledge_sources || []).filter(
-    (item) => item.server_code !== appState.serverCode || item.faction_code !== appState.factionCode,
-  );
-  appState.data.knowledge_sources = [...other, ...(result.items || [])];
+  appState.data.knowledge_sources = result.items || [];
   renderKnowledgeSources(appState.data.knowledge_sources);
 }
 

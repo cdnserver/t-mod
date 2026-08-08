@@ -35,13 +35,15 @@ services:
       start_period: 90s
 
   atlas-qdrant:
-    image: qdrant/qdrant:v1.15.5
+    image: qdrant/qdrant:v1.16.2
     container_name: tmod-atlas-qdrant
     restart: unless-stopped
     expose:
       - "6333"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/atlas/qdrant:/qdrant/storage"
+      # Qdrant mmap storage must live on a POSIX-compatible Docker volume.
+      # Windows bind mounts can corrupt Gridstore payload pages.
+      - "atlas-qdrant-data:/qdrant/storage"
     environment:
       QDRANT__SERVICE__ENABLE_CORS: "false"
     security_opt:
@@ -135,3 +137,7 @@ networks:
   default:
   minecraft-control:
     internal: true
+
+volumes:
+  atlas-qdrant-data:
+    name: tmod-atlas-qdrant-data

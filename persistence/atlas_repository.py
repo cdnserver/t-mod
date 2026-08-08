@@ -7,7 +7,11 @@ import json
 import re
 from typing import Any
 
-from modules.atlas_catalog import atlas_catalog, atlas_normalize_scope
+from modules.atlas_catalog import (
+    atlas_catalog,
+    atlas_normalize_knowledge_scope,
+    atlas_normalize_scope,
+)
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
@@ -350,6 +354,7 @@ def atlas_add_knowledge(
     source_url: str | None = None,
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
+    visibility_scope: str = "workspace",
     original_filename: str | None = None,
 ) -> dict[str, Any]:
     clean_title = str(title or "").strip()[:180]
@@ -360,9 +365,10 @@ def atlas_add_knowledge(
     if clean_kind not in {"document", "forum", "memo", "regulation", "manual", "url"}:
         clean_kind = "memo"
     clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
     clean_filename = str(original_filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1][:240] or None
     checksum = hashlib.sha256(
-        f"{clean_server}\0{clean_faction}\0{clean_content}".encode("utf-8")
+        f"{clean_visibility}\0{clean_server}\0{clean_faction}\0{clean_content}".encode("utf-8")
     ).hexdigest()
     now = utc_now_iso()
     with _db_lock, connect() as con:
@@ -378,10 +384,11 @@ def atlas_add_knowledge(
         con.execute(
             """
             INSERT INTO atlas_knowledge_sources(
-                organization_id, server_code, faction_code, title, source_kind,
+                organization_id, server_code, faction_code, visibility_scope,
+                title, source_kind,
                 source_url, content_text, checksum, original_filename,
                 created_by_id, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(organization_id, checksum) DO UPDATE SET
                 title = excluded.title,
                 source_url = excluded.source_url,
@@ -394,6 +401,7 @@ def atlas_add_knowledge(
                 int(organization_id),
                 clean_server,
                 clean_faction,
+                clean_visibility,
                 clean_title,
                 clean_kind,
                 str(source_url or "").strip()[:1000] or None,
@@ -438,20 +446,41 @@ def atlas_knowledge_sources(
     faction_code: str | None = None,
     limit: int = 80,
 ) -> list[dict[str, Any]]:
-    clauses = ["organization_id = ?", "status != 'archived'"]
-    params: list[Any] = [int(organization_id)]
+    clauses = ["status != 'archived'"]
+    params: list[Any] = []
     if server_code is not None or faction_code is not None:
         clean_server, clean_faction = atlas_normalize_scope(
             server_code or "phoenix-15",
             faction_code or "lspd",
         )
-        clauses.extend(["server_code = ?", "faction_code = ?"])
-        params.extend([clean_server, clean_faction])
+        clauses.append(
+            """(
+                visibility_scope = 'global'
+                OR (visibility_scope = 'server' AND server_code = ?)
+                OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
+                OR (visibility_scope = 'workspace' AND organization_id = ?
+                    AND server_code = ? AND faction_code = ?)
+            )"""
+        )
+        params.extend(
+            [
+                clean_server,
+                clean_server,
+                clean_faction,
+                int(organization_id),
+                clean_server,
+                clean_faction,
+            ]
+        )
+    else:
+        clauses.append("organization_id = ?")
+        params.append(int(organization_id))
     params.append(max(1, min(200, int(limit))))
     with connect_readonly() as con:
         rows = con.execute(
             f"""
-            SELECT id, organization_id, server_code, faction_code, title,
+            SELECT id, organization_id, server_code, faction_code,
+                   visibility_scope, title,
                    source_kind, source_url, checksum, status, original_filename,
                    metadata_json, created_by_id, indexed_at, last_error,
                    created_at, updated_at
@@ -460,6 +489,23 @@ def atlas_knowledge_sources(
             ORDER BY id DESC LIMIT ?
             """,
             tuple(params),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any]]:
+    """Return canonical source text for rebuilding the derived search index."""
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_knowledge_sources
+            WHERE status != 'archived'
+              AND length(trim(content_text)) >= 20
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (max(1, min(2_000, int(limit))),),
         ).fetchall()
     return [_row(row) for row in rows]
 

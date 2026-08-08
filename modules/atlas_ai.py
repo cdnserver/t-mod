@@ -81,6 +81,35 @@ def _qdrant_headers(config: AtlasAIConfig) -> dict[str, str]:
     return headers
 
 
+_QDRANT_CORRUPTION_MARKERS = (
+    "outputtoosmall",
+    "read operations failed",
+    "gridstore",
+    "collection may be in unstable state",
+    "task panicked",
+)
+
+
+def _response_error_message(body: dict[str, Any], status: int) -> str:
+    candidates: list[Any] = [body.get("message"), body.get("error")]
+    for key in ("status", "result"):
+        nested = body.get(key)
+        if isinstance(nested, dict):
+            candidates.extend((nested.get("message"), nested.get("error")))
+    for value in candidates:
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("error")
+        text = str(value or "").strip()
+        if text:
+            return text
+    return f"HTTP {status}"
+
+
+def _qdrant_index_corrupted(error: BaseException) -> bool:
+    text = str(error).lower().replace(" ", "")
+    return any(marker.replace(" ", "") in text for marker in _QDRANT_CORRUPTION_MARKERS)
+
+
 async def _json_request(
     method: str,
     url: str,
@@ -98,15 +127,15 @@ async def _json_request(
                 except (ValueError, aiohttp.ContentTypeError):
                     body = {"message": (await response.text())[:1000]}
                 if response.status >= 400:
-                    message = str(
-                        body.get("message")
-                        or (body.get("error") or {}).get("message")
-                        or f"HTTP {response.status}"
-                    )
+                    message = _response_error_message(body, response.status)
                     error_code = {
                         404: "upstream_not_found",
                         429: "upstream_rate_limited",
                     }.get(response.status, "upstream_error")
+                    if "/collections/" in url and _qdrant_index_corrupted(
+                        RuntimeError(message)
+                    ):
+                        error_code = "qdrant_index_corrupted"
                     raise AtlasAIError(
                         error_code,
                         f"Внешний ИИ-контур вернул {response.status}: {message[:400]}",
@@ -162,6 +191,59 @@ async def atlas_ensure_collection(vector_size: int) -> None:
     )
 
 
+async def atlas_probe_collection() -> dict[str, Any]:
+    """Check both collection metadata and payload readability."""
+
+    config = atlas_ai_config()
+    url = f"{config.qdrant_url}/collections/{config.collection}"
+    try:
+        details = await _json_request(
+            "GET",
+            url,
+            headers=_qdrant_headers(config),
+            timeout=5,
+        )
+    except AtlasAIError as exc:
+        if exc.code == "upstream_not_found":
+            return {"status": "missing", "points_count": 0}
+        if exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
+            return {"status": "corrupted", "points_count": None}
+        raise
+    try:
+        await _json_request(
+            "POST",
+            f"{url}/points/scroll",
+            headers=_qdrant_headers(config),
+            payload={"limit": 1, "with_payload": True, "with_vector": False},
+            timeout=8,
+        )
+    except AtlasAIError as exc:
+        if exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
+            return {"status": "corrupted", "points_count": None}
+        raise
+    result = details.get("result") if isinstance(details.get("result"), dict) else {}
+    return {
+        "status": "ok",
+        "points_count": int(result.get("points_count") or 0),
+    }
+
+
+async def atlas_reset_collection() -> None:
+    """Discard the derived index. Canonical Atlas sources remain in SQLite."""
+
+    config = atlas_ai_config()
+    try:
+        await _json_request(
+            "DELETE",
+            f"{config.qdrant_url}/collections/{config.collection}",
+            headers=_qdrant_headers(config),
+            timeout=15,
+        )
+    except AtlasAIError as exc:
+        if exc.code != "upstream_not_found":
+            raise
+
+
 def _chunks(content: str, *, size: int = 5600, overlap: int = 450) -> list[str]:
     text = str(content or "").strip()
     if not text:
@@ -192,6 +274,13 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     source_id = int(source["id"])
     server_code = str(source.get("server_code") or "phoenix-15")
     faction_code = str(source.get("faction_code") or "lspd")
+    visibility_scope = str(source.get("visibility_scope") or "workspace")
+    access_scope = _atlas_access_scope(
+        organization_id,
+        server_code,
+        faction_code,
+        visibility_scope,
+    )
     points = []
     point_ids = []
     for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
@@ -206,6 +295,8 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                     "source_id": source_id,
                     "server_code": server_code,
                     "faction_code": faction_code,
+                    "visibility_scope": visibility_scope,
+                    "access_scope": access_scope,
                     "title": str(source.get("title") or "Источник")[:300],
                     "source_url": str(source.get("source_url") or "")[:1000] or None,
                     "source_kind": str(source.get("source_kind") or "memo"),
@@ -234,26 +325,45 @@ async def atlas_search(
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
     vector = (await atlas_embed([str(query)[:8000]]))[0]
-    filters: list[dict[str, Any]] = [
-        {"key": "organization_id", "match": {"value": int(organization_id)}}
+    clean_server = str(server_code or "phoenix-15")
+    clean_faction = str(faction_code or "lspd")
+    access_scopes = [
+        "global",
+        f"server:{clean_server}",
+        f"faction:{clean_server}:{clean_faction}",
+        f"workspace:{int(organization_id)}:{clean_server}:{clean_faction}",
     ]
-    if server_code:
-        filters.append({"key": "server_code", "match": {"value": str(server_code)}})
-    if faction_code:
-        filters.append({"key": "faction_code", "match": {"value": str(faction_code)}})
-    body = await _json_request(
-        "POST",
-        f"{config.qdrant_url}/collections/{config.collection}/points/query",
-        headers=_qdrant_headers(config),
-        payload={
-            "query": vector,
-            "filter": {"must": filters},
-            "limit": max(1, min(12, int(limit))),
-            "with_payload": True,
-            "with_vector": False,
-        },
-        timeout=12,
-    )
+    filters: list[dict[str, Any]] = [
+        {"key": "access_scope", "match": {"any": access_scopes}}
+    ]
+    try:
+        body = await _json_request(
+            "POST",
+            f"{config.qdrant_url}/collections/{config.collection}/points/query",
+            headers=_qdrant_headers(config),
+            payload={
+                "query": vector,
+                "filter": {"must": filters},
+                "limit": max(1, min(12, int(limit))),
+                "with_payload": True,
+                "with_vector": False,
+            },
+            timeout=12,
+        )
+    except AtlasAIError as exc:
+        if exc.code == "upstream_not_found":
+            raise AtlasAIError(
+                "atlas_index_missing",
+                "Atlas готовит библиотеку к первому поиску. Повторите вопрос немного позже.",
+                retryable=True,
+            ) from exc
+        if exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
+            raise AtlasAIError(
+                "atlas_index_recovery_required",
+                "Atlas восстанавливает поисковую библиотеку. Материалы сохранены; повторите вопрос немного позже.",
+                retryable=True,
+            ) from exc
+        raise
     result = body.get("result")
     points = result.get("points") if isinstance(result, dict) else result
     if not isinstance(points, list):
@@ -268,6 +378,7 @@ async def atlas_search(
                 "source_id": int(payload.get("source_id") or 0),
                 "server_code": str(payload.get("server_code") or ""),
                 "faction_code": str(payload.get("faction_code") or ""),
+                "visibility_scope": str(payload.get("visibility_scope") or "workspace"),
                 "title": str(payload.get("title") or "Источник"),
                 "url": str(payload.get("source_url") or "") or None,
                 "text": str(payload.get("text") or "")[:7000],
@@ -275,6 +386,21 @@ async def atlas_search(
             }
         )
     return sources
+
+
+def _atlas_access_scope(
+    organization_id: int,
+    server_code: str,
+    faction_code: str,
+    visibility_scope: str,
+) -> str:
+    if visibility_scope == "global":
+        return "global"
+    if visibility_scope == "server":
+        return f"server:{server_code}"
+    if visibility_scope == "faction":
+        return f"faction:{server_code}:{faction_code}"
+    return f"workspace:{int(organization_id)}:{server_code}:{faction_code}"
 
 
 async def atlas_answer(
@@ -378,4 +504,14 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
     return dict(result)
 
 
-__all__ = ["AtlasAIError", "atlas_ai_config", "atlas_ai_health", "atlas_answer", "atlas_index_source"]
+__all__ = [
+    "AtlasAIError",
+    "atlas_ai_config",
+    "atlas_ai_health",
+    "atlas_answer",
+    "atlas_ensure_collection",
+    "atlas_index_source",
+    "atlas_probe_collection",
+    "atlas_reset_collection",
+    "atlas_search",
+]

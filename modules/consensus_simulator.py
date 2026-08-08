@@ -41,9 +41,12 @@ from modules.tvrs_presentation import (
 
 
 SIMULATION_COLOR = 0x9B59B6
-SIMULATION_FAKE_SPECS = (
+SIMULATION_FAKE_CHAIR_SPECS = (
+    (-100, "Фейк-сопредседатель Ирина", "chair", "first"),
     (-101, "Фейк-сопредседатель Марта", "chair", "second"),
     (-102, "Фейк-сопредседатель Лев", "chair", "third"),
+)
+SIMULATION_FAKE_SENATOR_SPECS = (
     (-201, "Фейк-сенатор Алекс", "senator", None),
     (-202, "Фейк-сенатор Ника", "senator", None),
     (-203, "Фейк-сенатор Роман", "senator", None),
@@ -257,27 +260,57 @@ class ConsensusSimulation:
                 voting_block=leader_block,
             )
         }
-        if real_roster:
-            for source in self.invited_participants:
-                if int(source.user_id) == self.leader_id:
-                    continue
-                participants[int(source.user_id)] = LiveParticipant(
-                    user_id=int(source.user_id),
-                    display_name=str(source.display_name),
-                    mention=str(source.mention),
-                    kind=source.kind,
-                    permanent=bool(source.permanent),
-                    voting_block=source.voting_block,
-                )
-        else:
-            for user_id, display_name, kind, voting_block in SIMULATION_FAKE_SPECS:
-                participants[user_id] = LiveParticipant(
-                    user_id=user_id,
-                    display_name=display_name,
-                    mention=display_name,
-                    kind=kind,  # type: ignore[arg-type]
-                    voting_block=voting_block,  # type: ignore[arg-type]
-                )
+        for source in self.invited_participants:
+            if int(source.user_id) == self.leader_id:
+                continue
+            participants[int(source.user_id)] = LiveParticipant(
+                user_id=int(source.user_id),
+                display_name=str(source.display_name),
+                mention=str(source.mention),
+                kind=source.kind,
+                permanent=bool(source.permanent),
+                voting_block=source.voting_block,
+            )
+
+        # A mixed simulation keeps the canonical six-seat training roster.
+        # Selected real users occupy their natural chair block or one of the
+        # internal-consensus seats; every unoccupied seat remains controllable
+        # by the host as a fake participant.
+        occupied_blocks = {
+            participant.voting_block
+            for participant in participants.values()
+            if participant.voting_block in {"first", "second", "third"}
+        }
+        for user_id, display_name, kind, voting_block in SIMULATION_FAKE_CHAIR_SPECS:
+            if voting_block in occupied_blocks:
+                continue
+            participants[user_id] = LiveParticipant(
+                user_id=user_id,
+                display_name=display_name,
+                mention=display_name,
+                kind=kind,  # type: ignore[arg-type]
+                permanent=voting_block == "third",
+                voting_block=voting_block,  # type: ignore[arg-type]
+            )
+
+        real_internal_seats = sum(
+            participant.user_id > 0 and participant.voting_block is None
+            for participant in participants.values()
+        )
+        fake_internal_seats = max(
+            0,
+            len(SIMULATION_FAKE_SENATOR_SPECS) - real_internal_seats,
+        )
+        for user_id, display_name, kind, voting_block in (
+            SIMULATION_FAKE_SENATOR_SPECS[:fake_internal_seats]
+        ):
+            participants[user_id] = LiveParticipant(
+                user_id=user_id,
+                display_name=display_name,
+                mention=display_name,
+                kind=kind,  # type: ignore[arg-type]
+                voting_block=voting_block,  # type: ignore[arg-type]
+            )
         self.coordinator = ConsensusCoordinator(self.repository)
         self.session = LiveConsensusSession(
             session_key=(
@@ -314,6 +347,10 @@ class ConsensusSimulation:
     @property
     def has_real_roster(self) -> bool:
         return bool(self.invited_participants)
+
+    @property
+    def has_fake_roster(self) -> bool:
+        return any(user_id < 0 for user_id in self.session.participants)
 
     @property
     def invited_user_ids(self) -> set[int]:
@@ -416,7 +453,7 @@ class ConsensusSimulation:
             (
                 item
                 for item in self.session.participants.values()
-                if item.user_id != self.leader_id and not item.confirmed
+                if item.user_id < 0 and not item.confirmed
             ),
             None,
         )
@@ -432,6 +469,8 @@ class ConsensusSimulation:
     def confirm_all(self) -> None:
         self._require_stage("registration")
         for participant in self.session.participants.values():
+            if participant.user_id >= 0:
+                continue
             self.coordinator.confirm_participant(
                 self.session,
                 participant.user_id,
@@ -473,7 +512,7 @@ class ConsensusSimulation:
         candidates = [
             participant
             for participant in self.session.confirmed_participants()
-            if participant.user_id != self.leader_id
+            if participant.user_id < 0
             and participant.user_id not in self.session.votes
         ]
         if not candidates:
@@ -496,25 +535,32 @@ class ConsensusSimulation:
         self._require_stage("voting")
         if scenario not in SIMULATION_SCENARIOS:
             raise ConsensusStateError("Неизвестный учебный сценарий.")
-        senators = [
+        fake_participants = [
             participant
             for participant in self.session.confirmed_participants()
+            if participant.user_id < 0
+        ]
+        if not fake_participants:
+            raise ConsensusStateError("В составе нет фейковых участников.")
+        fake_senators = [
+            participant
+            for participant in fake_participants
             if participant.kind == "senator"
         ]
         should_finalize = False
-        for participant in self.session.confirmed_participants():
-            if participant.user_id == self.leader_id:
-                continue
+        for participant in fake_participants:
             if scenario == "accepted":
                 vote = "yes"
             elif scenario == "rejected":
                 vote = "no"
+            elif participant.voting_block == "first":
+                vote = "yes"
             elif participant.voting_block == "second":
                 vote = "no"
             elif participant.voting_block == "third":
                 vote = "yes"
             else:
-                vote = "no" if senators.index(participant) == 1 else "yes"
+                vote = "no" if fake_senators.index(participant) == 1 else "yes"
             should_finalize = self.coordinator.cast_vote(
                 self.session,
                 participant.user_id,
@@ -1197,9 +1243,9 @@ class ConsensusSimulationView(discord.ui.View):
                     discord.ButtonStyle.secondary,
                     simulation.resend_invitations,
                 )
-            else:
+            if simulation.has_fake_roster:
                 self._add("Следующее подтверждение", "✅", discord.ButtonStyle.secondary, simulation.confirm_next)
-                self._add("Подтвердить всех", "👥", discord.ButtonStyle.success, simulation.confirm_all)
+                self._add("Подтвердить фейков", "👥", discord.ButtonStyle.success, simulation.confirm_all)
             self._add(
                 "Начать голосование",
                 "🗳️",
@@ -1226,7 +1272,7 @@ class ConsensusSimulationView(discord.ui.View):
                 discord.ButtonStyle.secondary,
                 lambda: simulation.cast_leader_vote("abstain"),
             )
-            if not simulation.has_real_roster:
+            if simulation.has_fake_roster:
                 self._add("Ход фейка", "🤖", discord.ButtonStyle.secondary, simulation.cast_next_fake_vote)
                 self.add_item(SimulationScenarioSelect(simulation))
             self._add("Дискуссия", "💬", discord.ButtonStyle.secondary, simulation.request_discussion, row=2)
@@ -1363,8 +1409,8 @@ class SimulationRosterSelect(discord.ui.UserSelect):
     def __init__(self, setup_view: "ConsensusSimulationSetupView") -> None:
         self.setup_view = setup_view
         super().__init__(
-            placeholder="Выберите сенаторов и председателей для теста",
-            min_values=1,
+            placeholder="Выберите настоящих участников (можно не выбирать)",
+            min_values=0,
             max_values=20,
             row=0,
         )
@@ -1397,8 +1443,8 @@ class SimulationRosterSelect(discord.ui.UserSelect):
         await interaction.response.edit_message(
             content=(
                 f"**Тестовый состав:** {chosen}{warning}\n"
-                "Нужно выбрать минимум двух участников кроме ведущего. "
-                "После запуска каждому придёт настоящее тестовое ЛС."
+                "Выбранным участникам придёт настоящее тестовое ЛС, а все "
+                "оставшиеся места симулятор заполнит фейковыми участниками."
             ),
             view=self.setup_view,
         )
@@ -1434,12 +1480,6 @@ class ConsensusSimulationSetupView(discord.ui.View):
         if interaction.guild is None or interaction.channel is None:
             await interaction.response.send_message(
                 "Симуляция запускается только в канале сервера.",
-                ephemeral=True,
-            )
-            return
-        if len(self.selected) < 2:
-            await interaction.response.send_message(
-                "Выберите минимум двух сенаторов или председателей кроме ведущего.",
                 ephemeral=True,
             )
             return
@@ -1509,7 +1549,8 @@ async def start_consensus_simulation(interaction: discord.Interaction) -> None:
         return
     await interaction.response.send_message(
         content=(
-            "Выберите реальных сенаторов и председателей для теста. Симулятор "
+            "Выберите любых реальных сенаторов и председателей для теста — "
+            "остальные места автоматически займут фейковые участники. Симулятор "
             "использует производственный координатор, правила 25/25/25/25 и те же "
             "личные панели, но хранит сессию отдельно от рабочей базы."
         ),

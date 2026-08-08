@@ -2028,6 +2028,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
         simulation.confirm_participant(2)
         simulation.confirm_participant(3)
+        simulation.confirm_next()
         simulation.begin_voting()
         simulation.open_voting()
         register_consensus_simulation(simulation)

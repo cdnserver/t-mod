@@ -12,8 +12,19 @@ from typing import Any, Awaitable, Callable
 import discord
 from aiohttp import web
 
-from modules.atlas_ai import AtlasAIError, atlas_ai_health, atlas_answer, atlas_index_source
-from modules.atlas_catalog import atlas_catalog, atlas_normalize_scope
+from modules.atlas_ai import (
+    AtlasAIError,
+    atlas_ai_health,
+    atlas_answer,
+    atlas_index_source,
+    atlas_probe_collection,
+    atlas_reset_collection,
+)
+from modules.atlas_catalog import (
+    atlas_catalog,
+    atlas_normalize_knowledge_scope,
+    atlas_normalize_scope,
+)
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
@@ -41,6 +52,8 @@ def register_atlas_web_routes(
     rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=30))
     receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
     indexing_tasks: set[asyncio.Task[None]] = set()
+    index_lock = asyncio.Lock()
+    rebuild_task: asyncio.Task[None] | None = None
 
     async def atlas_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "index.html")
@@ -218,6 +231,13 @@ def register_atlas_web_routes(
                 faction_code=faction_code,
             )
         except AtlasAIError as exc:
+            if exc.code in {
+                "atlas_index_missing",
+                "atlas_index_recovery_required",
+            }:
+                queue_index_reconciliation(
+                    force_reset=exc.code == "atlas_index_recovery_required"
+                )
             return web.json_response(
                 {"error": exc.code, "message": str(exc), "retryable": exc.retryable},
                 status=503 if exc.retryable or exc.code.endswith("not_configured") else 400,
@@ -272,33 +292,98 @@ def register_atlas_web_routes(
             return web.json_response({"error": str(exc), "message": "Документ не создан."}, status=400)
         return web.json_response({"document": created}, status=201)
 
+    async def index_source(source: dict[str, Any]) -> None:
+        point_ids = await atlas_index_source(source)
+        await asyncio.to_thread(
+            storage.atlas_mark_knowledge_indexed,
+            int(source["id"]),
+            point_id=point_ids[0] if point_ids else None,
+        )
+
+    async def mark_index_error(source: dict[str, Any], exc: BaseException) -> None:
+        await asyncio.to_thread(
+            storage.atlas_mark_knowledge_indexed,
+            int(source["id"]),
+            point_id=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    async def reconcile_knowledge_index(*, force_reset: bool = False) -> None:
+        sources = await asyncio.to_thread(storage.atlas_indexable_knowledge_sources)
+        if not sources:
+            return
+        async with index_lock:
+            probe = await atlas_probe_collection()
+            reset = force_reset or probe["status"] == "corrupted"
+            if reset:
+                await atlas_reset_collection()
+            indexed_count = sum(item.get("status") == "indexed" for item in sources)
+            rebuild_all = (
+                reset
+                or probe["status"] == "missing"
+                or int(probe.get("points_count") or 0) < indexed_count
+            )
+            targets = (
+                sources
+                if rebuild_all
+                else [item for item in sources if item.get("status") != "indexed"]
+            )
+            for source in targets:
+                try:
+                    await index_source(source)
+                except Exception as exc:
+                    await mark_index_error(source, exc)
+                    if isinstance(exc, AtlasAIError) and exc.retryable:
+                        raise
+
+    def queue_index_reconciliation(*, force_reset: bool = False) -> None:
+        nonlocal rebuild_task
+        if rebuild_task is not None and not rebuild_task.done():
+            return
+
+        async def runner() -> None:
+            reset_requested = force_reset
+            for delay in (0, 3, 10, 30, 60):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    await reconcile_knowledge_index(force_reset=reset_requested)
+                    return
+                except Exception:
+                    reset_requested = False
+                    continue
+
+        rebuild_task = asyncio.create_task(runner(), name="atlas-index-reconciliation")
+        indexing_tasks.add(rebuild_task)
+        rebuild_task.add_done_callback(indexing_tasks.discard)
+
     def queue_knowledge_index(source: dict[str, Any]) -> None:
         async def index_in_background() -> None:
             try:
-                point_ids = await atlas_index_source(source)
-                await asyncio.to_thread(
-                    storage.atlas_mark_knowledge_indexed,
-                    int(source["id"]),
-                    point_id=point_ids[0] if point_ids else None,
-                )
+                async with index_lock:
+                    await index_source(source)
             except AtlasAIError as exc:
-                await asyncio.to_thread(
-                    storage.atlas_mark_knowledge_indexed,
-                    int(source["id"]),
-                    point_id=None,
-                    error=str(exc),
-                )
+                await mark_index_error(source, exc)
+                if exc.code == "qdrant_index_corrupted":
+                    queue_index_reconciliation(force_reset=True)
             except Exception as exc:
-                await asyncio.to_thread(
-                    storage.atlas_mark_knowledge_indexed,
-                    int(source["id"]),
-                    point_id=None,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+                await mark_index_error(source, exc)
 
         task = asyncio.create_task(index_in_background(), name=f"atlas-index-{int(source['id'])}")
         indexing_tasks.add(task)
         task.add_done_callback(indexing_tasks.discard)
+
+    async def start_index_reconciliation(_: web.Application) -> None:
+        queue_index_reconciliation()
+
+    async def stop_index_reconciliation(_: web.Application) -> None:
+        for task in tuple(indexing_tasks):
+            task.cancel()
+        if indexing_tasks:
+            await asyncio.gather(*tuple(indexing_tasks), return_exceptions=True)
+
+    app.on_startup.append(start_index_reconciliation)
+    app.on_cleanup.append(stop_index_reconciliation)
 
     async def knowledge(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -336,6 +421,9 @@ def register_atlas_web_routes(
                 str(payload.get("server_code") or "phoenix-15"),
                 str(payload.get("faction_code") or "lspd"),
             )
+            visibility_scope = atlas_normalize_knowledge_scope(
+                str(payload.get("visibility_scope") or "server")
+            )
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
                 organization_id,
@@ -346,6 +434,7 @@ def register_atlas_web_routes(
                 source_url=str(payload.get("source_url") or "") or None,
                 server_code=server_code,
                 faction_code=faction_code,
+                visibility_scope=visibility_scope,
             )
         except (TypeError, ValueError) as exc:
             return web.json_response(
@@ -382,12 +471,22 @@ def register_atlas_web_routes(
                         file_data.extend(chunk)
                         if len(file_data) > ATLAS_KNOWLEDGE_MAX_FILE_BYTES:
                             raise AtlasKnowledgeFileError("atlas_file_too_large", "Файл превышает лимит 8 МБ.")
-                elif field.name in {"title", "source_kind", "source_url", "server_code", "faction_code"}:
+                elif field.name in {
+                    "title",
+                    "source_kind",
+                    "source_url",
+                    "server_code",
+                    "faction_code",
+                    "visibility_scope",
+                }:
                     values[str(field.name)] = (await field.text()).strip()
             extracted = await asyncio.to_thread(atlas_extract_knowledge_file, filename, bytes(file_data))
             server_code, faction_code = atlas_normalize_scope(
                 values.get("server_code", "phoenix-15"),
                 values.get("faction_code", "lspd"),
+            )
+            visibility_scope = atlas_normalize_knowledge_scope(
+                values.get("visibility_scope", "server")
             )
             dashboard = await asyncio.to_thread(
                 storage.atlas_dashboard,
@@ -405,6 +504,7 @@ def register_atlas_web_routes(
                 source_url=values.get("source_url") or None,
                 server_code=server_code,
                 faction_code=faction_code,
+                visibility_scope=visibility_scope,
                 original_filename=str(extracted["filename"]),
             )
         except (AtlasKnowledgeFileError, ValueError) as exc:
