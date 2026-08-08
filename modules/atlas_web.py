@@ -923,6 +923,27 @@ def register_atlas_web_routes(
                 },
                 status=503,
             )
+        source_url = str(payload.get("source_url") or "").strip()
+        if forum_sync_runner.is_configured_listing_url(source_url):
+            if not forum_sync_runner.trigger():
+                return web.json_response(
+                    {
+                        "error": "atlas_forum_sync_disabled",
+                        "message": "Автоматическое обновление форума отключено.",
+                    },
+                    status=409,
+                )
+            return web.json_response(
+                {
+                    "queued": True,
+                    "bulk": True,
+                    "message": (
+                        "Раздел форума принят. Atlas обойдёт все страницы и темы, "
+                        "после чего обновит библиотеку и поиск."
+                    ),
+                },
+                status=202,
+            )
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,
@@ -932,7 +953,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
-            snapshot = await forum_sync_runner.fetch_thread(str(payload.get("source_url") or ""))
+            snapshot = await forum_sync_runner.fetch_thread(source_url)
             dashboard = await user_dashboard(request, selected)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,

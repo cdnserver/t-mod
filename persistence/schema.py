@@ -1779,6 +1779,23 @@ def init_db() -> None:
             )
             set_meta(con, atlas_taxonomy_migration, utc_now_iso())
 
+        atlas_title_index_migration = "migration:atlas-title-index:2026-08-09-v1"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_title_index_migration,),
+        ).fetchone() is None:
+            # Search embeddings now include the document identity. Rebuild only
+            # derived Qdrant points; canonical texts and revisions stay intact.
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = CASE WHEN status = 'archived' THEN status ELSE 'pending' END,
+                    qdrant_point_id = NULL,
+                    last_error = NULL
+                """
+            )
+            set_meta(con, atlas_title_index_migration, utc_now_iso())
+
         con.execute(
             """
             UPDATE craft_plans

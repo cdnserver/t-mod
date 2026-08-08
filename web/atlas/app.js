@@ -1001,7 +1001,7 @@ function bind() {
     const values = Object.fromEntries(new FormData(form));
     const button = form.querySelector("button[type='submit']");
     button.disabled = true;
-    button.textContent = "Читаем тему…";
+    button.textContent = "Читаем форум…";
     try {
       const result = await api("/api/atlas/knowledge/import-forum", {
         method: "POST",
@@ -1010,9 +1010,9 @@ function bind() {
       });
       form.reset();
       await loadKnowledgeSources();
-      showToast(result.message || "Тема добавлена в библиотеку.");
+      showToast(result.message || "Форум принят на индексирование.");
     } catch (error) { showToast(error.message, true); }
-    finally { button.disabled = false; button.textContent = "Прочитать и добавить →"; }
+    finally { button.disabled = false; button.textContent = "Прочитать и проиндексировать →"; }
   });
   document.querySelectorAll("[data-knowledge-mode]").forEach((button) => {
     button.addEventListener("click", () => {

@@ -126,6 +126,33 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertEqual(len(batch.snapshots), 1)
         self.assertFalse(batch.inventory_complete)
 
+    def test_browser_indexes_other_threads_when_one_thread_is_unreadable(self) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        listing = """
+        <div class="structItem-title"><a href="/threads/broken.1/">Broken</a></div>
+        <div class="structItem-title"><a href="/threads/working.2/">Working</a></div>
+        """
+        working = """
+        <h1 class="p-title-value">Уголовный кодекс</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+        <p>Полная редакция уголовного кодекса с достаточным объёмом текста.</p>
+        </div></div></article>
+        """
+
+        def load(url: str) -> str:
+            if "/forums/" in url:
+                return listing
+            if "broken" in url:
+                raise AtlasForumSyncError("atlas_forum_thread_body_missing")
+            return working
+
+        browser._load = load
+        batch = browser.scrape()
+
+        self.assertEqual([item.title for item in batch.snapshots], ["Уголовный кодекс"])
+        self.assertEqual(len(batch.skipped_threads), 1)
+        self.assertFalse(batch.inventory_complete)
+
     def test_single_thread_import_uses_saved_browser_and_rejects_foreign_host(self) -> None:
         browser = AtlasForumBrowser(sync_config())
         page = """
@@ -429,6 +456,23 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["last_stats"]["changed"], 0)
         index.assert_awaited_once()
         self.assertTrue(browser.closed)
+
+    def test_runner_recognizes_only_configured_forum_listing(self) -> None:
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=_FakeBrowser(None),
+            index_callback=AsyncMock(),
+        )
+
+        self.assertTrue(runner.is_configured_listing_url(ROOT_URL))
+        self.assertFalse(
+            runner.is_configured_listing_url(
+                "https://forum.majestic-rp.ru/forums/drugoy-razdel.10/"
+            )
+        )
+        self.assertFalse(runner.is_configured_listing_url("https://example.org/forums/1/"))
 
     async def test_manual_check_sets_attention_without_changing_knowledge(self) -> None:
         browser = _FakeBrowser(

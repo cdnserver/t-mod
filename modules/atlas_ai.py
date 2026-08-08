@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from modules.atlas_taxonomy import atlas_classify_knowledge
+from persistence import atlas_repository as atlas_storage
 
 
 _HEALTH_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -28,6 +29,36 @@ _CREATIVE_REQUEST_RE = re.compile(
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
 _ATLAS_RETIRED_EXPENSIVE_DEFAULTS = frozenset({"openai/gpt-5.4"})
+_ATLAS_ABBREVIATIONS = {
+    "ук": "уголовный кодекс",
+    "упк": "уголовно-процессуальный кодекс",
+    "коап": "кодекс об административных правонарушениях",
+    "гк": "гражданский кодекс",
+    "гпк": "гражданский процессуальный кодекс",
+    "тк": "трудовой кодекс",
+    "пдд": "правила дорожного движения",
+    "нпа": "нормативный правовой акт",
+}
+_ATLAS_SEARCH_STOP_WORDS = frozenset(
+    {
+        "а",
+        "без",
+        "в",
+        "во",
+        "для",
+        "и",
+        "или",
+        "как",
+        "на",
+        "о",
+        "об",
+        "по",
+        "про",
+        "такое",
+        "что",
+        "это",
+    }
+)
 
 
 class AtlasAIError(RuntimeError):
@@ -322,13 +353,12 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     chunks = _chunks(str(source.get("content_text") or source.get("content") or ""))
     if not chunks:
         raise AtlasAIError("knowledge_empty", "Источник не содержит текста для индексации.")
-    vectors = await atlas_embed(chunks)
-    await atlas_ensure_collection(len(vectors[0]))
     organization_id = int(source["organization_id"])
     source_id = int(source["id"])
     server_code = str(source.get("server_code") or "phoenix-15")
     faction_code = str(source.get("faction_code") or "lspd")
     visibility_scope = str(source.get("visibility_scope") or "workspace")
+    title = str(source.get("title") or "Источник")[:300]
     source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     taxonomy = source_metadata.get("taxonomy") if isinstance(source_metadata.get("taxonomy"), dict) else {}
     if not taxonomy:
@@ -338,6 +368,12 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
             source_url=str(source.get("source_url") or "") or None,
             source_kind=str(source.get("source_kind") or "memo"),
         )
+    embedding_prefix = (
+        f"Название документа: {title}\n"
+        f"Тип материала: {str(taxonomy.get('corpus_kind') or 'other')}\n"
+    )
+    vectors = await atlas_embed([f"{embedding_prefix}{chunk}" for chunk in chunks])
+    await atlas_ensure_collection(len(vectors[0]))
     access_scope = _atlas_access_scope(
         organization_id,
         server_code,
@@ -360,7 +396,7 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                     "faction_code": faction_code,
                     "visibility_scope": visibility_scope,
                     "access_scope": access_scope,
-                    "title": str(source.get("title") or "Источник")[:300],
+                    "title": title,
                     "source_url": str(source.get("source_url") or "")[:1000] or None,
                     "source_kind": str(source.get("source_kind") or "memo"),
                     "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
@@ -397,8 +433,21 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
 
 def _atlas_query_variants(query: str) -> list[str]:
     clean = " ".join(str(query or "").split())[:8000]
-    lowered = clean.casefold()
     variants = [clean]
+    expanded = clean
+    matched_expansions: list[str] = []
+    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+        if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", expanded, re.IGNORECASE):
+            expanded = re.sub(
+                rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
+                meaning,
+                expanded,
+                flags=re.IGNORECASE,
+            )
+            matched_expansions.append(meaning)
+    if expanded != clean:
+        variants.extend((expanded, *matched_expansions))
+    lowered = expanded.casefold()
     if not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered):
         variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
     if not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
@@ -407,7 +456,83 @@ def _atlas_query_variants(query: str) -> list[str]:
         variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
     if re.search(r"организац|фракц|департамент|полиц|правительств|устав|ранг", lowered):
         variants.append(f"{clean}\nустав организации, внутренний регламент и зона полномочий")
-    return list(dict.fromkeys(item for item in variants if item))[:4]
+    return list(dict.fromkeys(item for item in variants if item))[:6]
+
+
+def _atlas_lexical_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    focused_query = query[-2500:]
+    expanded = focused_query
+    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+        expanded = re.sub(
+            rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
+            meaning,
+            expanded,
+            flags=re.IGNORECASE,
+        )
+    expanded = expanded.casefold()
+    raw_terms = [
+        token
+        for token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE)
+        if token not in _ATLAS_SEARCH_STOP_WORDS
+    ]
+    terms = list(
+        dict.fromkeys(reversed(raw_terms))
+    )[:16]
+    phrases = [
+        meaning
+        for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items()
+        if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", query, re.IGNORECASE)
+    ]
+    if not terms and not phrases:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        title = str(source.get("title") or "Источник")
+        content = str(source.get("content_text") or "")
+        title_folded = title.casefold()
+        content_folded = content.casefold()
+        title_hits = sum(term in title_folded for term in terms)
+        content_hits = sum(term in content_folded for term in terms)
+        phrase_title_hits = sum(phrase in title_folded for phrase in phrases)
+        phrase_content_hits = sum(phrase in content_folded for phrase in phrases)
+        score = (
+            phrase_title_hits * 1.2
+            + phrase_content_hits * 0.55
+            + title_hits * 0.22
+            + content_hits * 0.035
+        )
+        if score <= 0:
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        ranked_chunks = []
+        for chunk_index, chunk in enumerate(_chunks(content)):
+            folded = chunk.casefold()
+            rank = sum(term in folded for term in terms) + 4 * sum(
+                phrase in folded for phrase in phrases
+            )
+            ranked_chunks.append((rank, -chunk_index, chunk_index, chunk))
+        for _rank, _order, chunk_index, chunk in sorted(ranked_chunks, reverse=True)[:2]:
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+                    "title": title,
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": chunk[:7000],
+                    "score": round(min(2.0, 0.65 + score), 4),
+                    "chunk": chunk_index,
+                }
+            )
+    return candidates
 
 
 def atlas_research_plan(question: str) -> list[dict[str, Any]]:
@@ -486,6 +611,18 @@ async def atlas_search(
     query_variants: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
+    clean_server = str(server_code or "phoenix-15")
+    clean_faction = str(faction_code or "lspd")
+    try:
+        canonical_sources = await asyncio.to_thread(
+            atlas_storage.atlas_searchable_knowledge_sources,
+            int(organization_id),
+            server_code=clean_server,
+            faction_code=clean_faction,
+        )
+    except Exception:
+        canonical_sources = []
+    lexical_candidates = _atlas_lexical_candidates(str(query), canonical_sources)
     raw_queries = [str(query)[:8000], *(str(item)[:1200] for item in query_variants or [])]
     variants: list[str] = []
     for raw_query in raw_queries:
@@ -498,8 +635,6 @@ async def atlas_search(
         if len(variants) >= 8:
             break
     vectors = await atlas_embed(variants)
-    clean_server = str(server_code or "phoenix-15")
-    clean_faction = str(faction_code or "lspd")
     access_scopes = [
         "global",
         f"server:{clean_server}",
@@ -567,10 +702,16 @@ async def atlas_search(
                 "url": str(payload.get("source_url") or "") or None,
                 "text": str(payload.get("text") or "")[:7000],
                 "score": round(score, 4),
+                "chunk": chunk,
             }
             key = (source_id, chunk)
             if key not in candidates or float(candidates[key]["score"]) < score:
                 candidates[key] = item
+
+    for item in lexical_candidates:
+        key = (int(item["source_id"]), int(item.get("chunk") or 0))
+        if key not in candidates or float(candidates[key]["score"]) < float(item["score"]):
+            candidates[key] = item
 
     selected: list[dict[str, Any]] = []
     source_counts: dict[int, int] = {}

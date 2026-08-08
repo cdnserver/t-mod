@@ -771,6 +771,45 @@ def atlas_knowledge_sources(
     return [_row(row) for row in rows]
 
 
+def atlas_searchable_knowledge_sources(
+    organization_id: int,
+    *,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    """Return accessible canonical text for the local half of hybrid search."""
+
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_knowledge_sources
+            WHERE status != 'archived'
+              AND length(trim(content_text)) >= 20
+              AND (
+                visibility_scope = 'global'
+                OR (visibility_scope = 'server' AND server_code = ?)
+                OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
+                OR (visibility_scope = 'workspace' AND organization_id = ?
+                    AND server_code = ? AND faction_code = ?)
+              )
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (
+                clean_server,
+                clean_server,
+                clean_faction,
+                int(organization_id),
+                clean_server,
+                clean_faction,
+                max(1, min(1_000, int(limit))),
+            ),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
 def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any]]:
     """Return canonical source text for rebuilding the derived search index."""
 

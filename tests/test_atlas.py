@@ -15,6 +15,7 @@ from docx import Document
 from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
+    _atlas_query_variants,
     _chunks,
     atlas_ai_config,
     atlas_answer,
@@ -430,6 +431,42 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(chunks), 48)
         self.assertTrue(all(len(chunk) <= 1000 for chunk in chunks))
 
+    def test_query_variants_expand_legal_abbreviation(self) -> None:
+        variants = _atlas_query_variants("Что такое УК?")
+
+        self.assertTrue(any("уголовный кодекс" in item.casefold() for item in variants))
+
+    async def test_hybrid_search_finds_saved_source_when_qdrant_returns_nothing(self) -> None:
+        source = {
+            "id": 91,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный кодекс",
+            "content_text": (
+                "Уголовный кодекс устанавливает основания ответственности, "
+                "виды преступлений и применяемые наказания."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.1/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Что такое УК?", expanded=True)
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["source_id"], 91)
+        self.assertEqual(result[0]["title"], "Уголовный кодекс")
+
     async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
         response = {
             "result": {
@@ -512,9 +549,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "title": "Общий регламент",
             "content_text": "Проверенный общий материал Phoenix длиной больше двадцати символов.",
         }
+        embed = AsyncMock(return_value=[[0.1, 0.2]])
         with patch(
             "modules.atlas_ai.atlas_embed",
-            AsyncMock(return_value=[[0.1, 0.2]]),
+            embed,
         ), patch(
             "modules.atlas_ai.atlas_ensure_collection",
             AsyncMock(),
@@ -527,6 +565,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         put_call = next(call for call in request.await_args_list if call.args[0] == "PUT")
         delete_call = next(call for call in request.await_args_list if call.args[0] == "POST")
         point = put_call.kwargs["payload"]["points"][0]
+        self.assertIn("Название документа: Общий регламент", embed.await_args.args[0][0])
         self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
         self.assertEqual(point["payload"]["visibility_scope"], "server")
         self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
@@ -1025,7 +1064,13 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
                 AsyncMock(return_value=snapshot),
-            ), patch("modules.atlas_web.atlas_index_source", AsyncMock(return_value=["point-1"])):
+            ), patch(
+                "modules.atlas_forum_sync.AtlasForumSyncRunner.trigger",
+                return_value=True,
+            ) as trigger, patch(
+                "modules.atlas_web.atlas_index_source",
+                AsyncMock(return_value=["point-1"]),
+            ):
                 async with TestClient(TestServer(app)) as client:
                     response = await client.post(
                         "/api/atlas/knowledge/import-forum",
@@ -1041,11 +1086,28 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         },
                     )
                     payload = await response.json()
+                    bulk_response = await client.post(
+                        "/api/atlas/knowledge/import-forum",
+                        json={
+                            "source_url": (
+                                "https://forum.majestic-rp.ru/forums/"
+                                "zakonodatel-naya-baza.1213/"
+                            )
+                        },
+                        headers={
+                            "X-CSRF-Token": "admin-csrf",
+                            "X-Idempotency-Key": "forum-import-bulk-1",
+                        },
+                    )
+                    bulk_payload = await bulk_response.json()
 
             self.assertEqual(response.status, 202, payload)
             self.assertEqual(payload["taxonomy"]["domain"], "ic")
             self.assertEqual(payload["taxonomy"]["corpus_kind"], "charter")
             self.assertEqual(payload["source"]["faction_code"], "gov")
+            self.assertEqual(bulk_response.status, 202, bulk_payload)
+            self.assertTrue(bulk_payload["bulk"])
+            trigger.assert_called_once_with()
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

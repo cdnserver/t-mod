@@ -221,12 +221,12 @@
                   <button type="submit">Загрузить в библиотеку <span>→</span></button>
                 </form>
                 <form id="knowledge-forum-form" hidden>
-                  <label class="wide">Ссылка на тему форума<input name="source_url" type="url" required maxlength="1000" placeholder="https://forum.majestic-rp.ru/threads/..."></label>
+                  <label class="wide">Ссылка на тему или раздел форума<input name="source_url" type="url" required maxlength="1000" placeholder="https://forum.majestic-rp.ru/forums/... или /threads/..."></label>
                   <label>Мир материала<select name="knowledge_domain"><option value="">Определить автоматически</option><option value="ic">IC · игровой мир</option><option value="ooc">OOC · правила проекта</option><option value="mixed">Смешанный</option></select></label>
                   <label>Раздел знаний<select name="corpus_kind"><option value="">Определить автоматически</option><option value="law">Законодательство</option><option value="server_rule">Правила сервера</option><option value="charter">Устав организации</option><option value="case_law">Судебная практика</option><option value="lawsuit">Иск / судебный материал</option><option value="department_order">Приказ / распоряжение</option><option value="procedure">Процедура / регламент</option><option value="manual">Памятка / обучение</option><option value="other">Другой материал</option></select></label>
                   <label class="wide">Кому доступен материал<select name="visibility_scope"><option value="server">Всем организациям Phoenix (15)</option><option value="faction">Только выбранной организации</option><option value="workspace">Только этой рабочей группе</option><option value="global">Всем серверам Atlas</option></select></label>
-                  <p class="form-hint wide">Atlas откроет тему через авторизованный локальный браузер, извлечёт основной текст и сам определит тип материала. Произвольные сайты не открываются.</p>
-                  <button type="submit">Прочитать и добавить <span>→</span></button>
+                  <p class="form-hint wide">Для темы Atlas добавит один материал. Для раздела законодательной базы он обойдёт все страницы и проиндексирует каждую доступную тему. Произвольные сайты не открываются.</p>
+                  <button type="submit">Прочитать и проиндексировать <span>→</span></button>
                 </form>
                 <form id="knowledge-form" hidden>
                   <label>Название<input name="title" maxlength="180" required placeholder="Регламент проведения задержаний"></label>

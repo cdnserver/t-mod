@@ -135,6 +135,7 @@ class AtlasForumSnapshot:
 class AtlasForumScrapeBatch:
     snapshots: tuple[AtlasForumSnapshot, ...]
     inventory_complete: bool
+    skipped_threads: tuple[str, ...] = ()
 
 
 def _clean_text(value: str) -> str:
@@ -595,14 +596,25 @@ class AtlasForumBrowser:
                 "Форум не показал темы законодательной базы. Требуется проверка страницы."
             )
         snapshots: list[AtlasForumSnapshot] = []
+        skipped_threads: list[str] = []
         for index, thread_url in enumerate(thread_urls):
-            page = self._load(thread_url)
-            snapshots.append(parse_forum_thread(page, thread_url))
+            try:
+                page = self._load(thread_url)
+                snapshots.append(parse_forum_thread(page, thread_url))
+            except AtlasForumManualActionRequired:
+                raise
+            except AtlasForumSyncError:
+                skipped_threads.append(thread_url)
             if index + 1 < len(thread_urls):
                 time.sleep(self.config.page_delay_seconds)
+        if not snapshots:
+            raise AtlasForumSyncError("atlas_forum_threads_unreadable")
         return AtlasForumScrapeBatch(
             snapshots=tuple(snapshots),
-            inventory_complete=not hit_thread_limit and not listing_queue,
+            inventory_complete=(
+                not hit_thread_limit and not listing_queue and not skipped_threads
+            ),
+            skipped_threads=tuple(skipped_threads),
         )
 
     def scrape_thread(self, url: str) -> AtlasForumSnapshot:
@@ -678,6 +690,16 @@ class AtlasForumSyncRunner:
             return False
         self._wake.set()
         return True
+
+    def is_configured_listing_url(self, url: str) -> bool:
+        candidate = _canonical_url(self.config.root_url, str(url or ""))
+        configured = _canonical_url(self.config.root_url, self.config.root_url)
+        return bool(
+            candidate
+            and configured
+            and "/forums/" in candidate
+            and candidate.rstrip("/") == configured.rstrip("/")
+        )
 
     async def fetch_thread(self, url: str) -> AtlasForumSnapshot:
         """Reuse the signed-in browser while serializing it with scheduled sync."""
@@ -792,6 +814,7 @@ class AtlasForumSyncRunner:
                     )
                 stats = {
                     "pages": len(snapshots),
+                    "skipped": len(batch.skipped_threads),
                     "created": created,
                     "changed": changed,
                     "indexed": indexed,
