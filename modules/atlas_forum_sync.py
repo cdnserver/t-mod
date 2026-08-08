@@ -330,9 +330,21 @@ class AtlasForumBrowser:
             listing_url = listing_queue.pop(0)
             if listing_url in visited_listings:
                 continue
-            page = self._load(listing_url)
+            links: list[str] = []
+            next_url: str | None = None
+            for attempt in range(3):
+                page = self._load(listing_url)
+                links, next_url = parse_forum_listing(page, listing_url)
+                if links:
+                    break
+                if attempt < 2:
+                    time.sleep(self.config.page_delay_seconds)
+            if not links:
+                raise AtlasForumManualActionRequired(
+                    "Форум не показал список тем. Откройте локальный Chromium, "
+                    "завершите проверку страницы и повторите синхронизацию."
+                )
             visited_listings.add(listing_url)
-            links, next_url = parse_forum_listing(page, listing_url)
             for link in links:
                 if link in thread_seen:
                     continue
@@ -346,7 +358,9 @@ class AtlasForumBrowser:
             if listing_queue:
                 time.sleep(self.config.page_delay_seconds)
         if not thread_urls:
-            raise AtlasForumSyncError("atlas_forum_listing_empty")
+            raise AtlasForumManualActionRequired(
+                "Форум не показал темы законодательной базы. Требуется проверка страницы."
+            )
         snapshots: list[AtlasForumSnapshot] = []
         for index, thread_url in enumerate(thread_urls):
             page = self._load(thread_url)

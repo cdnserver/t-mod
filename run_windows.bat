@@ -9,6 +9,7 @@ title T-Mod Boot Console
 chcp 65001 >nul
 
 set PERSISTENT_DIR=C:\Users\Admin\Documents\SGLDiscordBot
+set "COMPOSE_ENV_FILES=%PERSISTENT_DIR%\.env"
 set DATA_DIR=%PERSISTENT_DIR%\data
 set BACKUP_DIR=%PERSISTENT_DIR%\backups
 set CADDY_DIR=%PERSISTENT_DIR%\caddy

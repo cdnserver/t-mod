@@ -65,7 +65,8 @@ services:
       SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
       SE_NODE_SESSION_TIMEOUT: "86400"
       SE_SESSION_REQUEST_TIMEOUT: "60"
-      SE_VNC_PASSWORD: "${ATLAS_FORUM_VNC_PASSWORD:-atlas-local}"
+      # noVNC is bound to host loopback only, so a second password is unnecessary.
+      SE_VNC_NO_PASSWORD: "true"
     healthcheck:
       test:
         - CMD

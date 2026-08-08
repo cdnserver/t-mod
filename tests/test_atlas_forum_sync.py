@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import storage
 from modules.atlas_forum_sync import (
@@ -121,6 +121,21 @@ class AtlasForumParserTests(unittest.TestCase):
 
         self.assertEqual(len(batch.snapshots), 1)
         self.assertFalse(batch.inventory_complete)
+
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_empty_listing_becomes_manual_action_after_retries(self, _sleep) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        loads = 0
+
+        def empty(_url):
+            nonlocal loads
+            loads += 1
+            return "<html><body>Промежуточная страница проверки</body></html>"
+
+        browser._load = empty
+        with self.assertRaisesRegex(AtlasForumManualActionRequired, "список тем"):
+            browser.scrape()
+        self.assertEqual(loads, 3)
 
 
 class AtlasForumRepositoryTests(unittest.TestCase):
