@@ -41,6 +41,12 @@ _MANUAL_MARKERS = (
     "подтвердите, что вы человек",
     "verify you are human",
 )
+_LOGIN_FORM_MARKERS = (
+    'type="password"',
+    "type='password'",
+    "autocomplete=\"current-password\"",
+    "autocomplete='current-password'",
+)
 
 
 class AtlasForumSyncError(RuntimeError):
@@ -259,6 +265,8 @@ def forum_interstitial_kind(page_html: str) -> str | None:
     lowered = str(page_html or "").lower()
     if any(marker in lowered for marker in _MANUAL_MARKERS):
         return "manual"
+    if "/login" in lowered and any(marker in lowered for marker in _LOGIN_FORM_MARKERS):
+        return "login"
     if any(marker in lowered for marker in _CHALLENGE_MARKERS):
         return "javascript"
     return None
@@ -519,6 +527,10 @@ class AtlasForumBrowser:
                     except Exception:
                         pass
                     return source
+                if kind == "login":
+                    raise AtlasForumManualActionRequired(
+                        "Форум ожидает авторизацию в локальном Chromium."
+                    )
                 if kind == "manual":
                     visible = bool(
                         driver.execute_script(
@@ -608,7 +620,10 @@ class AtlasForumBrowser:
             if index + 1 < len(thread_urls):
                 time.sleep(self.config.page_delay_seconds)
         if not snapshots:
-            raise AtlasForumSyncError("atlas_forum_threads_unreadable")
+            raise AtlasForumManualActionRequired(
+                "Atlas открыл раздел, но не смог прочитать ни одной темы. "
+                "Проверьте авторизацию и открытую страницу в локальном Chromium."
+            )
         return AtlasForumScrapeBatch(
             snapshots=tuple(snapshots),
             inventory_complete=(
@@ -752,9 +767,11 @@ class AtlasForumSyncRunner:
                 interval_seconds=self.config.interval_seconds,
             )
             await asyncio.to_thread(storage.atlas_forum_sync_started, int(feed["id"]))
+            phase = "forum_read"
             try:
                 batch = await asyncio.to_thread(self.browser.scrape)
                 snapshots = list(batch.snapshots)
+                phase = "knowledge_index"
                 changed = 0
                 created = 0
                 indexed = 0
@@ -813,6 +830,7 @@ class AtlasForumSyncRunner:
                         seen_urls=seen_urls,
                     )
                 stats = {
+                    "phase": "knowledge_index" if index_errors else "complete",
                     "pages": len(snapshots),
                     "skipped": len(batch.skipped_threads),
                     "created": created,
@@ -869,17 +887,25 @@ class AtlasForumSyncRunner:
                 )
                 return state
             except Exception as exc:
-                await asyncio.to_thread(self.browser.close)
+                keep_browser_open = phase == "forum_read" and bool(
+                    getattr(self.browser, "active", False)
+                )
+                if keep_browser_open:
+                    self._start_auth_checkpoint()
+                else:
+                    await asyncio.to_thread(self.browser.close)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
                     int(feed["id"]),
-                    stats={},
-                    error=f"{type(exc).__name__}: {exc}",
+                    stats={"phase": phase},
+                    error=f"{phase}:{type(exc).__name__}: {exc}",
+                    attention=keep_browser_open,
                 )
                 await self._technical_log(
                     title="Ошибка синхронизации Atlas с форумом",
                     details=(
-                        f"`{type(exc).__name__}`. Сохранённая законодательная база "
+                        f"Этап: `{phase}`. Ошибка: `{type(exc).__name__}`. "
+                        "Сохранённая законодательная база "
                         "не изменена; следующая попытка состоится автоматически."
                     ),
                     level="warning",

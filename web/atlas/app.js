@@ -492,9 +492,17 @@ function renderForumSync(value) {
   byId("forum-sync-changed").textContent = String(stats.changed || 0);
   const message = byId("forum-sync-message");
   message.classList.toggle("warning", state === "attention" || state === "error");
-  message.textContent = status.last_error
-    ? String(status.last_error)
-    : "Последняя подтверждённая версия всегда остаётся доступной Atlas AI.";
+  const rawError = status.last_error ? String(status.last_error) : "";
+  if (rawError && stats.phase === "forum_read") {
+    message.textContent = "Не удалось прочитать форум. Откройте локальный Chromium: окно оставлено активным для авторизации и проверки.";
+    message.title = rawError;
+  } else if (rawError && stats.phase === "knowledge_index") {
+    message.textContent = "Форум прочитан, но часть материалов пока не попала в интеллектуальный поиск. Atlas повторит индексирование автоматически.";
+    message.title = rawError;
+  } else {
+    message.textContent = rawError || "Последняя подтверждённая версия всегда остаётся доступной Atlas AI.";
+    message.removeAttribute("title");
+  }
   const button = byId("forum-sync-now");
   button.disabled = state === "running" || state === "disabled";
   button.firstChild.textContent = state === "running" ? "Проверка уже выполняется " : "Проверить обновления сейчас ";

@@ -20,6 +20,7 @@ from modules.atlas_ai import (
     atlas_ai_config,
     atlas_answer,
     atlas_answer_stream,
+    atlas_embed,
     atlas_ensure_collection,
     atlas_index_source,
     atlas_probe_collection,
@@ -588,6 +589,33 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         with patch("modules.atlas_ai._json_request", denied), self.assertRaises(AtlasAIError):
             await atlas_ensure_collection(1536)
         self.assertEqual(denied.await_count, 1)
+
+    async def test_embedding_retries_temporary_rate_limit(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="test/chat",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        request = AsyncMock(
+            side_effect=[
+                AtlasAIError("upstream_rate_limited", "limit", retryable=True),
+                {"data": [{"embedding": [0.1, 0.2]}]},
+            ]
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai._json_request", request
+        ), patch("modules.atlas_ai.asyncio.sleep", AsyncMock()) as sleep:
+            vectors = await atlas_embed(["Уголовный кодекс"])
+
+        self.assertEqual(vectors, [[0.1, 0.2]])
+        self.assertEqual(request.await_count, 2)
+        sleep.assert_awaited_once_with(2)
 
     async def test_search_converts_qdrant_gridstore_panic_into_recovery_state(self) -> None:
         corrupted = AtlasAIError(

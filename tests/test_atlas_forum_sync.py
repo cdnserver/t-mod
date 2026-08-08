@@ -104,6 +104,12 @@ class AtlasForumParserTests(unittest.TestCase):
             "javascript",
         )
         self.assertEqual(forum_interstitial_kind("<div class='g-recaptcha'></div>"), "manual")
+        self.assertEqual(
+            forum_interstitial_kind(
+                '<form action="/login/login"><input type="password" name="password"></form>'
+            ),
+            "login",
+        )
         self.assertIsNone(forum_interstitial_kind("<html><body>Обычная страница</body></html>"))
 
     def test_browser_marks_capped_inventory_as_incomplete(self) -> None:
@@ -418,6 +424,12 @@ class _ManualBrowser(_FakeBrowser):
         return 1
 
 
+class _ActiveFailingBrowser(_ManualBrowser):
+    def __init__(self):
+        super().__init__()
+        self.result = AtlasForumSyncError("atlas_forum_thread_body_missing")
+
+
 class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.old_data_dir = storage.DATA_DIR
@@ -507,6 +519,25 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         await runner.sync_once()
         await asyncio.sleep(0.05)
 
+        self.assertEqual(browser.checkpoints, 1)
+        await runner.close()
+
+    async def test_forum_read_failure_keeps_active_browser_open(self) -> None:
+        browser = _ActiveFailingBrowser()
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=[]),
+        )
+
+        state = await runner.sync_once()
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(state["status"], "attention")
+        self.assertEqual(state["last_stats"]["phase"], "forum_read")
+        self.assertFalse(browser.closed)
         self.assertEqual(browser.checkpoints, 1)
         await runner.close()
 

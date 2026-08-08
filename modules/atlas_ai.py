@@ -242,13 +242,28 @@ async def atlas_embed(texts: list[str]) -> list[list[float]]:
     if not config.openrouter_key:
         raise AtlasAIError("openrouter_not_configured", "Для Atlas не настроен OPENROUTER_API_KEY.")
     endpoint = config.openrouter_url.rsplit("/chat/completions", 1)[0] + "/embeddings"
-    body = await _json_request(
-        "POST",
-        endpoint,
-        headers=_openrouter_headers(config),
-        payload={"model": config.embedding_model, "input": texts},
-        timeout=30,
-    )
+    body: dict[str, Any] | None = None
+    for attempt, delay in enumerate((0, 2, 5, 10), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            body = await _json_request(
+                "POST",
+                endpoint,
+                headers=_openrouter_headers(config),
+                payload={"model": config.embedding_model, "input": texts},
+                timeout=30,
+            )
+            break
+        except AtlasAIError as exc:
+            if not exc.retryable or attempt >= 4:
+                raise
+    if body is None:
+        raise AtlasAIError(
+            "embedding_unavailable",
+            "Atlas не смог подготовить поисковый индекс после повторных попыток.",
+            retryable=True,
+        )
     data = body.get("data")
     if not isinstance(data, list) or len(data) != len(texts):
         raise AtlasAIError("embedding_invalid", "Провайдер вернул некорректные embeddings.")
