@@ -189,12 +189,24 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
         node = title_nodes[0]
         title = _clean_text(node if isinstance(node, str) else node.text_content())
     body_nodes = tree.xpath(
-        "(//article[contains(@class,'message--post')]//div[contains(@class,'message-body')]"
+        "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
     )
     if not body_nodes:
         body_nodes = tree.xpath(
-            "(//article[contains(@class,'message')]//div[contains(@class,'message-body')])[1]"
+            "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')])[1]"
+        )
+    if not body_nodes:
+        body_nodes = tree.xpath(
+            "(//*[contains(concat(' ', normalize-space(@class), ' '), ' message-userContent ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
+        )
+    if not body_nodes:
+        body_nodes = tree.xpath(
+            "(//*[contains(concat(' ', normalize-space(@class), ' '), ' message-content ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
         )
     if not body_nodes:
         raise AtlasForumSyncError("atlas_forum_thread_body_missing")
@@ -263,6 +275,7 @@ class AtlasForumBrowser:
         options.add_argument("--window-size=1440,1200")
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--user-data-dir=/home/seluser/.config/chromium/atlas")
         options.set_capability("pageLoadStrategy", "normal")
         try:
             self._driver = webdriver.Remote(

@@ -73,11 +73,11 @@ class AtlasForumParserTests(unittest.TestCase):
           <article class="message message--post">
             <a class="message-name"><span class="username">Robert</span></a>
             <time class="u-dt" datetime="2026-08-08T12:00:00+03:00"></time>
-            <div class="message-body"><div class="bbWrapper">
+            <div class="message-userContent"><article class="message-body js-selectToQuote"><div class="bbWrapper">
               <p>Раздел первый. Общие положения закона.</p>
               <blockquote class="bbCodeBlock bbCodeBlock--quote">Старая цитата</blockquote>
               <ol><li>Положение номер один.</li><li>Положение номер два.</li></ol>
-            </div></div>
+            </div></article></div>
           </article>
           <article class="message message--post"><div class="message-body"><p>Чужой ответ</p></div></article>
         </body></html>
