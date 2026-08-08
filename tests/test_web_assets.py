@@ -58,7 +58,7 @@ class WebAssetContractTests(unittest.TestCase):
 
     def test_production_surfaces_have_accessible_font_floor(self) -> None:
         offenders: list[str] = []
-        for name in ("admin.css", "style.css", "portal-theme.css", "login.css"):
+        for name in ("admin.css", "style.css", "portal-theme.css", "login.css", "games.css"):
             source = (WEB / name).read_text(encoding="utf-8")
             for size in re.findall(r"font-size:\s*([0-9.]+)px", source):
                 if float(size) < 10:

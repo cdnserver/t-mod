@@ -41,6 +41,17 @@ class GameEngineTests(unittest.TestCase):
         self.assertEqual(turn, "white")
         self.assertEqual(status, "active")
 
+    def test_chess_promotion_keeps_all_legal_choices(self) -> None:
+        state = {
+            "fen": "7k/P7/8/8/8/8/8/7K w - - 0 1",
+            "last_move": None,
+            "history": [],
+        }
+        choices = {move for move in chess_legal_moves(state) if move.startswith("a7a8")}
+        self.assertEqual(choices, {"a7a8q", "a7a8r", "a7a8b", "a7a8n"})
+        promoted, *_ = chess_move(state, "a7a8n")
+        self.assertEqual(chess.Board(promoted["fen"]).piece_at(chess.A8).symbol(), "N")
+
     def test_backgammon_move_consumes_a_die_and_preserves_checkers(self) -> None:
         state = new_backgammon_state()
         legal = backgammon_legal_moves(state, "white")
@@ -193,6 +204,68 @@ class GameWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moved["turn_side"], "white")
         self.assertTrue(moved["can_move"])
         self.assertEqual(len(moved["state"]["history"]), 2)
+
+    async def test_friend_invite_join_and_spectator_projection(self) -> None:
+        principals = {}
+        for user_id, name in ((10, "Автор"), (20, "Гость"), (30, "Зритель")):
+            member = SimpleNamespace(
+                id=user_id,
+                display_name=name,
+                guild_permissions=SimpleNamespace(administrator=False),
+                roles=[],
+            )
+            principals[user_id] = ConsensusWebPrincipal(
+                user_id=user_id,
+                guild_id=1,
+                display_name=name,
+                csrf_token=f"csrf-{user_id}",
+                member=member,
+            )
+
+        async def authenticate(request):
+            return principals[int(request.headers["X-Test-User"])], False
+
+        app = web.Application()
+        register_games_web_routes(
+            app,
+            SimpleNamespace(),
+            guild_id=1,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "consensus",
+            authenticate=authenticate,
+        )
+        async with TestClient(TestServer(app)) as client:
+            created_response = await client.post(
+                "/api/games/matches",
+                json={"game_type": "chess", "mode": "friend", "side": "white"},
+                headers={"X-Test-User": "10", "X-CSRF-Token": "csrf-10"},
+            )
+            created = (await created_response.json())["match"]
+            invite_response = await client.get(
+                f"/api/games/matches/{created['id']}",
+                headers={"X-Test-User": "20"},
+            )
+            invite = (await invite_response.json())["match"]
+            joined_response = await client.post(
+                f"/api/games/matches/{created['id']}/command",
+                json={"action": "join"},
+                headers={"X-Test-User": "20", "X-CSRF-Token": "csrf-20"},
+            )
+            joined = (await joined_response.json())["match"]
+            spectator_response = await client.get(
+                f"/api/games/matches/{created['id']}",
+                headers={"X-Test-User": "30"},
+            )
+            spectator = (await spectator_response.json())["match"]
+
+        self.assertEqual(created_response.status, 201)
+        self.assertTrue(invite["spectator"])
+        self.assertTrue(invite["can_join"])
+        self.assertEqual(joined_response.status, 200)
+        self.assertEqual(joined["viewer_side"], "black")
+        self.assertTrue(joined["can_move"] is False)
+        self.assertTrue(spectator["spectator"])
+        self.assertFalse(spectator["can_join"])
+        self.assertEqual(spectator["legal_moves"], [])
 
 
 if __name__ == "__main__":

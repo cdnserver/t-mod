@@ -6,7 +6,7 @@
     treasury: "Казна",
     legislation: "Реестр законопроектов",
     editor: "Законодательная мастерская",
-    games: "Игровой зал",
+    games: "T-Mod Games",
     consensus: "Консенсус",
     notifications: "Уведомления",
   };

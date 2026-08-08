@@ -3,68 +3,225 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-    <meta name="theme-color" content="#070b12">
-    <meta name="description" content="Reactor Games — шахматы и нарды Товарищества.">
-    <title>Reactor Games · T-Mod</title>
+    <meta name="theme-color" content="#080a0e">
+    <meta name="description" content="T-Mod Games — шахматы и нарды для участников Товарищества.">
+    <title>T-Mod Games</title>
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/games.css">
     <script src="/assets/games.js" defer></script>
   </head>
   <body>
-    <div class="game-atmosphere" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
-    <section id="games-loading" class="games-loading"><div class="loading-piece">♞<i></i></div><small>REACTOR GAMES</small><h1>Открываем игровой зал</h1><p>Синхронизируем матчи и защищённую сессию…</p></section>
+    <svg class="svg-library" aria-hidden="true" focusable="false">
+      <defs>
+        <symbol id="i-games" viewBox="0 0 32 32"><path d="M9 5h14a5 5 0 0 1 4.8 3.7l2.1 8.2a6.8 6.8 0 0 1-11.2 6.8l-1.4-1.2a2 2 0 0 0-2.6 0l-1.4 1.2a6.8 6.8 0 0 1-11.2-6.8l2.1-8.2A5 5 0 0 1 9 5Z"/><path d="M9 11v7M5.5 14.5h7M22 12.5h.1M25.5 16h.1"/></symbol>
+        <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="i-exit" viewBox="0 0 24 24"><path d="M14 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-3M10 12h11m-4-4 4 4-4 4"/></symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5m5-5-5 5 5 5"/></symbol>
+        <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></symbol>
+        <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4m0 1h11l-2 4 2 4H5"/></symbol>
+        <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M8 12h.1M16 12h.1M8 16h8"/></symbol>
+        <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+        <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+        <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 1.4 5.6L19 9l-5.6 1.4L12 16l-1.4-5.6L5 9l5.6-1.4ZM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7Z"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+        <symbol id="i-chess" viewBox="0 0 32 32"><path d="M10 27h14M11 23h12l-2.2-4.4c-.9-1.8-.7-4 .5-5.6l2.1-2.8-3.7-5.1-6.1 1.8L10 13l4 2-2.5 4.5Z"/><circle cx="17.5" cy="9" r="1"/></symbol>
+        <symbol id="i-backgammon" viewBox="0 0 32 32"><rect x="4" y="5" width="24" height="22" rx="4"/><path d="M16 5v22"/><circle cx="10" cy="11" r="2"/><circle cx="22" cy="11" r="2"/><circle cx="10" cy="21" r="2"/><circle cx="22" cy="21" r="2"/></symbol>
+
+        <symbol id="piece-pawn" viewBox="0 0 64 64"><circle cx="32" cy="17" r="9"/><path d="M24 27h16l-2 7 7 12H19l7-12Zm-8 21h32v7H16Z"/></symbol>
+        <symbol id="piece-rook" viewBox="0 0 64 64"><path d="M17 10h8v7h6v-7h6v7h6v-7h8v17l-6 5 4 17H15l4-17-6-5V10Zm-4 41h38v6H13Z"/></symbol>
+        <symbol id="piece-knight" viewBox="0 0 64 64"><path d="M17 50c1-14 8-19 15-26l-8-2 6-13 19 10c-2 8-7 12-12 15l9 16Zm13-29 7-3-5-3Z"/><path d="M13 51h38v6H13Z"/></symbol>
+        <symbol id="piece-bishop" viewBox="0 0 64 64"><path d="M32 7c8 7 12 13 12 19 0 7-5 11-9 13l8 10H21l8-10c-5-2-9-6-9-13 0-6 4-12 12-19Z"/><path class="piece-cut" d="m37 17-10 13"/><path d="M16 51h32v6H16Z"/></symbol>
+        <symbol id="piece-queen" viewBox="0 0 64 64"><circle cx="12" cy="15" r="4"/><circle cx="25" cy="10" r="4"/><circle cx="39" cy="10" r="4"/><circle cx="52" cy="15" r="4"/><path d="m12 20 9 22h22l9-22-13 11-7-16-7 16Z"/><path d="M17 46h30v10H17Z"/></symbol>
+        <symbol id="piece-king" viewBox="0 0 64 64"><path d="M32 5v14M25 12h14" class="piece-cut"/><path d="M21 28c0-7 5-11 11-11s11 4 11 11c0 5-3 9-7 11l9 10H19l9-10c-4-2-7-6-7-11Z"/><path d="M16 51h32v6H16Z"/></symbol>
+      </defs>
+    </svg>
+
+    <div class="games-backdrop" aria-hidden="true"><i></i><i></i><i></i></div>
+
+    <section id="games-loading" class="games-loading" aria-live="polite">
+      <div class="loading-mark"><svg><use href="#i-games"></use></svg><span></span></div>
+      <small>T-MOD GAMES</small>
+      <h1>Готовим игровую арену</h1>
+      <p>Загружаем ваши партии и проверяем соединение…</p>
+    </section>
 
     <div id="games-app" class="games-app" hidden>
       <header class="games-header">
-        <a class="games-brand" href="/reactor"><span>♜</span><b>REACTOR GAMES</b><small>инициатива №74</small></a>
-        <nav><a href="/reactor">Личный Реактор</a><button id="new-match-top" type="button">+ Новый матч</button><a href="/auth/logout">Выйти</a></nav>
+        <a class="games-brand" href="/games" aria-label="T-Mod Games — на главную">
+          <span><svg><use href="#i-games"></use></svg></span>
+          <span class="brand-copy"><b>T-MOD <em>GAMES</em></b><small>игровая система Товарищества</small></span>
+        </a>
+        <nav aria-label="Основная навигация">
+          <a class="nav-link" href="/reactor"><svg><use href="#i-home"></use></svg><span>Реактор</span></a>
+          <button id="new-match-top" class="nav-create" type="button"><svg><use href="#i-plus"></use></svg><span>Новая игра</span></button>
+          <a class="nav-link nav-exit" href="/auth/logout" aria-label="Выйти"><svg><use href="#i-exit"></use></svg></a>
+        </nav>
       </header>
 
       <main>
         <section id="lobby-screen" class="lobby-screen">
           <article class="games-hero">
-            <div><span><i></i> ИГРОВОЙ КОНТУР ТОВАРИЩЕСТВА</span><h1>Мыслить на<br><em>несколько ходов.</em></h1><p>Играйте против T‑Mod или пригласите участника одной приватной ссылкой. Позиция каждого матча сохраняется автоматически.</p><button id="new-match-hero" type="button">Создать матч <b>→</b></button></div>
-            <div class="hero-board" aria-hidden="true"><span class="hero-chess">♞</span><span class="hero-die">⚄</span><i></i><i></i><b>№74</b></div>
+            <div class="hero-copy">
+              <span class="eyebrow"><i></i> ИНИЦИАТИВА № 74 · TVR</span>
+              <h1>Твоя следующая<br><em>сильная партия.</em></h1>
+              <p>Шахматы и нарды внутри экосистемы T-Mod. Сыграйте с ботом или позовите участника одной ссылкой — прогресс сохранится автоматически.</p>
+              <div class="hero-actions">
+                <button id="new-match-hero" class="primary-action" type="button">Создать игру <svg><use href="#i-arrow"></use></svg></button>
+                <span><svg><use href="#i-lock"></use></svg> Приватные матчи</span>
+              </div>
+              <ul class="hero-facts" aria-label="Возможности">
+                <li><b>2</b><span>настольные<br>игры</span></li>
+                <li><b>3</b><span>уровня<br>T-Mod Bot</span></li>
+                <li><b>∞</b><span>времени<br>на стратегию</span></li>
+              </ul>
+            </div>
+            <div class="hero-arena" aria-hidden="true">
+              <div class="arena-glow"></div>
+              <div class="mini-board">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <div class="arena-piece arena-knight"><svg><use href="#piece-knight"></use></svg></div>
+              <div class="arena-piece arena-king"><svg><use href="#piece-king"></use></svg></div>
+              <div class="arena-die"><i></i><i></i><i></i><i></i><i></i></div>
+              <span class="arena-tag"><b>LIVE</b> T-Mod Arena</span>
+            </div>
           </article>
 
-          <div class="game-choice-grid">
-            <button class="game-choice chess-choice" type="button" data-quick-game="chess"><span>01</span><i>♛</i><small>КЛАССИКА</small><h2>Шахматы</h2><p>Полные правила, рокировка, превращение пешки и три уровня T‑Mod Bot.</p><b>Начать партию →</b></button>
-            <button class="game-choice backgammon-choice" type="button" data-quick-game="backgammon"><span>02</span><i>⚅</i><small>ТАКТИКА И РИСК</small><h2>Нарды</h2><p>Классическая доска, бар, выбивание, вывод шашек и умный бот.</p><b>Бросить кости →</b></button>
-          </div>
+          <section class="choose-game-section">
+            <header class="section-heading"><div><span>ВЫБЕРИТЕ ДИСЦИПЛИНУ</span><h2>Во что сыграем?</h2></div><p>Правила уже внутри. Никаких установок и лишних команд.</p></header>
+            <div class="game-choice-grid">
+              <button class="game-choice chess-choice" type="button" data-quick-game="chess">
+                <span class="choice-number">01</span>
+                <span class="choice-art"><svg><use href="#i-chess"></use></svg><i></i></span>
+                <span class="choice-copy"><small>ТОЧНЫЙ РАСЧЁТ</small><strong>Шахматы</strong><p>Полные турнирные правила, подсветка ходов и три характера T-Mod Bot.</p></span>
+                <span class="choice-arrow"><svg><use href="#i-arrow"></use></svg></span>
+              </button>
+              <button class="game-choice backgammon-choice" type="button" data-quick-game="backgammon">
+                <span class="choice-number">02</span>
+                <span class="choice-art"><svg><use href="#i-backgammon"></use></svg><i></i></span>
+                <span class="choice-copy"><small>ТАКТИКА И РИСК</small><strong>Короткие нарды</strong><p>Кости, бар, выбивание шашек и полноценный вывод за доску.</p></span>
+                <span class="choice-arrow"><svg><use href="#i-arrow"></use></svg></span>
+              </button>
+            </div>
+          </section>
 
-          <section class="recent-matches"><header><div><span>ВАШИ ПАРТИИ</span><h2>Продолжить игру</h2></div><b id="match-count">0 матчей</b></header><div id="match-list" class="match-list"></div></section>
+          <section class="recent-matches">
+            <header class="section-heading"><div><span>ВАШИ ПАРТИИ</span><h2>Продолжить игру</h2></div><b id="match-count" class="count-pill">0</b></header>
+            <div id="match-list" class="match-list"></div>
+          </section>
         </section>
 
         <section id="match-screen" class="match-screen" hidden>
-          <header class="match-topbar"><button id="back-lobby" type="button">← Игровой зал</button><div><small id="match-kicker">REACTOR MATCH</small><h1 id="match-title">Матч</h1></div><div class="match-actions"><button id="share-match" type="button">Скопировать приглашение</button><button id="resign-match" class="danger" type="button">Сдаться</button></div></header>
+          <header class="match-topbar">
+            <button id="back-lobby" class="icon-action back-action" type="button"><svg><use href="#i-back"></use></svg><span>Все партии</span></button>
+            <div class="match-heading"><small id="match-kicker">T-MOD MATCH</small><h1 id="match-title">Матч</h1></div>
+            <div class="match-actions">
+              <button id="share-match" class="icon-action" type="button"><svg><use href="#i-link"></use></svg><span>Пригласить</span></button>
+              <button id="resign-match" class="icon-action danger" type="button"><svg><use href="#i-flag"></use></svg><span>Сдаться</span></button>
+            </div>
+          </header>
+
           <div class="match-layout">
-            <section class="board-column">
-              <div class="player-strip opponent"><span id="opponent-avatar">T</span><div><small id="opponent-label">СОПЕРНИК</small><strong id="opponent-name">T‑Mod Bot</strong></div><b id="opponent-clock">ГОТОВ</b></div>
-              <div id="board-shell" class="board-shell"><div id="chess-board" class="chess-board" hidden></div><div id="backgammon-board" class="backgammon-board" hidden></div><div id="waiting-overlay" class="waiting-overlay" hidden><span>⌁</span><h2>Ожидаем второго игрока</h2><p>Отправьте ссылку участнику Товарищества.</p><button id="waiting-copy" type="button">Скопировать приглашение</button></div></div>
-              <div class="player-strip self"><span id="self-avatar">В</span><div><small id="self-label">ВАША СТОРОНА</small><strong id="self-name">Вы</strong></div><b id="turn-state">ОЖИДАНИЕ</b></div>
+            <section class="table-zone">
+              <div class="player-seat opponent">
+                <span id="opponent-avatar" class="player-avatar">T</span>
+                <div><small id="opponent-label">СОПЕРНИК</small><strong id="opponent-name">T-Mod Bot</strong></div>
+                <b id="opponent-clock" class="side-badge">ЧЁРНЫЕ</b>
+              </div>
+
+              <div id="board-shell" class="board-shell">
+                <div id="chess-board" class="chess-board" role="grid" aria-label="Шахматная доска" hidden></div>
+                <div id="backgammon-board" class="backgammon-board" aria-label="Доска для коротких нард" hidden></div>
+                <div id="waiting-overlay" class="waiting-overlay" hidden>
+                  <span><svg><use href="#i-link"></use></svg></span>
+                  <small>МАТЧ СОЗДАН</small>
+                  <h2>Место соперника свободно</h2>
+                  <p>Отправьте приватную ссылку участнику — доска откроется сразу после его входа.</p>
+                  <button id="waiting-copy" type="button">Скопировать приглашение <svg><use href="#i-link"></use></svg></button>
+                </div>
+                <div id="thinking-overlay" class="thinking-overlay" hidden><i></i><span>T-Mod Bot рассчитывает ответ</span></div>
+              </div>
+
+              <div class="player-seat self">
+                <span id="self-avatar" class="player-avatar">В</span>
+                <div><small id="self-label">ВАША СТОРОНА</small><strong id="self-name">Вы</strong></div>
+                <b id="turn-state" class="turn-badge">ОЖИДАНИЕ</b>
+              </div>
             </section>
+
             <aside class="match-panel">
-              <div class="panel-status"><span>СОСТОЯНИЕ МАТЧА</span><strong id="match-status">Подключение…</strong><p id="match-detail">Получаем актуальную позицию.</p></div>
-              <div id="dice-panel" class="dice-panel" hidden><span>ВЫПАЛО</span><div id="dice-list"></div></div>
-              <div id="join-panel" class="join-panel" hidden><span>ПРИГЛАШЕНИЕ</span><h3>Вас зовут в матч</h3><p>После входа вы займёте свободную сторону.</p><button id="join-match" type="button">Присоединиться</button></div>
-              <div class="history-panel"><header><span>ХРОНОЛОГИЯ</span><b>LIVE</b></header><div id="move-history"></div></div>
-              <footer><i></i> Позиция защищена контролем версий</footer>
+              <section class="panel-status">
+                <span class="status-orbit"><i></i></span>
+                <small>СОСТОЯНИЕ ПАРТИИ</small>
+                <strong id="match-status">Подключение…</strong>
+                <p id="match-detail">Получаем актуальную позицию.</p>
+              </section>
+
+              <section id="dice-panel" class="dice-panel" hidden>
+                <header><span>ВАШ БРОСОК</span><small>Выберите шашку и доступную точку</small></header>
+                <div id="dice-list"></div>
+              </section>
+
+              <section id="join-panel" class="join-panel" hidden>
+                <svg><use href="#i-user"></use></svg><div><small>ПРИГЛАШЕНИЕ</small><h3>Вас ждут за столом</h3><p>Нажмите, чтобы занять свободную сторону.</p></div>
+                <button id="join-match" type="button">Вступить в игру</button>
+              </section>
+
+              <dl class="match-meta">
+                <div><dt>Режим</dt><dd id="match-mode">—</dd></div>
+                <div><dt>Сторона</dt><dd id="match-side">—</dd></div>
+              </dl>
+
+              <section class="history-panel">
+                <header><span><svg><use href="#i-history"></use></svg> Ходы</span><b>LIVE</b></header>
+                <div id="move-history"></div>
+              </section>
+
+              <footer class="safe-state"><svg><use href="#i-check"></use></svg><span><b>Позиция сохранена</b><small>Защищено контролем версий</small></span></footer>
             </aside>
           </div>
         </section>
       </main>
     </div>
 
-    <dialog id="create-dialog" class="game-dialog"><form id="create-form">
-      <button class="dialog-close" type="button" data-close>×</button><span>NEW REACTOR MATCH</span><h2>Настройте партию</h2><p>Все параметры можно выбрать сейчас — матч будет готов сразу после создания.</p>
-      <div class="dialog-game-tabs"><label><input type="radio" name="game_type" value="chess" checked><span><i>♞</i><b>Шахматы</b></span></label><label><input type="radio" name="game_type" value="backgammon"><span><i>⚄</i><b>Нарды</b></span></label></div>
-      <label>Соперник<select name="mode"><option value="bot">T‑Mod Bot</option><option value="friend">Друг по ссылке</option></select></label>
-      <div class="dialog-row"><label>Ваша сторона<select name="side"><option value="random">Случайно</option><option value="white">Белые</option><option value="black">Чёрные</option></select></label><label id="bot-level-field">Сложность<select name="bot_level"><option value="1">Спокойная</option><option value="2">Тактическая</option><option value="3">Реакторная</option></select></label></div>
-      <button class="create-submit" type="submit">Создать защищённый матч <span>→</span></button>
-    </form></dialog>
+    <dialog id="create-dialog" class="game-dialog create-game-dialog">
+      <form id="create-form">
+        <header><span class="dialog-mark"><svg><use href="#i-games"></use></svg></span><div><small>НОВАЯ ИГРА</small><h2>Настройте партию</h2><p>Всего три шага — и можно начинать.</p></div><button class="dialog-close" type="button" data-close aria-label="Закрыть">×</button></header>
 
-    <dialog id="confirm-game-dialog" class="game-dialog confirm-game-dialog"><div><span>!</span><h2>Завершить партию?</h2><p>Сопернику будет засчитана победа. Это действие нельзя отменить.</p><footer><button type="button" data-close>Вернуться</button><button id="confirm-resign" type="button">Сдаться</button></footer></div></dialog>
-    <div id="games-toast" class="games-toast" role="status" hidden></div>
+        <fieldset class="dialog-section game-type-field"><legend>1. Дисциплина</legend><div class="dialog-game-tabs">
+          <label><input type="radio" name="game_type" value="chess" checked><span><svg><use href="#i-chess"></use></svg><i><b>Шахматы</b><small>Стратегия</small></i><em><svg><use href="#i-check"></use></svg></em></span></label>
+          <label><input type="radio" name="game_type" value="backgammon"><span><svg><use href="#i-backgammon"></use></svg><i><b>Короткие нарды</b><small>Тактика и риск</small></i><em><svg><use href="#i-check"></use></svg></em></span></label>
+        </div></fieldset>
+
+        <fieldset class="dialog-section"><legend>2. Соперник</legend><div class="option-segments">
+          <label><input type="radio" name="mode" value="bot" checked><span><svg><use href="#i-bot"></use></svg><i><b>T-Mod Bot</b><small>Начать сразу</small></i></span></label>
+          <label><input type="radio" name="mode" value="friend"><span><svg><use href="#i-link"></use></svg><i><b>Участник</b><small>Пригласить ссылкой</small></i></span></label>
+        </div></fieldset>
+
+        <fieldset class="dialog-section"><legend>3. Параметры</legend><div class="dialog-row">
+          <label class="select-field"><span>Ваша сторона</span><select name="side"><option value="random">Случайная</option><option value="white">Белые</option><option value="black">Чёрные</option></select></label>
+          <label id="bot-level-field" class="select-field"><span>Сложность бота</span><select name="bot_level"><option value="1">Спокойная</option><option value="2">Тактическая</option><option value="3">Реакторная</option></select></label>
+        </div></fieldset>
+
+        <button class="create-submit" type="submit"><span><b>Создать игру</b><small>Позиция сохранится автоматически</small></span><svg><use href="#i-arrow"></use></svg></button>
+      </form>
+    </dialog>
+
+    <dialog id="promotion-dialog" class="game-dialog promotion-dialog">
+      <div><small>ПРЕВРАЩЕНИЕ ПЕШКИ</small><h2>Выберите фигуру</h2><p>Пешка достигла последней горизонтали.</p><div id="promotion-options"></div><button type="button" data-close>Отмена</button></div>
+    </dialog>
+
+    <dialog id="confirm-game-dialog" class="game-dialog confirm-game-dialog">
+      <div><span><svg><use href="#i-flag"></use></svg></span><small>ПОДТВЕРЖДЕНИЕ</small><h2>Завершить партию?</h2><p>Сопернику будет засчитана победа. Отменить это действие уже не получится.</p><footer><button type="button" data-close>Продолжить игру</button><button id="confirm-resign" type="button">Сдаться</button></footer></div>
+    </dialog>
+
+    <div id="games-toast" class="games-toast" role="status" aria-live="polite" hidden><svg><use href="#i-check"></use></svg><span></span></div>
   </body>
 </html>
