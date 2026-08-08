@@ -66,8 +66,6 @@ services:
       SE_NODE_SESSION_TIMEOUT: "86400"
       SE_SESSION_REQUEST_TIMEOUT: "60"
       SE_VNC_PASSWORD: "${ATLAS_FORUM_VNC_PASSWORD:-atlas-local}"
-    volumes:
-      - "atlas-forum-browser-data:/home/seluser/.config/chromium"
     healthcheck:
       test:
         - CMD
@@ -172,5 +170,3 @@ networks:
 volumes:
   atlas-qdrant-data:
     name: tmod-atlas-qdrant-data
-  atlas-forum-browser-data:
-    name: tmod-atlas-forum-browser-data

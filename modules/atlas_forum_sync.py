@@ -263,7 +263,6 @@ class AtlasForumBrowser:
         options.add_argument("--window-size=1440,1200")
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--user-data-dir=/home/seluser/.config/chromium/atlas")
         options.set_capability("pageLoadStrategy", "normal")
         try:
             self._driver = webdriver.Remote(
