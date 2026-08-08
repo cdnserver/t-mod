@@ -649,7 +649,6 @@ async def atlas_search(
                 break
         if len(variants) >= 8:
             break
-    vectors = await atlas_embed(variants)
     access_scopes = [
         "global",
         f"server:{clean_server}",
@@ -660,6 +659,7 @@ async def atlas_search(
         {"key": "access_scope", "match": {"any": access_scopes}}
     ]
     try:
+        vectors = await atlas_embed(variants)
         bodies = await asyncio.gather(
             *(
                 _json_request(
@@ -679,19 +679,26 @@ async def atlas_search(
             )
         )
     except AtlasAIError as exc:
-        if exc.code == "upstream_not_found":
+        # SQLite is the canonical knowledge store. Semantic search is an
+        # accelerator, not a single point of failure: when embeddings or
+        # Qdrant are temporarily unavailable, keep answering from exact and
+        # abbreviation-expanded matches already found in the saved corpus.
+        if lexical_candidates:
+            bodies = []
+        elif exc.code == "upstream_not_found":
             raise AtlasAIError(
                 "atlas_index_missing",
                 "Atlas готовит библиотеку к первому поиску. Повторите вопрос немного позже.",
                 retryable=True,
             ) from exc
-        if exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
+        elif exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
             raise AtlasAIError(
                 "atlas_index_recovery_required",
                 "Atlas восстанавливает поисковую библиотеку. Материалы сохранены; повторите вопрос немного позже.",
                 retryable=True,
             ) from exc
-        raise
+        else:
+            raise
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
     for variant_index, body in enumerate(bodies):
         result = body.get("result")

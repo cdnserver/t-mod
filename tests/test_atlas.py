@@ -468,6 +468,36 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["source_id"], 91)
         self.assertEqual(result[0]["title"], "Уголовный кодекс")
 
+    async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
+        source = {
+            "id": 92,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный кодекс",
+            "content_text": "Уголовный кодекс определяет преступления и ответственность.",
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.2/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(
+                side_effect=AtlasAIError(
+                    "upstream_rate_limited",
+                    "temporary limit",
+                    retryable=True,
+                )
+            ),
+        ):
+            result = await atlas_search(77, "Что такое УК?", expanded=True)
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["source_id"], 92)
+
     async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
         response = {
             "result": {
