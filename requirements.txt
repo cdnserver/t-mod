@@ -8,6 +8,7 @@ tzdata>=2024.1,<2027
 requests>=2.31.0,<3
 python-docx>=1.1.2,<2
 chess>=1.11.2,<2
+selenium>=4.35.0,<5
 
 # 6.1 changes unsafe entity resolution defaults and includes current libxml2/
 # libxslt security fixes. Contract templates remain API-compatible.

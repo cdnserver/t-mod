@@ -13,6 +13,7 @@ services:
     environment:
       TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
       ATLAS_QDRANT_URL: "http://atlas-qdrant:6333"
+      ATLAS_FORUM_SELENIUM_URL: "http://atlas-forum-browser:4444/wd/hub"
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
@@ -48,6 +49,36 @@ services:
       QDRANT__SERVICE__ENABLE_CORS: "false"
     security_opt:
       - no-new-privileges:true
+
+  atlas-forum-browser:
+    image: selenium/standalone-chromium:4.46.0-20260707
+    container_name: tmod-atlas-forum-browser
+    restart: unless-stopped
+    shm_size: "2gb"
+    expose:
+      - "4444"
+    ports:
+      # Manual forum verification is reachable only from the home server.
+      - "127.0.0.1:7900:7900"
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
+      SE_NODE_SESSION_TIMEOUT: "86400"
+      SE_SESSION_REQUEST_TIMEOUT: "60"
+      SE_VNC_PASSWORD: "${ATLAS_FORUM_VNC_PASSWORD:-atlas-local}"
+    volumes:
+      - "atlas-forum-browser-data:/home/seluser/.config/chromium"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:4444/status
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 35s
 
   tmod-caddy:
     image: caddy:2.10.2-alpine
@@ -141,3 +172,5 @@ networks:
 volumes:
   atlas-qdrant-data:
     name: tmod-atlas-qdrant-data
+  atlas-forum-browser-data:
+    name: tmod-atlas-forum-browser-data

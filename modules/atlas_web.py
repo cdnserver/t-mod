@@ -25,6 +25,7 @@ from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
     atlas_normalize_scope,
 )
+from modules.atlas_forum_sync import AtlasForumSyncRunner
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
@@ -54,6 +55,8 @@ def register_atlas_web_routes(
     indexing_tasks: set[asyncio.Task[None]] = set()
     index_lock = asyncio.Lock()
     rebuild_task: asyncio.Task[None] | None = None
+    forum_sync_task: asyncio.Task[None] | None = None
+    forum_sync_runner: AtlasForumSyncRunner | None = None
 
     async def atlas_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "index.html")
@@ -114,7 +117,7 @@ def register_atlas_web_routes(
                 },
                 "catalog": atlas_catalog(),
             }
-        dashboard, health = await asyncio.gather(
+        dashboard, health, forum_sync = await asyncio.gather(
             asyncio.to_thread(
                 storage.atlas_dashboard,
                 int(guild_id),
@@ -122,6 +125,7 @@ def register_atlas_web_routes(
                 str(selected.display_name),
             ),
             atlas_ai_health(),
+            asyncio.to_thread(storage.atlas_forum_sync_status, int(guild_id)),
         )
         return {
             **dashboard,
@@ -132,6 +136,10 @@ def register_atlas_web_routes(
                 "csrf_token": str(selected.csrf_token),
             },
             "ai": health,
+            "forum_sync": forum_sync or {
+                "status": "waiting" if forum_sync_runner and forum_sync_runner.config.enabled else "disabled",
+                "last_stats": {},
+            },
             "capabilities": [
                 "chat",
                 "documents.create",
@@ -308,6 +316,10 @@ def register_atlas_web_routes(
             error=f"{type(exc).__name__}: {exc}",
         )
 
+    async def index_synced_source(source: dict[str, Any]) -> list[str]:
+        async with index_lock:
+            return await atlas_index_source(source)
+
     async def reconcile_knowledge_index(*, force_reset: bool = False) -> None:
         sources = await asyncio.to_thread(storage.atlas_indexable_knowledge_sources)
         if not sources:
@@ -373,8 +385,23 @@ def register_atlas_web_routes(
         indexing_tasks.add(task)
         task.add_done_callback(indexing_tasks.discard)
 
+    forum_sync_runner = AtlasForumSyncRunner(
+        bot,
+        int(guild_id),
+        index_callback=index_synced_source,
+    )
+
     async def start_index_reconciliation(_: web.Application) -> None:
         queue_index_reconciliation()
+
+    async def start_forum_sync(_: web.Application) -> None:
+        nonlocal forum_sync_task
+        if forum_sync_runner is None or not forum_sync_runner.config.enabled:
+            return
+        forum_sync_task = asyncio.create_task(
+            forum_sync_runner.run(),
+            name="atlas-forum-sync",
+        )
 
     async def stop_index_reconciliation(_: web.Application) -> None:
         for task in tuple(indexing_tasks):
@@ -382,7 +409,16 @@ def register_atlas_web_routes(
         if indexing_tasks:
             await asyncio.gather(*tuple(indexing_tasks), return_exceptions=True)
 
+    async def stop_forum_sync(_: web.Application) -> None:
+        if forum_sync_runner is not None:
+            await forum_sync_runner.close()
+        if forum_sync_task is not None:
+            forum_sync_task.cancel()
+            await asyncio.gather(forum_sync_task, return_exceptions=True)
+
     app.on_startup.append(start_index_reconciliation)
+    app.on_startup.append(start_forum_sync)
+    app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
 
     async def knowledge(request: web.Request) -> web.Response:
@@ -550,6 +586,42 @@ def register_atlas_web_routes(
             }
         )
 
+    async def forum_sync_control(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"atlas_forum_admin_required"}',
+                content_type="application/json",
+            )
+        if request.method == "POST":
+            await body(request, selected)
+            if forum_sync_runner is None or not forum_sync_runner.trigger():
+                return web.json_response(
+                    {
+                        "error": "atlas_forum_sync_disabled",
+                        "message": "Автоматическое обновление форума отключено.",
+                    },
+                    status=409,
+                )
+        status = await asyncio.to_thread(
+            storage.atlas_forum_sync_status,
+            int(guild_id),
+        )
+        return web.json_response(
+            {
+                "accepted": request.method == "POST",
+                "status": status or {
+                    "status": (
+                        "waiting"
+                        if forum_sync_runner and forum_sync_runner.config.enabled
+                        else "disabled"
+                    ),
+                    "last_stats": {},
+                },
+            },
+            status=202 if request.method == "POST" else 200,
+        )
+
     app.router.add_get("/atlas", atlas_index)
     app.router.add_get("/atlas/", atlas_index)
     app.router.add_get("/atlas/assets/{name}", atlas_asset)
@@ -561,6 +633,8 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge/upload", knowledge_upload)
+    app.router.add_get("/api/atlas/forum-sync", forum_sync_control)
+    app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_get("/api/admin/atlas", admin_overview)
 
 

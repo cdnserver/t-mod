@@ -312,6 +312,20 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
         payload={"points": points},
         timeout=30,
     )
+    # Publish first, then remove only obsolete tail chunks. A failed write can
+    # therefore never erase the last working search result for this source.
+    stale_point_ids = [
+        str(uuid.uuid5(uuid.NAMESPACE_URL, f"atlas:{organization_id}:{source_id}:{index}"))
+        for index in range(len(points), 48)
+    ]
+    if stale_point_ids:
+        await _json_request(
+            "POST",
+            f"{config.qdrant_url}/collections/{config.collection}/points/delete?wait=true",
+            headers=_qdrant_headers(config),
+            payload={"points": stale_point_ids},
+            timeout=15,
+        )
     return point_ids
 
 

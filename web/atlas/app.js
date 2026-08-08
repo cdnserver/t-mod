@@ -239,6 +239,43 @@ function renderKnowledgeSources(items) {
   if (!selected.length) list.append(element("div", "empty", "В этом разделе пока нет материалов."));
   const ready = selected.filter((item) => item.status === "indexed").length;
   byId("vault-count").textContent = String(ready);
+  byId("metric-knowledge").textContent = String(ready);
+}
+
+function readableTime(value, fallback) {
+  if (!value) return fallback;
+  const selected = new Date(value);
+  if (Number.isNaN(selected.getTime())) return fallback;
+  return selected.toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function renderForumSync(value) {
+  const status = value && typeof value === "object" ? value : { status: "waiting" };
+  const labels = {
+    waiting: "Ожидает первого запуска",
+    pending: "Готовится к первой сверке",
+    running: "Проверяет форум сейчас",
+    ok: "База подтверждена",
+    attention: "Нужно внимание администратора",
+    error: "Сверка будет повторена",
+    disabled: "Автоматическая сверка отключена",
+  };
+  const state = status.status || "waiting";
+  byId("forum-sync-status").textContent = labels[state] || "Состояние уточняется";
+  byId("forum-sync-light").className = state;
+  byId("forum-sync-last").textContent = readableTime(status.last_success_at, "Ещё не выполнялась");
+  byId("forum-sync-next").textContent = readableTime(status.next_sync_at, "После первого запуска");
+  const stats = status.last_stats || {};
+  byId("forum-sync-pages").textContent = String(stats.pages || 0);
+  byId("forum-sync-changed").textContent = String(stats.changed || 0);
+  const message = byId("forum-sync-message");
+  message.classList.toggle("warning", state === "attention" || state === "error");
+  message.textContent = status.last_error
+    ? String(status.last_error)
+    : "Последняя подтверждённая версия всегда остаётся доступной Atlas AI.";
+  const button = byId("forum-sync-now");
+  button.disabled = state === "running" || state === "disabled";
+  button.firstChild.textContent = state === "running" ? "Проверка уже выполняется " : "Проверить обновления сейчас ";
 }
 
 function render(data) {
@@ -258,6 +295,7 @@ function render(data) {
   byId("metric-members").textContent = String(counts.members || 0);
   byId("metric-threads").textContent = String(counts.threads || 0);
   renderKnowledgeSources(data.knowledge_sources || []);
+  renderForumSync(data.forum_sync);
   renderOnboarding(membership);
 
   const ai = data.ai || {};
@@ -360,6 +398,13 @@ async function loadKnowledgeSources() {
   const result = await api(`/api/atlas/knowledge?${query}`);
   appState.data.knowledge_sources = result.items || [];
   renderKnowledgeSources(appState.data.knowledge_sources);
+}
+
+async function loadForumSync() {
+  const result = await api("/api/atlas/forum-sync");
+  appState.data.forum_sync = result.status || {};
+  renderForumSync(appState.data.forum_sync);
+  return appState.data.forum_sync;
 }
 
 async function updateScope() {
@@ -489,6 +534,19 @@ function bind() {
     try { await loadKnowledgeSources(); showToast("Состояние библиотеки обновлено."); }
     catch (error) { showToast(error.message, true); }
   });
+  byId("forum-sync-now").addEventListener("click", async () => {
+    const button = byId("forum-sync-now");
+    button.disabled = true;
+    try {
+      await api("/api/atlas/forum-sync", { method: "POST", body: "{}" });
+      renderForumSync({ ...(appState.data?.forum_sync || {}), status: "running" });
+      showToast("Atlas начал безопасную сверку форума.");
+      setTimeout(() => void loadForumSync().catch(() => {}), 1800);
+    } catch (error) {
+      showToast(error.message || "Не удалось запустить сверку.", true);
+      renderForumSync(appState.data?.forum_sync || {});
+    }
+  });
   byId("global-search").addEventListener("click", () => {
     switchScreen("ai");
     byId("atlas-question").focus();
@@ -509,6 +567,9 @@ async function bootstrap() {
     }
     byId("atlas-app").hidden = false;
     switchScreen(location.hash.replace(/^#\//, "") || "home", false);
+    setInterval(() => {
+      if (!document.hidden && appState.screen === "forum") void loadForumSync().catch(() => {});
+    }, 30000);
   } catch (error) {
     if (!String(error.message).includes("Требуется вход")) {
       byId("loading").querySelector("span").textContent = "Atlas временно недоступен";

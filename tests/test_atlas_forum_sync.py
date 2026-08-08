@@ -1,0 +1,303 @@
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import storage
+from modules.atlas_forum_sync import (
+    AtlasForumBrowser,
+    AtlasForumManualActionRequired,
+    AtlasForumScrapeBatch,
+    AtlasForumSnapshot,
+    AtlasForumSyncConfig,
+    AtlasForumSyncRunner,
+    forum_interstitial_kind,
+    parse_forum_listing,
+    parse_forum_thread,
+)
+from persistence import atlas_repository
+
+
+ROOT_URL = "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/"
+
+
+def sync_config() -> AtlasForumSyncConfig:
+    return AtlasForumSyncConfig(
+        enabled=True,
+        selenium_url="http://browser:4444/wd/hub",
+        root_url=ROOT_URL,
+        feed_key="majestic-phoenix-laws-test",
+        server_code="phoenix-15",
+        faction_code="lspd",
+        visibility_scope="server",
+        interval_seconds=43_200,
+        initial_delay_seconds=5,
+        page_delay_seconds=1,
+        challenge_wait_seconds=10,
+        max_listing_pages=20,
+        max_threads=200,
+    )
+
+
+class AtlasForumParserTests(unittest.TestCase):
+    def test_listing_collects_canonical_threads_and_next_page(self) -> None:
+        page = """
+        <html><body>
+          <div class="structItem-title"><a href="/threads/zakon-1.100/">Закон 1</a></div>
+          <div class="structItem-title"><a href="https://forum.majestic-rp.ru/threads/zakon-2.101/?ref=x">Закон 2</a></div>
+          <a href="https://example.com/threads/foreign.1/">Чужая ссылка</a>
+          <a class="pageNav-jump pageNav-jump--next" href="/forums/zakonodatel-naya-baza.1213/page-2">Далее</a>
+        </body></html>
+        """
+
+        links, next_url = parse_forum_listing(page, ROOT_URL)
+
+        self.assertEqual(
+            links,
+            [
+                "https://forum.majestic-rp.ru/threads/zakon-1.100/",
+                "https://forum.majestic-rp.ru/threads/zakon-2.101/",
+            ],
+        )
+        self.assertEqual(
+            next_url,
+            "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/page-2",
+        )
+
+    def test_thread_extracts_only_first_post_without_quote(self) -> None:
+        page = """
+        <html><head><meta property="og:title" content="Уголовный кодекс" /></head><body>
+          <h1 class="p-title-value">Уголовный кодекс</h1>
+          <article class="message message--post">
+            <a class="message-name"><span class="username">Robert</span></a>
+            <time class="u-dt" datetime="2026-08-08T12:00:00+03:00"></time>
+            <div class="message-body"><div class="bbWrapper">
+              <p>Раздел первый. Общие положения закона.</p>
+              <blockquote class="bbCodeBlock bbCodeBlock--quote">Старая цитата</blockquote>
+              <ol><li>Положение номер один.</li><li>Положение номер два.</li></ol>
+            </div></div>
+          </article>
+          <article class="message message--post"><div class="message-body"><p>Чужой ответ</p></div></article>
+        </body></html>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/kodeks.100/",
+        )
+
+        self.assertEqual(snapshot.title, "Уголовный кодекс")
+        self.assertEqual(snapshot.author, "Robert")
+        self.assertIn("Положение номер два", snapshot.content)
+        self.assertNotIn("Старая цитата", snapshot.content)
+        self.assertNotIn("Чужой ответ", snapshot.content)
+
+    def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
+        self.assertEqual(
+            forum_interstitial_kind("<p>Please turn JavaScript on</p><script src='vddosw3data.js'></script>"),
+            "javascript",
+        )
+        self.assertEqual(forum_interstitial_kind("<div class='g-recaptcha'></div>"), "manual")
+        self.assertIsNone(forum_interstitial_kind("<html><body>Обычная страница</body></html>"))
+
+    def test_browser_marks_capped_inventory_as_incomplete(self) -> None:
+        config = replace(sync_config(), max_threads=1)
+        browser = AtlasForumBrowser(config)
+        listing = """
+        <div class="structItem-title"><a href="/threads/one.1/">One</a></div>
+        <div class="structItem-title"><a href="/threads/two.2/">Two</a></div>
+        """
+        thread = """
+        <h1 class="p-title-value">Первый закон</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+        <p>Достаточно длинный проверенный текст первой редакции закона.</p>
+        </div></div></article>
+        """
+        browser._load = lambda url: listing if "/forums/" in url else thread
+
+        batch = browser.scrape()
+
+        self.assertEqual(len(batch.snapshots), 1)
+        self.assertFalse(batch.inventory_complete)
+
+
+class AtlasForumRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_data_dir = storage.DATA_DIR
+        self.old_database_file = storage.DATABASE_FILE
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(self.temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-forum-test.db"
+        storage.init_db()
+
+    def tearDown(self) -> None:
+        storage.DATA_DIR = self.old_data_dir
+        storage.DATABASE_FILE = self.old_database_file
+        self.temp_dir.cleanup()
+
+    def test_synced_source_is_versioned_and_never_deleted_when_missing(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="laws",
+            root_url=ROOT_URL,
+        )
+        kwargs = {
+            "organization_id": int(feed["organization_id"]),
+            "title": "Закон",
+            "content": "Первая полная редакция закона длиной больше двадцати символов.",
+            "source_url": "https://forum.majestic-rp.ru/threads/zakon.100/",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "feed_key": "laws",
+        }
+        first = atlas_repository.atlas_upsert_synced_knowledge(**kwargs)
+        atlas_repository.atlas_mark_knowledge_indexed(
+            int(first["source"]["id"]),
+            point_id="point-1",
+        )
+        unchanged = atlas_repository.atlas_upsert_synced_knowledge(**kwargs)
+        changed = atlas_repository.atlas_upsert_synced_knowledge(
+            **{
+                **kwargs,
+                "content": "Вторая полная редакция закона с проверенным изменением содержания.",
+            }
+        )
+
+        self.assertTrue(first["created"])
+        self.assertFalse(unchanged["changed"])
+        self.assertTrue(changed["changed"])
+        self.assertEqual(changed["source"]["status"], "pending")
+        revisions = atlas_repository.atlas_knowledge_revisions(int(first["source"]["id"]))
+        self.assertEqual(len(revisions), 1)
+        self.assertIn("Первая полная редакция", revisions[0]["content_text"])
+
+        renamed = atlas_repository.atlas_upsert_synced_knowledge(
+            **{**kwargs, "title": "Закон — новая редакция заголовка", "content": changed["source"]["content_text"]}
+        )
+        self.assertTrue(renamed["changed"])
+        self.assertEqual(renamed["source"]["title"], "Закон — новая редакция заголовка")
+
+        atlas_repository.atlas_mark_forum_sources_seen(
+            int(feed["organization_id"]),
+            feed_key="laws",
+            seen_urls=[],
+        )
+        stored = atlas_repository.atlas_knowledge_sources(
+            int(feed["organization_id"]),
+            server_code="phoenix-15",
+            faction_code="lspd",
+        )[0]
+        self.assertTrue(stored["metadata"]["missing_from_feed"])
+        self.assertNotEqual(stored["status"], "archived")
+
+        atlas_repository.atlas_forum_sync_started(int(feed["id"]))
+        state = atlas_repository.atlas_forum_sync_finished(
+            int(feed["id"]),
+            stats={"pages": 1, "changed": 1},
+        )
+        self.assertEqual(state["last_stats"], {"pages": 1, "changed": 1})
+
+
+class _FakeBrowser:
+    def __init__(self, result):
+        self.result = result
+        self.closed = False
+
+    def scrape(self):
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+    def close(self):
+        self.closed = True
+
+
+class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.old_data_dir = storage.DATA_DIR
+        self.old_database_file = storage.DATABASE_FILE
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(self.temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-forum-runner-test.db"
+        storage.init_db()
+
+    def tearDown(self) -> None:
+        storage.DATA_DIR = self.old_data_dir
+        storage.DATABASE_FILE = self.old_database_file
+        self.temp_dir.cleanup()
+
+    async def test_runner_indexes_only_changes_and_preserves_incomplete_inventory(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/zakon.100/",
+            title="Закон",
+            content="Полная редакция закона для безопасной проверки Atlas длиной больше двадцати символов.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), False))
+        index = AsyncMock(return_value=["point-1"])
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=index,
+        )
+
+        first = await runner.sync_once()
+        second = await runner.sync_once()
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["last_stats"]["inventory_complete"], False)
+        self.assertEqual(second["last_stats"]["changed"], 0)
+        index.assert_awaited_once()
+
+    async def test_manual_check_sets_attention_without_changing_knowledge(self) -> None:
+        browser = _FakeBrowser(
+            AtlasForumManualActionRequired("Форум запросил ручное подтверждение.")
+        )
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(),
+        )
+
+        state = await runner.sync_once()
+
+        self.assertEqual(state["status"], "attention")
+        self.assertIn("ручное подтверждение", state["last_error"])
+        feed = atlas_repository.atlas_forum_sync_status(77)
+        self.assertIsNone(feed["last_success_at"])
+        self.assertEqual(atlas_repository.atlas_indexable_knowledge_sources(), [])
+
+    async def test_failed_index_is_retried_even_when_forum_text_is_unchanged(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/retry.101/",
+            title="Повтор индексации",
+            content="Проверенный материал должен повторно попасть в поиск после временного сбоя.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        index = AsyncMock(side_effect=[RuntimeError("qdrant unavailable"), ["point-2"]])
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=index,
+        )
+
+        first = await runner.sync_once()
+        second = await runner.sync_once()
+
+        self.assertEqual(first["status"], "attention")
+        self.assertEqual(second["status"], "ok")
+        self.assertEqual(second["last_stats"]["changed"], 0)
+        self.assertEqual(second["last_stats"]["retried"], 1)
+        self.assertEqual(index.await_count, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

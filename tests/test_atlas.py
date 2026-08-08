@@ -306,9 +306,16 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ) as request:
             await atlas_index_source(source)
 
-        point = request.await_args.kwargs["payload"]["points"][0]
+        put_call = next(call for call in request.await_args_list if call.args[0] == "PUT")
+        delete_call = next(call for call in request.await_args_list if call.args[0] == "POST")
+        point = put_call.kwargs["payload"]["points"][0]
         self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
         self.assertEqual(point["payload"]["visibility_scope"], "server")
+        self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
+        self.assertLess(
+            request.await_args_list.index(put_call),
+            request.await_args_list.index(delete_call),
+        )
 
     async def test_collection_is_created_only_when_missing(self) -> None:
         missing = AtlasAIError("upstream_not_found", "missing")

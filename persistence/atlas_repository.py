@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from modules.atlas_catalog import (
@@ -36,6 +37,22 @@ def _slug(value: str, user_id: int) -> str:
     return (selected[:36] or f"space-{int(user_id)}")
 
 
+def _knowledge_checksum(
+    visibility_scope: str,
+    server_code: str,
+    faction_code: str,
+    content: str,
+    *,
+    identity: str = "",
+) -> str:
+    return hashlib.sha256(
+        (
+            f"{visibility_scope}\0{server_code}\0{faction_code}\0"
+            f"{identity}\0{content}"
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _row(row: Any) -> dict[str, Any]:
     item = dict(row)
     for key, fallback in (
@@ -47,6 +64,7 @@ def _row(row: Any) -> dict[str, Any]:
         ("fields_json", {}),
         ("citations_json", []),
         ("details_json", {}),
+        ("last_stats_json", {}),
     ):
         if key in item:
             item[key.removesuffix("_json")] = _decoded(item.pop(key), fallback)
@@ -120,6 +138,37 @@ def atlas_ensure_personal_space(
         ).fetchone()
         con.commit()
     return {"organization": _row(organization), "membership": _row(membership)}
+
+
+def atlas_ensure_system_space(guild_id: int) -> dict[str, Any]:
+    """Return the non-user workspace that owns canonical shared imports."""
+
+    now = utc_now_iso()
+    slug = "atlas-system-library"
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            """
+            INSERT INTO atlas_organizations(
+                guild_id, slug, name, kind, owner_user_id, description,
+                created_at, updated_at
+            ) VALUES(?, ?, 'Системная библиотека Atlas', 'project', 0, ?, ?, ?)
+            ON CONFLICT(guild_id, slug) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            (
+                int(guild_id),
+                slug,
+                "Проверенные общие источники и автоматические синхронизации.",
+                now,
+                now,
+            ),
+        )
+        organization = con.execute(
+            "SELECT * FROM atlas_organizations WHERE guild_id = ? AND slug = ?",
+            (int(guild_id), slug),
+        ).fetchone()
+        con.commit()
+    return _row(organization)
 
 
 def atlas_user_spaces(guild_id: int, user_id: int) -> list[dict[str, Any]]:
@@ -367,9 +416,12 @@ def atlas_add_knowledge(
     clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
     clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
     clean_filename = str(original_filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1][:240] or None
-    checksum = hashlib.sha256(
-        f"{clean_visibility}\0{clean_server}\0{clean_faction}\0{clean_content}".encode("utf-8")
-    ).hexdigest()
+    checksum = _knowledge_checksum(
+        clean_visibility,
+        clean_server,
+        clean_faction,
+        clean_content,
+    )
     now = utc_now_iso()
     with _db_lock, connect() as con:
         membership = con.execute(
@@ -537,6 +589,342 @@ def atlas_mark_knowledge_indexed(
             ),
         )
         con.commit()
+
+
+def atlas_ensure_forum_feed(
+    guild_id: int,
+    *,
+    feed_key: str,
+    root_url: str,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    visibility_scope: str = "server",
+    interval_seconds: int = 43_200,
+) -> dict[str, Any]:
+    organization = atlas_ensure_system_space(guild_id)
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
+    clean_key = str(feed_key or "").strip().lower()[:80]
+    clean_url = str(root_url or "").strip()[:2000]
+    if not clean_key or not clean_url.startswith(("https://", "http://")):
+        raise ValueError("atlas_forum_feed_invalid")
+    interval = max(3600, min(604_800, int(interval_seconds)))
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            INSERT INTO atlas_forum_feeds(
+                guild_id, organization_id, feed_key, root_url, server_code,
+                faction_code, visibility_scope, interval_seconds,
+                created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, feed_key) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                root_url = excluded.root_url,
+                server_code = excluded.server_code,
+                faction_code = excluded.faction_code,
+                visibility_scope = excluded.visibility_scope,
+                interval_seconds = excluded.interval_seconds,
+                status = CASE
+                    WHEN atlas_forum_feeds.status = 'disabled' THEN 'pending'
+                    ELSE atlas_forum_feeds.status
+                END,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(guild_id),
+                int(organization["id"]),
+                clean_key,
+                clean_url,
+                clean_server,
+                clean_faction,
+                clean_visibility,
+                interval,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE guild_id = ? AND feed_key = ?",
+            (int(guild_id), clean_key),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
+def atlas_forum_sync_started(feed_id: int) -> dict[str, Any]:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            UPDATE atlas_forum_feeds
+            SET status = 'running', last_started_at = ?, last_error = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, now, int(feed_id)),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        con.commit()
+    if row is None:
+        raise ValueError("atlas_forum_feed_missing")
+    return _row(row)
+
+
+def atlas_forum_sync_finished(
+    feed_id: int,
+    *,
+    stats: dict[str, Any] | None = None,
+    error: str | None = None,
+    attention: bool = False,
+) -> dict[str, Any]:
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    with _db_lock, connect() as con:
+        feed = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        if feed is None:
+            raise ValueError("atlas_forum_feed_missing")
+        next_sync = (
+            now_dt + timedelta(seconds=max(3600, int(feed["interval_seconds"])))
+        ).isoformat()
+        status = "attention" if attention else ("error" if error else "ok")
+        con.execute(
+            """
+            UPDATE atlas_forum_feeds
+            SET status = ?, last_success_at = CASE WHEN ? IS NULL THEN ? ELSE last_success_at END,
+                next_sync_at = ?, last_error = ?, last_stats_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                error,
+                now,
+                next_sync,
+                str(error or "")[:4000] or None,
+                _json(stats or {}),
+                now,
+                int(feed_id),
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
+def atlas_forum_sync_status(guild_id: int) -> dict[str, Any] | None:
+    with connect_readonly() as con:
+        row = con.execute(
+            """
+            SELECT * FROM atlas_forum_feeds
+            WHERE guild_id = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(guild_id),),
+        ).fetchone()
+    return _row(row) if row is not None else None
+
+
+def atlas_upsert_synced_knowledge(
+    organization_id: int,
+    *,
+    title: str,
+    content: str,
+    source_url: str,
+    server_code: str,
+    faction_code: str,
+    visibility_scope: str,
+    feed_key: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_title = str(title or "").strip()[:180]
+    clean_content = str(content or "").strip()[:250000]
+    clean_url = str(source_url or "").strip()[:2000]
+    if not clean_title or len(clean_content) < 20 or not clean_url.startswith(("https://", "http://")):
+        raise ValueError("atlas_synced_knowledge_invalid")
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
+    checksum = _knowledge_checksum(
+        clean_visibility,
+        clean_server,
+        clean_faction,
+        clean_content,
+        identity=clean_url,
+    )
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        existing = con.execute(
+            """
+            SELECT * FROM atlas_knowledge_sources
+            WHERE organization_id = ? AND source_kind = 'forum' AND source_url = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(organization_id), clean_url),
+        ).fetchone()
+        current_metadata = _decoded(existing["metadata_json"], {}) if existing else {}
+        current_revision = max(1, int(current_metadata.get("revision") or 1))
+        merged_metadata = {
+            **current_metadata,
+            **dict(metadata or {}),
+            "sync_feed": str(feed_key)[:80],
+            "last_seen_at": now,
+            "missing_runs": 0,
+            "missing_from_feed": False,
+            "revision": current_revision,
+        }
+        created = existing is None
+        changed = (
+            created
+            or str(existing["checksum"]) != checksum
+            or str(existing["title"]) != clean_title
+        )
+        if existing is None:
+            cursor = con.execute(
+                """
+                INSERT INTO atlas_knowledge_sources(
+                    organization_id, server_code, faction_code, visibility_scope,
+                    title, source_kind, source_url, content_text, checksum,
+                    status, metadata_json, created_by_id, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'forum', ?, ?, ?, 'pending', ?, 0, ?, ?)
+                """,
+                (
+                    int(organization_id), clean_server, clean_faction,
+                    clean_visibility, clean_title, clean_url, clean_content,
+                    checksum, _json(merged_metadata), now, now,
+                ),
+            )
+            source_id = int(cursor.lastrowid)
+        else:
+            source_id = int(existing["id"])
+            if changed:
+                con.execute(
+                    """
+                    INSERT OR IGNORE INTO atlas_knowledge_revisions(
+                        source_id, revision, title, content_text, checksum,
+                        source_url, captured_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        current_revision,
+                        str(existing["title"]),
+                        str(existing["content_text"]),
+                        str(existing["checksum"]),
+                        str(existing["source_url"] or "") or None,
+                        now,
+                    ),
+                )
+                merged_metadata["revision"] = current_revision + 1
+                con.execute(
+                    """
+                    UPDATE atlas_knowledge_sources
+                    SET server_code = ?, faction_code = ?, visibility_scope = ?,
+                        title = ?, content_text = ?, checksum = ?, status = 'pending',
+                        qdrant_point_id = NULL, indexed_at = NULL, last_error = NULL,
+                        metadata_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        clean_server, clean_faction, clean_visibility, clean_title,
+                        clean_content, checksum, _json(merged_metadata), now, source_id,
+                    ),
+                )
+            else:
+                con.execute(
+                    """
+                    UPDATE atlas_knowledge_sources
+                    SET title = ?, metadata_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (clean_title, _json(merged_metadata), now, source_id),
+                )
+        if changed:
+            con.execute(
+                """
+                INSERT INTO atlas_audit_events(
+                    organization_id, actor_user_id, event_type, target_type,
+                    target_id, summary, details_json, created_at
+                ) VALUES(?, 0, 'forum_source_updated', 'knowledge', ?, ?, ?, ?)
+                """,
+                (
+                    int(organization_id),
+                    str(source_id),
+                    f"Atlas обновил материал форума «{clean_title}»",
+                    _json({"source_url": clean_url, "created": created}),
+                    now,
+                ),
+            )
+        row = con.execute(
+            "SELECT * FROM atlas_knowledge_sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        con.commit()
+    return {"source": _row(row), "created": created, "changed": changed}
+
+
+def atlas_mark_forum_sources_seen(
+    organization_id: int,
+    *,
+    feed_key: str,
+    seen_urls: list[str] | tuple[str, ...] | set[str],
+) -> int:
+    """Mark missing pages for review without deleting or de-indexing them."""
+
+    seen = {str(item).strip() for item in seen_urls if str(item).strip()}
+    changed = 0
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_knowledge_sources
+            WHERE organization_id = ? AND source_kind = 'forum'
+            """,
+            (int(organization_id),),
+        ).fetchall()
+        for row in rows:
+            details = _decoded(row["metadata_json"], {})
+            if str(details.get("sync_feed") or "") != str(feed_key):
+                continue
+            url = str(row["source_url"] or "")
+            missing = url not in seen
+            runs = int(details.get("missing_runs") or 0) + 1 if missing else 0
+            previous = bool(details.get("missing_from_feed"))
+            details.update(
+                {
+                    "missing_runs": runs,
+                    "missing_from_feed": missing,
+                    "last_inventory_at": now,
+                }
+            )
+            if missing != previous:
+                changed += 1
+            con.execute(
+                "UPDATE atlas_knowledge_sources SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (_json(details), now, int(row["id"])),
+            )
+        con.commit()
+    return changed
+
+
+def atlas_knowledge_revisions(source_id: int) -> list[dict[str, Any]]:
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_knowledge_revisions
+            WHERE source_id = ? ORDER BY revision DESC
+            """,
+            (int(source_id),),
+        ).fetchall()
+    return [_row(row) for row in rows]
 
 
 def atlas_create_thread(organization_id: int, user_id: int, title: str) -> int:

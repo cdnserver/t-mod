@@ -354,6 +354,48 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_status
             ON atlas_knowledge_sources(organization_id, status, id DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_knowledge_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content_text TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                source_url TEXT,
+                captured_at TEXT NOT NULL,
+                UNIQUE(source_id, revision),
+                FOREIGN KEY(source_id) REFERENCES atlas_knowledge_sources(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                feed_key TEXT NOT NULL,
+                root_url TEXT NOT NULL,
+                server_code TEXT NOT NULL DEFAULT 'phoenix-15',
+                faction_code TEXT NOT NULL DEFAULT 'lspd',
+                visibility_scope TEXT NOT NULL DEFAULT 'server'
+                    CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
+                interval_seconds INTEGER NOT NULL DEFAULT 43200,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
+                last_started_at TEXT,
+                last_success_at TEXT,
+                next_sync_at TEXT,
+                last_error TEXT,
+                last_stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, feed_key),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_feeds_due
+            ON atlas_forum_feeds(status, next_sync_at, id);
+
             CREATE TABLE IF NOT EXISTS atlas_document_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER,
@@ -1720,6 +1762,12 @@ def init_db() -> None:
                 visibility_scope, server_code, faction_code, organization_id,
                 status, id DESC
             );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_revisions_source
+            ON atlas_knowledge_revisions(source_id, revision DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_forum_url
+            ON atlas_knowledge_sources(organization_id, source_kind, source_url, id DESC);
 
             CREATE INDEX IF NOT EXISTS idx_activity_events_guild_at
             ON activity_events(guild_id, at DESC, id DESC);
