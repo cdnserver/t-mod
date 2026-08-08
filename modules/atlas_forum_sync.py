@@ -9,11 +9,13 @@ continues serving users.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -54,6 +56,7 @@ class AtlasForumSyncConfig:
     enabled: bool
     selenium_url: str
     root_url: str
+    cookie_file: str
     feed_key: str
     server_code: str
     faction_code: str
@@ -80,6 +83,12 @@ class AtlasForumSyncConfig:
                 os.getenv(
                     "ATLAS_FORUM_ROOT_URL",
                     "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/",
+                )
+            ).strip(),
+            cookie_file=str(
+                os.getenv(
+                    "ATLAS_FORUM_COOKIE_FILE",
+                    "/app/persistent/data/atlas-forum-cookies.json",
                 )
             ).strip(),
             feed_key=str(os.getenv("ATLAS_FORUM_FEED_KEY", "majestic-phoenix-laws")).strip(),
@@ -302,6 +311,85 @@ class AtlasForumBrowser:
         driver.set_page_load_timeout(60)
         return driver
 
+    def _save_cookies(self, driver: Any) -> int:
+        """Persist authentication without persisting Chromium's lock-prone profile."""
+
+        cookie_file = str(self.config.cookie_file or "").strip()
+        if not cookie_file:
+            return 0
+        cookies = driver.get_cookies()
+        if not isinstance(cookies, list) or not cookies:
+            return 0
+        path = Path(cookie_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(
+            json.dumps(cookies, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            # chmod is not supported by every Docker Desktop bind mount.
+            pass
+        temporary.replace(path)
+        return len(cookies)
+
+    def _restore_cookies(self, driver: Any) -> int:
+        cookie_file = str(self.config.cookie_file or "").strip()
+        if not cookie_file:
+            return 0
+        path = Path(cookie_file)
+        if not path.is_file():
+            return 0
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return 0
+        if not isinstance(payload, list):
+            return 0
+        parsed = urlsplit(self.config.root_url)
+        origin = urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
+        try:
+            driver.get(origin)
+        except Exception:
+            return 0
+        restored = 0
+        allowed_fields = {
+            "name",
+            "value",
+            "path",
+            "domain",
+            "secure",
+            "httpOnly",
+            "expiry",
+            "sameSite",
+        }
+        for raw_cookie in payload:
+            if not isinstance(raw_cookie, dict):
+                continue
+            cookie = {key: value for key, value in raw_cookie.items() if key in allowed_fields}
+            if not cookie.get("name") or "value" not in cookie:
+                continue
+            if "expiry" in cookie:
+                try:
+                    cookie["expiry"] = int(cookie["expiry"])
+                except (TypeError, ValueError):
+                    cookie.pop("expiry", None)
+            if cookie.get("sameSite") not in {"Strict", "Lax", "None"}:
+                cookie.pop("sameSite", None)
+            try:
+                driver.add_cookie(cookie)
+                restored += 1
+            except Exception:
+                # One obsolete forum cookie must not invalidate the whole session.
+                continue
+        return restored
+
+    @staticmethod
+    def _exception_detail(exc: BaseException) -> str:
+        return _SPACE_RE.sub(" ", str(exc or "")).strip()[:350]
+
     def _connect(self) -> Any:
         if self._driver is not None:
             try:
@@ -320,12 +408,12 @@ class AtlasForumBrowser:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        options.add_argument("--user-data-dir=/home/seluser/.config/chromium/atlas")
         options.set_capability("pageLoadStrategy", "normal")
         options.set_capability("se:name", "T-Mod Atlas forum sync")
         self._release_orphaned_sessions()
         try:
             self._driver = self._open_driver(options)
+            self._restore_cookies(self._driver)
             return self._driver
         except Exception:
             self.close()
@@ -333,11 +421,14 @@ class AtlasForumBrowser:
         try:
             self._release_orphaned_sessions()
             self._driver = self._open_driver(options)
+            self._restore_cookies(self._driver)
             return self._driver
         except Exception as exc:
             self.close()
+            detail = self._exception_detail(exc)
             raise AtlasForumSyncError(
                 f"atlas_forum_browser_unavailable:{type(exc).__name__}"
+                f"{f':{detail}' if detail else ''}"
             ) from exc
 
     def _load(self, url: str) -> str:
@@ -448,6 +539,10 @@ class AtlasForumBrowser:
     def close(self) -> None:
         driver, self._driver = self._driver, None
         if driver is not None:
+            try:
+                self._save_cookies(driver)
+            except Exception:
+                pass
             try:
                 driver.quit()
             except Exception:

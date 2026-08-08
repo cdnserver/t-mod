@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import storage
 from modules.atlas_forum_sync import (
@@ -29,6 +29,7 @@ def sync_config() -> AtlasForumSyncConfig:
         enabled=True,
         selenium_url="http://browser:4444/wd/hub",
         root_url=ROOT_URL,
+        cookie_file="",
         feed_key="majestic-phoenix-laws-test",
         server_code="phoenix-15",
         faction_code="lspd",
@@ -168,8 +169,10 @@ class AtlasForumParserTests(unittest.TestCase):
     @patch("modules.atlas_forum_sync.time.sleep")
     def test_browser_retries_session_creation_once(self, _sleep) -> None:
         class FakeOptions:
-            def add_argument(self, _value):
-                return None
+            arguments = []
+
+            def add_argument(self, value):
+                self.arguments.append(value)
 
             def set_capability(self, _name, _value):
                 return None
@@ -199,6 +202,38 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertIs(connected, driver)
         self.assertEqual(open_driver.call_count, 2)
         self.assertEqual(release.call_count, 2)
+        self.assertFalse(
+            any(value.startswith("--user-data-dir") for value in FakeOptions.arguments)
+        )
+
+    def test_browser_persists_and_restores_authenticated_cookies(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            cookie_file = Path(directory) / "forum-cookies.json"
+            browser = AtlasForumBrowser(
+                replace(sync_config(), cookie_file=str(cookie_file))
+            )
+            source = SimpleNamespace(
+                get_cookies=lambda: [
+                    {
+                        "name": "xf_session",
+                        "value": "signed-in",
+                        "domain": "forum.majestic-rp.ru",
+                        "path": "/",
+                        "sameSite": "Lax",
+                    }
+                ]
+            )
+
+            self.assertEqual(browser._save_cookies(source), 1)
+            target = SimpleNamespace(get=Mock(), add_cookie=Mock())
+            self.assertEqual(browser._restore_cookies(target), 1)
+
+            target.get.assert_called_once_with("https://forum.majestic-rp.ru/")
+            target.add_cookie.assert_called_once()
+            self.assertEqual(
+                target.add_cookie.call_args.args[0]["value"],
+                "signed-in",
+            )
 
     @patch("modules.atlas_forum_sync.time.sleep")
     def test_empty_listing_becomes_manual_action_after_retries(self, _sleep) -> None:

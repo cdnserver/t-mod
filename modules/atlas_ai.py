@@ -26,6 +26,8 @@ _CREATIVE_REQUEST_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
+_ATLAS_RETIRED_EXPENSIVE_DEFAULTS = frozenset({"openai/gpt-5.4"})
 
 
 class AtlasAIError(RuntimeError):
@@ -64,11 +66,11 @@ class _AtlasAnswerRequest:
 
 
 def atlas_ai_config() -> AtlasAIConfig:
-    chat_model = os.getenv("ATLAS_OPENROUTER_MODEL", "openai/gpt-5.4").strip()
-    # Existing installations inherited the old example value. Treat that
-    # exact legacy default as an automatic model migration.
-    if not chat_model or chat_model == "openai/gpt-4.1-mini":
-        chat_model = "openai/gpt-5.4"
+    chat_model = os.getenv("ATLAS_OPENROUTER_MODEL", _ATLAS_ECONOMY_MODEL).strip()
+    # Existing installations inherited GPT-5.4 from the previous example.
+    # Migrate that costly default automatically; custom model IDs stay untouched.
+    if not chat_model or chat_model in _ATLAS_RETIRED_EXPENSIVE_DEFAULTS:
+        chat_model = _ATLAS_ECONOMY_MODEL
     return AtlasAIConfig(
         openrouter_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
         openrouter_url=os.getenv(
@@ -112,6 +114,25 @@ def _reasoning_options(model: str, effort: str = "medium") -> dict[str, Any]:
     if "gpt-5" not in selected and not re.search(r"(?:^|/)[oO][134](?:-|$)", selected):
         return {}
     return {"reasoning": {"effort": effort, "exclude": True}}
+
+
+def _output_token_limit(mode: str) -> int:
+    defaults = {
+        "strict": 1800,
+        "balanced": 1800,
+        "creative": 2400,
+        "aristotle": 3200,
+    }
+    variable = (
+        "ATLAS_ARISTOTLE_MAX_OUTPUT_TOKENS"
+        if mode == "aristotle"
+        else "ATLAS_MAX_OUTPUT_TOKENS"
+    )
+    try:
+        requested = int(os.getenv(variable, str(defaults[mode])))
+    except (TypeError, ValueError):
+        requested = defaults[mode]
+    return max(400, min(8000, requested))
 
 
 _QDRANT_CORRUPTION_MARKERS = (
@@ -700,7 +721,8 @@ async def _generate_aristotle_plan(
             payload={
                 "model": config.chat_model,
                 "temperature": 0.32,
-                **_reasoning_options(config.chat_model, "medium"),
+                "max_tokens": 700,
+                **_reasoning_options(config.chat_model, "low"),
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {
@@ -772,7 +794,8 @@ async def _run_aristotle_agents(
                 payload={
                     "model": config.chat_model,
                     "temperature": 0.2,
-                    **_reasoning_options(config.chat_model, "medium"),
+                    "max_tokens": 1200,
+                    **_reasoning_options(config.chat_model, "low"),
                     "messages": [
                         {
                             "role": "system",
@@ -1014,9 +1037,10 @@ async def _prepare_atlas_answer(
         payload={
             "model": config.chat_model,
             "temperature": {"strict": 0.15, "balanced": 0.38, "creative": 0.68, "aristotle": 0.28}[mode],
+            "max_tokens": _output_token_limit(mode),
             **_reasoning_options(
                 config.chat_model,
-                "high" if mode in {"strict", "aristotle"} else "medium",
+                "medium" if mode in {"strict", "aristotle"} else "low",
             ),
             "messages": messages,
         },

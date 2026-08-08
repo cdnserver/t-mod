@@ -50,15 +50,6 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  atlas-forum-browser-init:
-    image: alpine:3.22
-    container_name: tmod-atlas-forum-browser-init
-    restart: "no"
-    user: "0:0"
-    command: ["sh", "-c", "mkdir -p /profile/atlas && chown -R 1200:1201 /profile"]
-    volumes:
-      - "atlas-forum-browser-data:/profile"
-
   atlas-forum-browser:
     image: selenium/standalone-chromium:4.46.0-20260707
     container_name: tmod-atlas-forum-browser
@@ -69,9 +60,6 @@ services:
     ports:
       # Manual forum verification is reachable only from the home server.
       - "127.0.0.1:7900:7900"
-    depends_on:
-      atlas-forum-browser-init:
-        condition: service_completed_successfully
     environment:
       SE_NODE_MAX_SESSIONS: "1"
       SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
@@ -80,8 +68,6 @@ services:
       SE_SESSION_REQUEST_TIMEOUT: "20"
       # noVNC is bound to host loopback only, so a second password is unnecessary.
       SE_VNC_NO_PASSWORD: "true"
-    volumes:
-      - "atlas-forum-browser-data:/home/seluser/.config/chromium"
     healthcheck:
       test:
         - CMD
@@ -186,5 +172,3 @@ networks:
 volumes:
   atlas-qdrant-data:
     name: tmod-atlas-qdrant-data
-  atlas-forum-browser-data:
-    name: tmod-atlas-forum-browser-data

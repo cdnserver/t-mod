@@ -385,12 +385,19 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
-    def test_legacy_model_value_is_upgraded_to_current_atlas_brain(self) -> None:
+    def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
             os.environ,
-            {"ATLAS_OPENROUTER_MODEL": "openai/gpt-4.1-mini"},
+            {"ATLAS_OPENROUTER_MODEL": "openai/gpt-5.4"},
         ):
-            self.assertEqual(atlas_ai_config().chat_model, "openai/gpt-5.4")
+            self.assertEqual(atlas_ai_config().chat_model, "openai/gpt-5-mini")
+
+    def test_custom_atlas_model_is_preserved(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ATLAS_OPENROUTER_MODEL": "custom/provider-model"},
+        ):
+            self.assertEqual(atlas_ai_config().chat_model, "custom/provider-model")
 
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
