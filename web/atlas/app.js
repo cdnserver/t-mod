@@ -5,6 +5,10 @@ function storedAtlasSpace() {
   try { return Number(localStorage.getItem("tmod-atlas-space")) || null; }
   catch (_error) { return null; }
 }
+function storedChatFocus() {
+  try { return localStorage.getItem("tmod-atlas-chat-focus") === "1"; }
+  catch (_error) { return false; }
+}
 const appState = {
   data: null,
   screen: "home",
@@ -19,6 +23,8 @@ const appState = {
   modelId: "atlas-tvr-a",
   onboardingPrompted: false,
   organizationId: storedAtlasSpace(),
+  chatFocus: storedChatFocus(),
+  chatHistoryOpen: false,
 };
 const screenMeta = {
   home: ["ATLAS", "Командный центр"],
@@ -207,11 +213,43 @@ function bindPreviewMotion() {
   }, { passive: true });
 }
 
+function setChatFocus(active, persist = true) {
+  const enabled = Boolean(active);
+  appState.chatFocus = enabled;
+  if (!enabled) appState.chatHistoryOpen = false;
+  const root = byId("atlas-app");
+  root.classList.toggle("chat-focus-mode", enabled);
+  root.classList.toggle("chat-focus-history", enabled && appState.chatHistoryOpen);
+  const focusButton = byId("chat-focus-toggle");
+  const historyButton = byId("chat-history-toggle");
+  focusButton.setAttribute("aria-pressed", String(enabled));
+  focusButton.classList.toggle("active", enabled);
+  focusButton.querySelector("span").textContent = enabled ? "Свернуть" : "Фокус";
+  historyButton.setAttribute("aria-pressed", String(enabled && appState.chatHistoryOpen));
+  historyButton.classList.toggle("active", enabled && appState.chatHistoryOpen);
+  if (persist) {
+    try { localStorage.setItem("tmod-atlas-chat-focus", enabled ? "1" : "0"); }
+    catch (_error) { /* focus mode still works for the current tab */ }
+  }
+  requestAnimationFrame(() => {
+    const stream = byId("chat-stream");
+    stream.scrollTop = stream.scrollHeight;
+  });
+}
+
+function toggleChatHistory() {
+  if (!appState.chatFocus) return;
+  appState.chatHistoryOpen = !appState.chatHistoryOpen;
+  setChatFocus(true, false);
+}
+
 function switchScreen(screen, updateHash = true) {
   const selected = screenMeta[screen] ? screen : "home";
   const changed = appState.screen !== selected;
   const applyScreen = () => {
     appState.screen = selected;
+    if (selected !== "ai" && appState.chatFocus) setChatFocus(false);
+    else if (selected === "ai" && appState.chatFocus) setChatFocus(true, false);
     document.querySelectorAll(".screen").forEach((node) => {
       node.classList.toggle("active", node.id === `screen-${selected}`);
     });
@@ -547,19 +585,25 @@ function updateResearchProgress(copy, event) {
   let panel = copy.querySelector(".research-progress");
   if (!panel) {
     panel = element("section", "research-progress");
-    panel.append(element("header", "", "АРИСТОТЕЛЬ · ПЛАН ИССЛЕДОВАНИЯ"), element("ol", "research-steps"), element("footer", "", "Формируем задачи…"));
+    panel.append(element("header", "", "АРИСТОТЕЛЬ · ИССЛЕДОВАТЕЛЬСКАЯ КОМАНДА"), element("ol", "research-steps"), element("footer", "", "Проектируем персональный план…"));
     copy.insertBefore(panel, copy.querySelector(".rich-text"));
   }
-  if (event.phase === "plan") {
+  if (event.phase === "planning") {
+    panel.querySelector("footer").textContent = "Аристотель определяет нужные роли и задачи";
+  } else if (event.phase === "plan") {
     const list = panel.querySelector("ol");
     clear(list);
     (event.steps || []).forEach((step) => {
       const item = element("li", "pending");
       item.dataset.stepId = step.id;
-      item.append(element("i", "", "○"), element("span", "", `${step.agent} · ${step.title}`));
+      const description = element("span");
+      description.append(element("b", "", step.agent), element("small", "", `${step.role || "Исследователь"} · ${step.title}`));
+      item.append(element("i", "", "○"), description);
       list.append(item);
     });
-    panel.querySelector("footer").textContent = "Задачи распределены по исследовательским контурам";
+    panel.querySelector("footer").textContent = event.source === "fallback"
+      ? "Резервный план активирован — исследование продолжится"
+      : "Уникальный план создан специально для этого запроса";
   } else if (event.phase === "stage") {
     const item = [...panel.querySelectorAll("[data-step-id]")].find(
       (candidate) => candidate.dataset.stepId === String(event.step_id || ""),
@@ -567,6 +611,16 @@ function updateResearchProgress(copy, event) {
     if (item) {
       item.className = event.status || "pending";
       item.querySelector("i").textContent = event.status === "complete" ? "✓" : "●";
+    }
+  } else if (event.phase === "agent_result") {
+    const item = [...panel.querySelectorAll("[data-step-id]")].find(
+      (candidate) => candidate.dataset.stepId === String(event.step_id || ""),
+    );
+    if (item) {
+      item.className = event.status || "complete";
+      item.querySelector("i").textContent = event.status === "complete" ? "✓" : "!";
+      const detail = item.querySelector("small");
+      if (detail && event.detail) detail.textContent = event.detail;
     }
   } else if (event.phase === "evidence") {
     const domains = Object.entries(event.domains || {}).map(([key, count]) => `${key}: ${count}`).join(" · ");
@@ -868,6 +922,15 @@ function bind() {
     }
   });
   byId("new-atlas-chat").addEventListener("click", newChat);
+  byId("chat-focus-toggle").addEventListener("click", () => {
+    setChatFocus(!appState.chatFocus);
+  });
+  byId("chat-history-toggle").addEventListener("click", toggleChatHistory);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && appState.chatFocus && !document.querySelector("dialog[open]")) {
+      setChatFocus(false);
+    }
+  });
   document.querySelectorAll("[data-response-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       if (appState.busy) {

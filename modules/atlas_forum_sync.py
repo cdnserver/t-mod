@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import requests
 from lxml import html
 
 from modules.atlas_ai import atlas_index_source
@@ -258,6 +259,49 @@ class AtlasForumBrowser:
         self.config = config
         self._driver: Any | None = None
 
+    def _grid_root(self) -> str:
+        parsed = urlsplit(self.config.selenium_url)
+        return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+
+    def _release_orphaned_sessions(self) -> int:
+        """Free the dedicated Grid slot left by a previous T-Mod process."""
+
+        try:
+            response = requests.post(
+                f"{self._grid_root()}/graphql",
+                json={"query": "{ sessionsInfo { sessions { id } } }"},
+                timeout=4,
+            )
+            response.raise_for_status()
+            sessions = response.json().get("data", {}).get("sessionsInfo", {}).get("sessions", [])
+        except (requests.RequestException, TypeError, ValueError, AttributeError):
+            return 0
+        released = 0
+        for item in sessions if isinstance(sessions, list) else []:
+            session_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+            if not session_id:
+                continue
+            try:
+                result = requests.delete(
+                    f"{self._grid_root()}/session/{session_id}",
+                    timeout=5,
+                )
+                if result.status_code < 500:
+                    released += 1
+            except requests.RequestException:
+                continue
+        return released
+
+    def _open_driver(self, options: Any) -> Any:
+        from selenium import webdriver
+
+        driver = webdriver.Remote(
+            command_executor=self.config.selenium_url,
+            options=options,
+        )
+        driver.set_page_load_timeout(60)
+        return driver
+
     def _connect(self) -> Any:
         if self._driver is not None:
             try:
@@ -266,7 +310,6 @@ class AtlasForumBrowser:
             except Exception:
                 self.close()
         try:
-            from selenium import webdriver
             from selenium.webdriver.chrome.options import Options
         except ImportError as exc:
             raise AtlasForumSyncError("selenium_not_installed") from exc
@@ -275,18 +318,27 @@ class AtlasForumBrowser:
         options.add_argument("--window-size=1440,1200")
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
         options.add_argument("--user-data-dir=/home/seluser/.config/chromium/atlas")
         options.set_capability("pageLoadStrategy", "normal")
+        options.set_capability("se:name", "T-Mod Atlas forum sync")
+        self._release_orphaned_sessions()
         try:
-            self._driver = webdriver.Remote(
-                command_executor=self.config.selenium_url,
-                options=options,
-            )
-            self._driver.set_page_load_timeout(60)
+            self._driver = self._open_driver(options)
+            return self._driver
+        except Exception:
+            self.close()
+            time.sleep(1.0)
+        try:
+            self._release_orphaned_sessions()
+            self._driver = self._open_driver(options)
             return self._driver
         except Exception as exc:
             self.close()
-            raise AtlasForumSyncError(f"atlas_forum_browser_unavailable:{type(exc).__name__}") from exc
+            raise AtlasForumSyncError(
+                f"atlas_forum_browser_unavailable:{type(exc).__name__}"
+            ) from exc
 
     def _load(self, url: str) -> str:
         driver = self._connect()
@@ -436,7 +488,13 @@ class AtlasForumSyncRunner:
         if not self.config.enabled or self._closed:
             raise AtlasForumSyncError("atlas_forum_sync_disabled")
         async with self._lock:
-            return await asyncio.to_thread(self.browser.scrape_thread, url)
+            try:
+                snapshot = await asyncio.to_thread(self.browser.scrape_thread, url)
+            except AtlasForumManualActionRequired:
+                raise
+            else:
+                await asyncio.to_thread(self.browser.close)
+                return snapshot
 
     async def _technical_log(
         self,
@@ -567,6 +625,7 @@ class AtlasForumSyncRunner:
                         level="info",
                         dedupe_key=f"atlas-forum-updated:{state.get('last_success_at')}",
                     )
+                await asyncio.to_thread(self.browser.close)
                 return state
             except AtlasForumManualActionRequired as exc:
                 state = await asyncio.to_thread(
@@ -589,6 +648,7 @@ class AtlasForumSyncRunner:
                 )
                 return state
             except Exception as exc:
+                await asyncio.to_thread(self.browser.close)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
                     int(feed["id"]),

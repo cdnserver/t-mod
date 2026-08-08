@@ -75,8 +75,9 @@ services:
     environment:
       SE_NODE_MAX_SESSIONS: "1"
       SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
-      SE_NODE_SESSION_TIMEOUT: "86400"
-      SE_SESSION_REQUEST_TIMEOUT: "60"
+      # Orphaned sessions must release the only browser slot automatically.
+      SE_NODE_SESSION_TIMEOUT: "600"
+      SE_SESSION_REQUEST_TIMEOUT: "20"
       # noVNC is bound to host loopback only, so a second password is unnecessary.
       SE_VNC_NO_PASSWORD: "true"
     volumes:

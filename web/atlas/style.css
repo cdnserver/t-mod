@@ -757,11 +757,82 @@ body:has(.atlas-app:not([hidden])) {
 .research-steps { display: grid; gap: 7px; margin: 12px 0; padding: 0; list-style: none; }
 .research-steps li { display: grid; grid-template-columns: 18px 1fr; align-items: start; gap: 7px; color: #6e8792; font-size: 9px; transition: .22s ease; }
 .research-steps li i { color: #657b86; font-style: normal; }
+.research-steps li span { display: grid; gap: 2px; min-width: 0; }
+.research-steps li b { color: inherit; font: 700 9px/1.35 "Unbounded", sans-serif; }
+.research-steps li small { color: #718994; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
 .research-steps li.running { color: #c6dce3; }.research-steps li.running i { color: #81dcf6; text-shadow: 0 0 12px rgba(129, 220, 246, .7); animation: previewStatus 1.2s ease-in-out infinite; }
 .research-steps li.complete { color: #8fa89f; }.research-steps li.complete i { color: #6ee0ba; }
+.research-steps li.degraded { color: #b7a584; }.research-steps li.degraded i { color: #e9ba70; }
 .research-progress > footer { padding-top: 10px; border-top: 1px solid rgba(142, 203, 226, .08); color: #607a85; font-size: 8px; }
 .research-progress.complete { border-color: rgba(104, 221, 186, .17); }
 @media (max-width: 620px) {
   .response-mode-switch { display: grid; grid-template-columns: repeat(2, 1fr); }
   .rich-text table { font-size: 9px; }
+}
+
+/* Atlas chat focus mode ------------------------------------------------- */
+.chat-view-actions { display: flex; gap: 5px; }
+.chat-view-actions button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 35px; padding: 0 10px; border: 1px solid rgba(130, 208, 236, .12);
+  border-radius: 10px; color: #718d98; background: rgba(255, 255, 255, .018);
+  font-size: 8px; font-weight: 780; cursor: pointer; transition: .2s var(--atlas-ease);
+}
+.chat-view-actions button:hover, .chat-view-actions button.active { color: #d9f5fc; border-color: rgba(126, 216, 248, .26); background: rgba(65, 153, 185, .11); }
+.chat-view-actions svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#chat-history-toggle { display: none; }
+
+@media (max-width: 1500px) and (min-width: 821px) {
+  .chat-toolbar { flex-wrap: wrap; }
+  .chat-controls { flex-wrap: wrap; justify-content: flex-end; }
+  .chat-view-actions button span { display: none; }
+  .atlas-app.chat-focus-mode .chat-view-actions button span { display: inline; }
+}
+
+@media (min-width: 821px) {
+  .ai-workspace { height: clamp(650px, calc(100dvh - 245px), 920px); min-height: 0; }
+  .ai-workspace > * { min-height: 0; }
+  .chat-panel { height: 100%; min-height: 0; }
+  .chat-stream { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+}
+
+.atlas-app, .atlas-app .sidebar, .atlas-app .main, .atlas-app .topbar, .atlas-app .content { transition: .32s var(--atlas-ease); }
+.atlas-app.chat-focus-mode { grid-template-columns: 0 minmax(0, 1fr); }
+.atlas-app.chat-focus-mode .sidebar { width: 0; padding-inline: 0; border: 0; opacity: 0; overflow: hidden; pointer-events: none; transform: translateX(-28px); }
+.atlas-app.chat-focus-mode .main { grid-column: 1 / -1; }
+.atlas-app.chat-focus-mode .topbar { min-height: 62px; padding-block: 8px; }
+.atlas-app.chat-focus-mode .topbar .scope-switcher,
+.atlas-app.chat-focus-mode #global-search,
+.atlas-app.chat-focus-mode .ai-state { display: none; }
+.atlas-app.chat-focus-mode .content { width: 100%; height: calc(100dvh - 62px); padding: 10px 12px 12px; overflow: hidden; }
+.atlas-app.chat-focus-mode #screen-ai { height: 100%; }
+.atlas-app.chat-focus-mode #screen-ai > .section-intro,
+.atlas-app.chat-focus-mode .ai-context,
+.atlas-app.chat-focus-mode .chat-history-panel { display: none; }
+.atlas-app.chat-focus-mode .ai-workspace { position: relative; grid-template-columns: minmax(0, 1fr); width: min(1500px, 100%); height: 100%; min-height: 0; margin: 0 auto; }
+.atlas-app.chat-focus-mode.chat-focus-history .ai-workspace { grid-template-columns: 240px minmax(0, 1fr); }
+.atlas-app.chat-focus-mode.chat-focus-history .chat-history-panel { display: grid; }
+.atlas-app.chat-focus-mode .chat-panel { height: 100%; min-height: 0; border-radius: 22px; box-shadow: 0 30px 100px rgba(0, 0, 0, .28), inset 0 1px rgba(255, 255, 255, .03); }
+.atlas-app.chat-focus-mode .chat-stream { min-height: 0; overflow-y: auto; padding-block: 24px; overscroll-behavior: contain; }
+.atlas-app.chat-focus-mode .assistant-message,
+.atlas-app.chat-focus-mode .user-message { max-width: min(78%, 940px); }
+.atlas-app.chat-focus-mode #chat-history-toggle { display: inline-flex; }
+
+@media (max-width: 820px) {
+  .chat-controls { flex-wrap: wrap; }
+  .chat-view-actions { width: 100%; }
+  .chat-view-actions button { flex: 1; }
+  .chat-stream { min-height: 0; max-height: 64dvh; overflow-y: auto; overscroll-behavior: contain; }
+  .atlas-app.chat-focus-mode .sidebar { position: fixed; width: 0; height: 0; padding: 0; }
+  .atlas-app.chat-focus-mode .topbar { top: 0; min-height: 54px; }
+  .atlas-app.chat-focus-mode .topbar > div:first-child { display: none; }
+  .atlas-app.chat-focus-mode .topbar .viewer { margin-left: auto; }
+  .atlas-app.chat-focus-mode .content { height: calc(100dvh - 54px); padding: 7px; }
+  .atlas-app.chat-focus-mode.chat-focus-history .ai-workspace { grid-template-columns: 1fr; }
+  .atlas-app.chat-focus-mode.chat-focus-history .chat-history-panel { position: absolute; z-index: 5; inset: 7px 7px auto; max-height: 42dvh; box-shadow: 0 28px 80px rgba(0, 0, 0, .55); }
+  .atlas-app.chat-focus-mode .chat-panel { min-height: 0; border-radius: 17px; }
+  .atlas-app.chat-focus-mode .chat-toolbar { max-height: 40dvh; overflow-y: auto; }
+  .atlas-app.chat-focus-mode .chat-stream { max-height: none; }
+  .atlas-app.chat-focus-mode .assistant-message,
+  .atlas-app.chat-focus-mode .user-message { max-width: 100%; }
 }

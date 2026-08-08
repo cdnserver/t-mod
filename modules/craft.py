@@ -1172,7 +1172,10 @@ async def create_craft_plan(
 
     member = guild.get_member(int(responsible_id))
     if member is None:
-        member = await guild.fetch_member(int(responsible_id))
+        try:
+            member = await guild.fetch_member(int(responsible_id))
+        except discord.NotFound as exc:
+            raise ValueError("craft_bad_responsible") from exc
     target_channel = await _get_channel(bot, CRAFT_CHANNEL_ID)
     plan: dict[str, Any] | None = None
     public_message: discord.Message | None = None

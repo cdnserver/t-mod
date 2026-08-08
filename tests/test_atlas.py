@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
     _chunks,
+    atlas_ai_config,
     atlas_answer,
     atlas_answer_stream,
     atlas_ensure_collection,
@@ -383,6 +385,13 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    def test_legacy_model_value_is_upgraded_to_current_atlas_brain(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ATLAS_OPENROUTER_MODEL": "openai/gpt-4.1-mini"},
+        ):
+            self.assertEqual(atlas_ai_config().chat_model, "openai/gpt-5.4")
+
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
             title="Правила сервера",
@@ -463,6 +472,28 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("server:phoenix-15", scopes["match"]["any"])
         self.assertIn("faction:phoenix-15:lspd", scopes["match"]["any"])
         self.assertIn("workspace:77:phoenix-15:lspd", scopes["match"]["any"])
+
+    async def test_search_embeds_agent_queries_independently(self) -> None:
+        embedded: list[str] = []
+
+        async def embed(texts: list[str]) -> list[list[float]]:
+            embedded.extend(texts)
+            return [[0.1, 0.2] for _ in texts]
+
+        with patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            await atlas_search(
+                77,
+                "основной вопрос",
+                query_variants=["процесс задержания", "исключения из правила"],
+            )
+
+        self.assertEqual(
+            embedded,
+            ["основной вопрос", "процесс задержания", "исключения из правила"],
+        )
 
     async def test_index_payload_contains_one_canonical_access_scope(self) -> None:
         source = {
@@ -594,8 +625,50 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["model"], "atlas-tvr-a")
 
     async def test_aristotle_stream_reports_visible_research_progress(self) -> None:
+        calls: list[str] = []
+
         async def completion(request: web.Request) -> web.StreamResponse:
             body = await request.json()
+            if not body.get("stream"):
+                system = str(body["messages"][0]["content"])
+                if "архитектор исследовательской команды" in system:
+                    calls.append("planner")
+                    return web.json_response(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": json.dumps(
+                                            {
+                                                "mission": "Подготовить защиту при задержании",
+                                                "agents": [
+                                                    {
+                                                        "agent": "Страж процедуры",
+                                                        "role": "Процесс задержания",
+                                                        "title": "Проверить действия сотрудника",
+                                                        "task": "Сверить порядок задержания и права лица",
+                                                        "search_query": "порядок задержания права задержанного",
+                                                    },
+                                                    {
+                                                        "agent": "Контраргумент",
+                                                        "role": "Риски позиции",
+                                                        "title": "Проверить слабые места защиты",
+                                                        "task": "Найти исключения и риски выбранной позиции",
+                                                        "search_query": "исключения риски при задержании",
+                                                    },
+                                                ],
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                    }
+                                }
+                            ]
+                        }
+                    )
+                calls.append("agent")
+                return web.json_response(
+                    {"choices": [{"message": {"content": "Проверка завершена [Источник 1]"}}]}
+                )
             self.assertEqual(body["temperature"], 0.28)
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
@@ -653,9 +726,18 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["response_mode"], "aristotle")
         self.assertTrue(result["research_plan"])
+        self.assertEqual(
+            [step["agent"] for step in result["research_plan"]],
+            ["Страж процедуры", "Контраргумент", "Аристотель"],
+        )
+        self.assertEqual(calls, ["planner", "agent", "agent"])
         self.assertTrue(search.await_args.kwargs["expanded"])
         self.assertIn("plan", {event["phase"] for event in progress})
         self.assertIn("evidence", {event["phase"] for event in progress})
+        self.assertEqual(
+            sum(event["phase"] == "agent_result" for event in progress),
+            2,
+        )
         self.assertEqual(progress[-1]["phase"], "complete")
 
     async def test_creative_answer_uses_current_history_cross_chat_memory_and_sources(self) -> None:

@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-atlas-intelligence-v3">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-atlas-focus-v4">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -179,7 +179,7 @@
                 <footer><i></i><span><b>Личная память</b><small>история видна только вам в этом пространстве</small></span></footer>
               </aside>
               <article class="chat-panel">
-                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="chat-controls"><label class="model-picker"><small>МОДЕЛЬ</small><select id="atlas-model" aria-label="Модель Atlas"><option value="atlas-tvr-a">atlas-tvr-a</option></select></label><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button><button class="aristotle-mode" type="button" data-response-mode="aristotle">Аристотель</button></div></div></header>
+                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="chat-controls"><label class="model-picker"><small>МОДЕЛЬ</small><select id="atlas-model" aria-label="Модель Atlas"><option value="atlas-tvr-a">atlas-tvr-a</option></select></label><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button><button class="aristotle-mode" type="button" data-response-mode="aristotle">Аристотель</button></div><div class="chat-view-actions"><button id="chat-history-toggle" type="button" aria-pressed="false" title="Показать диалоги"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>Диалоги</span></button><button id="chat-focus-toggle" type="button" aria-pressed="false" title="Развернуть чат внутри Atlas"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg><span>Фокус</span></button></div></div></header>
                 <div id="chat-stream" class="chat-stream">
                   <div class="assistant-message welcome"><span>A</span><div><small>ATLAS · НОВЫЙ ДИАЛОГ</small><p>Я могу проверить норму, продолжить прошлую мысль или создать речь и документ на основе правил. Факты останутся проверяемыми, а творческая часть — свободной.</p></div></div>
                 </div>
@@ -275,6 +275,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js?v=20260809-atlas-intelligence-v3" defer></script>
+    <script src="/atlas/assets/app.js?v=20260809-atlas-focus-v4" defer></script>
   </body>
 </html>

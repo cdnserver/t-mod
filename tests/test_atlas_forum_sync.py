@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import storage
@@ -144,6 +144,61 @@ class AtlasForumParserTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AtlasForumSyncError, "thread_url_invalid"):
             browser.scrape_thread("https://example.org/threads/secret.1/")
+
+    @patch("modules.atlas_forum_sync.requests.delete")
+    @patch("modules.atlas_forum_sync.requests.post")
+    def test_browser_releases_orphaned_grid_session(self, post, delete) -> None:
+        post.return_value = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "data": {"sessionsInfo": {"sessions": [{"id": "old-atlas-session"}]}}
+            },
+        )
+        delete.return_value = SimpleNamespace(status_code=200)
+        browser = AtlasForumBrowser(sync_config())
+
+        released = browser._release_orphaned_sessions()
+
+        self.assertEqual(released, 1)
+        delete.assert_called_once_with(
+            "http://browser:4444/session/old-atlas-session",
+            timeout=5,
+        )
+
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_browser_retries_session_creation_once(self, _sleep) -> None:
+        class FakeOptions:
+            def add_argument(self, _value):
+                return None
+
+            def set_capability(self, _name, _value):
+                return None
+
+        selenium = ModuleType("selenium")
+        webdriver = ModuleType("selenium.webdriver")
+        chrome = ModuleType("selenium.webdriver.chrome")
+        options = ModuleType("selenium.webdriver.chrome.options")
+        options.Options = FakeOptions
+        browser = AtlasForumBrowser(sync_config())
+        driver = SimpleNamespace(current_url=ROOT_URL)
+        with patch.dict(
+            "sys.modules",
+            {
+                "selenium": selenium,
+                "selenium.webdriver": webdriver,
+                "selenium.webdriver.chrome": chrome,
+                "selenium.webdriver.chrome.options": options,
+            },
+        ), patch.object(
+            browser, "_release_orphaned_sessions", return_value=1
+        ) as release, patch.object(
+            browser, "_open_driver", side_effect=[RuntimeError("session occupied"), driver]
+        ) as open_driver:
+            connected = browser._connect()
+
+        self.assertIs(connected, driver)
+        self.assertEqual(open_driver.call_count, 2)
+        self.assertEqual(release.call_count, 2)
 
     @patch("modules.atlas_forum_sync.time.sleep")
     def test_empty_listing_becomes_manual_action_after_retries(self, _sleep) -> None:
@@ -290,6 +345,7 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["last_stats"]["inventory_complete"], False)
         self.assertEqual(second["last_stats"]["changed"], 0)
         index.assert_awaited_once()
+        self.assertTrue(browser.closed)
 
     async def test_manual_check_sets_attention_without_changing_knowledge(self) -> None:
         browser = _FakeBrowser(

@@ -99,6 +99,21 @@ def safe_optional(value: str | None) -> str | None:
     return value if value else None
 
 
+async def _send_admin_modal_reply_safely(
+    interaction: discord.Interaction,
+    content: str,
+) -> bool:
+    """Best-effort reply after an admin operation may have deleted its channel."""
+
+    try:
+        await interaction.followup.send(content, ephemeral=True)
+    except discord.HTTPException:
+        # The database operation has already completed and the interaction may
+        # no longer have a channel/message to receive its ephemeral reply.
+        return False
+    return True
+
+
 def parse_amount(value: str) -> int | None:
     cleaned = re.sub(r"[^0-9]", "", str(value or ""))
     if not cleaned:
@@ -1800,7 +1815,7 @@ class AdminEditModal(discord.ui.Modal):
                     actor_display=interaction.user.display_name,
                 )
                 if record is None:
-                    await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
+                    await _send_admin_modal_reply_safely(interaction, t("sgbureau.admin.not_found"))
                     return
                 # If case was edited, try refreshing the channel name.
                 normalized_target = await asyncio.to_thread(
@@ -1815,12 +1830,15 @@ class AdminEditModal(discord.ui.Modal):
                     )
                     if case:
                         schedule_case_refresh(interaction.client, interaction.guild, case)
-                await interaction.followup.send(admin_short_result(target, identifier, field), ephemeral=True)
+                await _send_admin_modal_reply_safely(
+                    interaction,
+                    admin_short_result(target, identifier, field),
+                )
                 return
 
             confirm = str(self.confirm.value).strip().upper()
             if confirm not in {"DELETE", "УДАЛИТЬ"}:
-                await interaction.followup.send(t("sgbureau.admin.confirm_failed"), ephemeral=True)
+                await _send_admin_modal_reply_safely(interaction, t("sgbureau.admin.confirm_failed"))
                 return
             record = await asyncio.to_thread(
                 storage.admin_delete_record,
@@ -1831,7 +1849,7 @@ class AdminEditModal(discord.ui.Modal):
                 actor_display=interaction.user.display_name,
             )
             if record is None:
-                await interaction.followup.send(t("sgbureau.admin.not_found"), ephemeral=True)
+                await _send_admin_modal_reply_safely(interaction, t("sgbureau.admin.not_found"))
                 return
             normalized_target = await asyncio.to_thread(
                 storage.normalize_admin_target,
@@ -1846,18 +1864,30 @@ class AdminEditModal(discord.ui.Modal):
                             await channel.delete(reason=t("sgbureau.admin.delete_case_reason", actor=member_label(interaction.user)))
                         except discord.HTTPException:
                             pass
-            await interaction.followup.send(admin_short_result(target, identifier), ephemeral=True)
+            await _send_admin_modal_reply_safely(
+                interaction,
+                admin_short_result(target, identifier),
+            )
         except ValueError as exc:
             code = str(exc)
             if code == "field_not_allowed":
                 fields = ", ".join(
                     await asyncio.to_thread(storage.admin_allowed_fields, target)
                 ) or t("common.no_data")
-                await interaction.followup.send(t("sgbureau.admin.field_not_allowed", fields=fields), ephemeral=True)
+                await _send_admin_modal_reply_safely(
+                    interaction,
+                    t("sgbureau.admin.field_not_allowed", fields=fields),
+                )
             else:
-                await interaction.followup.send(t("sgbureau.admin.bad_request", error=code), ephemeral=True)
+                await _send_admin_modal_reply_safely(
+                    interaction,
+                    t("sgbureau.admin.bad_request", error=code),
+                )
         except Exception as exc:
-            await interaction.followup.send(t("sgbureau.admin.failed", error=str(exc)[:500]), ephemeral=True)
+            await _send_admin_modal_reply_safely(
+                interaction,
+                t("sgbureau.admin.failed", error=str(exc)[:500]),
+            )
 
 
 class SGBureauAdminView(SGRequesterView):

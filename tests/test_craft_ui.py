@@ -5,10 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+import discord
+
 from modules.craft import (
     BatchQuantityModal,
     CraftPlanView,
     completion_embed,
+    create_craft_plan,
     event_log_embed,
     FinalOutputModal,
     InventoryModal,
@@ -103,6 +106,27 @@ class CraftFormatTests(unittest.TestCase):
 
 
 class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_responsible_is_a_friendly_validation_error(self) -> None:
+        unknown_user = discord.NotFound(
+            SimpleNamespace(status=404, reason="Not Found"),
+            {"message": "Unknown User", "code": 10013},
+        )
+        guild = SimpleNamespace(
+            get_member=lambda member_id: None,
+            fetch_member=AsyncMock(side_effect=unknown_user),
+        )
+
+        with self.assertRaisesRegex(ValueError, "craft_bad_responsible"):
+            await create_craft_plan(
+                SimpleNamespace(),
+                guild,
+                recipe_id=1,
+                attempts_total=1,
+                responsible_id=999,
+                created_by_id=1,
+                created_by_display="Admin",
+            )
+
     async def test_expected_validation_does_not_alert_technical_log(self) -> None:
         response = SimpleNamespace(is_done=lambda: True)
         followup = SimpleNamespace(send=AsyncMock())

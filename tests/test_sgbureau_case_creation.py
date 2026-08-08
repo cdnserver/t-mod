@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import discord
+
 from modules import sgbureau
 
 
@@ -15,6 +17,23 @@ class FakeGuild:
 
 
 class SGLCaseCreationViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_reply_ignores_deleted_interaction_channel(self):
+        unknown_channel = discord.HTTPException(
+            SimpleNamespace(status=400, reason="Bad Request"),
+            {"message": "Unknown Channel", "code": 10003},
+        )
+        interaction = SimpleNamespace(
+            followup=SimpleNamespace(send=AsyncMock(side_effect=unknown_channel)),
+        )
+
+        delivered = await sgbureau._send_admin_modal_reply_safely(
+            interaction,
+            "Готово",
+        )
+
+        self.assertFalse(delivered)
+        interaction.followup.send.assert_awaited_once_with("Готово", ephemeral=True)
+
     def test_case_creation_view_exposes_optional_secretary_selector(self):
         view = sgbureau.SGCaseCreationView(
             bot=None,
