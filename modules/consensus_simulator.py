@@ -7,6 +7,7 @@ training can never alter real bills, plenary numbers, votes or DM deliveries.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
@@ -20,11 +21,23 @@ from modules.consensus_core import (
     LiveParticipant,
     LiveResult,
     calculate_consensus,
-    clean_stage_name,
     session_to_snapshot,
 )
 from modules.consensus_service import ConsensusActor, ConsensusCoordinator
-from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION, consensus_progress_text
+from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION
+from modules.tvrs_config import (
+    TVRS_COCHAIR_IDS,
+    TVRS_PERMANENT_CHAIR_ID,
+    TVRS_TIMER_OPTIONS,
+)
+from modules.tvrs_embeds import build_final_summary_embed, build_result_embed
+from modules.tvrs_formatting import role_label
+from modules.tvrs_presentation import (
+    build_dm_vote_embed,
+    build_live_vote_embed,
+    build_registration_embed,
+    participant_kind,
+)
 
 
 SIMULATION_COLOR = 0x9B59B6
@@ -207,6 +220,7 @@ class ConsensusSimulation:
     guild_id: int
     leader_id: int
     leader_display: str
+    invited_participants: tuple[LiveParticipant, ...] = ()
     bill_number: int = 900
     session: LiveConsensusSession = field(init=False)
     events: list[str] = field(default_factory=list)
@@ -222,25 +236,48 @@ class ConsensusSimulation:
     )
 
     def __post_init__(self) -> None:
+        real_roster = bool(self.invited_participants)
+        leader_block = (
+            ("first", "second", "third")[TVRS_COCHAIR_IDS.index(self.leader_id)]
+            if self.leader_id in TVRS_COCHAIR_IDS[:3]
+            else ("first" if not real_roster else None)
+        )
         participants = {
             self.leader_id: LiveParticipant(
                 user_id=self.leader_id,
                 display_name=self.leader_display,
                 mention=f"<@{self.leader_id}>",
                 kind="chair",
-                permanent=True,
+                permanent=(
+                    self.leader_id == TVRS_PERMANENT_CHAIR_ID
+                    if real_roster
+                    else True
+                ),
                 confirmed=True,
-                voting_block="first",
+                voting_block=leader_block,
             )
         }
-        for user_id, display_name, kind, voting_block in SIMULATION_FAKE_SPECS:
-            participants[user_id] = LiveParticipant(
-                user_id=user_id,
-                display_name=display_name,
-                mention=display_name,
-                kind=kind,  # type: ignore[arg-type]
-                voting_block=voting_block,  # type: ignore[arg-type]
-            )
+        if real_roster:
+            for source in self.invited_participants:
+                if int(source.user_id) == self.leader_id:
+                    continue
+                participants[int(source.user_id)] = LiveParticipant(
+                    user_id=int(source.user_id),
+                    display_name=str(source.display_name),
+                    mention=str(source.mention),
+                    kind=source.kind,
+                    permanent=bool(source.permanent),
+                    voting_block=source.voting_block,
+                )
+        else:
+            for user_id, display_name, kind, voting_block in SIMULATION_FAKE_SPECS:
+                participants[user_id] = LiveParticipant(
+                    user_id=user_id,
+                    display_name=display_name,
+                    mention=display_name,
+                    kind=kind,  # type: ignore[arg-type]
+                    voting_block=voting_block,  # type: ignore[arg-type]
+                )
         self.coordinator = ConsensusCoordinator(self.repository)
         self.session = LiveConsensusSession(
             session_key=(
@@ -260,7 +297,11 @@ class ConsensusSimulation:
             "simulation_opened",
             actor=self.actor,
         )
-        self._record("Симуляция открыта; ведущий подтверждён автоматически")
+        self._record(
+            "Симуляция открыта; ведущий подтверждён автоматически"
+            if not real_roster
+            else "Точный тестовый контур открыт; сенаторам направлены приглашения"
+        )
 
     @property
     def finished(self) -> bool:
@@ -269,6 +310,63 @@ class ConsensusSimulation:
     @property
     def actor(self) -> ConsensusActor:
         return ConsensusActor(self.leader_id, self.leader_display)
+
+    @property
+    def has_real_roster(self) -> bool:
+        return bool(self.invited_participants)
+
+    @property
+    def invited_user_ids(self) -> set[int]:
+        return {
+            participant.user_id
+            for participant in self.session.participants.values()
+            if participant.user_id > 0 and participant.user_id != self.leader_id
+        }
+
+    def participant_actor(self, user_id: int) -> ConsensusActor:
+        participant = self.session.participants.get(int(user_id))
+        if participant is None:
+            raise ConsensusStateError("Пользователь не входит в тестовый состав.")
+        return ConsensusActor(participant.user_id, participant.display_name)
+
+    def confirm_participant(self, user_id: int) -> None:
+        self._require_stage("registration")
+        participant = self.session.participants.get(int(user_id))
+        if participant is None:
+            raise ConsensusStateError("Пользователь не входит в тестовый состав.")
+        self.coordinator.confirm_participant(
+            self.session,
+            participant.user_id,
+            actor=self.participant_actor(participant.user_id),
+        )
+        self._record(f"{participant.display_name} подтвердил участие")
+
+    def cast_participant_vote(self, user_id: int, vote: str) -> bool:
+        participant = self.session.participants.get(int(user_id))
+        if participant is None or not participant.confirmed:
+            raise ConsensusStateError("Вы не зарегистрированы в этой симуляции.")
+        should_finalize = self.coordinator.cast_vote(
+            self.session,
+            participant.user_id,
+            vote,
+            actor=self.participant_actor(participant.user_id),
+        )
+        vote_label = {
+            "yes": "За",
+            "no": "Против",
+            "abstain": "Воздержался",
+        }.get(vote, vote)
+        self._record(f"{participant.display_name}: {vote_label}")
+        if should_finalize:
+            self.finalize(forced=False)
+        return should_finalize
+
+    def queue_text(self, limit: int = 5) -> str:
+        rows = self.queue_bills(limit)
+        return "\n".join(
+            f"`{index:02d}` №`{int(row['bill_number']):03d}` — **{row['title']}**"
+            for index, row in enumerate(rows, 1)
+        ) or "Очередь пуста."
 
     def _record(self, text: str) -> None:
         self.events.append(str(text))
@@ -341,6 +439,15 @@ class ConsensusSimulation:
             )
         self._record("Все фейковые участники подтвердили участие")
 
+    def resend_invitations(self) -> None:
+        self._require_stage("registration")
+        self.coordinator.save(
+            self.session,
+            "registration_invitations_retried",
+            actor=self.actor,
+        )
+        self._record("Приглашения участникам отправлены повторно")
+
     def begin_voting(self) -> None:
         self.coordinator.present_bill_atomically(
             self.session,
@@ -359,20 +466,7 @@ class ConsensusSimulation:
         self._record(f"Открыт воут по проекту №{self.bill_number}")
 
     def cast_leader_vote(self, vote: str) -> None:
-        should_finalize = self.coordinator.cast_vote(
-            self.session,
-            self.leader_id,
-            vote,
-            actor=self.actor,
-        )
-        vote_label = {
-            "yes": "За",
-            "no": "Против",
-            "abstain": "Воздержался",
-        }.get(vote, vote)
-        self._record(f"Ведущий проголосовал: {vote_label}")
-        if should_finalize:
-            self.finalize(forced=False)
+        self.cast_participant_vote(self.leader_id, vote)
 
     def cast_next_fake_vote(self) -> None:
         self._require_stage("voting")
@@ -431,10 +525,10 @@ class ConsensusSimulation:
         if should_finalize:
             self.finalize(forced=False)
 
-    def request_discussion(self) -> None:
-        initiator = self.session.participants[self.leader_id]
+    def request_discussion(self, user_id: int | None = None) -> None:
+        initiator = self.session.participants[int(user_id or self.leader_id)]
         self.coordinator.request_discussion(self.session, initiator)
-        self._record("Запрошена учебная дискуссия")
+        self._record(f"{initiator.display_name} запросил дискуссию")
 
     def choose_discussion(self, discussion_type: str) -> None:
         self.coordinator.begin_discussion(
@@ -520,14 +614,21 @@ class ConsensusSimulation:
     def timer_expired(self) -> LiveResult:
         return self.finalize(forced=False)
 
-    def veto(self) -> LiveResult:
+    def veto(self, user_id: int | None = None) -> LiveResult:
+        veto_user_id = int(user_id or self.leader_id)
+        participant = self.session.participants.get(veto_user_id)
+        if participant is None or not participant.permanent:
+            raise ConsensusStateError(
+                "Право вето доступно только постоянному председателю."
+            )
+        veto_actor = self.participant_actor(veto_user_id)
         bill = dict(self.session.current_bill or {})
         if not bill:
             raise ConsensusStateError("В симуляции нет текущего проекта.")
         self.coordinator.claim_finalization(
             self.session,
             kind="veto",
-            actor=self.actor,
+            actor=veto_actor,
             veto_authorized=True,
         )
         result = LiveResult(
@@ -540,9 +641,9 @@ class ConsensusSimulation:
             internal_active=False,
             resolution_method="veto",
             votes=dict(self.session.votes),
-            veto_by_id=self.leader_id,
-            resolved_by_id=self.leader_id,
-            resolved_by_display=self.leader_display,
+            veto_by_id=veto_user_id,
+            resolved_by_id=veto_user_id,
+            resolved_by_display=participant.display_name,
         )
         self.coordinator.complete_result_atomically(
             self.session,
@@ -550,7 +651,7 @@ class ConsensusSimulation:
             bill_status="vetoed",
             result_summary="Применено учебное право вето",
             event_type="veto_applied",
-            actor=self.actor,
+            actor=veto_actor,
             deliveries=(),
         )
         self._record("Учебное вето применено")
@@ -649,113 +750,161 @@ def clear_consensus_simulation(
     return _simulations.pop(int(guild_id), None)
 
 
-def _participant_lines(simulation: ConsensusSimulation) -> str:
-    lines: list[str] = []
-    for participant in simulation.session.participants.values():
-        confirmed = "✅" if participant.confirmed else "⏳"
-        role = "председатель" if participant.kind == "chair" else "сенатор"
-        vote = simulation.session.votes.get(participant.user_id)
-        vote_text = {
-            "yes": "За",
-            "no": "Против",
-            "abstain": "Воздержался",
-        }.get(vote, "—")
-        display = (
-            f"<@{participant.user_id}>"
-            if participant.user_id == simulation.leader_id
-            else participant.display_name
-        )
-        lines.append(f"{confirmed} **{display}** · `{role}` · голос: **{vote_text}**")
-    return "\n".join(lines)
-
-
 def consensus_simulation_embed(simulation: ConsensusSimulation) -> discord.Embed:
+    """Render the production card against an isolated in-memory session."""
+
     session = simulation.session
+    if session.finished:
+        embed = build_final_summary_embed(session)
+    elif session.stage == "registration":
+        embed = build_registration_embed(
+            session,
+            queue_override=simulation.queue_text(8),
+            voice_override="🧪 не проверяется в изолированном тесте",
+            description_override=(
+                "Это изолированный пульт ведущего. Выбранные участники подтверждают "
+                "тестовое участие в личном сообщении T-Mod. Ведущий зарегистрирован "
+                "автоматически."
+            ),
+        )
+    elif session.stage == "after_result" and session.results:
+        embed = build_result_embed(session.results[-1], session)
+    else:
+        embed = build_live_vote_embed(
+            session,
+            queue_override=simulation.queue_text(5),
+        )
+    embed.color = discord.Color(SIMULATION_COLOR)
+    embed.set_author(
+        name="ИЗОЛИРОВАННЫЙ ТЕСТ • интерфейс и правила рабочего консенсуса"
+    )
+    return embed
+
+
+def _simulation_registration_dm_embed(
+    simulation: ConsensusSimulation,
+    participant: LiveParticipant,
+) -> discord.Embed:
     embed = discord.Embed(
-        title=f"🧪 Симулятор Consensus V{simulation.session.engine_version}",
+        title="Пленарный консенсус Товарищества",
         description=(
-            "Тот же координатор, переходы и расчёт, что в рабочем консенсусе, "
-            "но с отдельной памятью и без реальных ЛС, базы и проверки войса. "
-            "Ход симуляции доступен в веб-панели."
+            f"Ведущий: <@{simulation.leader_id}>\n"
+            f"Роль: **{role_label(participant)}**"
         ),
         color=SIMULATION_COLOR,
     )
     embed.add_field(
-        name="Этап",
-        value=f"**{clean_stage_name(session.stage)}**",
-        inline=True,
-    )
-    embed.add_field(
-        name="Маршрут",
-        value=consensus_progress_text(session.stage),
+        name="Очередь законопроектов",
+        value=simulation.queue_text(10),
         inline=False,
     )
-    embed.add_field(
-        name="Учебный кворум",
-        value="✅ набран" if session.quorum_ready() else "⏳ ожидается",
-        inline=True,
-    )
-    embed.add_field(
-        name="Проверка войса",
-        value="🚫 отключена",
-        inline=True,
-    )
-    embed.add_field(
-        name="Веб-панель",
-        value="🟣 режим **«Симуляция»**",
-        inline=True,
-    )
-    embed.add_field(name="Участники", value=_participant_lines(simulation)[:1024], inline=False)
-
-    if session.current_bill is not None:
-        bill = session.current_bill
-        embed.add_field(
-            name=f"Проект №{int(bill.get('bill_number') or 0)}",
-            value=f"**{str(bill.get('title') or 'Учебный проект')}**\n{str(bill.get('summary') or '')}"[:1024],
-            inline=False,
-        )
-    if session.stage in {
-        "presentation",
-        "voting",
-        "discussion_type",
-        "discussion",
-        "paused",
-    } and session.current_bill:
-        calculation = calculate_consensus(session)
-        embed.add_field(
-            name="Текущий расчёт",
-            value=(
-                f"Сенат: **{calculation['internal_percent']}%** · "
-                f"общий результат: **{calculation['overall_percent']}%** · "
-                f"{'✅ проходит' if calculation['accepted'] else '❌ пока не проходит'}"
-            ),
-            inline=False,
-        )
-    if session.results:
-        result = session.results[-1]
-        status = {
-            "accepted": "✅ принят",
-            "rejected": "❌ отклонён",
-            "vetoed": "🛑 вето",
-        }.get(result.status, result.status)
-        embed.add_field(
-            name=f"Последний результат · №{result.bill_number}",
-            value=f"**{status}** · общий результат **{result.overall_percent}%**",
-            inline=False,
-        )
-    if simulation.events:
-        embed.add_field(
-            name="Ход симуляции",
-            value="\n".join(f"• {event}" for event in simulation.events)[-1024:],
-            inline=False,
-        )
-    embed.set_footer(
-        text=(
-            f"T-Mod • Consensus V{session.engine_version} • учебный контур • "
-            "сбрасывается при перезапуске"
-        )
-    )
+    embed.set_author(name="ИЗОЛИРОВАННЫЙ ТЕСТ • результат не попадёт в базу")
     return embed
+
+
+def _simulation_participant_embed(
+    simulation: ConsensusSimulation,
+    participant: LiveParticipant,
+) -> discord.Embed:
+    session = simulation.session
+    if session.stage == "registration":
+        return _simulation_registration_dm_embed(simulation, participant)
+    if session.finished:
+        embed = build_final_summary_embed(session, compact=True)
+    elif session.stage == "after_result" and session.results:
+        embed = build_result_embed(session.results[-1], session)
+    else:
+        embed = build_dm_vote_embed(
+            session,
+            participant,
+            queue_override=simulation.queue_text(4),
+        )
+    embed.color = discord.Color(SIMULATION_COLOR)
+    embed.set_author(name="ИЗОЛИРОВАННЫЙ ТЕСТ • интерфейс рабочего консенсуса")
+    return embed
+
+
+async def _resolve_simulation_member(
+    guild: discord.Guild,
+    user_id: int,
+) -> discord.Member | None:
+    member = guild.get_member(int(user_id))
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(int(user_id))
+    except discord.DiscordException:
+        return None
+
+
+async def _refresh_simulation_participant_dms(
+    simulation: ConsensusSimulation,
+    guild: discord.Guild,
+) -> None:
+    """Converge the same canonical DM as the production control delivery."""
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def refresh_one(participant: LiveParticipant) -> None:
+        if participant.user_id == simulation.leader_id or participant.user_id <= 0:
+            return
+        async with semaphore:
+            member = await _resolve_simulation_member(guild, participant.user_id)
+            if member is None:
+                participant.dm_failed = True
+                return
+            view: discord.ui.View | None = None
+            if simulation.session.stage == "registration" and not participant.confirmed:
+                view = SimulationParticipantView(simulation, participant.user_id)
+            elif simulation.session.stage == "voting":
+                view = SimulationParticipantView(simulation, participant.user_id)
+            content = (
+                "Подтвердите участие в тестовом консенсусе."
+                if simulation.session.stage == "registration" and not participant.confirmed
+                else "Участие подтверждено. Ожидайте начала рассмотрения."
+                if simulation.session.stage == "registration"
+                else "Законопроект представлен. Голосование откроет ведущий."
+                if simulation.session.stage == "presentation"
+                else None
+            )
+            embed = _simulation_participant_embed(simulation, participant)
+            message_id = int(
+                participant.vote_message_id or participant.dm_message_id or 0
+            )
+            for attempt in range(3):
+                try:
+                    dm_channel = member.dm_channel or await member.create_dm()
+                    message = (
+                        await dm_channel.fetch_message(message_id)
+                        if message_id
+                        else None
+                    )
+                    if message is None:
+                        message = await member.send(
+                            content=content,
+                            embed=embed,
+                            view=view,
+                        )
+                    else:
+                        await message.edit(content=content, embed=embed, view=view)
+                    participant.dm_message_id = int(message.id)
+                    participant.vote_message_id = int(message.id)
+                    participant.vote_bill_id = int(
+                        (simulation.session.current_bill or {}).get("id") or 0
+                    ) or None
+                    participant.dm_failed = False
+                    return
+                except discord.NotFound:
+                    message_id = 0
+                except discord.DiscordException:
+                    if attempt >= 2:
+                        participant.dm_failed = True
+                        return
+                    await asyncio.sleep(0.35 * (attempt + 1))
+
+    await asyncio.gather(
+        *(refresh_one(item) for item in simulation.session.participants.values())
+    )
 
 
 async def _apply_simulation_action(
@@ -779,32 +928,44 @@ async def _apply_simulation_action(
     if interaction_message is not None:
         simulation.control_message = interaction_message
     await interaction.response.edit_message(
+        content="🧪 **ИЗОЛИРОВАННЫЙ ТЕСТ** · действия не изменяют рабочий консенсус",
         embed=consensus_simulation_embed(simulation),
         view=None if simulation.finished else ConsensusSimulationView(simulation),
         allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
     )
+    guild = interaction.client.get_guild(simulation.guild_id)
+    if guild is not None:
+        await _refresh_simulation_participant_dms(simulation, guild)
 
 
 async def refresh_consensus_simulation_projection(
     simulation: ConsensusSimulation,
+    *,
+    guild: discord.Guild | None = None,
 ) -> None:
     """Converge the original Discord simulator card after a web action."""
 
     message = simulation.control_message
-    if message is None:
-        return
-    try:
-        await message.edit(
-            embed=consensus_simulation_embed(simulation),
-            view=None if simulation.finished else ConsensusSimulationView(simulation),
-            allowed_mentions=discord.AllowedMentions(
-                users=True,
-                roles=False,
-                everyone=False,
-            ),
-        )
-    except discord.DiscordException:
-        return
+    if message is not None:
+        try:
+            await message.edit(
+                content=(
+                    "🧪 **ИЗОЛИРОВАННЫЙ ТЕСТ** · действия не изменяют рабочий консенсус"
+                ),
+                embed=consensus_simulation_embed(simulation),
+                view=None if simulation.finished else ConsensusSimulationView(simulation),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False,
+                ),
+            )
+        except discord.DiscordException:
+            pass
+        if guild is None:
+            guild = getattr(message, "guild", None)
+    if guild is not None:
+        await _refresh_simulation_participant_dms(simulation, guild)
 
 
 class SimulationScenarioSelect(discord.ui.Select):
@@ -834,14 +995,211 @@ class SimulationScenarioSelect(discord.ui.Select):
         )
 
 
+class SimulationDiscussionTypeView(discord.ui.View):
+    def __init__(self, simulation: ConsensusSimulation, user_id: int) -> None:
+        super().__init__(timeout=300)
+        self.simulation = simulation
+        self.user_id = int(user_id)
+        self.bill_id = int((simulation.session.current_bill or {}).get("id") or 0)
+        for label in ("Правовая", "Фактическая", "Процедурная", "Иная"):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary)
+            button.callback = self._callback(label)  # type: ignore[assignment]
+            self.add_item(button)
+
+    def _callback(self, label: str):
+        async def callback(interaction: discord.Interaction) -> None:
+            current = get_consensus_simulation(self.simulation.guild_id)
+            if (
+                current is not self.simulation
+                or interaction.user.id != self.user_id
+                or self.simulation.session.stage != "discussion_type"
+                or int((self.simulation.session.current_bill or {}).get("id") or 0)
+                != self.bill_id
+            ):
+                await interaction.response.send_message(
+                    "Это меню относится к уже завершённому этапу теста.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer()
+            try:
+                self.simulation.choose_discussion(label)
+            except ConsensusStateError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
+            guild = interaction.client.get_guild(self.simulation.guild_id)
+            await refresh_consensus_simulation_projection(
+                self.simulation,
+                guild=guild,
+            )
+            await interaction.followup.send(
+                f"Дискуссия типа **{label}** начата в тестовом контуре.",
+                ephemeral=True,
+            )
+
+        return callback
+
+
+class SimulationVetoConfirmView(discord.ui.View):
+    def __init__(self, simulation: ConsensusSimulation, user_id: int) -> None:
+        super().__init__(timeout=90)
+        self.simulation = simulation
+        self.user_id = int(user_id)
+        self.bill_id = int((simulation.session.current_bill or {}).get("id") or 0)
+
+    @discord.ui.button(label="Подтвердить вето", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        current_bill_id = int(
+            (self.simulation.session.current_bill or {}).get("id") or 0
+        )
+        if (
+            interaction.user.id != self.user_id
+            or get_consensus_simulation(self.simulation.guild_id) is not self.simulation
+            or self.simulation.session.stage != "voting"
+            or current_bill_id != self.bill_id
+        ):
+            await interaction.response.send_message(
+                "Подтверждение устарело.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        try:
+            self.simulation.veto(self.user_id)
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.simulation.guild_id)
+        await refresh_consensus_simulation_projection(self.simulation, guild=guild)
+        await interaction.edit_original_response(content="Учебное вето применено.", view=None)
+
+
+class SimulationParticipantView(discord.ui.View):
+    """Participant controls with the same stage and generation fences as live."""
+
+    def __init__(self, simulation: ConsensusSimulation, user_id: int) -> None:
+        super().__init__(timeout=3600)
+        self.simulation = simulation
+        self.user_id = int(user_id)
+        self.session_key = simulation.session.session_key
+        self.bill_id = int((simulation.session.current_bill or {}).get("id") or 0)
+        participant = simulation.session.participants.get(self.user_id)
+        if simulation.session.stage == "registration":
+            self._add("Подтвердить участие", discord.ButtonStyle.success, self._confirm)
+        elif simulation.session.stage == "voting" and participant is not None:
+            self._add("За", discord.ButtonStyle.success, lambda i: self._vote(i, "yes"))
+            self._add("Против", discord.ButtonStyle.danger, lambda i: self._vote(i, "no"))
+            self._add(
+                "Воздержаться",
+                discord.ButtonStyle.secondary,
+                lambda i: self._vote(i, "abstain"),
+            )
+            if not simulation.session.discussion_initiator_id:
+                self._add("Дискуссия", discord.ButtonStyle.secondary, self._discussion)
+            if participant.permanent:
+                self._add("Вето!", discord.ButtonStyle.danger, self._veto)
+
+    def _add(self, label: str, style: discord.ButtonStyle, callback: Any) -> None:
+        button = discord.ui.Button(label=label, style=style)
+        button.callback = callback
+        self.add_item(button)
+
+    def _current(self, *, stage: str) -> bool:
+        return bool(
+            get_consensus_simulation(self.simulation.guild_id) is self.simulation
+            and self.simulation.session.session_key == self.session_key
+            and self.simulation.session.stage == stage
+            and (
+                stage == "registration"
+                or int((self.simulation.session.current_bill or {}).get("id") or 0)
+                == self.bill_id
+            )
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Эта кнопка не для вас.", ephemeral=True)
+            return False
+        return True
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        if not self._current(stage="registration"):
+            await interaction.response.send_message("Регистрация уже завершена.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            self.simulation.confirm_participant(self.user_id)
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.simulation.guild_id)
+        await refresh_consensus_simulation_projection(self.simulation, guild=guild)
+
+    async def _vote(self, interaction: discord.Interaction, vote: str) -> None:
+        if not self._current(stage="voting"):
+            await interaction.response.send_message(
+                "Эта кнопка относится к уже завершённому проекту.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        try:
+            self.simulation.cast_participant_vote(self.user_id, vote)
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.simulation.guild_id)
+        await refresh_consensus_simulation_projection(self.simulation, guild=guild)
+
+    async def _discussion(self, interaction: discord.Interaction) -> None:
+        if not self._current(stage="voting"):
+            await interaction.response.send_message("Голосование уже изменилось.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            self.simulation.request_discussion(self.user_id)
+        except ConsensusStateError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.simulation.guild_id)
+        await refresh_consensus_simulation_projection(self.simulation, guild=guild)
+        await interaction.followup.send(
+            "Выберите тип дискуссии.",
+            view=SimulationDiscussionTypeView(self.simulation, self.user_id),
+            ephemeral=True,
+        )
+
+    async def _veto(self, interaction: discord.Interaction) -> None:
+        if not self._current(stage="voting"):
+            await interaction.response.send_message("Голосование уже изменилось.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Подтвердите применение права вето в изолированном тесте.",
+            view=SimulationVetoConfirmView(self.simulation, self.user_id),
+            ephemeral=True,
+        )
+
+
 class ConsensusSimulationView(discord.ui.View):
     def __init__(self, simulation: ConsensusSimulation) -> None:
         super().__init__(timeout=3600)
         self.simulation = simulation
         stage = simulation.session.stage
         if stage == "registration":
-            self._add("Следующее подтверждение", "✅", discord.ButtonStyle.secondary, simulation.confirm_next)
-            self._add("Подтвердить всех", "👥", discord.ButtonStyle.success, simulation.confirm_all)
+            if simulation.has_real_roster:
+                self._add(
+                    "Повторить приглашения",
+                    "📨",
+                    discord.ButtonStyle.secondary,
+                    simulation.resend_invitations,
+                )
+            else:
+                self._add("Следующее подтверждение", "✅", discord.ButtonStyle.secondary, simulation.confirm_next)
+                self._add("Подтвердить всех", "👥", discord.ButtonStyle.success, simulation.confirm_all)
             self._add(
                 "Начать голосование",
                 "🗳️",
@@ -868,14 +1226,22 @@ class ConsensusSimulationView(discord.ui.View):
                 discord.ButtonStyle.secondary,
                 lambda: simulation.cast_leader_vote("abstain"),
             )
-            self._add("Ход фейка", "🤖", discord.ButtonStyle.secondary, simulation.cast_next_fake_vote)
-            self.add_item(SimulationScenarioSelect(simulation))
+            if not simulation.has_real_roster:
+                self._add("Ход фейка", "🤖", discord.ButtonStyle.secondary, simulation.cast_next_fake_vote)
+                self.add_item(SimulationScenarioSelect(simulation))
             self._add("Дискуссия", "💬", discord.ButtonStyle.secondary, simulation.request_discussion, row=2)
             self._add("Пауза", "⏸️", discord.ButtonStyle.secondary, simulation.pause, row=2)
-            self._add("Таймер 5 мин", "⏱️", discord.ButtonStyle.secondary, simulation.set_timer, row=2)
-            self._add("Таймер истёк", "⌛", discord.ButtonStyle.secondary, simulation.timer_expired, row=2)
-            self._add("Завершить сейчас", "📌", discord.ButtonStyle.primary, simulation.finalize, row=2)
-            self._add("Учебное вето", "🛑", discord.ButtonStyle.danger, simulation.veto, row=3)
+            self._add("Завершить голосование", "📌", discord.ButtonStyle.secondary, simulation.finalize, row=2)
+            for label, seconds in TVRS_TIMER_OPTIONS:
+                self._add(
+                    f"Таймер {label}",
+                    "⏱️",
+                    discord.ButtonStyle.secondary,
+                    lambda selected=seconds: simulation.set_timer(selected),
+                    row=3,
+                )
+            if simulation.session.participants[simulation.leader_id].permanent:
+                self._add("Вето!", "🛑", discord.ButtonStyle.danger, simulation.veto, row=4)
         elif stage == "discussion_type":
             for label in ("Правовая", "Фактическая", "Процедурная", "Иная"):
                 self._add(
@@ -974,6 +1340,159 @@ class ConsensusSimulationView(discord.ui.View):
         return True
 
 
+def _simulation_participant_from_member(member: discord.Member) -> LiveParticipant | None:
+    kind = participant_kind(member)
+    if kind is None or member.bot:
+        return None
+    voting_block = (
+        ("first", "second", "third")[TVRS_COCHAIR_IDS.index(member.id)]
+        if member.id in TVRS_COCHAIR_IDS[:3]
+        else None
+    )
+    return LiveParticipant(
+        user_id=member.id,
+        display_name=member.display_name,
+        mention=member.mention,
+        kind=kind,  # type: ignore[arg-type]
+        permanent=member.id == TVRS_PERMANENT_CHAIR_ID,
+        voting_block=voting_block,  # type: ignore[arg-type]
+    )
+
+
+class SimulationRosterSelect(discord.ui.UserSelect):
+    def __init__(self, setup_view: "ConsensusSimulationSetupView") -> None:
+        self.setup_view = setup_view
+        super().__init__(
+            placeholder="Выберите сенаторов и председателей для теста",
+            min_values=1,
+            max_values=20,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not await self.setup_view.interaction_check(interaction):
+            return
+        selected: list[LiveParticipant] = []
+        rejected: list[str] = []
+        for value in self.values:
+            member = value if isinstance(value, discord.Member) else None
+            if member is None and interaction.guild is not None:
+                member = interaction.guild.get_member(int(value.id))
+            if member is None or member.id == self.setup_view.leader_id:
+                continue
+            participant = _simulation_participant_from_member(member)
+            if participant is None:
+                rejected.append(getattr(value, "display_name", str(value)))
+            else:
+                selected.append(participant)
+        self.setup_view.selected = {
+            participant.user_id: participant for participant in selected
+        }
+        chosen = ", ".join(item.mention for item in selected) or "никого"
+        warning = (
+            "\nНе включены (нет роли консенсуса): " + ", ".join(rejected)
+            if rejected
+            else ""
+        )
+        await interaction.response.edit_message(
+            content=(
+                f"**Тестовый состав:** {chosen}{warning}\n"
+                "Нужно выбрать минимум двух участников кроме ведущего. "
+                "После запуска каждому придёт настоящее тестовое ЛС."
+            ),
+            view=self.setup_view,
+        )
+
+
+class ConsensusSimulationSetupView(discord.ui.View):
+    def __init__(self, leader_id: int) -> None:
+        super().__init__(timeout=600)
+        self.leader_id = int(leader_id)
+        self.selected: dict[int, LiveParticipant] = {}
+        self.add_item(SimulationRosterSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.leader_id:
+            await interaction.response.send_message(
+                "Настроить этот тест может только его ведущий.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="Запустить точную симуляцию",
+        emoji="🧪",
+        style=discord.ButtonStyle.success,
+        row=1,
+    )
+    async def launch(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "Симуляция запускается только в канале сервера.",
+                ephemeral=True,
+            )
+            return
+        if len(self.selected) < 2:
+            await interaction.response.send_message(
+                "Выберите минимум двух сенаторов или председателей кроме ведущего.",
+                ephemeral=True,
+            )
+            return
+        current = get_consensus_simulation(interaction.guild.id)
+        if current is not None and not current.finished:
+            await interaction.response.send_message(
+                "На сервере уже идёт симуляция. Завершите её перед запуском новой.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        simulation = ConsensusSimulation(
+            guild_id=interaction.guild.id,
+            leader_id=interaction.user.id,
+            leader_display=getattr(
+                interaction.user,
+                "display_name",
+                str(interaction.user),
+            ),
+            invited_participants=tuple(self.selected.values()),
+        )
+        register_consensus_simulation(simulation)
+        message = await interaction.channel.send(
+            content=(
+                "🧪 **ИЗОЛИРОВАННЫЙ ТЕСТ** · интерфейс, стадии и расчёт "
+                "совпадают с рабочим консенсусом; база не изменяется"
+            ),
+            embed=consensus_simulation_embed(simulation),
+            view=ConsensusSimulationView(simulation),
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False,
+            ),
+        )
+        simulation.control_message = message
+        await _refresh_simulation_participant_dms(simulation, interaction.guild)
+        unavailable = [
+            participant.mention
+            for participant in simulation.session.participants.values()
+            if participant.dm_failed
+        ]
+        suffix = (
+            " ЛС недоступны: " + ", ".join(unavailable)
+            if unavailable
+            else " Все приглашения доставлены."
+        )
+        await interaction.edit_original_response(
+            content=f"Точная симуляция запущена.{suffix}",
+            view=None,
+        )
+
+
 async def start_consensus_simulation(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message(
@@ -988,28 +1507,24 @@ async def start_consensus_simulation(interaction: discord.Interaction) -> None:
             ephemeral=True,
         )
         return
-    simulation = ConsensusSimulation(
-        guild_id=interaction.guild.id,
-        leader_id=interaction.user.id,
-        leader_display=getattr(interaction.user, "display_name", str(interaction.user)),
-    )
-    register_consensus_simulation(simulation)
     await interaction.response.send_message(
-        embed=consensus_simulation_embed(simulation),
-        view=ConsensusSimulationView(simulation),
-        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        content=(
+            "Выберите реальных сенаторов и председателей для теста. Симулятор "
+            "использует производственный координатор, правила 25/25/25/25 и те же "
+            "личные панели, но хранит сессию отдельно от рабочей базы."
+        ),
+        view=ConsensusSimulationSetupView(interaction.user.id),
+        ephemeral=True,
     )
-    try:
-        simulation.control_message = await interaction.original_response()
-    except discord.DiscordException:
-        pass
 
 
 __all__ = [
     "ConsensusSimulation",
+    "ConsensusSimulationSetupView",
     "ConsensusSimulationView",
     "InMemoryConsensusRepository",
     "SimulationScenarioSelect",
+    "SimulationParticipantView",
     "clear_consensus_simulation",
     "consensus_simulation_embed",
     "get_consensus_simulation",

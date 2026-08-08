@@ -29,6 +29,8 @@ from modules.technical_log import log_technical_event
 from modules.error_inbox import setup_error_inbox_runtime
 from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
+from modules.reliability import setup_reliability
+from persistence.database_guard import create_database_backup
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -987,6 +989,8 @@ boot_module("Consensus LAN Panel")
 setup_consensus_web(bot)
 boot_module("Operations Center")
 setup_operations(bot)
+boot_module("Production Reliability")
+setup_reliability(bot)
 boot_module("TVRS Consensus")
 setup_tvrs(bot, remember_command_activity)
 setup_links(bot)
@@ -1013,6 +1017,13 @@ setup_zigmund(bot, remember_command_activity)
 
 if __name__ == "__main__":
     runtime_token = require_discord_token()
+    if storage.DATABASE_FILE.exists() and storage.DATABASE_FILE.stat().st_size > 0:
+        boot_line("[DB] Creating validated startup recovery point ...")
+        startup_backup = create_database_backup(
+            "startup",
+            note="Automatic recovery point before startup migrations",
+        )
+        boot_line(f"[DB] Recovery point: {startup_backup['name']}")
     boot_line("[DB] SQLite migration check ...")
     storage.init_db()
     boot_line(f"[DB] Ready: {storage.DATABASE_FILE}")

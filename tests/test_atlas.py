@@ -1,3 +1,5 @@
+import asyncio
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,9 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import storage
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
+from docx import Document
 from modules.atlas_ai import AtlasAIError, _chunks, atlas_ensure_collection, atlas_search
+from modules.atlas_knowledge import AtlasKnowledgeFileError, atlas_extract_knowledge_file
 from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
@@ -116,6 +120,37 @@ class AtlasRepositoryTests(unittest.TestCase):
                 content="Этот пользователь не состоит в выбранной организации Atlas.",
             )
 
+    def test_knowledge_is_separated_by_server_and_faction(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        text = "Один и тот же общий текст может действовать в разных государственных структурах."
+        lspd = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="LSPD",
+            content=text,
+            server_code="phoenix-15",
+            faction_code="lspd",
+        )
+        gov = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="GOV",
+            content=text,
+            server_code="phoenix-15",
+            faction_code="gov",
+        )
+
+        self.assertNotEqual(lspd["id"], gov["id"])
+        self.assertEqual(
+            [item["id"] for item in atlas_repository.atlas_knowledge_sources(
+                organization_id, server_code="phoenix-15", faction_code="gov"
+            )],
+            [gov["id"]],
+        )
+        with self.assertRaisesRegex(ValueError, "atlas_faction_invalid"):
+            atlas_repository.atlas_normalize_scope("phoenix-15", "unknown")
+
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     def test_chunker_is_bounded_and_preserves_overlap(self) -> None:
@@ -147,6 +182,26 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result[0]["source_id"], 4)
 
+    async def test_search_applies_server_and_faction_filters(self) -> None:
+        with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
+            "modules.atlas_ai._json_request", AsyncMock(return_value={"result": {"points": []}})
+        ) as request:
+            await atlas_search(
+                77,
+                "порядок задержания",
+                server_code="phoenix-15",
+                faction_code="lspd",
+            )
+
+        self.assertEqual(
+            request.await_args.kwargs["payload"]["filter"]["must"],
+            [
+                {"key": "organization_id", "match": {"value": 77}},
+                {"key": "server_code", "match": {"value": "phoenix-15"}},
+                {"key": "faction_code", "match": {"value": "lspd"}},
+            ],
+        )
+
     async def test_collection_is_created_only_when_missing(self) -> None:
         missing = AtlasAIError("upstream_not_found", "missing")
         request = AsyncMock(side_effect=[missing, {"result": True}])
@@ -159,6 +214,30 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         with patch("modules.atlas_ai._json_request", denied), self.assertRaises(AtlasAIError):
             await atlas_ensure_collection(1536)
         self.assertEqual(denied.await_count, 1)
+
+
+class AtlasKnowledgeFileTests(unittest.TestCase):
+    def test_plain_text_and_docx_are_extracted(self) -> None:
+        plain = atlas_extract_knowledge_file(
+            "Правила.md",
+            "Проверенный материал для базы знаний Atlas длиной больше двадцати символов.".encode(),
+        )
+        document = Document()
+        document.add_heading("Устав GOV", level=1)
+        document.add_paragraph("Проверенный порядок работы государственного органа.")
+        stream = io.BytesIO()
+        document.save(stream)
+        docx = atlas_extract_knowledge_file("Устав.docx", stream.getvalue())
+
+        self.assertEqual(plain["title"], "Правила")
+        self.assertIn("Устав GOV", docx["content"])
+        self.assertIn("государственного органа", docx["content"])
+
+    def test_unsupported_and_empty_files_are_rejected(self) -> None:
+        with self.assertRaisesRegex(AtlasKnowledgeFileError, "Поддерживаются"):
+            atlas_extract_knowledge_file("archive.zip", b"content")
+        with self.assertRaisesRegex(AtlasKnowledgeFileError, "пуст"):
+            atlas_extract_knowledge_file("empty.txt", b"")
 
 
 class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
@@ -210,8 +289,77 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(payload["preview"])
+        self.assertEqual(payload["catalog"]["servers"][0]["label"], "Phoenix (15)")
+        self.assertEqual(
+            {item["code"] for item in payload["catalog"]["factions"]},
+            {"lspd", "gov"},
+        )
         self.assertNotIn("documents", payload)
         self.assertEqual(forbidden.status, 403)
+
+    async def test_admin_can_upload_scoped_knowledge_file(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-web-test.db"
+        storage.init_db()
+        member = SimpleNamespace(
+            id=42,
+            display_name="Администратор",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=member,
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application(client_max_size=10 * 1024 * 1024)
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        form = FormData()
+        form.add_field("server_code", "phoenix-15")
+        form.add_field("faction_code", "gov")
+        form.add_field("source_kind", "regulation")
+        form.add_field(
+            "file",
+            "Проверенный регламент Government для Atlas AI длиной больше двадцати символов.".encode(),
+            filename="Регламент GOV.txt",
+            content_type="text/plain",
+        )
+        try:
+            with patch("modules.atlas_web.atlas_index_source", AsyncMock(return_value=["point-1"])):
+                async with TestClient(TestServer(app)) as client:
+                    uploaded = await client.post(
+                        "/api/atlas/knowledge/upload",
+                        data=form,
+                        headers={"X-CSRF-Token": "admin-csrf", "X-Idempotency-Key": "upload-1"},
+                    )
+                    self.assertEqual(uploaded.status, 202, await uploaded.text())
+                    await asyncio.sleep(0.05)
+                    listed = await client.get(
+                        "/api/atlas/knowledge?server_code=phoenix-15&faction_code=gov"
+                    )
+                    payload = await listed.json()
+            self.assertEqual(payload["items"][0]["faction_code"], "gov")
+            self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
+            self.assertEqual(payload["items"][0]["status"], "indexed")
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
 
 
 if __name__ == "__main__":

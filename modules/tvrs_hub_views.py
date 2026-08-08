@@ -515,6 +515,15 @@ class TVRSMainPanelView(TVRSBaseView):
         )
         primary.callback = self.primary_action
         self.add_item(primary)
+        if self.has_chair_access:
+            schedule = discord.ui.Button(
+                label="Планирование",
+                emoji="🗓️",
+                style=discord.ButtonStyle.secondary,
+                row=0,
+            )
+            schedule.callback = self.schedule
+            self.add_item(schedule)
         if session is not None and not session.finished and access.primary_action != "observe":
             observer = discord.ui.Button(
                 label="Режим наблюдения",
@@ -603,6 +612,11 @@ class TVRSMainPanelView(TVRSBaseView):
             "Активного заседания сейчас нет.",
             ephemeral=True,
         )
+
+    async def schedule(self, interaction: discord.Interaction) -> None:
+        from modules.consensus_schedule import open_consensus_schedule
+
+        await open_consensus_schedule(interaction)
 
     async def open_active_consensus(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None

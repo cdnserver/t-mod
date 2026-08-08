@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any
 
+from modules.atlas_catalog import atlas_catalog, atlas_normalize_scope
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
@@ -347,6 +348,9 @@ def atlas_add_knowledge(
     content: str,
     source_kind: str = "memo",
     source_url: str | None = None,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    original_filename: str | None = None,
 ) -> dict[str, Any]:
     clean_title = str(title or "").strip()[:180]
     clean_content = str(content or "").strip()[:250000]
@@ -355,7 +359,11 @@ def atlas_add_knowledge(
     clean_kind = str(source_kind or "memo").strip().lower()
     if clean_kind not in {"document", "forum", "memo", "regulation", "manual", "url"}:
         clean_kind = "memo"
-    checksum = hashlib.sha256(clean_content.encode("utf-8")).hexdigest()
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_filename = str(original_filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1][:240] or None
+    checksum = hashlib.sha256(
+        f"{clean_server}\0{clean_faction}\0{clean_content}".encode("utf-8")
+    ).hexdigest()
     now = utc_now_iso()
     with _db_lock, connect() as con:
         membership = con.execute(
@@ -370,23 +378,28 @@ def atlas_add_knowledge(
         con.execute(
             """
             INSERT INTO atlas_knowledge_sources(
-                organization_id, title, source_kind, source_url, content_text,
-                checksum, created_by_id, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                organization_id, server_code, faction_code, title, source_kind,
+                source_url, content_text, checksum, original_filename,
+                created_by_id, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(organization_id, checksum) DO UPDATE SET
                 title = excluded.title,
                 source_url = excluded.source_url,
+                original_filename = excluded.original_filename,
                 status = 'pending',
                 last_error = NULL,
                 updated_at = excluded.updated_at
             """,
             (
                 int(organization_id),
+                clean_server,
+                clean_faction,
                 clean_title,
                 clean_kind,
                 str(source_url or "").strip()[:1000] or None,
                 clean_content,
                 checksum,
+                clean_filename,
                 int(user_id),
                 now,
                 now,
@@ -416,6 +429,39 @@ def atlas_add_knowledge(
         )
         con.commit()
     return _row(row)
+
+
+def atlas_knowledge_sources(
+    organization_id: int,
+    *,
+    server_code: str | None = None,
+    faction_code: str | None = None,
+    limit: int = 80,
+) -> list[dict[str, Any]]:
+    clauses = ["organization_id = ?", "status != 'archived'"]
+    params: list[Any] = [int(organization_id)]
+    if server_code is not None or faction_code is not None:
+        clean_server, clean_faction = atlas_normalize_scope(
+            server_code or "phoenix-15",
+            faction_code or "lspd",
+        )
+        clauses.extend(["server_code = ?", "faction_code = ?"])
+        params.extend([clean_server, clean_faction])
+    params.append(max(1, min(200, int(limit))))
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"""
+            SELECT id, organization_id, server_code, faction_code, title,
+                   source_kind, source_url, checksum, status, original_filename,
+                   metadata_json, created_by_id, indexed_at, last_error,
+                   created_at, updated_at
+            FROM atlas_knowledge_sources
+            WHERE {' AND '.join(clauses)}
+            ORDER BY id DESC LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_row(row) for row in rows]
 
 
 def atlas_mark_knowledge_indexed(
@@ -525,6 +571,8 @@ def atlas_dashboard(guild_id: int, user_id: int, display_name: str) -> dict[str,
         "counts": dict(counts),
         "templates": atlas_templates(organization_id),
         "documents": atlas_documents(organization_id, limit=12),
+        "knowledge_sources": atlas_knowledge_sources(organization_id, limit=40),
+        "catalog": atlas_catalog(),
     }
 
 

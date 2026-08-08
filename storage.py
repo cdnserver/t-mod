@@ -20,6 +20,7 @@ from persistence import profile_repository as _profile_repository
 from persistence import voice_control_repository as _voice_control_repository
 from persistence import bill_workspace_repository as _bill_workspace_repository
 from persistence import broadcast_repository as _broadcast_repository
+from persistence import consensus_schedule_repository as _consensus_schedule_repository
 from persistence import web_auth_repository as _web_auth_repository
 from persistence import reactor_repository as _reactor_repository
 from persistence import error_repository as _error_repository
@@ -41,6 +42,7 @@ _PERSISTENCE_MODULES = (
     _voice_control_repository,
     _bill_workspace_repository,
     _broadcast_repository,
+    _consensus_schedule_repository,
     _web_auth_repository,
     _reactor_repository,
     _error_repository,

@@ -3,9 +3,11 @@ import asyncio
 import unittest
 from pathlib import Path
 
+from modules.consensus_core import LiveParticipant
 from modules.consensus_v3 import CONSENSUS_ENGINE_VERSION
 from modules.consensus_simulator import (
     ConsensusSimulation,
+    SimulationParticipantView,
     ConsensusSimulationView,
     InMemoryConsensusRepository,
     consensus_simulation_embed,
@@ -122,6 +124,41 @@ class ConsensusSimulationTests(unittest.TestCase):
                 "modules.consensus_repository",
             }
         )
+
+    def test_real_roster_uses_real_registration_and_ballot_controls(self) -> None:
+        invitees = (
+            LiveParticipant(201, "Сенатор Один", "<@201>", "senator"),
+            LiveParticipant(202, "Сенатор Два", "<@202>", "senator"),
+        )
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=100,
+            leader_display="Ведущий",
+            invited_participants=invitees,
+        )
+
+        self.assertEqual(set(simulation.session.participants), {100, 201, 202})
+        self.assertFalse(simulation.session.participants[100].permanent)
+        registration = ConsensusSimulationView(simulation)
+        labels = {str(item.label) for item in registration.children}
+        self.assertIn("Повторить приглашения", labels)
+        self.assertNotIn("Подтвердить всех", labels)
+
+        simulation.confirm_participant(201)
+        simulation.confirm_participant(202)
+        self.assertTrue(simulation.session.quorum_ready())
+        simulation.begin_voting()
+        preview = SimulationParticipantView(simulation, 201)
+        self.assertFalse(preview.children)
+        simulation.open_voting()
+        ballot = SimulationParticipantView(simulation, 201)
+        ballot_labels = {str(item.label) for item in ballot.children}
+        self.assertEqual(
+            {"За", "Против", "Воздержаться", "Дискуссия"},
+            ballot_labels,
+        )
+        simulation.cast_participant_vote(201, "yes")
+        self.assertEqual(simulation.session.votes[201], "yes")
 
     def test_every_stage_fits_discord_component_and_embed_limits(self) -> None:
         async def inspect() -> None:

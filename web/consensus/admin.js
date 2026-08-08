@@ -170,6 +170,8 @@ const appState = {
   loadedSections: new Set(),
   detailRoute: null,
   openingRoute: false,
+  craftRecipes: [],
+  operation: null,
 };
 
 function byId(id) {
@@ -528,6 +530,123 @@ async function postJSON(path, body) {
   }
   if (!response.ok) throw new ApiError(response.status, payload);
   return payload;
+}
+
+function operationInput(field) {
+  const label = node("label", { className: field.wide ? "wide" : "" });
+  label.append(node("span", { text: field.label }));
+  let input;
+  if (field.type === "select") {
+    input = node("select");
+    input.append(
+      ...(field.options || []).map((option) =>
+        node("option", {
+          value: option.value,
+          text: option.label,
+        }),
+      ),
+    );
+  } else if (field.type === "textarea") {
+    input = node("textarea");
+  } else {
+    input = node("input", { type: field.type || "text" });
+  }
+  input.name = field.name;
+  if (field.value !== undefined && field.value !== null) input.value = String(field.value);
+  if (field.placeholder) input.placeholder = field.placeholder;
+  if (field.required) input.required = true;
+  if (field.min !== undefined) input.min = String(field.min);
+  if (field.max !== undefined) input.max = String(field.max);
+  if (field.step !== undefined) input.step = String(field.step);
+  if (field.maxLength) input.maxLength = Number(field.maxLength);
+  label.append(input);
+  return label;
+}
+
+function selectedOperation() {
+  const state = appState.operation;
+  const action = byId("operation-action").value;
+  return state?.operations?.find((item) => item.id === action) || null;
+}
+
+function renderOperationFields() {
+  const operation = selectedOperation();
+  replaceChildren(
+    "operation-fields",
+    operation ? (operation.fields || []).map(operationInput) : [],
+  );
+  const warning = byId("operation-warning");
+  warning.textContent = operation?.warning || "Операция будет записана в универсальный аудит T-Mod.";
+  warning.classList.toggle("danger", operation?.tone === "danger");
+  byId("operation-submit").textContent = operation?.accept || "Проверить и выполнить";
+}
+
+function openOperation(config) {
+  appState.operation = config;
+  setText("operation-eyebrow", config.eyebrow || "CONTROLLED OPERATION");
+  setText("operation-title", config.title || "Управление");
+  setText("operation-mark", config.mark || "◇");
+  setText("operation-context-title", config.contextTitle || "Объект T-Mod");
+  setText("operation-context-meta", config.contextMeta || "Единое состояние Discord и веб");
+  const select = byId("operation-action");
+  select.replaceChildren(
+    ...config.operations.map((item) => node("option", { value: item.id, text: item.label })),
+  );
+  select.value = config.defaultAction || config.operations[0]?.id || "";
+  renderOperationFields();
+  const dialog = byId("operation-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeOperation() {
+  const dialog = byId("operation-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  appState.operation = null;
+}
+
+async function submitOperation() {
+  const state = appState.operation;
+  const operation = selectedOperation();
+  if (!state || !operation) return;
+  const values = formValues("operation-form");
+  let body;
+  try {
+    body = operation.build ? operation.build(values) : { action: operation.id, ...values };
+  } catch (error) {
+    showToast(error.message || "Проверьте введённые значения.", true);
+    return;
+  }
+  const approved = window.TModReactor?.confirm
+    ? await window.TModReactor.confirm({
+        title: operation.confirmTitle || operation.label,
+        message: operation.confirmMessage || "T-Mod проверит права, состояние объекта и запишет действие в аудит.",
+        accept: operation.accept || "Выполнить",
+        tone: operation.tone || "warning",
+      })
+    : globalThis.confirm(operation.confirmTitle || operation.label);
+  if (!approved) return;
+  byId("operation-submit").disabled = true;
+  setLoading(true);
+  try {
+    const result = await postJSON(state.endpoint, { ...body, confirmed: true });
+    closeOperation();
+    showToast(result.message || "Операция выполнена.", false, {
+      title: "Состояние синхронизировано",
+      icon: "✓",
+      sound: "success",
+    });
+    if (result.projection_warning) {
+      showToast("Операция сохранена, но карточка Discord обновится повторно через рабочий цикл.", false);
+    }
+    await state.reload?.();
+  } catch (error) {
+    handleError(error);
+  } finally {
+    byId("operation-submit").disabled = false;
+    setLoading(false);
+  }
 }
 
 function buildQuery(values) {
@@ -997,7 +1116,7 @@ function interactiveRow(item, title, cells, route = null) {
   const row = node("tr", {}, cells);
   row.tabIndex = 0;
   row.addEventListener("click", (event) => {
-    if (event.target.closest("a")) return;
+    if (event.target.closest("a, button")) return;
     openDetails(title, item, route);
   });
   row.addEventListener("keydown", (event) => {
@@ -1178,7 +1297,19 @@ function renderFinance(data) {
         linkedPlan ? `связано с крафтом #${linkedPlan}` : item.report_date || "",
       ),
       tableCell(item.actor_display || `ID ${item.actor_id}`, `ID ${item.actor_id}`),
-      tableCell(item.game_code || "—", item.is_undone ? "операция отменена" : ""),
+      node("td", {}, [
+        node("div", { text: item.game_code || "—" }),
+        !item.is_undone && item.event_kind !== "undo"
+          ? (() => {
+              const button = node("button", { className: "plan-control-button", type: "button", text: "Отменить" });
+              button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                openFinanceOperation("undo", item);
+              });
+              return button;
+            })()
+          : node("small", { text: item.is_undone ? "операция отменена" : "" }),
+      ]),
     ], recordRoute("treasury", "finance", item.id));
   });
   if (rows.length) replaceChildren("finance-table-body", rows);
@@ -1209,6 +1340,338 @@ async function loadFinance(offset = appState.offsets.finance) {
   } finally {
     setLoading(false);
   }
+}
+
+function openFinanceOperation(defaultAction = "deposit", event = null) {
+  openOperation({
+    endpoint: "/api/admin/finance/command",
+    eyebrow: "TREASURY CONTROL",
+    title: "Операция с казной",
+    mark: "$",
+    contextTitle: event ? `Финансовая запись #${event.id}` : "Казна Товарищества",
+    contextMeta: "Баланс пересчитывается транзакционно · уведомления сохраняются",
+    defaultAction,
+    reload: () => loadFinance(appState.offsets.finance),
+    operations: [
+      {
+        id: "deposit",
+        label: "Записать поступление",
+        fields: [
+          { name: "amount", label: "Сумма", type: "number", min: 1, required: true },
+          { name: "game_code", label: "Игровой код", placeholder: "ABCD", maxLength: 4, required: true },
+          { name: "reason", label: "Причина поступления", type: "textarea", wide: true, required: true },
+        ],
+        confirmTitle: "Записать поступление в казну?",
+        accept: "Записать поступление",
+        build: (values) => ({ action: "deposit", amount: Number(values.amount), game_code: values.game_code, reason: values.reason }),
+      },
+      {
+        id: "withdraw",
+        label: "Записать расход",
+        fields: [
+          { name: "amount", label: "Сумма", type: "number", min: 1, required: true },
+          { name: "game_code", label: "Игровой код", placeholder: "ABCD", maxLength: 4, required: true },
+          { name: "reason", label: "Причина расхода", type: "textarea", wide: true, required: true },
+        ],
+        confirmTitle: "Записать расход казны?",
+        accept: "Записать расход",
+        tone: "warning",
+        build: (values) => ({ action: "withdraw", amount: Number(values.amount), game_code: values.game_code, reason: values.reason }),
+      },
+      {
+        id: "snapshot",
+        label: "Зафиксировать контрольный остаток",
+        fields: [{ name: "amount", label: "Фактический остаток", type: "number", min: 0, required: true }],
+        warning: "Контрольная сверка становится новой расчётной точкой казны. Используйте фактическое значение из игры.",
+        confirmTitle: "Зафиксировать новый остаток казны?",
+        accept: "Зафиксировать",
+        build: (values) => ({ action: "snapshot", amount: Number(values.amount) }),
+      },
+      ...(event && !event.is_undone && event.event_kind !== "undo"
+        ? [{
+            id: "undo",
+            label: `Отменить операцию #${event.id}`,
+            fields: [],
+            warning: "Исходная запись не удаляется. Будет создана отдельная отмена, а баланс пересчитан по журналу.",
+            confirmTitle: `Отменить финансовую операцию #${event.id}?`,
+            accept: "Отменить операцию",
+            tone: "danger",
+            build: () => ({ action: "undo", event_id: Number(event.id) }),
+          }]
+        : []),
+    ],
+  });
+}
+
+function parseMaterialLines(value) {
+  const rows = String(value || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(.+?)\s*[:=]\s*(\d+)$/);
+      if (!match) throw new Error("Материалы указываются построчно: Название = количество.");
+      return { material_name: match[1].trim(), quantity_per_unit: Number(match[2]) };
+    });
+  if (!rows.length) throw new Error("Добавьте хотя бы один материал.");
+  return rows;
+}
+
+function openCraftPlanCreate() {
+  const activeRecipes = appState.craftRecipes.filter((item) => item.active);
+  if (!activeRecipes.length) {
+    showToast("Сначала создайте активный рецепт.", true);
+    return;
+  }
+  openOperation({
+    endpoint: "/api/admin/crafts/command",
+    eyebrow: "PRODUCTION CONTROL",
+    title: "Новый производственный план",
+    mark: "＋",
+    contextTitle: "Мастерская T-Mod",
+    contextMeta: "План, карточка Discord и журнал создаются как одна операция",
+    reload: () => loadCraft(0),
+    operations: [{
+      id: "create_plan",
+      label: "Создать план из рецепта",
+      fields: [
+        {
+          name: "recipe_id",
+          label: "Рецепт",
+          type: "select",
+          options: activeRecipes.map((item) => ({ value: item.id, label: `#${item.id} · ${item.product_name}` })),
+          required: true,
+        },
+        { name: "attempts_total", label: "Количество попыток", type: "number", min: 1, required: true },
+        { name: "responsible_id", label: "Discord ID ответственного", placeholder: "902235631952998410", required: true, wide: true },
+      ],
+      confirmTitle: "Создать производственный план?",
+      accept: "Создать и опубликовать",
+      build: (values) => ({
+        action: "create_plan",
+        recipe_id: Number(values.recipe_id),
+        attempts_total: Number(values.attempts_total),
+        responsible_id: values.responsible_id,
+      }),
+    }],
+  });
+}
+
+function openCraftRecipeCreate() {
+  openOperation({
+    endpoint: "/api/admin/crafts/command",
+    eyebrow: "RECIPE ENGINEERING",
+    title: "Новый рецепт",
+    mark: "⌁",
+    contextTitle: "Версионируемый рецепт производства",
+    contextMeta: "Будущие планы сохранят собственный снимок этой версии",
+    reload: () => loadCraft(0),
+    operations: [{
+      id: "create_recipe",
+      label: "Создать рецепт",
+      fields: [
+        { name: "product_name", label: "Название продукта", required: true, wide: true },
+        { name: "treasury_cost_per_unit", label: "Расход казны на единицу", type: "number", min: 0, value: 0, required: true },
+        { name: "duration_minutes_per_unit", label: "Минут на единицу", type: "number", min: 1, required: true },
+        { name: "max_batch_size", label: "Максимум в одном цикле", type: "number", min: 1, required: true },
+        { name: "materials", label: "Материалы на единицу", type: "textarea", placeholder: "Железо = 50\nМедь = 20", required: true, wide: true },
+      ],
+      confirmTitle: "Создать новый рецепт?",
+      accept: "Создать рецепт",
+      build: (values) => ({
+        action: "create_recipe",
+        product_name: values.product_name,
+        treasury_cost_per_unit: Number(values.treasury_cost_per_unit),
+        duration_minutes_per_unit: Number(values.duration_minutes_per_unit),
+        max_batch_size: Number(values.max_batch_size),
+        materials: parseMaterialLines(values.materials),
+      }),
+    }],
+  });
+}
+
+function recipeMaterialText(recipe) {
+  return (recipe.materials || [])
+    .map((item) => `${item.material_name} = ${item.quantity_per_unit}`)
+    .join("\n");
+}
+
+function openCraftRecipeOperation(recipe) {
+  const sharedFields = [
+    { name: "product_name", label: "Название продукта", value: recipe.product_name, required: true, wide: true },
+    { name: "treasury_cost_per_unit", label: "Расход казны на единицу", type: "number", min: 0, value: recipe.treasury_cost_per_unit, required: true },
+    { name: "duration_minutes_per_unit", label: "Минут на единицу", type: "number", min: 1, value: recipe.duration_minutes_per_unit, required: true },
+    { name: "max_batch_size", label: "Максимум в цикле", type: "number", min: 1, value: recipe.max_batch_size, required: true },
+    { name: "materials", label: "Материалы на единицу", type: "textarea", value: recipeMaterialText(recipe), required: true, wide: true },
+  ];
+  openOperation({
+    endpoint: "/api/admin/crafts/command",
+    eyebrow: "RECIPE ENGINEERING",
+    title: `Рецепт #${recipe.id}`,
+    mark: "⌁",
+    contextTitle: recipe.product_name,
+    contextMeta: `версия ${recipe.version || 1} · ${recipe.active ? "активен" : "отключён"}`,
+    reload: () => loadCraft(appState.offsets.craft),
+    operations: [
+      {
+        id: "update_recipe",
+        label: "Создать новую версию",
+        fields: sharedFields,
+        warning: "Активные планы сохранят прежний снимок. Новые планы будут использовать обновлённую версию.",
+        confirmTitle: `Обновить рецепт «${recipe.product_name}»?`,
+        accept: "Сохранить новую версию",
+        build: (values) => ({
+          action: "update_recipe",
+          recipe_id: recipe.id,
+          product_name: values.product_name,
+          treasury_cost_per_unit: Number(values.treasury_cost_per_unit),
+          duration_minutes_per_unit: Number(values.duration_minutes_per_unit),
+          max_batch_size: Number(values.max_batch_size),
+          materials: parseMaterialLines(values.materials),
+        }),
+      },
+      {
+        id: "clone_recipe",
+        label: "Создать независимую копию",
+        fields: [{ name: "product_name", label: "Название копии", value: `${recipe.product_name} — копия`, required: true, wide: true }],
+        build: (values) => ({ action: "clone_recipe", recipe_id: recipe.id, product_name: values.product_name }),
+      },
+      {
+        id: "toggle_recipe",
+        label: recipe.active ? "Отключить рецепт" : "Включить рецепт",
+        fields: [],
+        warning: recipe.active
+          ? "Новые планы нельзя будет создавать из рецепта. Существующие планы продолжат работу."
+          : "Рецепт снова станет доступен для новых производственных планов.",
+        tone: recipe.active ? "danger" : "warning",
+        accept: recipe.active ? "Отключить" : "Включить",
+        build: () => ({ action: "toggle_recipe", recipe_id: recipe.id, active: !Boolean(recipe.active) }),
+      },
+    ],
+  });
+}
+
+function recipeControlCard(recipe) {
+  const button = node("button", {
+    className: "plan-control-button",
+    type: "button",
+    text: "Управлять",
+  });
+  button.addEventListener("click", () => openCraftRecipeOperation(recipe));
+  return node("article", { className: "recipe-control-card" }, [
+    node("header", {}, [
+      node("span", { text: `R-${String(recipe.id).padStart(3, "0")} · V${recipe.version || 1}` }),
+      statusPill(recipe.active ? "Активен" : "Отключён", recipe.active ? "" : "warning"),
+    ]),
+    node("h3", { text: recipe.product_name }),
+    node("p", { text: `${formatNumber(recipe.duration_minutes_per_unit)} мин/шт · цикл до ${formatNumber(recipe.max_batch_size)} · ${(recipe.materials || []).length} материалов` }),
+    node("footer", {}, [
+      node("span", { text: `казна ${formatMoney(recipe.treasury_cost_per_unit)} / шт.` }),
+      button,
+    ]),
+  ]);
+}
+
+function openCraftPlanOperation(plan) {
+  const operations = [];
+  if (["procurement", "crafting"].includes(plan.stage)) {
+    operations.push({
+      id: "purchase",
+      label: "Добавить закупку материала",
+      fields: [
+        { name: "plan_material_id", label: "Материал", type: "select", options: (plan.materials || []).map((item) => ({ value: item.id, label: `${item.name} · склад ${formatNumber(item.stock_quantity)}` })), required: true, wide: true },
+        { name: "quantity", label: "Закуплено единиц", type: "number", min: 1, required: true },
+        { name: "total_cost", label: "Общая стоимость", type: "number", min: 0, value: 0, required: true },
+        { name: "finance_code", label: "Финансовый код — необязательно", placeholder: "ABCD", maxLength: 4, wide: true },
+      ],
+      confirmTitle: `Записать закупку для плана #${plan.id}?`,
+      accept: "Записать закупку",
+      build: (values) => ({ action: "purchase", plan_id: plan.id, plan_material_id: Number(values.plan_material_id), quantity: Number(values.quantity), total_cost: Number(values.total_cost), finance_code: values.finance_code }),
+    });
+    operations.push({
+      id: "start_batch",
+      label: "Запустить цикл крафта",
+      fields: [{ name: "quantity", label: "Количество в цикле", type: "number", min: 1, required: true }],
+      warning: "T-Mod повторно проверит остаток плана, лимит цикла, материалы и расчётную казну.",
+      confirmTitle: `Запустить цикл плана #${plan.id}?`,
+      accept: "Запустить цикл",
+      build: (values) => ({ action: "start_batch", plan_id: plan.id, quantity: Number(values.quantity) }),
+    });
+  }
+  if (plan.stage === "awaiting_output") {
+    operations.push({
+      id: "final_output",
+      label: "Зафиксировать итог производства",
+      fields: [{ name: "product_quantity", label: "Получено готовых предметов", type: "number", min: 0, required: true }],
+      confirmTitle: `Зафиксировать итог плана #${plan.id}?`,
+      accept: "Сохранить итог",
+      build: (values) => ({ action: "final_output", plan_id: plan.id, product_quantity: Number(values.product_quantity) }),
+    });
+  }
+  if (["listing", "selling"].includes(plan.stage)) {
+    operations.push({
+      id: "estimated_price",
+      label: "Установить ожидаемую цену",
+      fields: [{ name: "unit_price", label: "Цена за единицу", type: "number", min: 1, value: plan.estimated_unit_price || "", required: true }],
+      build: (values) => ({ action: "estimated_price", plan_id: plan.id, unit_price: Number(values.unit_price) }),
+    });
+  }
+  if (plan.stage === "listing") {
+    operations.push({
+      id: "market_listing",
+      label: "Записать выставление на маркет",
+      fields: [{ name: "quantity", label: "Выставлено единиц", type: "number", min: 1, required: true }],
+      build: (values) => ({ action: "market_listing", plan_id: plan.id, quantity: Number(values.quantity) }),
+    });
+  }
+  if (plan.stage === "selling") {
+    operations.push({
+      id: "sale",
+      label: "Записать продажу",
+      fields: [
+        { name: "quantity", label: "Продано единиц", type: "number", min: 1, required: true },
+        { name: "total_amount", label: "Получено всего", type: "number", min: 1, required: true },
+      ],
+      confirmTitle: `Записать продажу плана #${plan.id}?`,
+      accept: "Записать продажу",
+      build: (values) => ({ action: "sale", plan_id: plan.id, quantity: Number(values.quantity), total_amount: Number(values.total_amount) }),
+    });
+  }
+  if (!["completed", "cancelled"].includes(plan.stage)) {
+    operations.push({
+      id: "inventory",
+      label: "Провести сверку склада",
+      fields: [
+        ...(plan.materials || []).map((item) => ({ name: `material_${item.id}`, label: item.name, type: "number", min: 0, value: item.stock_quantity, required: true })),
+        { name: "product_quantity", label: "Готовый продукт на складе", type: "number", min: 0, value: plan.product_stock || 0, required: true },
+        { name: "note", label: "Комментарий", type: "textarea", wide: true },
+      ],
+      warning: "Сверка заменяет расчётные остатки фактическими. Проверьте каждое значение перед подтверждением.",
+      confirmTitle: `Применить фактические остатки плана #${plan.id}?`,
+      accept: "Применить сверку",
+      build: (values) => ({
+        action: "inventory",
+        plan_id: plan.id,
+        material_quantities: Object.fromEntries((plan.materials || []).map((item) => [item.id, Number(values[`material_${item.id}`])])),
+        product_quantity: Number(values.product_quantity),
+        note: values.note,
+      }),
+    });
+  }
+  if (!operations.length) {
+    showToast("Завершённый план доступен только для просмотра и аудита.", true);
+    return;
+  }
+  openOperation({
+    endpoint: "/api/admin/crafts/command",
+    eyebrow: "PRODUCTION CONTROL",
+    title: `Управление планом #${plan.id}`,
+    mark: "◇",
+    contextTitle: plan.product_name,
+    contextMeta: `${craftStageLabels[plan.stage] || plan.stage} · ответственный ${plan.responsible?.name || "не назначен"}`,
+    reload: () => loadCraft(appState.offsets.craft),
+    operations,
+  });
 }
 
 function planCard(plan) {
@@ -1273,6 +1736,15 @@ function planCard(plan) {
           : `обновлён ${relativeTime(plan.updated_at)}`,
       }),
       node("span", { className: "card-actions" }, [
+        (() => {
+          const button = node("button", {
+            className: "plan-control-button",
+            type: "button",
+            text: "Управлять",
+          });
+          button.addEventListener("click", () => openCraftPlanOperation(plan));
+          return button;
+        })(),
         cardLinkButton(route),
         plan.discord_url
           ? node("a", {
@@ -1309,6 +1781,7 @@ function renderCraft(data) {
   if (!showApplication(data)) return;
   const stats = data.stats || {};
   const plans = data.active_plans || [];
+  appState.craftRecipes = data.recipes || [];
   const events = data.events || {};
   appState.rows.craft = events.items || [];
   setText("craft-active", formatNumber(stats.active_count));
@@ -1328,6 +1801,13 @@ function renderCraft(data) {
     plans.length
       ? plans.map(planCard)
       : [node("div", { className: "empty-state", text: "Сейчас активных планов нет." })],
+  );
+  setText("craft-recipe-count", `Версии производства · ${formatNumber(appState.craftRecipes.length)}`);
+  replaceChildren(
+    "craft-recipe-grid",
+    appState.craftRecipes.length
+      ? appState.craftRecipes.map(recipeControlCard)
+      : [node("div", { className: "empty-state", text: "Рецепты ещё не созданы." })],
   );
 
   const rows = appState.rows.craft.map((item) =>
@@ -1826,6 +2306,51 @@ function billStatusLabel(status) {
   }[status] || status || "Без статуса";
 }
 
+function openBillOperation(item) {
+  const editable = [
+    { id: "title", label: "Изменить название", value: item.title || "", type: "text" },
+    { id: "summary", label: "Изменить полный текст", value: item.summary || "", type: "textarea" },
+    { id: "materials", label: "Изменить материалы", value: item.materials || "", type: "textarea" },
+  ].map((field) => ({
+    id: `update_${field.id}`,
+    label: field.label,
+    fields: [{ name: "value", label: field.label, type: field.type, value: field.value, required: true, wide: true }],
+    warning: "Активный консенсус и незавершённая доставка автоматически заблокируют изменение.",
+    confirmTitle: `${field.label} законопроекта №${item.bill_number}?`,
+    accept: "Сохранить редакцию",
+    build: (values) => ({ action: "update", bill_number: item.bill_number, field: field.id, value: values.value }),
+  }));
+  const statuses = ["draft", "queued", "requeued", "accepted", "rejected", "vetoed"];
+  editable.push({
+    id: "update_status",
+    label: "Изменить административный статус",
+    fields: [{ name: "value", label: "Новый статус", type: "select", value: item.status, options: statuses.map((status) => ({ value: status, label: billStatusLabel(status) })) }],
+    warning: "Статус не заменяет голосование и не создаёт результат консенсуса.",
+    build: (values) => ({ action: "update", bill_number: item.bill_number, field: "status", value: values.value }),
+  });
+  editable.push({
+    id: "delete",
+    label: "Удалить законопроект",
+    fields: [],
+    warning: "Проект, его голоса и результаты будут удалены из рабочих таблиц. Снимок останется в универсальном аудите для восстановления.",
+    confirmTitle: `Удалить законопроект №${item.bill_number}?`,
+    confirmMessage: "Действие допустимо только вне активного консенсуса. T-Mod сохранит полный снимок в аудите.",
+    accept: "Удалить с сохранением снимка",
+    tone: "danger",
+    build: () => ({ action: "delete", bill_number: item.bill_number }),
+  });
+  openOperation({
+    endpoint: "/api/admin/bills/command",
+    eyebrow: "LEGISLATIVE CONTROL",
+    title: `Законопроект №${item.bill_number}`,
+    mark: "§",
+    contextTitle: item.title || "Без названия",
+    contextMeta: `${billStatusLabel(item.status)} · ${item.author_display || item.author_id}`,
+    reload: loadBills,
+    operations: editable,
+  });
+}
+
 function billCard(item) {
   const route = recordRoute("bills", "bill", item.id);
   const percent = item.result_overall_percent;
@@ -1848,6 +2373,15 @@ function billCard(item) {
         text: percent === null || percent === undefined ? "решения ещё нет" : `${Number(percent).toFixed(1)}%`,
       }),
       cardLinkButton(route),
+      (() => {
+        const button = node("button", {
+          className: "bill-control-button",
+          type: "button",
+          text: "Управлять",
+        });
+        button.addEventListener("click", () => openBillOperation(item));
+        return button;
+      })(),
       source
         ? node("a", {
             text: "Оригинал ↗",
@@ -1979,7 +2513,39 @@ function renderSgl(data) {
             ]),
           ]);
           const route = recordRoute("sgl", "archive", item.id);
-          card.append(cardLinkButton(route));
+          const restore = node("button", {
+            className: "archive-restore-button",
+            type: "button",
+            text: "Восстановить канал",
+          });
+          restore.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            const approved = window.TModReactor?.confirm
+              ? await window.TModReactor.confirm({
+                  title: `Восстановить архив кейса №${item.case_number}?`,
+                  message: "T-Mod создаст временный защищённый канал и восстановит сообщения в фоне. Повторный запрос не создаст дубликат.",
+                  accept: "Восстановить",
+                  tone: "warning",
+                })
+              : globalThis.confirm(`Восстановить архив кейса №${item.case_number}?`);
+            if (!approved) return;
+            setLoading(true);
+            try {
+              const result = await postJSON("/api/admin/sgl/command", {
+                action: "restore_archive",
+                case_number: item.case_number,
+                confirmed: true,
+              });
+              showToast(result.message || "Архив восстанавливается.");
+              if (result.discord_url) globalThis.open(result.discord_url, "_blank", "noopener");
+              await loadSgl(appState.offsets.sgl);
+            } catch (error) {
+              handleError(error);
+            } finally {
+              setLoading(false);
+            }
+          });
+          card.append(restore, cardLinkButton(route));
           card.tabIndex = 0;
           card.addEventListener("click", (event) => {
             if (!event.target.closest("button")) {
@@ -2433,6 +2999,86 @@ async function loadProfile() {
   }
 }
 
+function renderReliability(reliability = {}) {
+  const overall = String(reliability.overall || "warning");
+  const overallNode = byId("reliability-overall");
+  overallNode.textContent = overall === "ok" ? "контур в норме" : overall === "critical" ? "критическая проблема" : "нужно внимание";
+  overallNode.className = `health-pill${overall === "ok" ? "" : " warning"}`;
+  setText("reliability-release", `release ${reliability.release || "unknown"}`);
+
+  const database = reliability.database || {};
+  const latest = database.latest || {};
+  const integrity = database.last_integrity || {};
+  setText(
+    "db-protection-state",
+    database.status === "ok"
+      ? `${formatNumber(database.backup_count || 0)} защищённых снимков`
+      : database.status === "critical"
+        ? "защита требует немедленного внимания"
+        : "защита ещё набирает историю",
+  );
+  setText("db-latest-backup", latest.created_at ? relativeTime(latest.created_at) : "копий пока нет");
+  setText(
+    "db-integrity-state",
+    integrity.ok === true
+      ? `OK · ${relativeTime(integrity.checked_at)}`
+      : integrity.ok === false
+        ? "ОШИБКА"
+        : "ещё не проверена",
+  );
+  setText("db-size", formatBytes(database.database_size_bytes));
+  setText("db-free-space", formatBytes(database.free_bytes));
+
+  const domains = Array.isArray(reliability.domains) ? reliability.domains : [];
+  replaceChildren(
+    "reliability-domain-list",
+    domains.length
+      ? domains.map((item) => {
+          const status = String(item.status || "warning");
+          const certificate = Number.isFinite(Number(item.certificate_days_remaining))
+            ? `TLS ${formatNumber(item.certificate_days_remaining)} дн.`
+            : textPreview(item.error, "TLS неизвестен");
+          return node("div", { className: `domain-health-item ${status}`, title: item.error || item.url || "" }, [
+            node("i"),
+            node("div", {}, [
+              node("strong", { text: item.title || item.host || "Веб-контур" }),
+              node("small", { text: `${item.http_status || "—"} · ${certificate}` }),
+            ]),
+            node("b", { text: item.latency_ms === null || item.latency_ms === undefined ? "—" : `${Math.round(Number(item.latency_ms))} мс` }),
+          ]);
+        })
+      : [node("div", { className: "empty-state", text: "Домены ещё не проверены." })],
+  );
+
+  const update = reliability.update || {};
+  const updateState = String(update.state || "unknown");
+  const updateNode = byId("update-state");
+  const updateLabels = {
+    success: "обновление подтверждено",
+    rolled_back: "выполнен автоматический откат",
+    failed: "обновление не принято",
+    testing: "проверка кандидата",
+    deploying: "развёртывание",
+    blocked_local_changes: "обновление отложено",
+    offline: "GitHub временно недоступен",
+    unknown: "нет истории обновлений",
+  };
+  updateNode.textContent = updateLabels[updateState] || updateState;
+  updateNode.className = ["failed", "rolled_back"].includes(updateState)
+    ? "failed"
+    : ["testing", "deploying", "blocked_local_changes", "offline"].includes(updateState)
+      ? "warning"
+      : "";
+  setText("update-version", update.release || update.new_commit || reliability.release || "unknown");
+  setText(
+    "update-detail",
+    update.message || update.detail || (updateState === "unknown"
+      ? "Следующее обновление через Desktop Launcher будет проверено до переключения рабочей версии."
+      : "Транзакция обновления завершена."),
+  );
+  setText("update-time", update.updated_at ? formatDate(update.updated_at) : `аптайм ${formatNumber(reliability.uptime_seconds || 0)} сек.`);
+}
+
 function renderSystem(data) {
   if (!showApplication(data)) return;
   const runtime = data.runtime || {};
@@ -2465,6 +3111,7 @@ function renderSystem(data) {
   const healthy = Boolean(runtime.ready) && dead === 0;
   health.textContent = healthy ? "контур в норме" : "требуется внимание";
   health.className = `health-pill${healthy ? "" : " warning"}`;
+  renderReliability(data.reliability || {});
 
   const statusMax = Math.max(...statusRows.map((item) => Number(item.items || 0)), 1);
   replaceChildren(
@@ -2581,7 +3228,7 @@ async function loadSectionAccess() {
             revoke.addEventListener("click", async () => {
               try {
                 const result = await postJSON("/api/admin/access", {
-                  user_id: grant.user_id,
+                  user_id: grant.user_id_text || String(grant.user_id),
                   section: grant.section,
                   enabled: false,
                 });
@@ -2619,14 +3266,38 @@ async function loadSectionAccess() {
   }
 }
 
-async function loadSystem(silent = false) {
+async function loadSystem(silent = false, fresh = false) {
   if (!silent) setLoading(true);
   try {
-    renderSystem(await fetchJSON("/api/admin/system"));
+    renderSystem(await fetchJSON(`/api/admin/system${fresh ? "?fresh=1" : ""}`));
   } catch (error) {
     handleError(error);
   } finally {
     if (!silent) setLoading(false);
+  }
+}
+
+async function sendSystemAction(action, payload = {}) {
+  if (action === "backup_database") {
+    const approved = window.TModReactor?.confirm
+      ? await window.TModReactor.confirm({
+          title: "Создать резервную копию SQLite?",
+          message: "T-Mod сделает консистентный снимок через SQLite Backup API и сразу проверит его целостность.",
+          accept: "Создать копию",
+          tone: "warning",
+        })
+      : globalThis.confirm("Создать проверенную резервную копию SQLite?");
+    if (!approved) return;
+  }
+  setLoading(true);
+  try {
+    const result = await postJSON("/api/admin/system/action", { action, ...payload });
+    showToast(result.message || "Операция завершена.", result.result?.ok === false);
+    await loadSystem(true);
+  } catch (error) {
+    handleError(error);
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -2889,6 +3560,16 @@ async function pollGlobalActivity() {
 }
 
 function bindEvents() {
+  byId("operation-action").addEventListener("change", renderOperationFields);
+  byId("operation-close").addEventListener("click", closeOperation);
+  byId("operation-cancel").addEventListener("click", closeOperation);
+  byId("operation-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitOperation();
+  });
+  byId("finance-command").addEventListener("click", () => openFinanceOperation());
+  byId("craft-plan-create").addEventListener("click", openCraftPlanCreate);
+  byId("craft-recipe-create").addEventListener("click", openCraftRecipeCreate);
   byId("section-access-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = formValues("section-access-form");
@@ -2896,7 +3577,7 @@ function bindEvents() {
     button.disabled = true;
     try {
       const result = await postJSON("/api/admin/access", {
-        user_id: Number(values.user_id),
+        user_id: values.user_id,
         section: values.section,
         enabled: true,
       });
@@ -2923,6 +3604,15 @@ function bindEvents() {
   });
   byId("refresh-button").addEventListener("click", () =>
     refreshCurrentSection(false, true),
+  );
+  byId("system-refresh-reliability").addEventListener("click", () =>
+    loadSystem(false, true),
+  );
+  byId("system-backup-database").addEventListener("click", () =>
+    sendSystemAction("backup_database"),
+  );
+  byId("system-check-database").addEventListener("click", () =>
+    sendSystemAction("check_database"),
   );
   byId("notification-toggle").addEventListener("click", async () => {
     appState.soundEnabled = !appState.soundEnabled;

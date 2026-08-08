@@ -10,6 +10,7 @@ import discord
 
 from persistence import activity_repository as _activity_storage
 from persistence import tvrs_repository as storage
+from persistence import consensus_schedule_repository as schedule_storage
 from modules.consensus_core import (
     ConsensusStateError,
     DEFAULT_CONSENSUS_RULES,
@@ -141,6 +142,8 @@ async def open_consensus_registration(
     bot,
     guild: discord.Guild,
     leader: discord.Member,
+    *,
+    schedule_id: int | None = None,
 ) -> LiveConsensusSession:
     """Open registration through the canonical application workflow.
 
@@ -211,6 +214,27 @@ async def open_consensus_registration(
             raise
 
     wake_delivery_worker()
+    if schedule_id is not None:
+        try:
+            planned = await asyncio.to_thread(
+                schedule_storage.get_consensus_schedule,
+                int(schedule_id),
+            )
+            if (
+                planned is not None
+                and int(planned.get("guild_id") or 0) == int(guild.id)
+                and str(planned.get("status") or "") == "scheduled"
+            ):
+                await asyncio.to_thread(
+                    schedule_storage.start_consensus_schedule,
+                    int(guild.id),
+                    session_key=str(session.session_key),
+                    schedule_id=int(schedule_id),
+                )
+        except (OSError, ValueError):
+            # The live session is already durable and must not be rolled back
+            # because a non-critical planning projection failed.
+            pass
     await delete_sticky_message(bot, guild)
     await ensure_public_consensus_card(bot, guild, session)
     wake_operations_worker()
@@ -569,9 +593,11 @@ class TVRSPreparationView(_RequesterPortalView):
         requester_id: int,
         guild_id: int,
         report: ConsensusPreflight,
+        schedule_id: int | None = None,
     ) -> None:
         super().__init__(requester_id, timeout=600)
         self.guild_id = int(guild_id)
+        self.schedule_id = int(schedule_id) if schedule_id else None
         open_button = discord.ui.Button(
             label="Открыть регистрацию",
             emoji="✅",
@@ -630,7 +656,12 @@ class TVRSPreparationView(_RequesterPortalView):
         await interaction.response.edit_message(
             content=None,
             embed=embed,
-            view=TVRSPreparationView(interaction.user.id, interaction.guild.id, report),
+            view=TVRSPreparationView(
+                interaction.user.id,
+                interaction.guild.id,
+                report,
+                schedule_id=self.schedule_id,
+            ),
         )
 
     async def back(self, interaction: discord.Interaction) -> None:
@@ -644,6 +675,7 @@ class TVRSPreparationView(_RequesterPortalView):
                 interaction.client,
                 interaction.guild,
                 interaction.user,
+                schedule_id=self.schedule_id,
             )
         except ConsensusStateError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
@@ -882,13 +914,22 @@ class TVRSObserverView(_RequesterPortalView):
         await open_tvrs_hub(interaction)
 
 
-async def open_preparation_portal(interaction: discord.Interaction) -> None:
+async def open_preparation_portal(
+    interaction: discord.Interaction,
+    *,
+    schedule_id: int | None = None,
+) -> None:
     assert interaction.guild is not None
     embed, report = build_preparation_embed(interaction.guild, interaction.user.id)
     await interaction.response.edit_message(
         content=None,
         embed=embed,
-        view=TVRSPreparationView(interaction.user.id, interaction.guild.id, report),
+        view=TVRSPreparationView(
+            interaction.user.id,
+            interaction.guild.id,
+            report,
+            schedule_id=schedule_id,
+        ),
     )
 
 

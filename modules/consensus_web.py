@@ -50,6 +50,8 @@ from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
 from persistence import reactor_repository as reactor_storage
+from persistence import consensus_schedule_repository as schedule_storage
+from modules.consensus_schedule import public_schedule_payload
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -468,6 +470,11 @@ def _session_payload(
             if session.timer_deadline is not None
             else None
         ),
+        "timer_seconds": (
+            int(session.timer_seconds)
+            if getattr(session, "timer_seconds", None) is not None
+            else None
+        ),
         "pause_reason": str(getattr(session, "paused_reason", "") or ""),
         "discussion": {
             "type": str(getattr(session, "discussion_type", "") or ""),
@@ -564,10 +571,15 @@ async def build_consensus_web_state(
     if selected_simulation:
         queue_rows = simulation.queue_bills(3) if simulation else []
         recent_rows = list(session.results[-12:]) if session is not None else []
+        schedule_row = None
     else:
-        queue_rows, recent_rows = await asyncio.gather(
+        queue_rows, recent_rows, schedule_row = await asyncio.gather(
             asyncio.to_thread(tvrs_storage.tvrs_queue_bills, guild_id, 20),
             asyncio.to_thread(tvrs_storage.tvrs_recent_live_results, guild_id, 12),
+            asyncio.to_thread(
+                schedule_storage.get_upcoming_consensus_schedule,
+                guild_id,
+            ),
         )
 
     available_modes = ["live"]
@@ -593,8 +605,7 @@ async def build_consensus_web_state(
         else None
     )
     viewer_can_vote = bool(
-        not selected_simulation
-        and session is not None
+        session is not None
         and session.stage == "voting"
         and session.current_bill is not None
         and viewer_participant is not None
@@ -610,6 +621,7 @@ async def build_consensus_web_state(
         "mode_label": "Симуляция" if selected_simulation else "Рабочий контур",
         "available_modes": available_modes,
         "active": session is not None and not session.finished,
+        "schedule": public_schedule_payload(schedule_row),
         "session": None,
         "queue": [
             {
@@ -657,8 +669,7 @@ async def build_consensus_web_state(
                 str(viewer_participant.kind) if viewer_participant is not None else None
             ),
             "ballot_available": bool(
-                not selected_simulation
-                and viewer_participant is not None
+                viewer_participant is not None
                 and viewer_participant.confirmed
             ),
             "can_vote": viewer_can_vote,
@@ -849,6 +860,7 @@ def create_consensus_web_app(
         if name not in {
             "app.js",
             "style.css",
+            "chamber.css",
             "egg.css",
             "egg.js",
             "zigmund-murchalki.mp3",
@@ -878,14 +890,36 @@ def create_consensus_web_app(
             response.content_type = "font/woff2"
         return response
 
-    async def login_page(_: web.Request) -> web.FileResponse:
+    async def login_page(request: web.Request) -> web.StreamResponse:
+        next_path = (
+            str(request.query.get("next"))
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
+            else "/"
+        )
+        principal = await resolve_principal(request, bot, guild_id=int(guild_id))
+        if principal is not None:
+            if next_path != "/admin" or principal.administrator:
+                raise web.HTTPSeeOther(location=next_path)
+            grants = await asyncio.to_thread(
+                credential_storage.web_section_grants,
+                int(guild_id),
+                int(principal.user_id),
+            )
+            if grants:
+                raise web.HTTPSeeOther(location=next_path)
         return web.FileResponse(_ASSET_DIR / "login.html")
 
     async def favicon(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "favicon.svg")
 
-    async def health(_: web.Request) -> web.Response:
-        return web.json_response({"status": "ok"})
+    async def health(request: web.Request) -> web.Response:
+        discord_ready = bool(getattr(bot, "is_ready", lambda: False)())
+        require_ready = request.query.get("ready") == "1"
+        status = "ok" if discord_ready or not require_ready else "starting"
+        return web.json_response(
+            {"status": status, "discord_ready": discord_ready},
+            status=200 if status == "ok" else 503,
+        )
 
     async def authenticated_request(
         request: web.Request,
@@ -956,6 +990,7 @@ def create_consensus_web_app(
             response,
             token,
             secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
+            request_host=request.host,
         )
         return response
 
@@ -1094,6 +1129,7 @@ def create_consensus_web_app(
             token,
             secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
+            request_host=request.host,
         )
         return response
 
@@ -1113,6 +1149,7 @@ def create_consensus_web_app(
         clear_session_cookie(
             response,
             secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
+            request_host=request.host,
         )
         return response
 

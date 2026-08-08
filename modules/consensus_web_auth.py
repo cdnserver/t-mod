@@ -14,6 +14,8 @@ import binascii
 import hashlib
 import hmac
 import json
+import os
+import re
 import secrets
 import sqlite3
 import time
@@ -28,13 +30,17 @@ from persistence import activity_repository as meta_storage
 from persistence import web_auth_repository as credential_storage
 
 
-SESSION_COOKIE = "tmod_consensus_session"
+SESSION_COOKIE = "tmod_account_session"
+LEGACY_SESSION_COOKIE = "tmod_consensus_session"
 _SECRET_META_KEY = "consensus_web:session_secret:v1"
 _TICKET_LIFETIME_SECONDS = 10 * 60
 _SESSION_LIFETIME_SECONDS = 12 * 60 * 60
 PERSISTENT_SESSION_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 _used_tickets: dict[str, int] = {}
 _runtime_secret: bytes | None = None
+_COOKIE_DOMAIN_RE = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,13 +220,43 @@ def create_session_token(
     )
 
 
+def account_cookie_domain(request_host: str | None) -> str | None:
+    """Return a shared parent domain only for an actual member of that domain."""
+
+    configured = os.getenv("TMOD_ACCOUNT_COOKIE_DOMAIN", ".tvr.lat").strip().lower()
+    if configured in {"", "none", "host-only"}:
+        return None
+    base = configured.lstrip(".").rstrip(".")
+    if not _COOKIE_DOMAIN_RE.fullmatch(base):
+        return None
+    raw_host = str(request_host or "").strip().lower().rstrip(".")
+    if raw_host.startswith("["):
+        host = raw_host[1:].split("]", 1)[0]
+    else:
+        host = raw_host.split(":", 1)[0]
+    if host != base and not host.endswith(f".{base}"):
+        return None
+    return f".{base}"
+
+
 def clear_session_cookie(
     response: web.StreamResponse,
     *,
     secure: bool,
+    request_host: str | None = None,
 ) -> None:
+    domain = account_cookie_domain(request_host)
     response.del_cookie(
         SESSION_COOKIE,
+        path="/",
+        domain=domain,
+        secure=bool(secure),
+        httponly=True,
+        samesite="Lax",
+    )
+    # Remove the previous host-only consensus cookie during the SSO migration.
+    response.del_cookie(
+        LEGACY_SESSION_COOKIE,
         path="/",
         secure=bool(secure),
         httponly=True,
@@ -234,12 +270,15 @@ def set_session_cookie(
     *,
     secure: bool,
     max_age: int = _SESSION_LIFETIME_SECONDS,
+    request_host: str | None = None,
 ) -> None:
+    domain = account_cookie_domain(request_host)
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=max(60, int(max_age)),
         path="/",
+        domain=domain,
         secure=bool(secure),
         httponly=True,
         samesite="Lax",
@@ -252,6 +291,9 @@ async def resolve_principal(
     *,
     guild_id: int,
 ) -> ConsensusWebPrincipal | None:
+    # Do not authenticate with the former host-only cookie.  Falling back to
+    # it after a shared logout could silently restore a session on another
+    # subdomain.  It is deleted opportunistically by the logout endpoint.
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token:
         return None
@@ -302,7 +344,9 @@ __all__ = [
     "ConsensusWebAuthError",
     "ConsensusWebPrincipal",
     "PERSISTENT_SESSION_LIFETIME_SECONDS",
+    "LEGACY_SESSION_COOKIE",
     "SESSION_COOKIE",
+    "account_cookie_domain",
     "clear_session_cookie",
     "consensus_web_entry_url",
     "consume_entry_ticket",

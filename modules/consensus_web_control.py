@@ -95,10 +95,34 @@ def consensus_web_capabilities(
         if (
             simulation is None
             or simulation.session is not session
-            or simulation.leader_id != principal.user_id
         ):
             return []
-        return _stage_capabilities(stage, permanent=True, simulation=True)
+        if simulation.leader_id == principal.user_id:
+            participant = session.participants.get(int(principal.user_id))
+            capabilities = _stage_capabilities(
+                stage,
+                permanent=bool(participant and participant.permanent),
+                simulation=True,
+            )
+            if simulation.has_real_roster:
+                capabilities = [
+                    item
+                    for item in capabilities
+                    if item
+                    not in {"confirm_next", "confirm_all", "fake_vote", "fake_scenario"}
+                ]
+                if stage == "registration":
+                    capabilities.append("resend_invitations")
+            return capabilities
+        participant = session.participants.get(int(principal.user_id))
+        return (
+            ["participant_vote"]
+            if stage == "voting"
+            and participant is not None
+            and participant.confirmed
+            and session.current_bill is not None
+            else []
+        )
     if session is None:
         return ["open_registration"] if is_chair(principal.member) else []
     if not _is_live_leader(session, principal):
@@ -688,12 +712,6 @@ async def _execute_simulation(
             status=409,
         )
     session = simulation.session
-    if simulation.leader_id != principal.user_id:
-        raise ConsensusWebCommandError(
-            "forbidden",
-            "Этой симуляцией управляет другой ведущий.",
-            status=403,
-        )
     _validate_generation(
         session,
         session_key=session_key,
@@ -714,12 +732,25 @@ async def _execute_simulation(
         simulation.confirm_next()
     elif action == "confirm_all":
         simulation.confirm_all()
+    elif action == "resend_invitations":
+        simulation.resend_invitations()
     elif action == "start_vote":
         simulation.begin_voting()
     elif action == "open_vote":
         simulation.open_voting()
     elif action == "leader_vote":
+        if simulation.leader_id != principal.user_id:
+            raise ConsensusWebCommandError(
+                "forbidden",
+                "Голос ведущего доступен только ведущему симуляции.",
+                status=403,
+            )
         simulation.cast_leader_vote(str(payload.get("vote") or ""))
+    elif action == "participant_vote":
+        simulation.cast_participant_vote(
+            principal.user_id,
+            str(payload.get("vote") or ""),
+        )
     elif action == "fake_vote":
         simulation.cast_next_fake_vote()
     elif action == "fake_scenario":

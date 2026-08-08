@@ -14,6 +14,7 @@
     >
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/style.css">
+    <link rel="stylesheet" href="/assets/chamber.css">
     <script src="/assets/tab-signal.js" defer></script>
     <script src="/assets/app.js" defer></script>
   </head>
@@ -143,19 +144,28 @@
           </div>
           <header class="ballot-header">
             <div>
-              <div id="ballot-eyebrow" class="eyebrow">ПЕРСОНАЛЬНЫЙ КОНТУР ГОЛОСОВАНИЯ</div>
-              <h1 id="ballot-heading">Ваш бюллетень</h1>
+              <div id="ballot-eyebrow" class="eyebrow">МЕСТО СЕНАТОРА</div>
+              <h1 id="ballot-heading">Ваше место в консенсусе</h1>
               <p id="ballot-session-detail">Ожидаем сведения о текущем заседании.</p>
             </div>
-            <div class="ballot-security">
-              <span class="ballot-security-mark" aria-hidden="true">T</span>
-              <span>
-                <strong>Защищённая сессия</strong>
-                <small id="ballot-identity">личность проверяется</small>
-              </span>
-              <button id="ballot-sound-toggle" class="ballot-sound-toggle" type="button" aria-pressed="true" title="Звуки заседания включены">
-                <span aria-hidden="true">♪</span><b>Звук</b>
-              </button>
+            <div class="ballot-header-aside">
+              <div id="ballot-deadline" class="ballot-deadline waiting">
+                <span class="ballot-deadline-ring" aria-hidden="true"><i></i></span>
+                <span>
+                  <small id="ballot-timer-caption">СРОК РЕШЕНИЯ</small>
+                  <strong id="ballot-timer">—</strong>
+                </span>
+              </div>
+              <div class="ballot-security">
+                <span id="ballot-identity-mark" class="ballot-security-mark" aria-hidden="true">T</span>
+                <span>
+                  <strong>Удостоверение сенатора</strong>
+                  <small id="ballot-identity">личность проверяется</small>
+                </span>
+                <button id="ballot-sound-toggle" class="ballot-sound-toggle" type="button" aria-pressed="true" title="Звуки заседания включены">
+                  <span aria-hidden="true">♪</span><b>Звук</b>
+                </button>
+              </div>
             </div>
           </header>
 
@@ -262,6 +272,19 @@
               <span>прямой эфир</span>
             </div>
           </header>
+
+          <article id="observer-schedule" class="observer-schedule" hidden>
+            <div>
+              <span>СЛЕДУЮЩЕЕ ПЛЕНАРНОЕ ЗАСЕДАНИЕ</span>
+              <h2 id="observer-schedule-title">Заседание запланировано</h2>
+              <p id="observer-schedule-description">Подробности появятся после публикации плана.</p>
+            </div>
+            <div class="observer-schedule-time">
+              <small id="observer-schedule-date">—</small>
+              <strong id="observer-schedule-countdown">—</strong>
+              <a id="observer-schedule-link" href="#" target="_blank" rel="noreferrer" hidden>Событие Discord ↗</a>
+            </div>
+          </article>
 
           <div class="observer-grid">
             <article class="observer-card observer-bill">

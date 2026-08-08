@@ -1,10 +1,11 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from aiohttp import FormData
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
 import storage
@@ -29,8 +30,15 @@ from modules.consensus_web import (
 from modules.consensus_web_auth import (
     ConsensusWebAuthError,
     ConsensusWebPrincipal,
+    LEGACY_SESSION_COOKIE,
+    SESSION_COOKIE,
+    account_cookie_domain,
+    clear_session_cookie,
     consume_entry_ticket,
     create_entry_ticket,
+    create_session_token,
+    resolve_principal,
+    set_session_cookie,
 )
 from modules.consensus_web_control import (
     ConsensusWebCommandError,
@@ -151,6 +159,26 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bill["materials"], "https://example.com/source")
         self.assertEqual(bill["decision_category"], "ordinary")
         self.assertIsNone(state["session"]["current_result"])
+
+    async def test_state_exposes_upcoming_consensus_schedule(self) -> None:
+        storage.save_consensus_schedule(
+            guild_id=77,
+            plenary_number=7,
+            title="Седьмой пленарный консенсус",
+            description="Рассмотрение очереди законопроектов.",
+            invitation_text="Просим прибыть заранее.",
+            scheduled_for=datetime.now(timezone.utc) + timedelta(days=1),
+            duration_minutes=90,
+            voice_channel_id=88,
+            actor_id=1,
+            actor_display="Председатель",
+        )
+
+        state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
+
+        self.assertEqual(state["schedule"]["plenary_number"], 7)
+        self.assertEqual(state["schedule"]["duration_minutes"], 90)
+        self.assertEqual(state["schedule"]["title"], "Седьмой пленарный консенсус")
 
     async def test_fixed_result_exposes_exact_percentages_and_restores_bill_text(
         self,
@@ -406,6 +434,95 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConsensusWebAuthError):
             consume_entry_ticket(wrong_guild, expected_guild_id=78)
 
+    def test_tmod_account_cookie_is_shared_only_inside_configured_domain(self) -> None:
+        with patch.dict("os.environ", {"TMOD_ACCOUNT_COOKIE_DOMAIN": ".tvr.lat"}):
+            self.assertEqual(account_cookie_domain("atlas.tvr.lat"), ".tvr.lat")
+            self.assertEqual(account_cookie_domain("tvr.lat:443"), ".tvr.lat")
+            self.assertIsNone(account_cookie_domain("tvr.lat.attacker.example"))
+            self.assertIsNone(account_cookie_domain("127.0.0.1:8787"))
+
+            shared = web.Response()
+            set_session_cookie(
+                shared,
+                "signed-token",
+                secure=True,
+                request_host="reactor.tvr.lat",
+            )
+            morsel = shared.cookies[SESSION_COOKIE]
+            self.assertEqual(morsel["domain"], ".tvr.lat")
+            self.assertEqual(morsel["httponly"], True)
+            self.assertEqual(morsel["secure"], True)
+            self.assertEqual(morsel["samesite"], "Lax")
+
+            cleared = web.Response()
+            clear_session_cookie(
+                cleared,
+                secure=True,
+                request_host="consensus.tvr.lat",
+            )
+            self.assertIn(SESSION_COOKIE, cleared.cookies)
+            self.assertIn(LEGACY_SESSION_COOKIE, cleared.cookies)
+            self.assertEqual(cleared.cookies[SESSION_COOKIE]["domain"], ".tvr.lat")
+
+    async def test_existing_tmod_account_session_skips_repeated_login(self) -> None:
+        principal = self._principal(user_id=42)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                atlas = await client.get(
+                    "/login?next=/atlas",
+                    allow_redirects=False,
+                )
+                admin = await client.get(
+                    "/login?next=/admin",
+                    allow_redirects=False,
+                )
+
+            self.assertEqual(atlas.status, 303)
+            self.assertEqual(atlas.headers["Location"], "/atlas")
+            self.assertEqual(admin.status, 303)
+            self.assertEqual(admin.headers["Location"], "/admin")
+        finally:
+            await client.close()
+
+    async def test_legacy_host_cookie_cannot_restore_shared_logout(self) -> None:
+        legacy_token, _ = create_session_token(guild_id=77, user_id=42)
+        request = SimpleNamespace(cookies={LEGACY_SESSION_COOKIE: legacy_token})
+
+        principal = await resolve_principal(  # type: ignore[arg-type]
+            request,
+            self.bot,  # type: ignore[arg-type]
+            guild_id=77,
+        )
+
+        self.assertIsNone(principal)
+
+    async def test_shared_identity_does_not_bypass_admin_permissions(self) -> None:
+        principal = self._principal(user_id=42)
+        principal.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                response = await client.get(
+                    "/login?next=/admin",
+                    allow_redirects=False,
+                )
+
+            self.assertEqual(response.status, 200)
+            self.assertIn("T-Mod Account", await response.text())
+        finally:
+            await client.close()
+
     async def test_http_api_requires_token_and_serves_dashboard(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         client = TestClient(TestServer(app))
@@ -420,6 +537,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="ballot-screen"', index_text)
             self.assertIn('id="ballot-choices"', index_text)
             self.assertIn('id="ballot-sound-toggle"', index_text)
+            self.assertIn('id="ballot-deadline"', index_text)
+            self.assertIn('id="observer-schedule"', index_text)
+            self.assertIn('/assets/chamber.css', index_text)
             self.assertIn('id="vote-confirm-dialog"', index_text)
             self.assertIn('id="atmosphere"', index_text)
             self.assertIn('id="result-announcer"', index_text)
@@ -815,7 +935,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(accepted.status, 303)
             self.assertEqual(accepted.headers["Location"], "/admin")
-            self.assertIn("tmod_consensus_session=", accepted.headers["Set-Cookie"])
+            self.assertIn("tmod_account_session=", accepted.headers["Set-Cookie"])
 
             member.guild_permissions.administrator = False
             not_admin = await client.post(
@@ -1029,7 +1149,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 (await bills.json())["items"][0]["summary"], self.bill.summary
             )
-            self.assertIn("outbox_status", await system.json())
+            system_payload = await system.json()
+            self.assertIn("outbox_status", system_payload)
+            self.assertIn("database", system_payload["reliability"])
+            self.assertIn("domains", system_payload["reliability"])
+            self.assertIn("update", system_payload["reliability"])
             attention_payload = await reactor_attention.json()
             health_payload = await reactor_health.json()
             self.assertIn("health", attention_payload)
@@ -1249,6 +1373,205 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await without_csrf.json())["error"], "csrf_failed")
             self.assertEqual(unavailable.status, 400)
             self.assertIn("недоступен", (await unavailable.json())["message"])
+        finally:
+            await client.close()
+
+    async def test_reactor_domain_commands_share_finance_craft_and_bill_state(self) -> None:
+        recipe = storage.craft_create_recipe(
+            guild_id=77,
+            product_name="Панельный сплав",
+            treasury_cost_per_unit=0,
+            duration_minutes_per_unit=5,
+            max_batch_size=10,
+            materials=[("Железо", 2)],
+            created_by_id=1,
+            created_by_display="Администратор",
+        )
+        plan = storage.craft_create_plan(
+            guild_id=77,
+            recipe_id=recipe["id"],
+            channel_id=88,
+            attempts_total=5,
+            responsible_id=1,
+            responsible_display="Администратор",
+            created_by_id=1,
+            created_by_display="Администратор",
+        )
+        admin_bill = storage.tvrs_create_bill(
+            guild_id=77,
+            channel_id=88,
+            author_id=6,
+            author_display="Редактор",
+            title="Проект для административной правки",
+            summary="Этот проект не находится в активной сессии консенсуса.",
+            materials=None,
+        )
+        storage.tvrs_mark_bill_status(self.bill.id, "voting")
+        material = plan["materials"][0]
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                finance = await client.post(
+                    "/api/admin/finance/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-finance-snapshot-1",
+                    },
+                    json={"action": "snapshot", "amount": 500_000, "confirmed": True},
+                )
+                craft = await client.post(
+                    "/api/admin/crafts/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-craft-purchase-1",
+                    },
+                    json={
+                        "action": "purchase",
+                        "plan_id": plan["id"],
+                        "plan_material_id": material["id"],
+                        "quantity": 12,
+                        "total_cost": 0,
+                        "confirmed": True,
+                    },
+                )
+                recipe_from_web = await client.post(
+                    "/api/admin/crafts/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-craft-recipe-1",
+                    },
+                    json={
+                        "action": "create_recipe",
+                        "product_name": "Рецепт из Реактора",
+                        "treasury_cost_per_unit": 100,
+                        "duration_minutes_per_unit": 3,
+                        "max_batch_size": 4,
+                        "materials": [
+                            {"material_name": "Сталь", "quantity_per_unit": 2},
+                        ],
+                        "confirmed": True,
+                    },
+                )
+                bill = await client.post(
+                    "/api/admin/bills/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-bill-update-1",
+                    },
+                    json={
+                        "action": "update",
+                        "bill_number": admin_bill.bill_number,
+                        "field": "title",
+                        "value": "Обновлено из Ядерного Реактора",
+                        "confirmed": True,
+                    },
+                )
+                locked_bill = await client.post(
+                    "/api/admin/bills/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-bill-locked-1",
+                    },
+                    json={
+                        "action": "update",
+                        "bill_number": self.bill.bill_number,
+                        "field": "title",
+                        "value": "Это изменение должно быть заблокировано",
+                        "confirmed": True,
+                    },
+                )
+
+            self.assertEqual(finance.status, 200)
+            self.assertEqual(craft.status, 200)
+            self.assertEqual(recipe_from_web.status, 200)
+            self.assertEqual(bill.status, 200)
+            self.assertEqual(locked_bill.status, 400)
+            self.assertIn("защищён", (await locked_bill.json())["message"])
+            self.assertEqual(
+                storage.finance_get_latest_state(77)["estimated_balance"],
+                500_000,
+            )
+            self.assertEqual(
+                storage.craft_get_plan(plan["id"])["materials"][0]["stock_quantity"],
+                12,
+            )
+            self.assertEqual(
+                storage.tvrs_get_bill_by_number(77, admin_bill.bill_number)["title"],
+                "Обновлено из Ядерного Реактора",
+            )
+            self.assertTrue(
+                any(
+                    item["product_name"] == "Рецепт из Реактора"
+                    for item in storage.craft_list_recipes(77, active_only=False)
+                )
+            )
+        finally:
+            await client.close()
+
+    async def test_delegated_craft_operator_can_act_only_inside_granted_section(self) -> None:
+        recipe = storage.craft_create_recipe(
+            guild_id=77,
+            product_name="Делегированный крафт",
+            treasury_cost_per_unit=0,
+            duration_minutes_per_unit=5,
+            max_batch_size=10,
+            materials=[("Медь", 1)],
+            created_by_id=1,
+            created_by_display="Администратор",
+        )
+        plan = storage.craft_create_plan(
+            guild_id=77,
+            recipe_id=recipe["id"],
+            channel_id=88,
+            attempts_total=2,
+            responsible_id=2,
+            responsible_display="Оператор",
+            created_by_id=1,
+            created_by_display="Администратор",
+        )
+        storage.web_set_section_grant(77, 2, "craft", enabled=True, granted_by_id=1)
+        operator = self._principal(user_id=2)
+        operator.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=operator),
+            ):
+                allowed = await client.post(
+                    "/api/admin/crafts/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "delegated-craft-inventory-1",
+                    },
+                    json={
+                        "action": "inventory",
+                        "plan_id": plan["id"],
+                        "material_quantities": {
+                            str(plan["materials"][0]["id"]): 2,
+                        },
+                        "product_quantity": 0,
+                        "confirmed": True,
+                    },
+                )
+                denied = await client.post(
+                    "/api/admin/finance/command",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "delegated-finance-denied-1",
+                    },
+                    json={"action": "snapshot", "amount": 1, "confirmed": True},
+                )
+            self.assertEqual(allowed.status, 200)
+            self.assertEqual(denied.status, 403)
         finally:
             await client.close()
 
@@ -1692,6 +2015,51 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload={},
         )
         self.assertEqual(simulation.session.stage, "voting")
+
+    async def test_invited_simulation_senator_can_vote_from_web(self) -> None:
+        simulation = ConsensusSimulation(
+            guild_id=77,
+            leader_id=1,
+            leader_display="Ведущий",
+            invited_participants=(
+                LiveParticipant(2, "Сенатор 2", "<@2>", "senator"),
+                LiveParticipant(3, "Сенатор 3", "<@3>", "senator"),
+            ),
+        )
+        simulation.confirm_participant(2)
+        simulation.confirm_participant(3)
+        simulation.begin_voting()
+        simulation.open_voting()
+        register_consensus_simulation(simulation)
+        principal = self._principal(2)
+
+        self.assertEqual(
+            consensus_web_capabilities(
+                mode="simulation",
+                session=simulation.session,
+                principal=principal,
+            ),
+            ["participant_vote"],
+        )
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            mode="simulation",
+            principal=principal,
+        )
+        self.assertTrue(state["viewer"]["can_vote"])
+        await execute_consensus_web_command(  # type: ignore[arg-type]
+            self.bot,
+            self.bot.get_guild(77),
+            principal,
+            mode="simulation",
+            action="participant_vote",
+            session_key=simulation.session.session_key,
+            revision=simulation.session.revision,
+            bill_id=int(simulation.session.current_bill["id"]),
+            payload={"vote": "yes"},
+        )
+        self.assertEqual(simulation.session.votes[2], "yes")
 
     def test_public_https_url_replaces_local_display_address(self) -> None:
         with patch(

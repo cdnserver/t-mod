@@ -3109,6 +3109,602 @@ button:not(.dialog-close):not(.list-title-button):not(.library-row):not(.observe
   }
 }
 
+/* Institutional chamber redesign ----------------------------------------- */
+:root {
+  --chamber-ink: #090b10;
+  --chamber-panel: #10131a;
+  --chamber-panel-raised: #151922;
+  --chamber-paper: #eee9df;
+  --chamber-muted: #9c9a94;
+  --chamber-gold: #c6a86a;
+  --chamber-gold-bright: #e1c88f;
+  --chamber-gold-soft: rgba(198, 168, 106, 0.11);
+  --chamber-line: rgba(222, 210, 184, 0.13);
+  --chamber-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  background-color: var(--chamber-ink);
+  background-image:
+    radial-gradient(circle at 50% -22rem, rgba(185, 156, 96, 0.11), transparent 42rem),
+    linear-gradient(180deg, #0b0e14 0, #080a0f 60%, #07090d 100%);
+}
+
+.atmosphere {
+  opacity: 0.42;
+}
+
+.atmosphere-ring,
+.atmosphere-sweep {
+  opacity: 0.12;
+}
+
+.noise {
+  opacity: 0.012;
+}
+
+.observer-screen {
+  color: var(--chamber-paper);
+}
+
+.observer-session {
+  position: relative;
+  min-height: 78px;
+  padding: 2px 3px 14px;
+  border-bottom: 1px solid var(--chamber-line);
+}
+
+.observer-session::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  width: min(220px, 28vw);
+  height: 1px;
+  content: "";
+  background: linear-gradient(90deg, transparent, var(--chamber-gold));
+}
+
+.observer-session h1 {
+  color: #f0ece4;
+  font-family: "Source Serif 4", Georgia, serif;
+  font-size: clamp(1.6rem, 3.2vw, 2.65rem);
+  font-weight: 550;
+  letter-spacing: -0.038em;
+}
+
+.observer-session p {
+  color: #888b8f;
+  font-size: 0.75rem;
+}
+
+.observer-live {
+  color: #aba59a;
+  letter-spacing: 0.16em;
+}
+
+.observer-live .pulse {
+  width: 7px;
+  height: 7px;
+  background: #d1b779;
+  box-shadow: 0 0 0 4px rgba(198, 168, 106, 0.09);
+  animation: chamberLive 2.4s ease-in-out infinite;
+}
+
+.observer-schedule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: center;
+  padding: 22px 26px;
+  overflow: hidden;
+  border: 1px solid rgba(207, 181, 124, 0.18);
+  border-radius: 20px;
+  background:
+    linear-gradient(105deg, rgba(199, 169, 105, 0.09), transparent 52%),
+    #10131a;
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.2), inset 0 1px rgba(255, 255, 255, 0.026);
+  animation: chamberArrival 700ms var(--chamber-ease) both;
+}
+
+.observer-schedule[hidden] {
+  display: none;
+}
+
+.observer-schedule > div:first-child > span,
+.observer-schedule-time small {
+  color: var(--chamber-gold);
+  font: 750 0.61rem/1.2 "Manrope", sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.observer-schedule h2 {
+  margin: 7px 0 5px;
+  color: #f2eee7;
+  font: 560 clamp(1.3rem, 2.2vw, 2rem)/1.08 "Source Serif 4", Georgia, serif;
+  letter-spacing: -0.03em;
+}
+
+.observer-schedule p {
+  max-width: 850px;
+  margin: 0;
+  color: #8f9090;
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.observer-schedule-time {
+  display: grid;
+  min-width: 220px;
+  justify-items: end;
+  gap: 5px;
+  padding-left: 24px;
+  border-left: 1px solid var(--chamber-line);
+}
+
+.observer-schedule-time strong {
+  color: #efe7d8;
+  font: 550 clamp(1.45rem, 2.8vw, 2.2rem)/1 "Source Serif 4", Georgia, serif;
+  letter-spacing: -0.04em;
+}
+
+.observer-schedule-time a {
+  margin-top: 3px;
+  color: #c7ae79;
+  font-size: 0.68rem;
+  text-decoration: none;
+}
+
+.observer-grid {
+  grid-template-columns: minmax(0, 1.72fr) minmax(330px, 0.68fr);
+  gap: 14px;
+}
+
+.observer-card {
+  border-color: var(--chamber-line);
+  border-radius: 18px;
+  background: linear-gradient(152deg, #131720, #0e1117 72%);
+  box-shadow: 0 24px 75px rgba(0, 0, 0, 0.2), inset 0 1px rgba(255, 255, 255, 0.025);
+}
+
+.observer-card-head h2 {
+  color: #efebe4;
+  font-family: "Source Serif 4", Georgia, serif;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+}
+
+.observer-card .eyebrow,
+.observer-bill .bill-reading > small {
+  color: var(--chamber-gold);
+}
+
+.observer-bill .bill-reading p {
+  color: #d5d0c8;
+  font-family: "Source Serif 4", Georgia, serif;
+  font-size: clamp(0.9rem, 1.15vw, 1.02rem);
+  line-height: 1.56;
+}
+
+.observer-bill .bill-meta > span,
+.observer-bill .consensus-result {
+  border-color: rgba(218, 205, 178, 0.1);
+  background: rgba(5, 7, 11, 0.31);
+}
+
+.observer-tabs button.active {
+  color: #e2d2ad;
+  border-color: rgba(198, 168, 106, 0.22);
+  background: var(--chamber-gold-soft);
+}
+
+.observer-feed {
+  scrollbar-color: rgba(198, 168, 106, 0.25) transparent;
+}
+
+.ballot-screen {
+  --timer-progress: 0;
+  min-height: min(790px, calc(100dvh - 190px));
+  border-color: rgba(218, 199, 158, 0.16);
+  border-radius: 28px;
+  color: var(--chamber-paper);
+  background:
+    radial-gradient(circle at 50% -45%, rgba(202, 174, 112, 0.13), transparent 52%),
+    linear-gradient(155deg, #131720, #090c12 68%);
+  box-shadow: 0 45px 140px rgba(0, 0, 0, 0.52), inset 0 1px rgba(255, 255, 255, 0.035);
+  animation: chamberArrival 700ms var(--chamber-ease) both;
+}
+
+.ballot-screen::before {
+  opacity: 0.18;
+  background-image: linear-gradient(90deg, transparent 49.9%, rgba(198, 168, 106, 0.12) 50%, transparent 50.1%);
+  background-size: 100% 100%;
+}
+
+.ballot-screen::after {
+  right: -240px;
+  bottom: -285px;
+  width: 540px;
+  height: 540px;
+  border-color: rgba(198, 168, 106, 0.08);
+  box-shadow: 0 0 0 72px rgba(198, 168, 106, 0.012), 0 0 0 144px rgba(198, 168, 106, 0.008);
+}
+
+.ballot-aurora span {
+  opacity: 0.045;
+  background: #c6a86a;
+  filter: blur(110px);
+  animation-duration: 24s;
+}
+
+.ballot-screen[data-vote="no"] .ballot-aurora span { background: #9e6966; }
+.ballot-screen[data-vote="abstain"] .ballot-aurora span { background: #a99c70; }
+
+.ballot-header {
+  align-items: center;
+  padding: 34px 38px 27px;
+  border-color: var(--chamber-line);
+}
+
+.ballot-header h1 {
+  margin-top: 8px;
+  color: #f3eee6;
+  font: 540 clamp(2rem, 4vw, 3.7rem)/0.98 "Source Serif 4", Georgia, serif;
+  letter-spacing: -0.052em;
+}
+
+.ballot-header p {
+  color: #939491;
+}
+
+.ballot-header-aside {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.ballot-deadline {
+  --timer-progress: 0;
+  display: flex;
+  min-width: 190px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid var(--chamber-line);
+  border-radius: 15px;
+  background: rgba(8, 10, 15, 0.48);
+  transition: border-color 300ms ease, background 300ms ease;
+}
+
+.ballot-deadline.open {
+  border-color: rgba(210, 182, 121, 0.28);
+  background: rgba(151, 124, 69, 0.09);
+}
+
+.ballot-deadline > span:last-child {
+  display: grid;
+  gap: 4px;
+}
+
+.ballot-deadline small {
+  color: #7f7f7c;
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.ballot-deadline strong {
+  color: #e9dfcc;
+  font: 600 1.03rem/1 "Unbounded", "Manrope", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+.ballot-deadline-ring {
+  position: relative;
+  display: grid;
+  width: 39px;
+  height: 39px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--chamber-gold) calc(var(--timer-progress) * 1turn),
+    rgba(255, 255, 255, 0.065) 0
+  );
+  transform: rotate(-90deg);
+  transition: background 500ms linear;
+}
+
+.ballot-deadline-ring::after {
+  width: 31px;
+  height: 31px;
+  border-radius: 50%;
+  background: #11151c;
+  content: "";
+}
+
+.ballot-deadline-ring i {
+  position: absolute;
+  z-index: 1;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--chamber-gold-bright);
+  box-shadow: 0 0 10px rgba(225, 200, 143, 0.45);
+}
+
+.ballot-security {
+  min-width: 270px;
+  border-color: var(--chamber-line);
+  background: rgba(8, 10, 15, 0.48);
+}
+
+.ballot-security-mark,
+.vote-confirm-mark {
+  color: #f1e2c3;
+  border-color: rgba(216, 188, 128, 0.28);
+  background: radial-gradient(circle at 32% 22%, #66583c, #252117 68%);
+  box-shadow: 0 0 28px rgba(185, 152, 88, 0.1);
+}
+
+.ballot-security strong {
+  color: #e2ddd4;
+}
+
+.ballot-security small {
+  color: #858681;
+}
+
+.ballot-sound-toggle {
+  color: #baa77d;
+  border-color: rgba(198, 168, 106, 0.14);
+  background: rgba(198, 168, 106, 0.055);
+}
+
+.ballot-sound-toggle:hover {
+  color: #ead9b5;
+  border-color: rgba(198, 168, 106, 0.28);
+  background: rgba(198, 168, 106, 0.1);
+}
+
+.ballot-phase-rail::before {
+  background: var(--chamber-line);
+}
+
+.ballot-phase-rail::after {
+  background: linear-gradient(90deg, #8d7549, #d4b875);
+  box-shadow: 0 0 14px rgba(198, 168, 106, 0.18);
+}
+
+.ballot-phase-rail > span {
+  color: #5e6061;
+}
+
+.ballot-phase-rail > span.done,
+.ballot-phase-rail > span.active {
+  color: #c1b394;
+}
+
+.ballot-phase-rail i {
+  border-color: var(--chamber-line);
+  background: #10141a;
+}
+
+.ballot-phase-rail > span.done i,
+.ballot-phase-rail > span.active i {
+  color: #f0dfbc;
+  border-color: rgba(198, 168, 106, 0.36);
+  background: #3c3424;
+}
+
+.ballot-phase-rail > span.active i {
+  box-shadow: 0 0 0 5px rgba(198, 168, 106, 0.06), 0 0 30px rgba(198, 168, 106, 0.13);
+  animation: none;
+}
+
+.ballot-grid {
+  grid-template-columns: minmax(0, 1.3fr) minmax(355px, 0.7fr);
+  gap: 16px;
+  padding: 23px;
+}
+
+.ballot-bill-card,
+.ballot-console {
+  border-color: var(--chamber-line);
+  border-radius: 20px;
+  background: rgba(7, 9, 14, 0.52);
+}
+
+.ballot-bill-card::after {
+  color: rgba(218, 195, 146, 0.026);
+  font-family: "Source Serif 4", Georgia, serif;
+  font-weight: 500;
+}
+
+.ballot-bill-topline > span:first-child,
+.ballot-console-head > div > span,
+.ballot-bill-meta small,
+.ballot-bill-text > span {
+  color: #9e8b64;
+}
+
+.ballot-stage.open,
+.ballot-lock-indicator.open {
+  color: #e7d5ad;
+  background: rgba(178, 145, 82, 0.13);
+  box-shadow: none;
+}
+
+.ballot-bill-card h2 {
+  color: #f0ece4;
+  font: 550 clamp(1.8rem, 3.3vw, 3.15rem)/1.08 "Source Serif 4", Georgia, serif;
+  letter-spacing: -0.045em;
+}
+
+.ballot-bill-meta span {
+  border-color: rgba(218, 205, 178, 0.09);
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.ballot-bill-text {
+  border-left-color: rgba(198, 168, 106, 0.55);
+  background: linear-gradient(90deg, rgba(198, 168, 106, 0.075), rgba(255, 255, 255, 0.006));
+}
+
+.ballot-bill-text p {
+  color: #d1ccc3;
+  font-size: clamp(1.03rem, 1.45vw, 1.2rem);
+}
+
+.ballot-progress-track span {
+  background: linear-gradient(90deg, #7c6841, #d2b674);
+  box-shadow: 0 0 18px rgba(198, 168, 106, 0.2);
+}
+
+.ballot-console {
+  background: linear-gradient(160deg, rgba(22, 25, 33, 0.93), rgba(8, 10, 15, 0.93));
+}
+
+.ballot-console h2 {
+  color: #ece7de;
+  font-family: "Source Serif 4", Georgia, serif;
+  font-size: 1.45rem;
+  font-weight: 560;
+}
+
+.ballot-choice {
+  min-height: 72px;
+  border-color: rgba(218, 205, 178, 0.11);
+  border-radius: 14px;
+  color: #d1cec8;
+  background: rgba(255, 255, 255, 0.018);
+  transition: transform 240ms var(--chamber-ease), border-color 240ms ease, background 240ms ease;
+}
+
+.ballot-choice:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(198, 168, 106, 0.26);
+  background: rgba(198, 168, 106, 0.045);
+}
+
+.ballot-choice.selected {
+  border-color: rgba(198, 168, 106, 0.31);
+  background: rgba(198, 168, 106, 0.075);
+  box-shadow: inset 2px 0 var(--chamber-gold);
+}
+
+.ballot-choice.selected .ballot-choice-icon {
+  animation: chamberSeal 380ms var(--chamber-ease) both;
+}
+
+.ballot-choice-icon {
+  border-color: rgba(198, 168, 106, 0.16);
+  background: rgba(198, 168, 106, 0.045);
+}
+
+.ballot-receipt.recorded {
+  border-color: rgba(198, 168, 106, 0.2);
+  background: rgba(198, 168, 106, 0.055);
+}
+
+.vote-confirm-dialog {
+  border-color: rgba(198, 168, 106, 0.24);
+  color: #ede8df;
+  background: #11141b;
+}
+
+.vote-confirm-submit {
+  border-color: rgba(210, 181, 119, 0.3);
+  color: #17130b;
+  background: linear-gradient(135deg, #dbc17f, #b7995c);
+  box-shadow: 0 10px 30px rgba(146, 118, 63, 0.2);
+}
+
+::view-transition-old(consensus-surface) {
+  animation: chamberSurfaceOut 260ms ease both;
+}
+
+::view-transition-new(consensus-surface) {
+  animation: chamberSurfaceIn 620ms var(--chamber-ease) both;
+}
+
+@keyframes chamberArrival {
+  from {
+    opacity: 0;
+    filter: blur(9px);
+    transform: translateY(18px) scale(0.988);
+  }
+}
+
+@keyframes chamberSurfaceOut {
+  to { opacity: 0; filter: blur(8px); transform: scale(0.992); }
+}
+
+@keyframes chamberSurfaceIn {
+  from { opacity: 0; filter: blur(12px); transform: translateY(14px) scale(0.988); }
+}
+
+@keyframes chamberSeal {
+  from { opacity: 0.4; transform: scale(0.72); }
+  70% { transform: scale(1.06); }
+}
+
+@keyframes chamberLive {
+  50% { opacity: 0.45; box-shadow: 0 0 0 7px rgba(198, 168, 106, 0.035); }
+}
+
+@media (max-width: 1180px) {
+  .ballot-header-aside {
+    width: min(100%, 620px);
+    flex-wrap: wrap;
+  }
+
+  .ballot-deadline,
+  .ballot-security {
+    flex: 1 1 260px;
+  }
+}
+
+@media (max-width: 980px) {
+  .observer-schedule {
+    grid-template-columns: 1fr;
+  }
+
+  .observer-schedule-time {
+    min-width: 0;
+    justify-items: start;
+    padding: 15px 0 0;
+    border-top: 1px solid var(--chamber-line);
+    border-left: 0;
+  }
+
+  .ballot-header-aside {
+    width: 100%;
+  }
+}
+
+@media (max-width: 680px) {
+  .observer-schedule {
+    padding: 19px;
+    border-radius: 16px;
+  }
+
+  .ballot-header h1 {
+    font-size: clamp(2rem, 11vw, 3rem);
+  }
+
+  .ballot-header-aside {
+    display: grid;
+  }
+
+  .ballot-deadline,
+  .ballot-security {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 /* Consensus live broadcast / private ballot -------------------------------- */
 .experience-switch {
   display: inline-flex;

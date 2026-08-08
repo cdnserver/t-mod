@@ -1154,6 +1154,81 @@ class RecipeAdminSelectView(discord.ui.View):
             self.add_item(following)
 
 
+async def create_craft_plan(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    *,
+    recipe_id: int,
+    attempts_total: int,
+    responsible_id: int,
+    created_by_id: int,
+    created_by_display: str | None,
+) -> dict[str, Any]:
+    """Create and bind a craft plan for every UI surface.
+
+    SQLite and the public Discord message are treated as one operation: an
+    unbound plan is removed if Discord cannot create its durable control card.
+    """
+
+    member = guild.get_member(int(responsible_id))
+    if member is None:
+        member = await guild.fetch_member(int(responsible_id))
+    target_channel = await _get_channel(bot, CRAFT_CHANNEL_ID)
+    plan: dict[str, Any] | None = None
+    public_message: discord.Message | None = None
+    bound = False
+    try:
+        plan = await asyncio.to_thread(
+            storage.craft_create_plan,
+            guild_id=int(guild.id),
+            recipe_id=int(recipe_id),
+            channel_id=CRAFT_CHANNEL_ID,
+            attempts_total=int(attempts_total),
+            responsible_id=int(member.id),
+            responsible_display=str(member.display_name),
+            created_by_id=int(created_by_id),
+            created_by_display=str(created_by_display or "") or None,
+        )
+        public_message = await target_channel.send(
+            embed=plan_embed(plan),
+            view=CraftPlanView(plan),
+        )
+        thread = await public_message.create_thread(
+            name=f"крафт-{plan['id']}-{plan['recipe']['product_name']}"[:100],
+            auto_archive_duration=1440,
+        )
+        plan = await asyncio.to_thread(
+            storage.craft_bind_plan_message,
+            plan_id=int(plan["id"]),
+            channel_id=CRAFT_CHANNEL_ID,
+            message_id=int(public_message.id),
+            thread_id=int(thread.id),
+        )
+        if plan is None:  # pragma: no cover - guarded by the repository
+            raise RuntimeError("craft_plan_bind_failed")
+        bound = True
+        try:
+            await public_message.edit(embed=plan_embed(plan), view=CraftPlanView(plan))
+            await thread.send(
+                f"Подробный журнал плана **#{plan['id']}**. "
+                f"Ответственный: <@{plan['responsible_id']}>."
+            )
+        except discord.DiscordException:
+            traceback.print_exc()
+        wake_craft_worker()
+        plan["discord_url"] = public_message.jump_url
+        return plan
+    except Exception:
+        if plan is not None and not bound:
+            await asyncio.to_thread(storage.craft_delete_unbound_plan, int(plan["id"]))
+            if public_message is not None:
+                try:
+                    await public_message.delete()
+                except discord.DiscordException:
+                    traceback.print_exc()
+        raise
+
+
 class PlanCreateModal(discord.ui.Modal):
     def __init__(self, recipe_id: int, *, allow_any_channel: bool = False) -> None:
         super().__init__(title="Новый план крафта", timeout=600)
@@ -1178,58 +1253,22 @@ class PlanCreateModal(discord.ui.Modal):
         if not await craft_channel_only(interaction, allow_any_channel=self.allow_any_channel):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        plan: dict[str, Any] | None = None
-        public_message: discord.Message | None = None
-        bound = False
         try:
             responsible_id = parse_user_id(self.responsible.value)
-            member = interaction.guild.get_member(responsible_id)
-            if member is None:
-                member = await interaction.guild.fetch_member(responsible_id)
-            target_channel_id = CRAFT_CHANNEL_ID
-            target_channel = await _get_channel(interaction.client, target_channel_id)
-            plan = await asyncio.to_thread(
-                storage.craft_create_plan,
-                guild_id=interaction.guild.id,
+            plan = await create_craft_plan(
+                interaction.client,
+                interaction.guild,
                 recipe_id=self.recipe_id,
-                channel_id=target_channel_id,
                 attempts_total=parse_positive_int(self.attempts.value),
-                responsible_id=member.id,
-                responsible_display=member.display_name,
+                responsible_id=responsible_id,
                 created_by_id=interaction.user.id,
                 created_by_display=display_name(interaction.user),
             )
-            public_message = await target_channel.send(embed=plan_embed(plan), view=CraftPlanView(plan))
-            thread_name = f"крафт-{plan['id']}-{plan['recipe']['product_name']}"[:100]
-            thread = await public_message.create_thread(name=thread_name, auto_archive_duration=1440)
-            plan = await asyncio.to_thread(
-                storage.craft_bind_plan_message,
-                plan_id=int(plan["id"]),
-                channel_id=target_channel_id,
-                message_id=public_message.id,
-                thread_id=thread.id,
-            )
-            bound = True
-            try:
-                await public_message.edit(embed=plan_embed(plan), view=CraftPlanView(plan))
-                await thread.send(
-                    f"Подробный журнал плана **#{plan['id']}**. Ответственный: <@{plan['responsible_id']}>."
-                )
-            except discord.DiscordException:
-                traceback.print_exc()
-            wake_craft_worker()
             await interaction.followup.send(
-                f"План **#{plan['id']}** создан: {public_message.jump_url}",
+                f"План **#{plan['id']}** создан: {plan['discord_url']}",
                 ephemeral=True,
             )
         except Exception as exc:
-            if plan is not None and not bound:
-                await asyncio.to_thread(storage.craft_delete_unbound_plan, int(plan["id"]))
-                if public_message is not None:
-                    try:
-                        await public_message.delete()
-                    except discord.DiscordException:
-                        traceback.print_exc()
             await send_interaction_error(interaction, exc)
 
 

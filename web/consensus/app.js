@@ -281,6 +281,49 @@ function formatTimer(deadline) {
     : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
 }
 
+function formatScheduleCountdown(deadline) {
+  if (!deadline) return "—";
+  const seconds = Math.max(0, Math.floor((new Date(deadline).getTime() - Date.now()) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days} дн. ${hours} ч.`;
+  if (hours > 0) return `${hours} ч. ${minutes} мин.`;
+  if (minutes > 0) return `${minutes} мин.`;
+  return "начинается";
+}
+
+function renderSchedule(data) {
+  const schedule = data?.schedule || null;
+  const card = byId("observer-schedule");
+  const visible = Boolean(schedule && !data?.active && selectedMode !== "simulation");
+  document.body.classList.toggle("schedule-visible", visible);
+  card.hidden = !visible;
+  if (!visible) return;
+  text("observer-schedule-title", schedule.title || "Пленарный консенсус");
+  text(
+    "observer-schedule-description",
+    schedule.description || "Повестка и состав будут подтверждены председателем перед началом.",
+  );
+  const date = new Date(schedule.scheduled_for);
+  text(
+    "observer-schedule-date",
+    Number.isNaN(date.getTime())
+      ? "Время уточняется"
+      : date.toLocaleString("ru-RU", {
+          weekday: "long",
+          day: "2-digit",
+          month: "long",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+  );
+  text("observer-schedule-countdown", formatScheduleCountdown(schedule.scheduled_for));
+  const link = byId("observer-schedule-link");
+  link.hidden = !schedule.event_url;
+  if (schedule.event_url) link.href = schedule.event_url;
+}
+
 function showCommandMessage(message, kind = "success") {
   const node = byId("command-message");
   node.textContent = message;
@@ -551,13 +594,15 @@ function renderObserver(data) {
     "observer-session-title",
     session
       ? active ? "Заседание в процессе" : "Заседание завершено"
-      : "Консенсус не проводится",
+      : data.schedule ? "Следующее заседание назначено" : "Консенсус не проводится",
   );
   text(
     "observer-session-detail",
     session
       ? `Ведущий: ${session.leader.name} · ${session.stage_label.toLowerCase()}`
-      : "Экран ожидает начало следующего пленарного заседания.",
+      : data.schedule
+        ? "План опубликован председателем. Трансляция откроется здесь автоматически."
+        : "Экран ожидает начало следующего пленарного заседания.",
   );
   text("observer-stage", session?.stage_label || "Ожидание");
   byId("observer-stage").className = `stage-badge stage-${visualStage(session)}${active ? "" : " idle"}`;
@@ -1018,10 +1063,11 @@ function renderBallot(data) {
   ballotScreen.dataset.vote = vote || "none";
   byId("ballot-bill-card").dataset.number = bill ? formatNumber(bill.bill_number) : "000";
 
-  text("ballot-eyebrow", session ? `ПЛЕНАРНЫЙ КОНСЕНСУС · ${session.plenary_number}` : "ПЕРСОНАЛЬНЫЙ КОНТУР ГОЛОСОВАНИЯ");
-  text("ballot-heading", session ? "Персональный бюллетень" : "Бюллетень ожидает заседание");
+  text("ballot-eyebrow", session ? `МЕСТО СЕНАТОРА · ЗАСЕДАНИЕ ${session.plenary_number}` : "МЕСТО СЕНАТОРА");
+  text("ballot-heading", session ? "Ваше решение имеет вес" : "Место ожидает заседание");
   text("ballot-session-detail", session ? `Ведущий: ${session.leader.name} · ${session.stage_label}` : "Когда заседание начнётся, проект появится здесь автоматически.");
   text("ballot-identity", `${viewer.name || "Участник"} · личность подтверждена`);
+  text("ballot-identity-mark", (viewer.name || "T").trim().slice(0, 1).toUpperCase());
   text("ballot-bill-number", bill ? `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}` : "ПРОЕКТ НЕ ВЫБРАН");
   text("ballot-bill-title", bill?.title || "Между законопроектами");
   text("ballot-bill-author", bill?.author?.name || "—");
@@ -1034,6 +1080,25 @@ function renderBallot(data) {
   text("ballot-console-detail", detail);
   text("ballot-lock-indicator", canVote ? "открыт" : "закрыт");
   byId("ballot-lock-indicator").className = `ballot-lock-indicator ${canVote ? "open" : "locked"}`;
+
+  const deadline = byId("ballot-deadline");
+  const timerValue = formatTimer(session?.timer_deadline);
+  text("ballot-timer", timerValue);
+  text(
+    "ballot-timer-caption",
+    canVote
+      ? session?.timer_deadline ? "ДО ЗАКРЫТИЯ" : "ВРЕМЯ НЕ ОГРАНИЧЕНО"
+      : session?.stage === "presentation" ? "ДО ОТКРЫТИЯ ВОУТА" : "СРОК РЕШЕНИЯ",
+  );
+  deadline.className = `ballot-deadline ${canVote ? "open" : "waiting"}`;
+  const totalSeconds = Number(session?.timer_seconds || 0);
+  const remainingSeconds = session?.timer_deadline
+    ? Math.max(0, (new Date(session.timer_deadline).getTime() - Date.now()) / 1000)
+    : 0;
+  const timerProgress = totalSeconds > 0
+    ? Math.max(0, Math.min(1, remainingSeconds / totalSeconds))
+    : 0;
+  deadline.style.setProperty("--timer-progress", String(timerProgress));
 
   const expected = Number(session?.voting?.expected || 0);
   const received = Number(session?.voting?.received || 0);
@@ -1326,6 +1391,7 @@ function render(data) {
   renderMode(data);
   renderViewer(data);
   applyVisualState(data);
+  renderSchedule(data);
   const experience = renderExperience(data);
   const privilegedControls = (data.capabilities || []).some(
     (action) => action !== "participant_vote",
@@ -1667,6 +1733,18 @@ clockTimer = setInterval(() => {
     const timer = formatTimer(state.session.timer_deadline);
     text("timer-value", timer);
     text("observer-timer", timer);
+    text("ballot-timer", timer);
+    const totalSeconds = Number(state.session.timer_seconds || 0);
+    const remainingSeconds = state.session.timer_deadline
+      ? Math.max(0, (new Date(state.session.timer_deadline).getTime() - Date.now()) / 1000)
+      : 0;
+    byId("ballot-deadline").style.setProperty(
+      "--timer-progress",
+      String(totalSeconds > 0 ? Math.max(0, Math.min(1, remainingSeconds / totalSeconds)) : 0),
+    );
+  }
+  if (state?.schedule) {
+    text("observer-schedule-countdown", formatScheduleCountdown(state.schedule.scheduled_for));
   }
 }, 1000);
 

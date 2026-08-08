@@ -22,12 +22,57 @@
     </section>
 
     <section id="atlas-preview" class="atlas-preview" hidden>
-      <header><a class="preview-brand" href="/reactor"><span>A</span><b>ATLAS</b><small>T‑Mod</small></a><a href="/reactor">Вернуться в Реактор ↗</a></header>
-      <main>
-        <div class="preview-copy"><span><i></i> В ожидании превосходного</span><h1>Знания получают<br><em>собственные координаты.</em></h1><p>Мы строим новую рабочую среду для документов, проверенных источников и интеллектуальной навигации.</p><div class="preview-tags"><b>Atlas AI</b><b>Documents</b><b>Vault</b><b>Forumworks</b></div><footer><strong>Скоро в экосистеме T‑Mod</strong><small>доступ будет открываться поэтапно</small></footer></div>
-        <div class="preview-machine" aria-hidden="true"><div class="machine-orbits"><i></i><i></i><i></i><i></i><strong>A</strong><span class="signal s1">AI</span><span class="signal s2">DOC</span><span class="signal s3">RAG</span><span class="signal s4">DATA</span></div><div class="machine-readout"><span>ATLAS CORE</span><b>CALIBRATING</b><i></i></div></div>
+      <div class="preview-atmosphere" aria-hidden="true">
+        <span class="preview-aurora aurora-one"></span>
+        <span class="preview-aurora aurora-two"></span>
+        <span class="preview-stars"></span>
+        <span class="preview-horizon"></span>
+      </div>
+
+      <header class="preview-header">
+        <a class="preview-brand" href="/reactor" aria-label="Atlas от T-Mod">
+          <span class="preview-brand-mark"><i></i><b>A</b></span>
+          <span><strong>ATLAS</strong><small>T‑MOD · TVR × SGL</small></span>
+        </a>
+        <div class="preview-header-state"><i></i><span><small>СТАТУС СИСТЕМЫ</small><b>Закрытая подготовка</b></span></div>
+        <a class="preview-reactor-link" href="/reactor"><span>Вернуться</span><b>Ядерный Реактор</b><i>↗</i></a>
+      </header>
+
+      <main class="preview-stage">
+        <div class="preview-copy">
+          <span class="preview-kicker"><i></i> НОВОЕ ПРОСТРАНСТВО T‑MOD</span>
+          <h1><span>Знания обретают</span><em>направление.</em></h1>
+          <p>Atlas превращает правила, документы и опыт команды в ясные ответы и готовые решения — именно тогда, когда они нужны.</p>
+          <div class="preview-access-note">
+            <span class="access-seal"><i></i><b>А</b></span>
+            <span><small>ATLAS ГОТОВИТСЯ К ЗАПУСКУ</small><strong>Сейчас пространство открыто команде разработки</strong></span>
+          </div>
+        </div>
+
+        <div class="preview-constellation" aria-hidden="true">
+          <div class="constellation-aura"></div>
+          <div class="constellation-orbit orbit-outer"><i></i><i></i><i></i></div>
+          <div class="constellation-orbit orbit-middle"><i></i><i></i></div>
+          <div class="constellation-orbit orbit-inner"><i></i></div>
+          <div class="constellation-axis axis-one"></div>
+          <div class="constellation-axis axis-two"></div>
+          <div class="constellation-core"><span></span><i></i><b>A</b><small>ATLAS</small></div>
+          <span class="constellation-label label-knowledge"><i></i><b>Знания</b><small>всегда рядом</small></span>
+          <span class="constellation-label label-documents"><i></i><b>Документы</b><small>в едином стиле</small></span>
+          <span class="constellation-label label-guidance"><i></i><b>Ответы</b><small>с опорой на источник</small></span>
+          <span class="constellation-coordinate coordinate-one">PHX · 15</span>
+          <span class="constellation-coordinate coordinate-two">TVR × SGL</span>
+        </div>
       </main>
-      <div class="preview-ticker" aria-hidden="true"><span>SEMANTIC SEARCH</span><i>◇</i><span>VERIFIED SOURCES</span><i>◇</i><span>DOCUMENT INTELLIGENCE</span><i>◇</i><span>ISOLATED KNOWLEDGE</span><i>◇</i><span>TVR × SGL</span></div>
+
+      <footer class="preview-footer">
+        <div class="preview-principle"><span>01</span><p><b>Спросите</b><small>простыми словами</small></p></div>
+        <i></i>
+        <div class="preview-principle"><span>02</span><p><b>Проверьте</b><small>по исходным материалам</small></p></div>
+        <i></i>
+        <div class="preview-principle"><span>03</span><p><b>Действуйте</b><small>уверенно и точно</small></p></div>
+        <strong>ATLAS <small>— карта для сложной работы</small></strong>
+      </footer>
     </section>
 
     <div id="atlas-app" class="atlas-app" hidden>
@@ -46,7 +91,7 @@
 
         <nav class="atlas-nav" aria-label="Навигация Atlas">
           <button class="active" type="button" data-screen="home"><i>⌂</i><span>Командный центр</span></button>
-          <button type="button" data-screen="ai"><i>✦</i><span>Atlas AI</span><b>RAG</b></button>
+          <button type="button" data-screen="ai"><i>✦</i><span>Atlas AI</span><b>NEW</b></button>
           <button type="button" data-screen="documents"><i>▤</i><span>Документы</span></button>
           <button type="button" data-screen="knowledge"><i>◎</i><span>База знаний</span></button>
           <button type="button" data-screen="forum"><i>↗</i><span>Форум и памятки</span></button>
@@ -65,8 +110,12 @@
             <h1 id="screen-title">Командный центр</h1>
           </div>
           <div class="top-actions">
+            <div class="scope-switcher" aria-label="Рабочий раздел Atlas">
+              <label><small>Сервер</small><select id="atlas-server" aria-label="Сервер"></select></label>
+              <label><small>Фракция</small><select id="atlas-faction" aria-label="Фракция"></select></label>
+            </div>
             <button id="global-search" type="button"><span>⌕</span><b>Найти в Atlas</b><kbd>Ctrl K</kbd></button>
-            <span id="ai-state" class="ai-state"><i></i><b>ИИ-контур</b><small>проверка</small></span>
+            <span id="ai-state" class="ai-state"><i></i><b>Atlas AI</b><small>проверка</small></span>
             <div class="viewer"><span id="viewer-avatar">A</span><span><small>Пользователь Atlas</small><strong id="viewer-name">—</strong></span><a href="/auth/logout" title="Выйти">↗</a></div>
           </div>
         </header>
@@ -93,7 +142,7 @@
 
             <div class="metric-grid">
               <article><span>Документы</span><strong id="metric-documents">0</strong><small>в рабочем пространстве</small></article>
-              <article><span>Источники знаний</span><strong id="metric-knowledge">0</strong><small>проиндексировано Qdrant</small></article>
+              <article><span>Источники знаний</span><strong id="metric-knowledge">0</strong><small>готово к поиску</small></article>
               <article><span>Участники</span><strong id="metric-members">1</strong><small>с активным доступом</small></article>
               <article><span>Диалоги Atlas</span><strong id="metric-threads">0</strong><small>защищённые сессии</small></article>
             </div>
@@ -116,13 +165,13 @@
             <div class="module-grid">
               <article class="module-card ai" data-jump="ai"><span class="module-index">01</span><i>✦</i><h3>Atlas AI</h3><p>Ответы только по вашей проверенной базе знаний с точными источниками.</p><b>Открыть навигатор →</b></article>
               <article class="module-card docs" data-jump="documents"><span class="module-index">02</span><i>▤</i><h3>Документооборот</h3><p>Шаблоны, версии, согласование и единый стандарт для каждой структуры.</p><b>Открыть студию →</b></article>
-              <article class="module-card knowledge" data-jump="knowledge"><span class="module-index">03</span><i>◎</i><h3>База знаний</h3><p>Регламенты, форум, памятки и документы в собственном векторном индексе.</p><b>Управлять знаниями →</b></article>
-              <article class="module-card forum" data-jump="forum"><span class="module-index">04</span><i>↗</i><h3>Forum Desk</h3><p>Подготовка публикаций, проверка требований и будущая синхронизация с форумом.</p><b>Посмотреть контур →</b></article>
+              <article class="module-card knowledge" data-jump="knowledge"><span class="module-index">03</span><i>◎</i><h3>База знаний</h3><p>Регламенты, материалы форума, памятки и документы в одной проверенной библиотеке.</p><b>Управлять знаниями →</b></article>
+              <article class="module-card forum" data-jump="forum"><span class="module-index">04</span><i>↗</i><h3>Работа с форумом</h3><p>Подготовка публикаций, проверка требований и будущая синхронизация с форумом.</p><b>Посмотреть возможности →</b></article>
             </div>
           </section>
 
           <section id="screen-ai" class="screen">
-            <div class="section-intro"><span>ATLAS AI / GROUNDED INTELLIGENCE</span><h2>Навигатор по знаниям</h2><p>Atlas ищет подтверждённые фрагменты в Qdrant и только затем формирует ответ через OpenRouter.</p></div>
+            <div class="section-intro"><span>ATLAS AI</span><h2>Навигатор по знаниям</h2><p>Выберите сервер и фракцию. Atlas найдёт ответ только в подтверждённых материалах выбранного раздела и покажет источники.</p></div>
             <div class="ai-workspace">
               <article class="chat-panel">
                 <div id="chat-stream" class="chat-stream">
@@ -135,9 +184,9 @@
                 </form>
               </article>
               <aside class="ai-context">
-                <span>КОНТУР ОТВЕТА</span><h3>Grounded by design</h3>
-                <ol><li><i>1</i><span><b>Поиск</b><small>Qdrant выбирает релевантные фрагменты</small></span></li><li><i>2</i><span><b>Синтез</b><small>OpenRouter получает только найденные материалы</small></span></li><li><i>3</i><span><b>Проверка</b><small>Ответ возвращается с источниками</small></span></li></ol>
-                <div class="context-health"><i></i><span><b id="context-model">модель не выбрана</b><small id="context-collection">коллекция не подключена</small></span></div>
+                <span>КАК СТРОИТСЯ ОТВЕТ</span><h3>Проверяемый результат</h3>
+                <ol><li><i>1</i><span><b>Находит</b><small>подходящие правила и памятки</small></span></li><li><i>2</i><span><b>Собирает</b><small>короткий и понятный ответ</small></span></li><li><i>3</i><span><b>Показывает</b><small>материалы, на которых основан ответ</small></span></li></ol>
+                <div class="context-health"><i></i><span><b id="context-model">Atlas AI подключается</b><small id="context-collection">проверяем библиотеку</small></span></div>
               </aside>
             </div>
           </section>
@@ -148,8 +197,10 @@
           </section>
 
           <section id="screen-knowledge" class="screen">
-            <div class="section-intro"><span>KNOWLEDGE VAULT</span><h2>База знаний организации</h2><p>Каждый материал получает контрольную сумму, векторный индекс и изолируется внутри пространства.</p></div>
-            <div class="knowledge-grid"><article class="vault-visual"><div class="vault-core"><span></span><strong id="vault-count">0</strong><small>ИСТОЧНИКОВ<br>В ИНДЕКСЕ</small></div><h3>Векторное хранилище</h3><p>Atlas никогда не смешивает материалы разных организаций.</p></article><article id="knowledge-editor" class="knowledge-editor"><span>ДОБАВИТЬ ИСТОЧНИК</span><h3>Обучите Atlas новому материалу</h3><form id="knowledge-form"><label>Название<input name="title" maxlength="180" required placeholder="Регламент проведения задержаний"></label><label>Тип<select name="source_kind"><option value="regulation">Регламент</option><option value="manual">Памятка</option><option value="forum">Форум</option><option value="document">Документ</option><option value="memo">Заметка</option></select></label><label class="wide">Текст<textarea name="content" rows="8" minlength="20" required placeholder="Вставьте проверенный материал..."></textarea></label><button type="submit">Добавить и проиндексировать <span>→</span></button></form></article></div>
+            <div class="section-intro"><span>БИБЛИОТЕКА ATLAS</span><h2>Материалы для Atlas AI</h2><p>Загрузите правила, уставы, приказы и памятки. Atlas сохранит принадлежность к серверу и фракции, подготовит материал для поиска и будет ссылаться на него в ответах.</p></div>
+            <div class="knowledge-guide"><article><i>1</i><span><b>Выберите раздел</b><small>Phoenix (15) и нужную фракцию</small></span></article><article><i>2</i><span><b>Добавьте материал</b><small>файлом или проверенным текстом</small></span></article><article><i>3</i><span><b>Дождитесь статуса «Готов»</b><small>после этого Atlas использует источник</small></span></article></div>
+            <div class="knowledge-grid"><article class="vault-visual"><div class="vault-core"><span></span><strong id="vault-count">0</strong><small>ГОТОВЫХ<br>ИСТОЧНИКОВ</small></div><h3 id="vault-scope">Phoenix (15) · LSPD</h3><p>Материалы разных фракций не смешиваются.</p></article><article id="knowledge-editor" class="knowledge-editor"><span>ДОБАВИТЬ МАТЕРИАЛ</span><h3>Пополнить библиотеку</h3><div class="knowledge-modes"><button class="active" type="button" data-knowledge-mode="file">Загрузить файл</button><button type="button" data-knowledge-mode="text">Вставить текст</button></div><form id="knowledge-upload-form"><label class="wide upload-drop">Файл<input name="file" type="file" accept=".txt,.md,.docx,.pdf" required><span><b>Выберите TXT, Markdown, DOCX или PDF</b><small>до 8 МБ · по одному материалу за раз</small></span></label><label>Название, если нужно<input name="title" maxlength="180" placeholder="Будет взято из имени файла"></label><label>Тип<select name="source_kind"><option value="regulation">Регламент</option><option value="manual">Памятка</option><option value="forum">Материал форума</option><option value="document">Документ</option><option value="memo">Заметка</option></select></label><label class="wide">Ссылка на оригинал, если есть<input name="source_url" type="url" maxlength="1000" placeholder="https://..."></label><button type="submit">Загрузить в библиотеку <span>→</span></button></form><form id="knowledge-form" hidden><label>Название<input name="title" maxlength="180" required placeholder="Регламент проведения задержаний"></label><label>Тип<select name="source_kind"><option value="regulation">Регламент</option><option value="manual">Памятка</option><option value="forum">Материал форума</option><option value="document">Документ</option><option value="memo">Заметка</option></select></label><label class="wide">Ссылка на оригинал, если есть<input name="source_url" type="url" maxlength="1000" placeholder="https://..."></label><label class="wide">Проверенный текст<textarea name="content" rows="8" minlength="20" required placeholder="Вставьте полный материал без паролей и личных данных..."></textarea></label><button type="submit">Добавить в библиотеку <span>→</span></button></form></article></div>
+            <article class="source-library"><header><div><span>МАТЕРИАЛЫ ВЫБРАННОГО РАЗДЕЛА</span><h3 id="source-library-title">Phoenix (15) · LSPD</h3></div><button id="refresh-sources" type="button">Обновить</button></header><div id="knowledge-source-list" class="knowledge-source-list"><div class="empty">Материалы ещё не загружены.</div></div></article>
           </section>
 
           <section id="screen-forum" class="screen">
@@ -162,7 +213,7 @@
 
     <dialog id="onboarding-dialog" class="atlas-dialog">
       <form id="onboarding-form" method="dialog">
-        <button class="dialog-close" type="button" data-close>×</button><span>ATLAS ONBOARDING</span><h2>Ваш рабочий профиль</h2><p>Эти данные помогают Atlas предлагать подходящие инструменты и не влияют на права доступа.</p><label>Ваша роль<input name="role" maxlength="100" placeholder="Сотрудник государственной структуры"></label><label>Направление работы<input name="direction" maxlength="120" placeholder="Юридическая работа, кадровый отдел..."></label><label>Проект или фракция<input name="organization" maxlength="120" placeholder="Название структуры"></label><button class="primary" type="submit">Сохранить и продолжить</button>
+        <button class="dialog-close" type="button" data-close>×</button><span>ПЕРВЫЙ ЗАПУСК ATLAS</span><h2>Ваш рабочий профиль</h2><p>Выберите рабочее направление. Сервер и фракцию всегда можно поменять в верхней панели.</p><label>Сервер<select id="onboarding-server" name="server_code"></select></label><label>Фракция<select id="onboarding-faction" name="faction_code"></select></label><label>Ваша роль<input name="role" maxlength="100" placeholder="Сотрудник государственной структуры"></label><label>Направление работы<input name="direction" maxlength="120" placeholder="Юридическая работа, кадровый отдел..."></label><button class="primary" type="submit">Сохранить и продолжить</button>
       </form>
     </dialog>
 

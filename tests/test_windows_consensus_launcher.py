@@ -15,6 +15,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("docker stop minecraft", launcher)
         self.assertNotIn("docker rm minecraft", launcher)
         self.assertIn("http://127.0.0.1:8787/api/health", launcher)
+        self.assertIn("/api/health?ready=1", launcher)
+        self.assertIn("$r.discord_ready", launcher)
         self.assertIn("https://tvr.lat", launcher)
         self.assertNotIn("http://SERVER_LAN_IP:8787", launcher)
 
@@ -134,6 +136,29 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("docker exec minecraft rcon-cli list", launcher)
         self.assertIn("Minecraft RCON secret accepted", launcher)
         self.assertIn("server.properties are not synchronized", launcher)
+
+    def test_transactional_updater_tests_backs_up_and_rolls_back(self) -> None:
+        desktop = (ROOT / "start_tmod_windows.bat").read_text(encoding="utf-8")
+        runtime = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        updater = (ROOT / "safe_update_windows.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("safe_update_windows.ps1", desktop)
+        self.assertIn("TMOD_SKIP_BUILD", runtime)
+        self.assertIn("TMOD_TRANSACTIONAL_UPDATE", runtime)
+        self.assertIn("tmod_db_guard.py backup --kind pre-update", updater)
+        self.assertIn("worktree add --detach", updater)
+        self.assertIn("unittest discover", updater)
+        self.assertIn("db-validation-", updater)
+        self.assertIn("storage.init_db()", updater)
+        self.assertIn("PRAGMA integrity_check", updater)
+        self.assertIn("caddy validate", updater)
+        self.assertIn("merge --ff-only", updater)
+        self.assertIn("rollback-", updater)
+        self.assertIn("Restore-CodeRevision", updater)
+        self.assertIn('State "rolled_back"', updater)
+        self.assertIn('State "blocked_local_changes"', updater)
+        self.assertNotIn("stash push", updater)
+        self.assertNotIn("git reset --hard", updater)
 
     def test_retired_browser_stream_is_removed_during_startup(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")

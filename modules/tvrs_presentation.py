@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import discord
 from discord.ext import commands
@@ -8,6 +9,7 @@ from discord.ext import commands
 from persistence import activity_repository as _activity_storage
 from persistence import craft_repository as _craft_storage
 from persistence import finance_repository as _finance_storage
+from persistence import consensus_schedule_repository as _schedule_storage
 from persistence import tvrs_repository as _tvrs_storage
 from modules.consensus_core import (
     DEFAULT_CONSENSUS_RULES,
@@ -196,6 +198,7 @@ def build_main_panel_embed(guild: discord.Guild) -> discord.Embed:
     queue_count = len(_tvrs_storage.tvrs_queue_bills(guild.id, limit=100))
     plenary = _tvrs_storage.tvrs_get_next_plenary_number(guild.id, TVRS_DEFAULT_NEXT_PLENARY_NUMBER)
     active = _active_sessions.get(guild.id)
+    schedule = _schedule_storage.get_upcoming_consensus_schedule(guild.id)
     active_text = "🟢 активного заседания нет"
     if active and not active.finished:
         active_text = (
@@ -224,6 +227,20 @@ def build_main_panel_embed(guild: discord.Guild) -> discord.Embed:
             value=(
                 "Председатель проверяет повестку и войс через **«Подготовить заседание»**. "
                 "Рабочая сессия создаётся только после успешной проверки."
+            ),
+            inline=False,
+        )
+    if schedule is not None:
+        starts_at = datetime.fromisoformat(
+            str(schedule["scheduled_for"]).replace("Z", "+00:00")
+        )
+        unix_time = int(starts_at.timestamp())
+        embed.add_field(
+            name="🗓️ Запланировано",
+            value=(
+                f"**{clip_text(schedule.get('title'), 160)}**\n"
+                f"<t:{unix_time}:F> · <t:{unix_time}:R>\n"
+                f"Ориентировочно **{int(schedule.get('duration_minutes') or 90)} мин.**"
             ),
             inline=False,
         )
@@ -379,7 +396,13 @@ def participant_lines(session: LiveConsensusSession) -> str:
     return clip_text("\n".join(lines), 1000, "Нет участников.")
 
 
-def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
+def build_registration_embed(
+    session: LiveConsensusSession,
+    *,
+    queue_override: str | None = None,
+    voice_override: str | None = None,
+    description_override: str | None = None,
+) -> discord.Embed:
     chairs = len(session.confirmed_chairs())
     senators = len(session.confirmed_senators())
     total_confirmed = len(session.confirmed_participants())
@@ -387,7 +410,8 @@ def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
     percent = (total_confirmed / total_invited * 100.0) if total_invited else 0.0
     embed = discord.Embed(
         title=f"🟦 Регистрация консенсуса • {ru_ordinal(session.plenary_number)}",
-        description=(
+        description=description_override
+        or (
             "Это приватный пульт ведущего. Участники подтверждают участие в ЛС или через "
             "`/tvrs` → **«Консенсус»**. Ведущий зарегистрирован автоматически."
         ),
@@ -398,9 +422,21 @@ def build_registration_embed(session: LiveConsensusSession) -> discord.Embed:
     embed.add_field(name="📌 Кворум", value=("✅ **набран**" if session.quorum_ready() else "❌ **ожидается**"), inline=True)
     embed.add_field(name="🧾 Подтверждения", value=f"`{total_confirmed}/{total_invited}` {progress_bar(percent, 10)} `{round(percent, 1)}%`", inline=False)
     embed.add_field(name="⚖️ Состав", value=f"Председатели: `{chairs}` • Сенаторы: `{senators}`", inline=True)
-    embed.add_field(name="🎙️ Войс", value=f"<#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>", inline=True)
+    embed.add_field(
+        name="🎙️ Войс",
+        value=voice_override or f"<#{TVRS_CONSENSUS_VOICE_CHANNEL_ID}>",
+        inline=True,
+    )
     embed.add_field(name="👥 Участники", value=participant_lines(session), inline=False)
-    embed.add_field(name="📚 Очередь к рассмотрению", value=queue_short_lines(session.guild_id, limit=8), inline=False)
+    embed.add_field(
+        name="📚 Очередь к рассмотрению",
+        value=(
+            queue_override
+            if queue_override is not None
+            else queue_short_lines(session.guild_id, limit=8)
+        ),
+        inline=False,
+    )
     embed.set_footer(
         text=(
             f"Consensus V{session.engine_version} • правила v{session.rules.version} • "
@@ -421,7 +457,11 @@ def vote_lines(session: LiveConsensusSession) -> str:
     return clip_text("\n".join(lines), 1000, "Голосов пока нет.")
 
 
-def build_live_vote_embed(session: LiveConsensusSession) -> discord.Embed:
+def build_live_vote_embed(
+    session: LiveConsensusSession,
+    *,
+    queue_override: str | None = None,
+) -> discord.Embed:
     if session.stage == "paused":
         return build_paused_embed(session)
     if session.stage in {"discussion_type", "discussion"}:
@@ -470,10 +510,14 @@ def build_live_vote_embed(session: LiveConsensusSession) -> discord.Embed:
         )
         embed.add_field(
             name="📚 Далее в очереди",
-            value=queue_short_lines(
-                session.guild_id,
-                limit=5,
-                skip_bill_id=int(bill.get("id") or 0),
+            value=(
+                queue_override
+                if queue_override is not None
+                else queue_short_lines(
+                    session.guild_id,
+                    limit=5,
+                    skip_bill_id=int(bill.get("id") or 0),
+                )
             ),
             inline=False,
         )
@@ -521,12 +565,29 @@ def build_live_vote_embed(session: LiveConsensusSession) -> discord.Embed:
     embed.add_field(name="❌ Против", value=no, inline=True)
     embed.add_field(name="⚪ Воздержались", value=abstain, inline=True)
     embed.add_field(name="⏳ Ожидаются", value=wait, inline=True)
-    embed.add_field(name="📚 Далее в очереди", value=queue_short_lines(session.guild_id, limit=5, skip_bill_id=int(bill.get("id") or 0)), inline=False)
+    embed.add_field(
+        name="📚 Далее в очереди",
+        value=(
+            queue_override
+            if queue_override is not None
+            else queue_short_lines(
+                session.guild_id,
+                limit=5,
+                skip_bill_id=int(bill.get("id") or 0),
+            )
+        ),
+        inline=False,
+    )
     embed.set_footer(text="Панель ведущего • кнопки ниже управляют только текущим голосованием")
     return embed
 
 
-def build_dm_vote_embed(session: LiveConsensusSession, participant: LiveParticipant) -> discord.Embed:
+def build_dm_vote_embed(
+    session: LiveConsensusSession,
+    participant: LiveParticipant,
+    *,
+    queue_override: str | None = None,
+) -> discord.Embed:
     if session.stage == "paused":
         embed = build_paused_embed(session)
         embed.add_field(name="Ваш статус", value="Голосование временно недоступно.", inline=False)
@@ -536,7 +597,7 @@ def build_dm_vote_embed(session: LiveConsensusSession, participant: LiveParticip
         embed.add_field(name="Ваш статус", value="На время дискуссии кнопки голосования скрыты.", inline=False)
         return embed
     if session.stage == "finalizing":
-        embed = build_live_vote_embed(session)
+        embed = build_live_vote_embed(session, queue_override=queue_override)
         embed.add_field(name="Ваш статус", value="Голос принят. Ожидайте итог.", inline=False)
         return embed
     bill = session.current_bill or {}
@@ -568,10 +629,14 @@ def build_dm_vote_embed(session: LiveConsensusSession, participant: LiveParticip
         )
         embed.add_field(
             name="Очередь после текущего",
-            value=queue_short_lines(
-                session.guild_id,
-                limit=4,
-                skip_bill_id=int(bill.get("id") or 0),
+            value=(
+                queue_override
+                if queue_override is not None
+                else queue_short_lines(
+                    session.guild_id,
+                    limit=4,
+                    skip_bill_id=int(bill.get("id") or 0),
+                )
             ),
             inline=False,
         )
@@ -592,7 +657,19 @@ def build_dm_vote_embed(session: LiveConsensusSession, participant: LiveParticip
     embed.add_field(name="Таймер", value=remaining_timer_text(session), inline=True)
     embed.add_field(name="Прогресс", value=f"`{voted}/{total}` {progress_bar(vote_pct, 8)}", inline=True)
     embed.add_field(name="Общий консенсус сейчас", value=f"`{calc['overall_percent']}%` {progress_bar(float(calc['overall_percent']), 8)}", inline=False)
-    embed.add_field(name="Очередь после текущего", value=queue_short_lines(session.guild_id, limit=4, skip_bill_id=int(bill.get("id") or 0)), inline=False)
+    embed.add_field(
+        name="Очередь после текущего",
+        value=(
+            queue_override
+            if queue_override is not None
+            else queue_short_lines(
+                session.guild_id,
+                limit=4,
+                skip_bill_id=int(bill.get("id") or 0),
+            )
+        ),
+        inline=False,
+    )
     if participant.permanent:
         embed.set_footer(text="Вы можете проголосовать, инициировать вето или дождаться итогов.")
     elif participant.kind == "senator":

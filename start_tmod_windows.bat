@@ -50,6 +50,16 @@ call :log "Repository cloned from %REPO_URL%"
 goto repository_ready
 
 :repository_ready
+if not exist "%PROJECT_DIR%\safe_update_windows.ps1" goto legacy_update
+echo [SAFE UPDATE] Transactional updater enabled.
+call :log "Starting transactional update and guarded deployment"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\safe_update_windows.ps1" -ProjectDir "%PROJECT_DIR%" -PersistentDir "%USERPROFILE%\Documents\SGLDiscordBot" -Branch "%BRANCH%"
+set "BOT_EXIT_CODE=%ERRORLEVEL%"
+call :log "Transactional updater finished with exit code %BOT_EXIT_CODE%"
+if not "%BOT_EXIT_CODE%"=="0" goto fatal_error
+exit /b 0
+
+:legacy_update
 echo [GIT] Checking GitHub for updates...
 git -C "%PROJECT_DIR%" remote get-url origin >nul 2>nul
 if errorlevel 1 git -C "%PROJECT_DIR%" remote add origin "%REPO_URL%"

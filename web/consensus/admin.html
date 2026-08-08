@@ -478,9 +478,10 @@
                 <h2>Казна под контролем</h2>
                 <p>Баланс, движение средств, причины и связь с крафтами.</p>
               </div>
-              <button id="finance-export" class="secondary-button" type="button">
-                Экспорт CSV
-              </button>
+              <div class="section-actions">
+                <button id="finance-command" class="primary-button" type="button">＋ Операция</button>
+                <button id="finance-export" class="secondary-button" type="button">Экспорт CSV</button>
+              </div>
             </div>
 
             <div class="kpi-grid compact-kpis">
@@ -584,9 +585,11 @@
                 <h2>Производственный аудит</h2>
                 <p>Прогресс, материалы, сроки, экономика и история каждого плана.</p>
               </div>
-              <button id="craft-export" class="secondary-button" type="button">
-                Экспорт событий
-              </button>
+              <div class="section-actions">
+                <button id="craft-plan-create" class="primary-button" type="button">＋ Новый план</button>
+                <button id="craft-recipe-create" class="secondary-button" type="button">Новый рецепт</button>
+                <button id="craft-export" class="secondary-button" type="button">Экспорт событий</button>
+              </div>
             </div>
 
             <div class="kpi-grid compact-kpis">
@@ -620,6 +623,16 @@
                 </div>
               </header>
               <div id="craft-plan-grid" class="plan-grid"></div>
+            </article>
+
+            <article class="panel">
+              <header class="panel-head">
+                <div>
+                  <span class="panel-kicker">КОНСТРУКТОР РЕЦЕПТОВ</span>
+                  <h2 id="craft-recipe-count">Версии производства</h2>
+                </div>
+              </header>
+              <div id="craft-recipe-grid" class="recipe-control-grid"></div>
             </article>
 
             <form id="craft-filters" class="filter-bar">
@@ -771,7 +784,10 @@
                 <h2>Законопроекты и консенсус</h2>
                 <p>Полный реестр проектов, редакторские пространства и результаты.</p>
               </div>
-              <a class="secondary-button" href="/">Открыть пленарную панель</a>
+              <div class="section-actions">
+                <span class="control-status"><i></i> управление защищено аудитом</span>
+                <a class="secondary-button" href="/">Открыть пленарную панель</a>
+              </div>
             </div>
 
             <div class="kpi-grid compact-kpis">
@@ -1197,6 +1213,49 @@
               </article>
             </div>
 
+            <article class="panel reliability-console">
+              <header class="panel-head reliability-head">
+                <div>
+                  <span class="panel-kicker">PRODUCTION RELIABILITY CONTOUR</span>
+                  <h2>Контур надёжности</h2>
+                  <p>Сертификаты, резервные копии, целостность SQLite и состояние установленного релиза.</p>
+                </div>
+                <div class="reliability-head-actions">
+                  <span id="reliability-release" class="release-chip">release —</span>
+                  <span id="reliability-overall" class="health-pill">проверка</span>
+                  <button id="system-refresh-reliability" class="secondary-button" type="button">Перепроверить</button>
+                </div>
+              </header>
+              <div class="reliability-grid">
+                <section class="reliability-unit database-guard-unit">
+                  <div class="reliability-unit-title"><i>DB</i><div><strong>SQLite Guard</strong><small id="db-protection-state">ожидание телеметрии</small></div></div>
+                  <div class="reliability-metrics">
+                    <div><span>Последняя копия</span><b id="db-latest-backup">—</b></div>
+                    <div><span>Целостность</span><b id="db-integrity-state">—</b></div>
+                    <div><span>Размер базы</span><b id="db-size">—</b></div>
+                    <div><span>Свободно</span><b id="db-free-space">—</b></div>
+                  </div>
+                  <div class="reliability-controls">
+                    <button id="system-backup-database" class="primary-button" type="button">Создать проверенную копию</button>
+                    <button id="system-check-database" class="secondary-button" type="button">Проверить SQLite</button>
+                  </div>
+                </section>
+                <section class="reliability-unit domain-guard-unit">
+                  <div class="reliability-unit-title"><i>TLS</i><div><strong>Web Gateway</strong><small>доступность и сертификаты</small></div></div>
+                  <div id="reliability-domain-list" class="domain-health-list"></div>
+                </section>
+                <section class="reliability-unit release-guard-unit">
+                  <div class="reliability-unit-title"><i>UP</i><div><strong>Safe Update</strong><small>последняя транзакция развёртывания</small></div></div>
+                  <div class="release-state-card">
+                    <span id="update-state">состояние неизвестно</span>
+                    <strong id="update-version">—</strong>
+                    <p id="update-detail">После первого безопасного обновления здесь появится полный отчёт.</p>
+                    <small id="update-time">—</small>
+                  </div>
+                </section>
+              </div>
+            </article>
+
             <div class="triple-grid">
               <article class="panel">
                 <header class="panel-head">
@@ -1604,6 +1663,29 @@
         </div>
       </form>
       <div id="detail-content" class="detail-content"></div>
+    </dialog>
+
+    <dialog id="operation-dialog" class="reactor-dialog operation-dialog">
+      <form id="operation-form">
+        <header class="reactor-dialog-head">
+          <span><small id="operation-eyebrow">CONTROLLED OPERATION</small><strong id="operation-title">Управление</strong></span>
+          <button id="operation-close" type="button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="operation-context">
+          <span id="operation-mark">◇</span>
+          <div><strong id="operation-context-title">Объект</strong><small id="operation-context-meta">Единое состояние Discord и веб</small></div>
+        </div>
+        <label class="operation-action-select">
+          <span>Действие</span>
+          <select id="operation-action" name="operation_action"></select>
+        </label>
+        <div id="operation-fields" class="operation-fields"></div>
+        <p id="operation-warning" class="operation-warning">Операция будет записана в универсальный аудит T-Mod.</p>
+        <footer class="operation-footer">
+          <button id="operation-cancel" class="secondary-button" type="button">Отмена</button>
+          <button id="operation-submit" class="primary-button" type="submit">Проверить и выполнить</button>
+        </footer>
+      </form>
     </dialog>
 
     <dialog id="command-dialog" class="reactor-dialog command-dialog">

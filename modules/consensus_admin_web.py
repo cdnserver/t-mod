@@ -13,10 +13,19 @@ from typing import Any, Awaitable, Callable
 import discord
 from aiohttp import web
 
+from modules.admin_domain_commands import (
+    BILL_ERROR_MESSAGES,
+    CRAFT_ERROR_MESSAGES,
+    FINANCE_ERROR_MESSAGES,
+    execute_bill_command,
+    execute_craft_command,
+    execute_finance_command,
+)
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.delivery_runtime import wake_delivery_worker
 from modules.music_runtime_errors import MusicRuntimeError
 from modules.profile import PROFILE_ROLE_HIERARCHY
+from modules.reliability import reliability_snapshot
 from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from persistence import admin_dashboard_repository as dashboard_storage
@@ -27,10 +36,12 @@ from persistence import craft_repository as craft_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
 from persistence import profile_repository as profile_storage
+from persistence import sgl_archive_repository as sgl_archive_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import voice_control_repository as voice_storage
 from persistence import web_portal_repository as portal_storage
 from persistence import web_auth_repository as web_auth_storage
+from persistence.database_guard import check_live_database, create_database_backup
 
 
 ADMIN_BROADCAST_TOPIC = "admin.broadcast.dm.v1"
@@ -521,6 +532,7 @@ def register_admin_web_routes(
             projected_grants.append(
                 {
                     **grant,
+                    "user_id_text": str(grant["user_id"]),
                     "member_name": str(
                         getattr(grant_member, "display_name", "")
                         or f"Discord {grant['user_id']}"
@@ -971,7 +983,7 @@ def register_admin_web_routes(
     async def crafts(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
         days = _query_int(request, "days", 30, minimum=1, maximum=365)
-        stats, active, recent, events = await asyncio.gather(
+        stats, active, recent, recipes, events = await asyncio.gather(
             asyncio.to_thread(
                 craft_storage.craft_stats,
                 int(guild_id),
@@ -986,6 +998,12 @@ def register_admin_web_routes(
                 craft_storage.craft_recent_plans,
                 int(guild_id),
                 50,
+            ),
+            asyncio.to_thread(
+                craft_storage.craft_list_recipes,
+                int(guild_id),
+                active_only=False,
+                limit=100,
             ),
             asyncio.to_thread(
                 dashboard_storage.admin_craft_events,
@@ -1017,9 +1035,222 @@ def register_admin_web_routes(
                 "recent_plans": [
                     _craft_plan_payload(plan, int(guild_id)) for plan in recent
                 ],
+                "recipes": recipes,
                 "events": events,
             }
         )
+
+    async def craft_command(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        if body.get("confirmed") is not True:
+            return web.json_response(
+                {
+                    "error": "craft_confirmation_required",
+                    "message": "Подтвердите производственную операцию.",
+                },
+                status=400,
+            )
+        try:
+            result = await execute_craft_command(
+                bot,
+                guild_id=int(guild_id),
+                actor_id=int(principal.user_id),
+                actor_display=str(principal.display_name),
+                body=body,
+            )
+        except (TypeError, ValueError) as exc:
+            code = str(exc).split(":", 1)[0]
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": CRAFT_ERROR_MESSAGES.get(
+                        code,
+                        "Не удалось выполнить операцию крафта. Проверьте стадию и введённые данные.",
+                    ),
+                },
+                status=400,
+            )
+        except (discord.DiscordException, OSError, RuntimeError) as exc:
+            return web.json_response(
+                {
+                    "error": type(exc).__name__,
+                    "message": "Discord временно не завершил операцию. Состояние проверено и небезопасный незакреплённый план удалён.",
+                },
+                status=503,
+            )
+        payload = {
+            "ok": True,
+            "message": result["message"],
+            "plan": (
+                _craft_plan_payload(result["plan"], int(guild_id))
+                if isinstance(result.get("plan"), dict)
+                else None
+            ),
+            "recipe": result.get("recipe"),
+            "projection_warning": result.get("projection_warning"),
+        }
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        return web.json_response(payload)
+
+    async def finance_command(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        if body.get("confirmed") is not True:
+            return web.json_response(
+                {
+                    "error": "finance_confirmation_required",
+                    "message": "Подтвердите изменение финансового реестра.",
+                },
+                status=400,
+            )
+        try:
+            result = await execute_finance_command(
+                guild_id=int(guild_id),
+                actor_id=int(principal.user_id),
+                actor_display=str(principal.display_name),
+                idempotency_key=idempotency_key,
+                body=body,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": FINANCE_ERROR_MESSAGES.get(
+                        str(exc),
+                        "Не удалось изменить казну. Проверьте сумму, причину и код.",
+                    ),
+                },
+                status=400,
+            )
+        payload = {"ok": True, **result}
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        return web.json_response(payload)
+
+    async def bill_command(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        if body.get("confirmed") is not True:
+            return web.json_response(
+                {
+                    "error": "bill_confirmation_required",
+                    "message": "Подтвердите изменение реестра законопроектов.",
+                },
+                status=400,
+            )
+        try:
+            result = await execute_bill_command(
+                guild_id=int(guild_id),
+                actor_id=int(principal.user_id),
+                actor_display=str(principal.display_name),
+                body=body,
+            )
+        except (TypeError, ValueError) as exc:
+            code = str(exc).split(":", 1)[0]
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": BILL_ERROR_MESSAGES.get(
+                        code,
+                        "Проект не изменён: проверьте данные и состояние консенсуса.",
+                    ),
+                },
+                status=400,
+            )
+        payload = {"ok": True, **result}
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        return web.json_response(payload)
+
+    async def sgl_command(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        if body.get("confirmed") is not True:
+            return web.json_response(
+                {
+                    "error": "sgl_confirmation_required",
+                    "message": "Подтвердите восстановление юридического архива.",
+                },
+                status=400,
+            )
+        if str(body.get("action") or "").strip().lower() != "restore_archive":
+            return web.json_response(
+                {"error": "sgl_action_invalid", "message": "Неизвестная операция Бюро."},
+                status=400,
+            )
+        try:
+            case_number = int(body.get("case_number") or 0)
+        except (TypeError, ValueError):
+            case_number = 0
+        archive = await asyncio.to_thread(
+            sgl_archive_storage.get_sgl_case_archive,
+            int(guild_id),
+            case_number,
+        )
+        guild = bot.get_guild(int(guild_id))
+        if archive is None or guild is None:
+            return web.json_response(
+                {"error": "sgl_archive_not_found", "message": "Архив кейса не найден."},
+                status=404,
+            )
+        try:
+            from modules.sgl_archive_restore import start_case_restoration
+
+            channel, created = await start_case_restoration(
+                bot,  # type: ignore[arg-type]
+                guild,
+                archive,
+                principal.member,  # type: ignore[arg-type]
+            )
+        except (discord.DiscordException, OSError, RuntimeError) as exc:
+            return web.json_response(
+                {
+                    "error": type(exc).__name__,
+                    "message": "Не удалось создать временный канал архива. Повторите после проверки Discord.",
+                },
+                status=503,
+            )
+        message = (
+            "Временный канал архива создан."
+            if created
+            else "Этот архив уже восстановлен; открыт существующий канал."
+        )
+        payload = {
+            "ok": True,
+            "message": message,
+            "channel_id": int(channel.id),
+            "discord_url": f"https://discord.com/channels/{int(guild_id)}/{int(channel.id)}",
+        }
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        await asyncio.to_thread(
+            activity_storage.bot_record_action,
+            guild_id=int(guild_id),
+            actor_id=int(principal.user_id),
+            actor_display=str(principal.display_name),
+            module="sgl",
+            action_kind="web_archive_restore",
+            target_type="sgl_archive",
+            target_id=int(archive.id),
+            summary=f"Восстановлен архив кейса №{case_number:03d}",
+            payload={"source": "nuclear-reactor", "channel_id": int(channel.id)},
+            reversible=False,
+        )
+        return web.json_response(payload)
 
     async def discord_audit(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
@@ -1671,16 +1902,20 @@ def register_admin_web_routes(
 
     async def system(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
-        system_data = await asyncio.to_thread(
-            portal_storage.portal_system,
-            int(guild_id),
-            limit=50,
+        system_data, reliability = await asyncio.gather(
+            asyncio.to_thread(
+                portal_storage.portal_system,
+                int(guild_id),
+                limit=50,
+            ),
+            reliability_snapshot(force=request.query.get("fresh") == "1"),
         )
         guild = bot.get_guild(int(guild_id))
         return web.json_response(
             {
                 **context(principal),
                 **system_data,
+                "reliability": reliability,
                 "music": music_snapshot(),
                 "runtime": {
                     "ready": bool(getattr(bot, "is_ready", lambda: False)()),
@@ -1695,6 +1930,61 @@ def register_admin_web_routes(
                 },
             }
         )
+
+    async def system_action(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        action = str(body.get("action") or "").strip().lower()
+        if action == "backup_database":
+            result = await asyncio.to_thread(
+                create_database_backup,
+                "manual",
+                note=(
+                    f"Nuclear Reactor · {principal.display_name} "
+                    f"({principal.user_id})"
+                ),
+            )
+            message = "Проверенная резервная копия SQLite создана."
+            action_kind = "database_backup_created"
+        elif action == "check_database":
+            result = await asyncio.to_thread(
+                check_live_database,
+                full=bool(body.get("full")),
+            )
+            message = (
+                "Проверка SQLite завершена: повреждений не найдено."
+                if result.get("ok")
+                else "Проверка SQLite обнаружила проблему."
+            )
+            action_kind = "database_integrity_checked"
+        else:
+            return web.json_response(
+                {
+                    "error": "system_action_invalid",
+                    "message": "Неизвестное действие технического контура.",
+                },
+                status=400,
+            )
+        payload = {"ok": True, "message": message, "result": result}
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        await asyncio.to_thread(
+            activity_storage.bot_record_action,
+            guild_id=int(guild_id),
+            actor_id=int(principal.user_id),
+            actor_display=str(principal.display_name),
+            module="reliability",
+            action_kind=action_kind,
+            target_type="sqlite_database",
+            target_id=str(result.get("name") or "tmod.db"),
+            summary=message,
+            payload={"source": "nuclear-reactor", "result": result},
+            reversible=False,
+        )
+        return web.json_response(payload)
 
     async def media_status(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
@@ -1810,7 +2100,9 @@ def register_admin_web_routes(
     app.router.add_get("/api/admin/overview", overview)
     app.router.add_get("/api/admin/actions", actions)
     app.router.add_get("/api/admin/finance", finance)
+    app.router.add_post("/api/admin/finance/command", finance_command)
     app.router.add_get("/api/admin/crafts", crafts)
+    app.router.add_post("/api/admin/crafts/command", craft_command)
     app.router.add_get("/api/admin/discord", discord_audit)
     app.router.add_get("/api/admin/registry", registry)
     app.router.add_get("/api/admin/market", market)
@@ -1819,7 +2111,9 @@ def register_admin_web_routes(
         market_alert_command,
     )
     app.router.add_get("/api/admin/bills", bills_registry)
+    app.router.add_post("/api/admin/bills/command", bill_command)
     app.router.add_get("/api/admin/sgl", sgl_registry)
+    app.router.add_post("/api/admin/sgl/command", sgl_command)
     app.router.add_get("/api/admin/members", members_registry)
     app.router.add_get("/api/admin/communications", communications)
     app.router.add_post(
@@ -1836,6 +2130,7 @@ def register_admin_web_routes(
         update_character_visibility,
     )
     app.router.add_get("/api/admin/system", system)
+    app.router.add_post("/api/admin/system/action", system_action)
     app.router.add_get("/api/admin/access", access_control)
     app.router.add_post("/api/admin/access", access_control)
     app.router.add_get("/api/admin/access/self", access_self)

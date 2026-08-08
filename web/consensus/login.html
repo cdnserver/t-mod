@@ -6,9 +6,9 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#080b0c">
     <style>html,body{background:#080b0c;color:#edf1eb}</style>
-    <title>T·ID — вход в систему</title>
+    <title>T-Mod Account — единый вход</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <meta name="description" content="Персональный вход в веб-систему T-Mod.">
+    <meta name="description" content="Единый защищённый аккаунт для сервисов T-Mod.">
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/login.css">
     <script src="/assets/login.js" defer></script>
@@ -27,13 +27,13 @@
           <p>ЕДИНАЯ УЧЁТНАЯ ЗАПИСЬ</p>
           <h1>Один вход.<br>Вся система.</h1>
           <span>
-            Права синхронизируются с Discord: участник получает личные разделы,
-            администратор — полный операционный контур.
+            Войдите один раз — Reactor, Consensus, Atlas и T-Mod Games узнают
+            вас автоматически на этом устройстве.
           </span>
         </div>
         <div class="identity-status">
           <i></i>
-          <span><b>Discord authority</b><small>права проверяются при каждом входе</small></span>
+          <span><b>Права Discord</b><small>проверяются при каждом защищённом действии</small></span>
         </div>
       </section>
 
@@ -41,7 +41,7 @@
         <div class="credential-head">
           <span class="credential-mark" aria-hidden="true">T</span>
           <p>ЗАЩИЩЁННАЯ СЕССИЯ</p>
-          <h2 id="login-title">Войти в T-Mod</h2>
+          <h2 id="login-title">Войти в T-Mod Account</h2>
           <span>Используйте данные, заданные лично через <b>/profile</b> в Discord.</span>
         </div>
         <form id="credential-form" action="/auth/login" method="post">

@@ -326,6 +326,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS atlas_knowledge_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
+                server_code TEXT NOT NULL DEFAULT 'phoenix-15',
+                faction_code TEXT NOT NULL DEFAULT 'lspd',
                 title TEXT NOT NULL,
                 source_kind TEXT NOT NULL DEFAULT 'memo'
                     CHECK(source_kind IN ('document', 'forum', 'memo', 'regulation', 'manual', 'url')),
@@ -336,6 +338,7 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'indexed', 'failed', 'archived')),
                 metadata_json TEXT NOT NULL DEFAULT '{}',
+                original_filename TEXT,
                 created_by_id INTEGER NOT NULL,
                 indexed_at TEXT,
                 last_error TEXT,
@@ -920,6 +923,37 @@ def init_db() -> None:
                 details_json TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS tvrs_consensus_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                plenary_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                invitation_text TEXT NOT NULL DEFAULT '',
+                scheduled_for TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL DEFAULT 90,
+                voice_channel_id INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                discord_event_id INTEGER,
+                invitation_broadcast_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'scheduled'
+                    CHECK(status IN ('scheduled', 'started', 'completed', 'cancelled')),
+                started_session_key TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                cancelled_at TEXT,
+                started_at TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_consensus_schedule_active
+            ON tvrs_consensus_schedules(guild_id)
+            WHERE status = 'scheduled';
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_consensus_schedule_timeline
+            ON tvrs_consensus_schedules(guild_id, scheduled_for DESC, id DESC);
 
             CREATE TABLE IF NOT EXISTS delivery_outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1605,6 +1639,19 @@ def init_db() -> None:
         _add_column_if_missing(con, "craft_inventory_checks", "previous_materials_json", "TEXT")
         _add_column_if_missing(con, "craft_inventory_checks", "previous_product_quantity", "INTEGER")
         _add_column_if_missing(con, "craft_inventory_checks", "previous_stage", "TEXT")
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "server_code",
+            "TEXT NOT NULL DEFAULT 'phoenix-15'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "faction_code",
+            "TEXT NOT NULL DEFAULT 'lspd'",
+        )
+        _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
 
         con.execute(
             """
@@ -1639,6 +1686,11 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_activity_events_user_at
             ON activity_events(guild_id, user_id, at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_scope
+            ON atlas_knowledge_sources(
+                organization_id, server_code, faction_code, status, id DESC
+            );
 
             CREATE INDEX IF NOT EXISTS idx_activity_events_guild_at
             ON activity_events(guild_id, at DESC, id DESC);

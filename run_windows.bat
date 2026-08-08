@@ -1,6 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+if not defined TMOD_SKIP_BUILD set TMOD_SKIP_BUILD=0
+if not defined TMOD_NONINTERACTIVE set TMOD_NONINTERACTIVE=0
+if not defined TMOD_TRANSACTIONAL_UPDATE set TMOD_TRANSACTIONAL_UPDATE=0
+
 title T-Mod Boot Console
 chcp 65001 >nul
 
@@ -33,7 +37,7 @@ if not exist "%SECRETS_DIR%" mkdir "%SECRETS_DIR%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_minecraft_secrets_windows.ps1" -RconPath "%MINECRAFT_RCON_SECRET%" -SupervisorPath "%MINECRAFT_SUPERVISOR_SECRET%" -ChangedMarkerPath "%MINECRAFT_SECRETS_MARKER%"
 if errorlevel 1 (
   call :fail "Failed to verify Minecraft control secrets"
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 if exist "%MINECRAFT_SECRETS_MARKER%" set MINECRAFT_SECRETS_CHANGED=1
@@ -46,14 +50,14 @@ if not exist "%PERSISTENT_DIR%\.env" (
   call :warn "Created %PERSISTENT_DIR%\.env"
   call :warn "Put your Discord token into this file, then run this bat again."
   echo.
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0merge_env_windows.ps1" -ExamplePath "%~dp0.env.persistent.example" -TargetPath "%PERSISTENT_DIR%\.env"
 if errorlevel 1 (
   call :fail "Failed to merge .env"
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 call :ok ".env synchronized"
@@ -63,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_direct_web_w
 if errorlevel 1 (
   call :fail "Failed to configure the direct HTTPS domain"
   call :warn "Approve the Windows administrator prompt and run this file again."
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 call :ok "Caddy HTTPS route ready"
@@ -73,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0configure_minecraft_wi
 if errorlevel 1 (
   call :fail "Failed to configure the Minecraft public port"
   call :warn "Approve the Windows administrator prompt and run this file again."
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 call :ok "Minecraft port ready"
@@ -86,7 +90,7 @@ if not exist "%PERSISTENT_DIR%\localization.json" (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0merge_localization_windows.ps1" -ExamplePath "%~dp0localization.example.json" -TargetPath "%PERSISTENT_DIR%\localization.json" -BackupDir "%BACKUP_DIR%"
   if errorlevel 1 (
     call :fail "Failed to merge localization.json"
-    pause
+    call :pause_if_interactive
     exit /b 1
   )
   call :ok "localization.json synchronized"
@@ -108,7 +112,7 @@ call :module "Minecraft Lifecycle Supervisor"
 call :stage "07" "Docker engine"
 call :ensure_docker_engine
 if errorlevel 1 (
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 
@@ -123,15 +127,19 @@ if exist "%PERSISTENT_DIR%\browser-stream" rmdir /S /Q "%PERSISTENT_DIR%\browser
 call :ok "Retired services cleaned without stopping live Minecraft"
 
 call :stage "09" "Docker build"
-set COMPOSE_BAKE=true
-docker compose build
-if errorlevel 1 (
-  call :fail "Docker build failed"
-  call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
-  pause
-  exit /b 1
+if "%TMOD_SKIP_BUILD%"=="1" (
+  call :ok "Pre-tested Docker image selected by Safe Update"
+) else (
+  set COMPOSE_BAKE=true
+  docker compose build
+  if errorlevel 1 (
+    call :fail "Docker build failed"
+    call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
+    call :pause_if_interactive
+    exit /b 1
+  )
+  call :ok "Docker image ready"
 )
-call :ok "Docker image ready"
 
 call :stage "10" "Starting T-Mod and Minecraft"
 if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
@@ -139,7 +147,7 @@ if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
   docker compose up -d --force-recreate minecraft minecraft-supervisor
   if errorlevel 1 (
     call :fail "Minecraft secret synchronization restart failed"
-    pause
+    call :pause_if_interactive
     exit /b 1
   )
 )
@@ -153,7 +161,7 @@ if errorlevel 1 (
   echo Minecraft supervisor logs:
   docker compose logs --no-color --tail 80 minecraft-supervisor
   call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 call :ok "Container started"
@@ -161,12 +169,16 @@ call :ok "Container started"
 call :stage "11" "Minecraft RCON verification"
 call :check_minecraft_rcon
 if errorlevel 1 (
-  pause
+  call :pause_if_interactive
   exit /b 1
 )
 
 call :stage "12" "Consensus health check"
 call :check_consensus_health
+if errorlevel 1 if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
+  call :fail "Post-deploy health check failed; Safe Update will roll back"
+  exit /b 1
+)
 
 call :stage "13" "Status"
 docker compose ps
@@ -195,7 +207,7 @@ echo.
 echo Live logs: docker logs -f tmod-discord-bot
 echo Minecraft logs: docker logs -f minecraft
 echo.
-pause
+call :pause_if_interactive
 exit /b 0
 
 :check_minecraft_rcon
@@ -222,7 +234,7 @@ exit /b 1
 
 :check_consensus_health
 for /l %%i in (1,1,24) do (
-  powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health' -TimeoutSec 3; if ($r.status -eq 'ok') { exit 0 } } catch {}; exit 1" >nul 2>nul
+  powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health?ready=1' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.discord_ready) { exit 0 } } catch {}; exit 1" >nul 2>nul
   if not errorlevel 1 (
     call :ok "Consensus web panel is healthy"
     exit /b 0
@@ -233,6 +245,10 @@ for /l %%i in (1,1,24) do (
 echo.
 call :warn "The bot is running, but the web panel did not answer within 72 seconds."
 call :warn "Check: docker logs --tail 100 tmod-discord-bot"
+exit /b 1
+
+:pause_if_interactive
+if not "%TMOD_NONINTERACTIVE%"=="1" pause
 exit /b 0
 
 :ensure_docker_engine

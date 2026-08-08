@@ -1,13 +1,21 @@
 "use strict";
 
 const byId = (id) => document.getElementById(id);
-const appState = { data: null, screen: "home", selectedTemplate: null, busy: false };
+const appState = {
+  data: null,
+  screen: "home",
+  selectedTemplate: null,
+  busy: false,
+  scopeReady: false,
+  serverCode: "phoenix-15",
+  factionCode: "lspd",
+};
 const screenMeta = {
-  home: ["ATLAS COMMAND", "Командный центр"],
-  ai: ["GROUNDED INTELLIGENCE", "Atlas AI"],
-  documents: ["DOCUMENT STUDIO", "Документы"],
-  knowledge: ["KNOWLEDGE VAULT", "База знаний"],
-  forum: ["FORUM DESK", "Форум и памятки"],
+  home: ["ATLAS", "Командный центр"],
+  ai: ["УМНЫЙ ПОМОЩНИК", "Atlas AI"],
+  documents: ["РАБОТА С ДОКУМЕНТАМИ", "Документы"],
+  knowledge: ["БИБЛИОТЕКА ATLAS", "База знаний"],
+  forum: ["РАБОТА С ФОРУМОМ", "Форум и памятки"],
 };
 let toastTimer = null;
 
@@ -38,7 +46,7 @@ function requestId() {
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.body) {
-    headers["Content-Type"] = "application/json";
+    if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
     headers["X-CSRF-Token"] = appState.data?.viewer?.csrf_token || "";
     headers["X-Idempotency-Key"] = options.idempotencyKey || requestId();
   }
@@ -76,6 +84,26 @@ function openDialog(dialog) {
 function closeDialog(dialog) {
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
+}
+
+function bindPreviewMotion() {
+  const preview = byId("atlas-preview");
+  if (!preview || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let frame = 0;
+  preview.addEventListener("pointermove", (event) => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      const bounds = preview.getBoundingClientRect();
+      const x = ((event.clientX - bounds.left) / Math.max(bounds.width, 1) - .5) * 2;
+      const y = ((event.clientY - bounds.top) / Math.max(bounds.height, 1) - .5) * 2;
+      preview.style.setProperty("--pointer-x", x.toFixed(3));
+      preview.style.setProperty("--pointer-y", y.toFixed(3));
+    });
+  }, { passive: true });
+  preview.addEventListener("pointerleave", () => {
+    preview.style.setProperty("--pointer-x", "0");
+    preview.style.setProperty("--pointer-y", "0");
+  }, { passive: true });
 }
 
 function switchScreen(screen, updateHash = true) {
@@ -127,8 +155,76 @@ function renderOnboarding(membership) {
   });
 }
 
+function selectedServer() {
+  return (appState.data?.catalog?.servers || []).find((item) => item.code === appState.serverCode) || { label: "Phoenix (15)" };
+}
+
+function selectedFaction() {
+  return (appState.data?.catalog?.factions || []).find((item) => item.code === appState.factionCode) || { label: "LSPD" };
+}
+
+function scopeLabel() {
+  return `${selectedServer().label} · ${selectedFaction().label}`;
+}
+
+function fillSelect(select, items, selected) {
+  clear(select);
+  items.filter((item) => item.enabled !== false).forEach((item) => {
+    select.append(new Option(item.label || item.name, item.code, false, item.code === selected));
+  });
+}
+
+function renderCatalog(data) {
+  const catalog = data.catalog || { servers: [], factions: [], defaults: {} };
+  const profile = data.membership?.profile || {};
+  if (!appState.scopeReady) {
+    appState.serverCode = profile.server_code || catalog.defaults?.server_code || "phoenix-15";
+    appState.factionCode = profile.faction_code || catalog.defaults?.faction_code || "lspd";
+    appState.scopeReady = true;
+  }
+  fillSelect(byId("atlas-server"), catalog.servers || [], appState.serverCode);
+  fillSelect(byId("atlas-faction"), catalog.factions || [], appState.factionCode);
+  fillSelect(byId("onboarding-server"), catalog.servers || [], appState.serverCode);
+  fillSelect(byId("onboarding-faction"), catalog.factions || [], appState.factionCode);
+  byId("vault-scope").textContent = scopeLabel();
+  byId("source-library-title").textContent = scopeLabel();
+}
+
+function sourceStatus(item) {
+  if (item.status === "indexed") return ["ready", "Готов"];
+  if (item.status === "failed") return ["failed", "Нужна проверка"];
+  return ["pending", "Подготавливается"];
+}
+
+function knowledgeSourceCard(item) {
+  const card = element("article", "knowledge-source-card");
+  const icon = element("i", "", item.original_filename ? "⇧" : "≡");
+  const copy = element("span");
+  const details = [item.source_kind || "материал", item.original_filename || "текст"];
+  if (item.updated_at) details.push(new Date(item.updated_at).toLocaleDateString("ru-RU"));
+  copy.append(element("b", "", item.title), element("small", "", details.join(" · ")));
+  const [statusClass, statusText] = sourceStatus(item);
+  const status = element("em", `source-status ${statusClass}`, statusText);
+  if (item.status === "failed") status.title = "Откройте журнал Atlas в Ядерном Реакторе или загрузите материал повторно.";
+  card.append(icon, copy, status);
+  return card;
+}
+
+function renderKnowledgeSources(items) {
+  const selected = (Array.isArray(items) ? items : []).filter(
+    (item) => item.server_code === appState.serverCode && item.faction_code === appState.factionCode,
+  );
+  const list = byId("knowledge-source-list");
+  clear(list);
+  selected.forEach((item) => list.append(knowledgeSourceCard(item)));
+  if (!selected.length) list.append(element("div", "empty", "В этом разделе пока нет материалов."));
+  const ready = selected.filter((item) => item.status === "indexed").length;
+  byId("vault-count").textContent = String(ready);
+}
+
 function render(data) {
   appState.data = data;
+  renderCatalog(data);
   const viewer = data.viewer || {};
   const organization = data.organization || {};
   const membership = data.membership || {};
@@ -142,15 +238,15 @@ function render(data) {
   byId("metric-knowledge").textContent = String(counts.knowledge || 0);
   byId("metric-members").textContent = String(counts.members || 0);
   byId("metric-threads").textContent = String(counts.threads || 0);
-  byId("vault-count").textContent = String(counts.knowledge || 0);
+  renderKnowledgeSources(data.knowledge_sources || []);
   renderOnboarding(membership);
 
   const ai = data.ai || {};
   const aiState = byId("ai-state");
   aiState.classList.toggle("warning", !ai.configured || ai.qdrant !== "ok");
   aiState.querySelector("small").textContent = ai.configured && ai.qdrant === "ok" ? "готов" : "настройка";
-  byId("context-model").textContent = ai.chat_model || "модель не настроена";
-  byId("context-collection").textContent = `${ai.collection || "коллекция"} · ${ai.qdrant || "disabled"}`;
+  byId("context-model").textContent = ai.configured ? "Ответы по проверенным материалам" : "Помощник ещё настраивается";
+  byId("context-collection").textContent = ai.qdrant === "ok" ? "библиотека подключена" : "библиотека временно недоступна";
 
   const templates = Array.isArray(data.templates) ? data.templates : [];
   const templateList = byId("template-list");
@@ -210,7 +306,7 @@ async function sendQuestion(question) {
   try {
     const result = await api("/api/atlas/chat", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, server_code: appState.serverCode, faction_code: appState.factionCode }),
       timeout: 60000,
     });
     stream.append(messageNode("assistant", result.answer, result.citations || []));
@@ -237,7 +333,44 @@ async function reload() {
   else render(data);
 }
 
+async function loadKnowledgeSources() {
+  const query = new URLSearchParams({ server_code: appState.serverCode, faction_code: appState.factionCode });
+  const result = await api(`/api/atlas/knowledge?${query}`);
+  const other = (appState.data?.knowledge_sources || []).filter(
+    (item) => item.server_code !== appState.serverCode || item.faction_code !== appState.factionCode,
+  );
+  appState.data.knowledge_sources = [...other, ...(result.items || [])];
+  renderKnowledgeSources(appState.data.knowledge_sources);
+}
+
+async function updateScope() {
+  appState.serverCode = byId("atlas-server").value || "phoenix-15";
+  appState.factionCode = byId("atlas-faction").value || "lspd";
+  byId("onboarding-server").value = appState.serverCode;
+  byId("onboarding-faction").value = appState.factionCode;
+  byId("vault-scope").textContent = scopeLabel();
+  byId("source-library-title").textContent = scopeLabel();
+  renderKnowledgeSources(appState.data?.knowledge_sources || []);
+  try {
+    const membership = appState.data?.membership || {};
+    await Promise.all([
+      loadKnowledgeSources(),
+      api("/api/atlas/onboarding", {
+        method: "POST",
+        body: JSON.stringify({
+          step: Number(membership.onboarding_step || 0),
+          profile: { ...(membership.profile || {}), server_code: appState.serverCode, faction_code: appState.factionCode },
+        }),
+      }),
+    ]);
+  } catch (error) {
+    showToast(error.message || "Не удалось сменить раздел.", true);
+  }
+}
+
 function bind() {
+  byId("atlas-server").addEventListener("change", () => void updateScope());
+  byId("atlas-faction").addEventListener("change", () => void updateScope());
   document.querySelectorAll(".atlas-nav [data-screen]").forEach((button) => {
     button.addEventListener("click", () => switchScreen(button.dataset.screen));
   });
@@ -258,6 +391,10 @@ function bind() {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
     try {
+      appState.serverCode = values.server_code || appState.serverCode;
+      appState.factionCode = values.faction_code || appState.factionCode;
+      byId("atlas-server").value = appState.serverCode;
+      byId("atlas-faction").value = appState.factionCode;
       await api("/api/atlas/onboarding", { method: "POST", body: JSON.stringify({ step: 4, profile: values }) });
       closeDialog(byId("onboarding-dialog"));
       await reload();
@@ -293,12 +430,45 @@ function bind() {
     button.disabled = true;
     button.textContent = "Индексируем…";
     try {
-      const result = await api("/api/atlas/knowledge", { method: "POST", body: JSON.stringify(values), timeout: 15000 });
+      const result = await api("/api/atlas/knowledge", {
+        method: "POST",
+        body: JSON.stringify({ ...values, server_code: appState.serverCode, faction_code: appState.factionCode }),
+        timeout: 15000,
+      });
       form.reset();
-      await reload();
+      await loadKnowledgeSources();
       showToast(result.message || "Источник принят и индексируется в фоне.");
     } catch (error) { showToast(error.message, true); }
-    finally { button.disabled = false; button.textContent = "Добавить и проиндексировать →"; }
+    finally { button.disabled = false; button.textContent = "Добавить в библиотеку →"; }
+  });
+  byId("knowledge-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    values.set("server_code", appState.serverCode);
+    values.set("faction_code", appState.factionCode);
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    button.textContent = "Загружаем…";
+    try {
+      const result = await api("/api/atlas/knowledge/upload", { method: "POST", body: values, timeout: 30000 });
+      form.reset();
+      await loadKnowledgeSources();
+      showToast(result.message || "Файл принят в библиотеку.");
+    } catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; button.textContent = "Загрузить в библиотеку →"; }
+  });
+  document.querySelectorAll("[data-knowledge-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const fileMode = button.dataset.knowledgeMode === "file";
+      document.querySelectorAll("[data-knowledge-mode]").forEach((item) => item.classList.toggle("active", item === button));
+      byId("knowledge-upload-form").hidden = !fileMode;
+      byId("knowledge-form").hidden = fileMode;
+    });
+  });
+  byId("refresh-sources").addEventListener("click", async () => {
+    try { await loadKnowledgeSources(); showToast("Состояние библиотеки обновлено."); }
+    catch (error) { showToast(error.message, true); }
   });
   byId("global-search").addEventListener("click", () => {
     switchScreen("ai");
@@ -315,6 +485,7 @@ async function bootstrap() {
     byId("loading").hidden = true;
     if (appState.data?.preview) {
       byId("atlas-preview").hidden = false;
+      bindPreviewMotion();
       return;
     }
     byId("atlas-app").hidden = false;

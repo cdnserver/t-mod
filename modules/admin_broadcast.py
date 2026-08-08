@@ -17,7 +17,11 @@ from modules.discord_delivery import (
     resolve_delivery_member,
 )
 from modules.profile_notifications import evaluate_profile_notification
-from modules.tvrs_config import TVRS_EMBED_COLOR, TVRS_SENATOR_ROLE_ID
+from modules.tvrs_config import (
+    TVRS_COCHAIR_IDS,
+    TVRS_EMBED_COLOR,
+    TVRS_SENATOR_ROLE_ID,
+)
 from persistence import broadcast_repository as storage
 
 
@@ -117,11 +121,16 @@ async def _senator_recipients(
         raise ValueError("broadcast_senator_role_missing")
     if not getattr(guild, "chunked", True):
         await guild.chunk(cache=True)
-    return [
-        (int(member.id), str(member.display_name))
+    recipients = {
+        int(member.id): str(member.display_name)
         for member in role.members
         if not member.bot
-    ]
+    }
+    for user_id in TVRS_COCHAIR_IDS:
+        member = guild.get_member(int(user_id))
+        if member is not None and not member.bot:
+            recipients[int(member.id)] = str(member.display_name)
+    return sorted(recipients.items())
 
 
 async def deliver_admin_broadcast(
@@ -167,7 +176,10 @@ async def deliver_admin_broadcast(
             reason="member_unavailable",
         )
         return DeliveryReceipt()
-    if not any(role.id == TVRS_SENATOR_ROLE_ID for role in member.roles):
+    if (
+        user_id not in TVRS_COCHAIR_IDS
+        and not any(role.id == TVRS_SENATOR_ROLE_ID for role in member.roles)
+    ):
         await asyncio.to_thread(
             storage.mark_broadcast_recipient,
             broadcast_id,
