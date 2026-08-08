@@ -49,6 +49,7 @@ from modules.games_web import register_games_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
+from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from modules.consensus_schedule import public_schedule_payload
@@ -113,15 +114,19 @@ def _configured_surface_url(variable: str, fallback: str) -> str:
 
 REACTOR_WEB_PUBLIC_URL = _configured_surface_url(
     "REACTOR_WEB_PUBLIC_URL",
-    CONSENSUS_WEB_PUBLIC_URL,
+    "https://reactor.tvr.lat",
 )
 PORTAL_WEB_PUBLIC_URL = _configured_surface_url(
     "PORTAL_WEB_PUBLIC_URL",
-    CONSENSUS_WEB_PUBLIC_URL,
+    "https://tvr.lat",
 )
 ATLAS_WEB_PUBLIC_URL = _configured_surface_url(
     "ATLAS_WEB_PUBLIC_URL",
     "https://atlas.tvr.lat",
+)
+ZIGMUND_WEB_PUBLIC_URL = _configured_surface_url(
+    "ZIGMUND_WEB_PUBLIC_URL",
+    "https://zigmund.tvr.lat",
 )
 
 
@@ -770,6 +775,61 @@ def _request_remote(request: web.Request) -> str:
     return remote[:64] or "unknown"
 
 
+def _canonical_surface_location(request: web.Request) -> str | None:
+    """Keep every public T-Mod surface on its own canonical hostname."""
+
+    path = str(request.path or "/")
+    next_path = str(request.query.get("next") or "/")
+    consensus_url = CONSENSUS_WEB_PUBLIC_URL or "https://consensus.tvr.lat"
+    target_url: str | None = None
+
+    def belongs_to(prefix: str) -> bool:
+        return path == prefix or path.startswith(f"{prefix}/")
+
+    if path == "/":
+        target_url = consensus_url
+    elif belongs_to("/admin"):
+        target_url = REACTOR_WEB_PUBLIC_URL
+    elif belongs_to("/reactor") or belongs_to("/games"):
+        target_url = PORTAL_WEB_PUBLIC_URL
+    elif belongs_to("/atlas"):
+        target_url = ATLAS_WEB_PUBLIC_URL
+    elif belongs_to("/egg"):
+        target_url = ZIGMUND_WEB_PUBLIC_URL
+    elif path in {"/login", "/auth/ticket"}:
+        if next_path == "/admin":
+            target_url = REACTOR_WEB_PUBLIC_URL
+        elif next_path in {"/reactor", "/games"}:
+            target_url = PORTAL_WEB_PUBLIC_URL
+        elif next_path == "/atlas":
+            target_url = ATLAS_WEB_PUBLIC_URL
+        else:
+            target_url = consensus_url
+    if not target_url:
+        return None
+
+    target = urlsplit(target_url)
+    current_host = str(request.host or "").strip().lower().rstrip(".")
+    if current_host.startswith("["):
+        current_hostname = current_host[1:].split("]", 1)[0]
+    else:
+        current_hostname = current_host.split(":", 1)[0]
+    ecosystem_hosts = {
+        str(urlsplit(value).hostname or "").lower()
+        for value in (
+            consensus_url,
+            REACTOR_WEB_PUBLIC_URL,
+            PORTAL_WEB_PUBLIC_URL,
+            ATLAS_WEB_PUBLIC_URL,
+            ZIGMUND_WEB_PUBLIC_URL,
+        )
+    }
+    target_hostname = str(target.hostname or "").lower()
+    if current_hostname not in ecosystem_hosts or current_hostname == target_hostname:
+        return None
+    return f"{target.scheme}://{target.netloc}{request.rel_url}"
+
+
 @web.middleware
 async def _security_middleware(
     request: web.Request,
@@ -777,6 +837,9 @@ async def _security_middleware(
 ) -> web.StreamResponse:
     started_at = time.perf_counter()
     try:
+        canonical_location = _canonical_surface_location(request)
+        if canonical_location is not None:
+            raise web.HTTPPermanentRedirect(location=canonical_location)
         response = await handler(request)
     except web.HTTPException as exc:
         _apply_security_headers(exc, request_path=request.path)
@@ -898,6 +961,8 @@ def create_consensus_web_app(
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
+            if not principal.guild_member and next_path != "/atlas":
+                raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
             grants = await asyncio.to_thread(
@@ -905,7 +970,7 @@ def create_consensus_web_app(
                 int(guild_id),
                 int(principal.user_id),
             )
-            if grants:
+            if any(str(item.get("section")) != "atlas_ai" for item in grants):
                 raise web.HTTPSeeOther(location=next_path)
         return web.FileResponse(_ASSET_DIR / "login.html")
 
@@ -930,6 +995,17 @@ def create_consensus_web_app(
             guild_id=int(guild_id),
         )
         if principal is not None:
+            if not principal.guild_member and not request.path.startswith("/api/atlas"):
+                raise web.HTTPForbidden(
+                    text=json.dumps(
+                        {
+                            "error": "zero_account_scope",
+                            "message": "Нулевой аккаунт не имеет доступа к Товариществу.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    content_type="application/json",
+                )
             _failed_auth[_request_remote(request)].clear()
             return principal, False
         supplied = _request_token(request)
@@ -1044,16 +1120,28 @@ def create_consensus_web_app(
                     dedupe_key="web-login-security",
                 )
                 guild = bot.get_guild(int(guild_id))
-                member = (
-                    guild.get_member(int(result.user_id)) if guild is not None else None
-                )
+                member = guild.get_member(int(result.user_id)) if guild is not None else None
                 fetch_member = getattr(guild, "fetch_member", None)
                 if member is None and callable(fetch_member):
                     try:
                         member = await fetch_member(int(result.user_id))
                     except discord.DiscordException:
                         member = None
-                if member is not None and callable(getattr(member, "send", None)):
+                get_user = getattr(bot, "get_user", None)
+                recipient = member or (
+                    get_user(int(result.user_id)) if callable(get_user) else None
+                )
+                if recipient is None:
+                    fetch_user = getattr(bot, "fetch_user", None)
+                    try:
+                        recipient = (
+                            await fetch_user(int(result.user_id))
+                            if callable(fetch_user)
+                            else None
+                        )
+                    except discord.DiscordException:
+                        recipient = None
+                if recipient is not None and callable(getattr(recipient, "send", None)):
                     embed = discord.Embed(
                         title=(
                             "Веб-доступ T-Mod заблокирован"
@@ -1079,7 +1167,7 @@ def create_consensus_web_app(
                         inline=False,
                     )
                     try:
-                        await member.send(
+                        await recipient.send(
                             embed=embed,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
@@ -1089,34 +1177,43 @@ def create_consensus_web_app(
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': error})}"
             )
+        characters = await asyncio.to_thread(
+            profile_storage.list_profile_characters,
+            int(guild_id),
+            int(result.credential.user_id),
+        )
+        if not characters:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'character_required'})}"
+            )
         guild = bot.get_guild(int(guild_id))
-        if guild is None:
-            raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
-        member = guild.get_member(int(result.credential.user_id))
-        if member is None:
+        member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
+        if member is None and guild is not None:
             try:
                 member = await guild.fetch_member(int(result.credential.user_id))
             except discord.DiscordException:
                 member = None
+        grants = await asyncio.to_thread(
+            credential_storage.web_section_grants,
+            int(guild_id),
+            int(result.credential.user_id),
+        )
+        sections = {str(item["section"]) for item in grants}
+        is_administrator = bool(member and member.guild_permissions.administrator)
         if member is None:
-            attempts.append(now)
-            raise web.HTTPSeeOther(
-                location=f"/login?{urlencode({'next': next_path, 'error': 'invalid'})}"
-            )
-        if next_path == "/admin" and not bool(member.guild_permissions.administrator):
-            grants = await asyncio.to_thread(
-                credential_storage.web_section_grants,
-                int(guild_id),
-                int(member.id),
-            )
-            if not grants:
+            if next_path != "/atlas" or "atlas_ai" not in sections:
+                raise web.HTTPSeeOther(
+                    location="/login?next=%2Fatlas&error=atlas_access"
+                )
+        elif next_path == "/admin" and not is_administrator:
+            if not (sections - {"atlas_ai"}):
                 raise web.HTTPSeeOther(
                     location="/login?next=%2Fadmin&error=administrator"
                 )
         attempts.clear()
         token, _ = create_session_token(
             guild_id=int(guild_id),
-            user_id=int(member.id),
+            user_id=int(result.credential.user_id),
             lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
             session_version=int(result.credential.session_version),
         )

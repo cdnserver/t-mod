@@ -1,4 +1,4 @@
-"""Private `/profile` presentation and controls for Voice Control diagnostics."""
+"""Private `/account` presentation and controls for Voice Control diagnostics."""
 
 from __future__ import annotations
 

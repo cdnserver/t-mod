@@ -21,6 +21,8 @@ from modules.profile import (
     ProfileQuietHoursView,
     ProfileSettingsView,
     ProfileStatusView,
+    TModAccountCharacterModal,
+    TModAccountView,
     WebAccessModal,
     _edit_profile_web_access,
     profile_embed,
@@ -501,16 +503,27 @@ class ProfileUiTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profile_quiet_hours_invalid"):
                 parse_profile_clock(invalid)
 
-    def test_profile_command_has_optional_member_argument(self) -> None:
+    def test_account_replaces_profile_and_keeps_optional_user_argument(self) -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         setup_profile(bot)
-        command = bot.tree.get_command("profile")
+        command = bot.tree.get_command("account")
         self.assertIsNotNone(command)
         self.assertEqual([parameter.name for parameter in command.parameters], ["user"])
         self.assertFalse(command.parameters[0].required)
+        self.assertIsNone(bot.tree.get_command("profile"))
         reset = bot.tree.get_command("reset")
         self.assertIsNotNone(reset)
         self.assertEqual(reset.parameters, [])
+
+    def test_zero_account_can_manage_and_correct_own_characters(self) -> None:
+        character = SimpleNamespace(id=7, nickname="Robert Test", static_id="321")
+        view = TModAccountView(10, 20, [character], None)
+        labels = {getattr(item, "label", None) for item in view.children}
+        self.assertEqual(labels, {"Добавить персонажа", "Персонажи", "Логин и PIN"})
+        modal = TModAccountCharacterModal(10, 20, character)
+        self.assertEqual(modal.character_id, 7)
+        self.assertEqual(str(modal.nickname.default), "Robert Test")
+        self.assertEqual(str(modal.static_id.default), "321")
 
     def test_reset_modal_creates_an_editable_ephemeral_response(self) -> None:
         class Response:
@@ -545,6 +558,10 @@ class ProfileUiTests(unittest.TestCase):
                 patch(
                     "modules.profile.web_auth_storage.get_web_credential",
                     return_value=None,
+                ),
+                patch(
+                    "modules.profile.storage.list_profile_characters",
+                    return_value=[SimpleNamespace(id=1)],
                 ),
             ):
                 await modal.on_submit(interaction)

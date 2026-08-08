@@ -61,6 +61,7 @@ ADMIN_SECTION_LABELS = {
     "discord": "Discord-аудит",
     "system": "Технический контур",
     "atlas": "T-Mod Atlas",
+    "atlas_ai": "Доступ к Atlas AI",
     "minecraft": "Minecraft",
 }
 
@@ -438,11 +439,17 @@ def register_admin_web_routes(
                             member = await guild.fetch_member(user_id)
                         except discord.DiscordException:
                             member = None
+                    if member is None and section == "atlas_ai":
+                        fetch_user = getattr(bot, "fetch_user", None)
+                        try:
+                            member = await fetch_user(user_id) if callable(fetch_user) else None
+                        except discord.DiscordException:
+                            member = None
                     if member is None:
                         return web.json_response(
                             {
-                                "error": "member_not_found",
-                                "message": "Участник с таким Discord ID не найден на сервере.",
+                                "error": "user_not_found",
+                                "message": "Пользователь с таким Discord ID не найден.",
                             },
                             status=404,
                         )
@@ -465,18 +472,27 @@ def register_admin_web_routes(
             dm_sent = False
             if enabled and changed and member is not None:
                 label = ADMIN_SECTION_LABELS.get(section, section)
+                atlas_access = section == "atlas_ai"
                 embed = discord.Embed(
-                    title="Доступ к Ядерному Реактору",
+                    title="Доступ к Atlas AI" if atlas_access else "Доступ к Ядерному Реактору",
                     description=(
                         f"Вам открыт раздел **{label}**.\n\n"
                         "Войдите с вашим логином и восьмизначным PIN."
                     ),
                     color=0x68E0B7,
-                    url=f"https://reactor.tvr.lat/admin#/{section}",
+                    url=(
+                        "https://atlas.tvr.lat/"
+                        if atlas_access
+                        else f"https://reactor.tvr.lat/admin#/{section}"
+                    ),
                 )
                 embed.add_field(
                     name="Открыть раздел",
-                    value=f"[reactor.tvr.lat → {label}](https://reactor.tvr.lat/admin#/{section})",
+                    value=(
+                        f"[atlas.tvr.lat → {label}](https://atlas.tvr.lat/)"
+                        if atlas_access
+                        else f"[reactor.tvr.lat → {label}](https://reactor.tvr.lat/admin#/{section})"
+                    ),
                     inline=False,
                 )
                 embed.set_footer(text=f"Доступ выдал {principal.display_name} · T-Mod")
@@ -564,7 +580,7 @@ def register_admin_web_routes(
             if principal.administrator
             else [row["section"] for row in await asyncio.to_thread(
                 web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)
-            )]
+            ) if row["section"] != "atlas_ai"]
         )
         if not sections:
             raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
@@ -1805,7 +1821,7 @@ def register_admin_web_routes(
                 {
                     "error": str(exc),
                     "message": (
-                        "Сначала настройте начало и конец тихих часов в /profile."
+                        "Сначала настройте начало и конец тихих часов в /account."
                         if str(exc) == "profile_quiet_hours_invalid"
                         else "Не удалось сохранить настройку профиля."
                     ),

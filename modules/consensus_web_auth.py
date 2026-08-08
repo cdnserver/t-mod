@@ -28,6 +28,7 @@ from aiohttp import web
 
 from persistence import activity_repository as meta_storage
 from persistence import web_auth_repository as credential_storage
+from persistence import profile_repository as profile_storage
 
 
 SESSION_COOKIE = "tmod_account_session"
@@ -44,16 +45,43 @@ _COOKIE_DOMAIN_RE = re.compile(
 
 
 @dataclass(frozen=True, slots=True)
+class TModAccountIdentity:
+    """Minimal Discord-shaped identity for accounts outside the home guild."""
+
+    id: int
+    display_name: str
+    roles: tuple[Any, ...] = ()
+
+    @property
+    def guild_permissions(self) -> discord.Permissions:
+        return discord.Permissions.none()
+
+    @property
+    def mention(self) -> str:
+        return f"<@{int(self.id)}>"
+
+
+@dataclass(frozen=True, slots=True)
 class ConsensusWebPrincipal:
     user_id: int
     guild_id: int
     display_name: str
     csrf_token: str
-    member: discord.Member
+    member: discord.Member | TModAccountIdentity
 
     @property
     def administrator(self) -> bool:
         return bool(self.member.guild_permissions.administrator)
+
+    @property
+    def guild_member(self) -> bool:
+        return not isinstance(self.member, TModAccountIdentity)
+
+    @property
+    def account_tier(self) -> str:
+        if self.administrator:
+            return "administrator"
+        return "member" if self.guild_member else "zero"
 
 
 class ConsensusWebAuthError(ValueError):
@@ -312,17 +340,38 @@ async def resolve_principal(
         int(session_version),
     ):
         return None
-    guild = bot.get_guild(int(guild_id))
-    if guild is None or user_id <= 0:
+    if session_version is not None and not await asyncio.to_thread(
+        profile_storage.list_profile_characters,
+        int(guild_id),
+        user_id,
+    ):
         return None
-    member = guild.get_member(user_id)
-    if member is None:
+    if user_id <= 0:
+        return None
+    guild = bot.get_guild(int(guild_id))
+    member = guild.get_member(user_id) if guild is not None else None
+    if member is None and guild is not None:
         try:
             member = await guild.fetch_member(user_id)
         except discord.DiscordException:
-            return None
+            member = None
     if not isinstance(member, discord.Member):
-        return None
+        # A persistent credential is also the proof for a zero-level T-Mod
+        # account. Ticket sessions never contain `sv`, so a former/foreign
+        # Discord user cannot turn a one-time link into an external account.
+        if session_version is None:
+            return None
+        credential = await asyncio.to_thread(
+            credential_storage.get_web_credential,
+            int(guild_id),
+            user_id,
+        )
+        if credential is None:
+            return None
+        member = TModAccountIdentity(
+            id=user_id,
+            display_name=str(credential.login),
+        )
     csrf_token = str(payload.get("csrf") or "")
     if not csrf_token:
         return None
@@ -343,6 +392,7 @@ def csrf_matches(request: web.Request, principal: ConsensusWebPrincipal) -> bool
 __all__ = [
     "ConsensusWebAuthError",
     "ConsensusWebPrincipal",
+    "TModAccountIdentity",
     "PERSISTENT_SESSION_LIFETIME_SECONDS",
     "LEGACY_SESSION_COOKIE",
     "SESSION_COOKIE",

@@ -21,6 +21,7 @@ from modules.consensus_simulator import (
     register_consensus_simulation,
 )
 from modules.consensus_web import (
+    _canonical_surface_location,
     _request_remote,
     _result_payload,
     build_consensus_web_state,
@@ -464,6 +465,53 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(LEGACY_SESSION_COOKIE, cleared.cookies)
             self.assertEqual(cleared.cookies[SESSION_COOKIE]["domain"], ".tvr.lat")
 
+    async def test_public_surfaces_redirect_to_their_canonical_domains(self) -> None:
+        direct = SimpleNamespace(
+            path="/atlas",
+            query={},
+            host="tvr.lat",
+            rel_url="/atlas?screen=ai",
+        )
+        self.assertEqual(
+            _canonical_surface_location(direct),  # type: ignore[arg-type]
+            "https://atlas.tvr.lat/atlas?screen=ai",
+        )
+
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            atlas = await client.get(
+                "/atlas",
+                headers={"Host": "tvr.lat"},
+                allow_redirects=False,
+            )
+            games = await client.get(
+                "/games/demo-match",
+                headers={"Host": "atlas.tvr.lat"},
+                allow_redirects=False,
+            )
+            ticket = await client.get(
+                "/auth/ticket?ticket=unused&next=/admin",
+                headers={"Host": "consensus.tvr.lat"},
+                allow_redirects=False,
+            )
+            canonical = await client.get(
+                "/atlas",
+                headers={"Host": "atlas.tvr.lat"},
+                allow_redirects=False,
+            )
+        finally:
+            await client.close()
+
+        self.assertEqual(atlas.status, 308)
+        self.assertEqual(atlas.headers["Location"], "https://atlas.tvr.lat/atlas")
+        self.assertEqual(games.status, 308)
+        self.assertEqual(games.headers["Location"], "https://tvr.lat/games/demo-match")
+        self.assertEqual(ticket.status, 308)
+        self.assertIn("https://reactor.tvr.lat/auth/ticket?", ticket.headers["Location"])
+        self.assertEqual(canonical.status, 200)
+
     async def test_existing_tmod_account_session_skips_repeated_login(self) -> None:
         principal = self._principal(user_id=42)
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
@@ -900,6 +948,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_persistent_login_uses_profile_credential_and_admin_role(
         self,
     ) -> None:
+        storage.add_profile_character(77, 42, "Operator Test", "42001")
         storage.configure_web_credential(77, 42, "operator", "12345678")
         member = SimpleNamespace(
             id=42,
@@ -963,7 +1012,36 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_zero_account_can_open_only_whitelisted_atlas(self) -> None:
+        storage.add_profile_character(77, 4242, "External User", "424200")
+        storage.configure_web_credential(77, 4242, "external.user", "12345678")
+        storage.web_set_section_grant(
+            77,
+            4242,
+            "atlas_ai",
+            enabled=True,
+            granted_by_id=1,
+        )
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            accepted = await client.post(
+                "/auth/login?next=/atlas",
+                data={"login": "external.user", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(accepted.status, 303)
+            self.assertEqual(accepted.headers["Location"], "/atlas")
+            atlas = await client.get("/api/atlas/bootstrap")
+            atlas_payload = await atlas.json()
+            protected = await client.get("/api/state")
+
+        self.assertEqual(atlas.status, 200)
+        self.assertEqual(atlas_payload["viewer"]["account_tier"], "zero")
+        self.assertEqual(protected.status, 403)
+
     async def test_three_bad_pins_warn_owner_and_require_discord_reset(self) -> None:
+        storage.add_profile_character(77, 42, "Operator Test", "42001")
         storage.configure_web_credential(77, 42, "operator", "12345678")
         member = SimpleNamespace(
             id=42,

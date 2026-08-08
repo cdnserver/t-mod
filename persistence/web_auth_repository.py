@@ -38,6 +38,7 @@ WEB_GRANTABLE_SECTIONS = frozenset(
         "discord",
         "system",
         "atlas",
+        "atlas_ai",
         "minecraft",
     }
 )

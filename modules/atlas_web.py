@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -16,6 +17,7 @@ from modules.atlas_ai import (
     AtlasAIError,
     atlas_ai_health,
     atlas_answer,
+    atlas_answer_stream,
     atlas_index_source,
     atlas_probe_collection,
     atlas_reset_collection,
@@ -32,6 +34,7 @@ from modules.atlas_knowledge import (
     atlas_extract_knowledge_file,
 )
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
 from persistence import web_auth_repository as web_auth_storage
 
@@ -101,14 +104,66 @@ def register_atlas_web_routes(
             )
         return payload
 
+    async def atlas_allowed(selected: ConsensusWebPrincipal) -> bool:
+        if selected.administrator:
+            return True
+        try:
+            grants = await asyncio.to_thread(
+                web_auth_storage.web_section_grants,
+                int(guild_id),
+                int(selected.user_id),
+            )
+        except (OSError, sqlite3.Error):
+            return False
+        return any(str(item.get("section")) == "atlas_ai" for item in grants)
+
+    async def require_atlas(selected: ConsensusWebPrincipal) -> None:
+        if not await atlas_allowed(selected):
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "atlas_access_required",
+                        "message": "Доступ к Atlas AI выдаёт администратор T-Mod.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+
+    async def atlas_log(
+        title: str,
+        details: str,
+        *,
+        level: str = "error",
+        exception: BaseException | None = None,
+        dedupe_key: str,
+    ) -> None:
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            return
+        await log_technical_event(
+            bot,
+            guild,
+            title=f"Atlas · {title}",
+            details=details,
+            level=level,
+            exception=exception,
+            dedupe_key=dedupe_key,
+            cooldown_seconds=120,
+            component="atlas",
+        )
+
     async def dashboard_for(selected: ConsensusWebPrincipal) -> dict[str, Any]:
-        if not selected.administrator:
+        allowed = await atlas_allowed(selected)
+        if not allowed:
             return {
                 "preview": True,
                 "viewer": {
                     "id": int(selected.user_id),
                     "name": str(selected.display_name),
                     "administrator": False,
+                    "account_tier": str(selected.account_tier),
+                    "atlas_access": False,
                     "csrf_token": str(selected.csrf_token),
                 },
                 "release": {
@@ -133,6 +188,8 @@ def register_atlas_web_routes(
                 "id": int(selected.user_id),
                 "name": str(selected.display_name),
                 "administrator": bool(selected.administrator),
+                "account_tier": str(selected.account_tier),
+                "atlas_access": True,
                 "csrf_token": str(selected.csrf_token),
             },
             "ai": health,
@@ -154,8 +211,7 @@ def register_atlas_web_routes(
 
     async def onboarding(request: web.Request) -> web.Response:
         selected = await principal(request)
-        if not selected.administrator:
-            raise web.HTTPForbidden(text='{"error":"atlas_closed_preview"}', content_type="application/json")
+        await require_atlas(selected)
         payload = await body(request, selected)
         profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
         try:
@@ -165,7 +221,24 @@ def register_atlas_web_routes(
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
-        profile = {**profile, "server_code": server_code, "faction_code": faction_code}
+        nickname = " ".join(str(profile.get("nickname") or "").split())[:80]
+        rank = " ".join(str(profile.get("rank") or "").split())[:100]
+        requested_step = int(payload.get("step") or 0)
+        if requested_step >= 4 and (len(nickname) < 2 or len(rank) < 1):
+            return web.json_response(
+                {
+                    "error": "atlas_onboarding_profile_required",
+                    "message": "Укажите игровой ник и ранг.",
+                },
+                status=400,
+            )
+        profile = {
+            **profile,
+            "server_code": server_code,
+            "faction_code": faction_code,
+            "nickname": nickname,
+            "rank": rank,
+        }
         dashboard = await asyncio.to_thread(
             storage.atlas_dashboard,
             int(guild_id),
@@ -176,7 +249,7 @@ def register_atlas_web_routes(
             storage.atlas_update_onboarding,
             int(dashboard["organization"]["id"]),
             int(selected.user_id),
-            step=int(payload.get("step") or 0),
+            step=requested_step,
             profile=profile,
         )
         return web.json_response({"membership": result})
@@ -209,11 +282,7 @@ def register_atlas_web_routes(
 
     async def threads(request: web.Request) -> web.Response:
         selected = await principal(request)
-        if not selected.administrator:
-            raise web.HTTPForbidden(
-                text='{"error":"atlas_closed_preview"}',
-                content_type="application/json",
-            )
+        await require_atlas(selected)
         dashboard = await asyncio.to_thread(
             storage.atlas_dashboard,
             int(guild_id),
@@ -246,8 +315,7 @@ def register_atlas_web_routes(
 
     async def chat(request: web.Request) -> web.Response:
         selected = await principal(request)
-        if not selected.administrator:
-            raise web.HTTPForbidden(text='{"error":"atlas_closed_preview"}', content_type="application/json")
+        await require_atlas(selected)
         payload = await body(request, selected)
         receipt_key, cached = cached_receipt(selected.user_id, request)
         if cached is not None:
@@ -302,6 +370,8 @@ def register_atlas_web_routes(
                 history=history,
                 memory=memory,
                 response_mode=str(payload.get("response_mode") or "balanced"),
+                model_id=str(payload.get("model") or "atlas-tvr-a"),
+                user_profile=dict(dashboard["membership"].get("profile") or {}),
             )
         except AtlasAIError as exc:
             if exc.code in {
@@ -311,9 +381,31 @@ def register_atlas_web_routes(
                 queue_index_reconciliation(
                     force_reset=exc.code == "atlas_index_recovery_required"
                 )
+            await atlas_log(
+                "ответ временно недоступен",
+                f"Пользователь: `{selected.user_id}`\nКод: `{exc.code}`\nОшибка: `{str(exc)[:1000]}`",
+                level="warning" if exc.retryable else "error",
+                exception=exc,
+                dedupe_key=f"atlas-chat:{exc.code}",
+            )
             return web.json_response(
                 {"error": exc.code, "message": str(exc), "retryable": exc.retryable},
                 status=503 if exc.retryable or exc.code.endswith("not_configured") else 400,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the web runtime alive
+            await atlas_log(
+                "непредвиденная ошибка ответа",
+                f"Пользователь: `{selected.user_id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:1000]}`",
+                exception=exc,
+                dedupe_key=f"atlas-chat-unexpected:{type(exc).__name__}",
+            )
+            return web.json_response(
+                {
+                    "error": "atlas_internal_error",
+                    "message": "Atlas временно не смог обработать запрос. Ошибка уже записана.",
+                    "retryable": True,
+                },
+                status=503,
             )
         if thread_id is None:
             thread_id = await asyncio.to_thread(
@@ -332,6 +424,20 @@ def register_atlas_web_routes(
             model=answer["model"],
             latency_ms=answer["latency_ms"],
         )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            organization_id,
+            int(selected.user_id),
+            "ai_answer_created",
+            "Atlas ответил на запрос",
+            target_type="ai_thread",
+            target_id=thread_id,
+            details={
+                "source": "web",
+                "model": answer["model"],
+                "latency_ms": answer["latency_ms"],
+            },
+        )
         stored_thread = await asyncio.to_thread(
             storage.atlas_thread_messages,
             organization_id,
@@ -343,10 +449,193 @@ def register_atlas_web_routes(
         receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, response)
         return web.json_response(response)
 
+    async def chat_stream(request: web.Request) -> web.StreamResponse | web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        receipt_key, cached = cached_receipt(selected.user_id, request)
+        if cached is not None:
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+            await response.prepare(request)
+            for event in (
+                {"type": "start", "thread_id": cached.get("thread_id")},
+                {"type": "done", **cached},
+            ):
+                await response.write(
+                    ("data:" + json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n\n").encode("utf-8")
+                )
+            await response.write_eof()
+            return response
+        check_rate(selected.user_id)
+        question = str(payload.get("question") or "").strip()
+        try:
+            server_code, faction_code = atlas_normalize_scope(
+                str(payload.get("server_code") or "phoenix-15"),
+                str(payload.get("faction_code") or "lspd"),
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Выберите доступный сервер и фракцию."},
+                status=400,
+            )
+        dashboard = await asyncio.to_thread(
+            storage.atlas_dashboard,
+            int(guild_id),
+            int(selected.user_id),
+            str(selected.display_name),
+        )
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id: int | None = None
+        history: list[dict[str, Any]] = []
+        raw_thread_id = payload.get("thread_id")
+        if raw_thread_id is not None and raw_thread_id != "":
+            try:
+                thread_id = int(raw_thread_id)
+                thread = await asyncio.to_thread(
+                    storage.atlas_thread_messages,
+                    organization_id,
+                    int(selected.user_id),
+                    thread_id,
+                    limit=80,
+                )
+                history = list(thread["messages"])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
+                    status=404,
+                )
+        memory = await asyncio.to_thread(
+            storage.atlas_recent_chat_memory,
+            organization_id,
+            int(selected.user_id),
+            exclude_thread_id=thread_id,
+        )
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        connected = True
+
+        async def emit(event: dict[str, Any]) -> None:
+            nonlocal connected
+            if not connected:
+                return
+            try:
+                data = "data:" + json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n\n"
+                await response.write(data.encode("utf-8"))
+            except (ConnectionError, RuntimeError):
+                connected = False
+
+        await emit({"type": "start", "thread_id": thread_id})
+        try:
+            answer = await atlas_answer_stream(
+                organization_id,
+                question,
+                on_delta=lambda text: emit({"type": "delta", "text": text}),
+                server_code=server_code,
+                faction_code=faction_code,
+                history=history,
+                memory=memory,
+                response_mode=str(payload.get("response_mode") or "balanced"),
+                model_id=str(payload.get("model") or "atlas-tvr-a"),
+                user_profile=dict(dashboard["membership"].get("profile") or {}),
+            )
+            if thread_id is None:
+                thread_id = await asyncio.to_thread(
+                    storage.atlas_create_thread,
+                    organization_id,
+                    int(selected.user_id),
+                    question[:100],
+                )
+            await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
+            await asyncio.to_thread(
+                storage.atlas_add_message,
+                thread_id,
+                "assistant",
+                answer["answer"],
+                citations=answer["citations"],
+                model=answer["model"],
+                latency_ms=answer["latency_ms"],
+            )
+            await asyncio.to_thread(
+                storage.atlas_record_event,
+                organization_id,
+                int(selected.user_id),
+                "ai_answer_created",
+                "Atlas ответил на запрос",
+                target_type="ai_thread",
+                target_id=thread_id,
+                details={
+                    "source": "web-stream",
+                    "model": answer["model"],
+                    "latency_ms": answer["latency_ms"],
+                },
+            )
+            stored_thread = await asyncio.to_thread(
+                storage.atlas_thread_messages,
+                organization_id,
+                int(selected.user_id),
+                thread_id,
+                limit=1,
+            )
+            result = {**answer, "thread_id": thread_id, "thread": stored_thread["thread"]}
+            receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, result)
+            await emit({"type": "done", **result})
+        except AtlasAIError as exc:
+            if exc.code in {"atlas_index_missing", "atlas_index_recovery_required"}:
+                queue_index_reconciliation(force_reset=exc.code == "atlas_index_recovery_required")
+            await atlas_log(
+                "потоковый ответ временно недоступен",
+                f"Пользователь: `{selected.user_id}`\nКод: `{exc.code}`\nОшибка: `{str(exc)[:1000]}`",
+                level="warning" if exc.retryable else "error",
+                exception=exc,
+                dedupe_key=f"atlas-chat-stream:{exc.code}",
+            )
+            await emit(
+                {
+                    "type": "error",
+                    "error": exc.code,
+                    "message": str(exc),
+                    "retryable": exc.retryable,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve the long-lived web runtime
+            await atlas_log(
+                "непредвиденная ошибка потокового ответа",
+                f"Пользователь: `{selected.user_id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:1000]}`",
+                exception=exc,
+                dedupe_key=f"atlas-chat-stream-unexpected:{type(exc).__name__}",
+            )
+            await emit(
+                {
+                    "type": "error",
+                    "error": "atlas_internal_error",
+                    "message": "Atlas временно не смог обработать запрос. Ошибка уже записана.",
+                    "retryable": True,
+                }
+            )
+        if connected:
+            try:
+                await response.write_eof()
+            except (ConnectionError, RuntimeError):
+                pass
+        return response
+
     async def documents(request: web.Request) -> web.Response:
         selected = await principal(request)
-        if not selected.administrator:
-            raise web.HTTPForbidden(text='{"error":"atlas_closed_preview"}', content_type="application/json")
+        await require_atlas(selected)
         dashboard = await asyncio.to_thread(
             storage.atlas_dashboard,
             int(guild_id),
@@ -496,7 +785,8 @@ def register_atlas_web_routes(
 
     async def knowledge(request: web.Request) -> web.Response:
         selected = await principal(request)
-        if not selected.administrator:
+        await require_atlas(selected)
+        if request.method != "GET" and not selected.administrator:
             raise web.HTTPForbidden(
                 text='{"error":"atlas_knowledge_admin_required"}',
                 content_type="application/json",
@@ -650,6 +940,7 @@ def register_atlas_web_routes(
                     "id": int(selected.user_id),
                     "name": str(selected.display_name),
                     "administrator": bool(selected.administrator),
+                    "account_tier": str(selected.account_tier),
                     "csrf_token": str(selected.csrf_token),
                 },
                 "guild": {
@@ -701,6 +992,7 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/bootstrap", bootstrap)
     app.router.add_post("/api/atlas/onboarding", onboarding)
     app.router.add_post("/api/atlas/chat", chat)
+    app.router.add_post("/api/atlas/chat/stream", chat_stream)
     app.router.add_get("/api/atlas/threads", threads)
     app.router.add_get("/api/atlas/threads/{thread_id}", threads)
     app.router.add_get("/api/atlas/documents", documents)

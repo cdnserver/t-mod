@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
@@ -47,6 +48,16 @@ class AtlasAIConfig:
     @property
     def configured(self) -> bool:
         return bool(self.openrouter_key and self.qdrant_url)
+
+
+@dataclass(frozen=True, slots=True)
+class _AtlasAnswerRequest:
+    config: AtlasAIConfig
+    payload: dict[str, Any]
+    sources: list[dict[str, Any]]
+    started: float
+    response_mode: str
+    requested_response_mode: str
 
 
 def atlas_ai_config() -> AtlasAIConfig:
@@ -467,7 +478,7 @@ def _cross_chat_context(memory: list[dict[str, Any]] | None) -> str:
     return "\n\n".join(rows)[-14_000:]
 
 
-async def atlas_answer(
+async def _prepare_atlas_answer(
     organization_id: int,
     question: str,
     *,
@@ -476,15 +487,30 @@ async def atlas_answer(
     history: list[dict[str, Any]] | None = None,
     memory: list[dict[str, Any]] | None = None,
     response_mode: str = "balanced",
-) -> dict[str, Any]:
+    model_id: str = "atlas-tvr-a",
+    user_profile: dict[str, Any] | None = None,
+) -> _AtlasAnswerRequest:
     clean_question = str(question or "").strip()[:8000]
     if len(clean_question) < 2:
         raise AtlasAIError("question_required", "Введите вопрос для Atlas.")
     config = atlas_ai_config()
+    selected_model = str(model_id or "atlas-tvr-a").strip().lower()
+    if selected_model != "atlas-tvr-a":
+        raise AtlasAIError("atlas_model_invalid", "Выбранная модель Atlas недоступна.")
     if not config.configured:
         raise AtlasAIError("atlas_ai_not_configured", "ИИ-контур Atlas ещё не настроен администратором.")
     started = time.monotonic()
     requested_mode = atlas_normalize_response_mode(response_mode)
+    profile = dict(user_profile or {})
+    profile_context = "; ".join(
+        f"{label}: {str(profile.get(key) or '').strip()[:120]}"
+        for key, label in (
+            ("nickname", "персонаж"),
+            ("rank", "ранг"),
+            ("direction", "направление"),
+        )
+        if str(profile.get(key) or "").strip()
+    )
     mode = (
         "creative"
         if requested_mode == "balanced" and _CREATIVE_REQUEST_RE.search(clean_question)
@@ -527,6 +553,7 @@ async def atlas_answer(
             "content": (
                 "Ты — Atlas, интеллектуальный помощник государственных структур Majestic RP. "
                 f"Текущий сервер: {server_code}; текущая фракция: {faction_code}. "
+                f"Рабочий профиль пользователя: {profile_context or 'не заполнен'}. "
                 "Отвечай по-русски и сохраняй контекст диалога. Разделяй подтверждённые факты, "
                 "выводы и творческую работу. Правила, даты, полномочия, наказания и иные проверяемые "
                 "факты можно утверждать только по источникам и нужно отмечать ссылками [1], [2]. "
@@ -555,37 +582,196 @@ async def atlas_answer(
         )
     messages.extend(dialog_messages)
     messages.append({"role": "user", "content": clean_question})
-    body = await _json_request(
-        "POST",
-        config.openrouter_url,
-        headers=_openrouter_headers(config),
+    return _AtlasAnswerRequest(
+        config=config,
         payload={
             "model": config.chat_model,
             "temperature": {"strict": 0.15, "balanced": 0.38, "creative": 0.68}[mode],
             "messages": messages,
         },
-        timeout=45,
+        sources=sources,
+        started=started,
+        response_mode=mode,
+        requested_response_mode=requested_mode,
     )
+
+
+def _answer_text(body: dict[str, Any], *, streamed: bool = False) -> str:
     choices = body.get("choices")
-    answer = ""
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        message = choices[0].get("message")
-        if isinstance(message, dict):
-            answer = str(message.get("content") or "").strip()
-    if not answer:
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    selected = choices[0]
+    container = selected.get("delta") if streamed else selected.get("message")
+    if not isinstance(container, dict):
+        return ""
+    content = container.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                pieces.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+
+
+def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
+    clean_answer = str(answer or "").strip()
+    if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     citations = [
         {"index": index, "source_id": item["source_id"], "title": item["title"], "url": item["url"], "score": item["score"]}
-        for index, item in enumerate(sources, 1)
+        for index, item in enumerate(prepared.sources, 1)
     ]
     return {
-        "answer": answer[:30000],
+        "answer": clean_answer[:30000],
         "citations": citations,
-        "model": config.chat_model,
-        "response_mode": mode,
-        "requested_response_mode": requested_mode,
-        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": "atlas-tvr-a",
+        "response_mode": prepared.response_mode,
+        "requested_response_mode": prepared.requested_response_mode,
+        "latency_ms": round((time.monotonic() - prepared.started) * 1000),
     }
+
+
+async def atlas_answer(
+    organization_id: int,
+    question: str,
+    *,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    history: list[dict[str, Any]] | None = None,
+    memory: list[dict[str, Any]] | None = None,
+    response_mode: str = "balanced",
+    model_id: str = "atlas-tvr-a",
+    user_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prepared = await _prepare_atlas_answer(
+        organization_id,
+        question,
+        server_code=server_code,
+        faction_code=faction_code,
+        history=history,
+        memory=memory,
+        response_mode=response_mode,
+        model_id=model_id,
+        user_profile=user_profile,
+    )
+    body = await _json_request(
+        "POST",
+        prepared.config.openrouter_url,
+        headers=_openrouter_headers(prepared.config),
+        payload=prepared.payload,
+        timeout=45,
+    )
+    return _atlas_answer_result(prepared, _answer_text(body))
+
+
+async def atlas_answer_stream(
+    organization_id: int,
+    question: str,
+    *,
+    on_delta: Callable[[str], Awaitable[None]],
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    history: list[dict[str, Any]] | None = None,
+    memory: list[dict[str, Any]] | None = None,
+    response_mode: str = "balanced",
+    model_id: str = "atlas-tvr-a",
+    user_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stream provider deltas while preserving the regular Atlas result contract."""
+
+    prepared = await _prepare_atlas_answer(
+        organization_id,
+        question,
+        server_code=server_code,
+        faction_code=faction_code,
+        history=history,
+        memory=memory,
+        response_mode=response_mode,
+        model_id=model_id,
+        user_profile=user_profile,
+    )
+    timeout = aiohttp.ClientTimeout(total=90, connect=5, sock_read=45)
+    answer_parts: list[str] = []
+    answer_length = 0
+    fallback_lines: list[str] = []
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                prepared.config.openrouter_url,
+                headers=_openrouter_headers(prepared.config),
+                json={**prepared.payload, "stream": True},
+            ) as response:
+                if response.status >= 400:
+                    raw = await response.text()
+                    try:
+                        error_body = json.loads(raw)
+                    except (TypeError, ValueError):
+                        error_body = {"message": raw[:1000]}
+                    message = _response_error_message(
+                        error_body if isinstance(error_body, dict) else {},
+                        response.status,
+                    )
+                    raise AtlasAIError(
+                        {404: "upstream_not_found", 429: "upstream_rate_limited"}.get(
+                            response.status,
+                            "upstream_error",
+                        ),
+                        f"Внешний ИИ-контур вернул {response.status}: {message[:400]}",
+                        retryable=response.status in {408, 425, 429, 500, 502, 503, 504},
+                    )
+                while not response.content.at_eof():
+                    raw_line = await response.content.readline()
+                    if not raw_line:
+                        break
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        fallback_lines.append(line)
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except (TypeError, ValueError):
+                        continue
+                    delta = _answer_text(event, streamed=True) if isinstance(event, dict) else ""
+                    if not delta:
+                        continue
+                    remaining = 30000 - answer_length
+                    if remaining <= 0:
+                        continue
+                    selected = delta[:remaining]
+                    answer_parts.append(selected)
+                    answer_length += len(selected)
+                    await on_delta(selected)
+    except AtlasAIError:
+        raise
+    except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
+        raise AtlasAIError(
+            "upstream_unavailable",
+            "ИИ-контур временно недоступен. Запрос можно безопасно повторить.",
+            retryable=True,
+        ) from exc
+
+    if not answer_parts and fallback_lines:
+        try:
+            fallback = json.loads("\n".join(fallback_lines))
+        except (TypeError, ValueError):
+            fallback = {}
+        full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
+        if full_text:
+            answer_parts.append(full_text[:30000])
+            await on_delta(answer_parts[0])
+    return _atlas_answer_result(prepared, "".join(answer_parts))
 
 
 async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
@@ -605,7 +791,14 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
         "configured": config.configured,
         "qdrant": qdrant,
         "openrouter": "configured" if bool(config.openrouter_key) else "disabled",
-        "chat_model": config.chat_model,
+        "chat_model": "atlas-tvr-a",
+        "models": [
+            {
+                "id": "atlas-tvr-a",
+                "name": "atlas-tvr-a",
+                "description": "Основная интеллектуальная модель Atlas",
+            }
+        ],
         "embedding_model": config.embedding_model,
         "collection": config.collection,
     }
@@ -618,6 +811,7 @@ __all__ = [
     "atlas_ai_config",
     "atlas_ai_health",
     "atlas_answer",
+    "atlas_answer_stream",
     "atlas_ensure_collection",
     "atlas_index_source",
     "atlas_normalize_response_mode",

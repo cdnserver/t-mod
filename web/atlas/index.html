@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-account-stream">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -30,12 +30,12 @@
       </div>
 
       <header class="preview-header">
-        <a class="preview-brand" href="/reactor" aria-label="Atlas от T-Mod">
+        <a class="preview-brand" href="https://tvr.lat/" aria-label="Atlas от T-Mod">
           <span class="preview-brand-mark"><i></i><b>A</b></span>
           <span><strong>ATLAS</strong><small>T‑MOD · TVR × SGL</small></span>
         </a>
         <div class="preview-header-state"><i></i><span><small>СТАТУС СИСТЕМЫ</small><b>Закрытая подготовка</b></span></div>
-        <a class="preview-reactor-link" href="/reactor"><span>Вернуться</span><b>Ядерный Реактор</b><i>↗</i></a>
+        <a id="preview-return" class="preview-reactor-link" href="https://tvr.lat/"><span>Вернуться</span><b>Персональный Reactor</b><i>↗</i></a>
       </header>
 
       <main class="preview-stage">
@@ -45,7 +45,7 @@
           <p>Atlas превращает правила, документы и опыт команды в ясные ответы и готовые решения — именно тогда, когда они нужны.</p>
           <div class="preview-access-note">
             <span class="access-seal"><i></i><b>А</b></span>
-            <span><small>ATLAS ГОТОВИТСЯ К ЗАПУСКУ</small><strong>Сейчас пространство открыто команде разработки</strong></span>
+            <span><small>ДОСТУП ПО ПРИГЛАШЕНИЮ</small><strong>Администратор T-Mod может открыть вам Atlas AI</strong></span>
           </div>
         </div>
 
@@ -77,7 +77,7 @@
 
     <div id="atlas-app" class="atlas-app" hidden>
       <aside class="sidebar">
-        <a class="brand" href="/atlas" aria-label="T-Mod Atlas">
+        <a class="brand" href="https://atlas.tvr.lat/" aria-label="T-Mod Atlas">
           <span class="brand-mark"><i></i><b>A</b></span>
           <span><strong>ATLAS</strong><small>TVR × SGL</small></span>
         </a>
@@ -179,7 +179,7 @@
                 <footer><i></i><span><b>Личная память</b><small>история видна только вам в этом пространстве</small></span></footer>
               </aside>
               <article class="chat-panel">
-                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button></div></header>
+                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="chat-controls"><label class="model-picker"><small>МОДЕЛЬ</small><select id="atlas-model" aria-label="Модель Atlas"><option value="atlas-tvr-a">atlas-tvr-a</option></select></label><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button></div></div></header>
                 <div id="chat-stream" class="chat-stream">
                   <div class="assistant-message welcome"><span>A</span><div><small>ATLAS · НОВЫЙ ДИАЛОГ</small><p>Я могу проверить норму, продолжить прошлую мысль или создать речь и документ на основе правил. Факты останутся проверяемыми, а творческая часть — свободной.</p></div></div>
                 </div>
@@ -254,7 +254,7 @@
 
     <dialog id="onboarding-dialog" class="atlas-dialog">
       <form id="onboarding-form" method="dialog">
-        <button class="dialog-close" type="button" data-close>×</button><span>ПЕРВЫЙ ЗАПУСК ATLAS</span><h2>Ваш рабочий профиль</h2><p>Выберите рабочее направление. Сервер и фракцию всегда можно поменять в верхней панели.</p><label>Сервер<select id="onboarding-server" name="server_code"></select></label><label>Фракция<select id="onboarding-faction" name="faction_code"></select></label><label>Ваша роль<input name="role" maxlength="100" placeholder="Сотрудник государственной структуры"></label><label>Направление работы<input name="direction" maxlength="120" placeholder="Юридическая работа, кадровый отдел..."></label><button class="primary" type="submit">Сохранить и продолжить</button>
+        <button class="dialog-close" type="button" data-close>×</button><span>ПЕРВЫЙ ЗАПУСК ATLAS</span><h2>Представьтесь Atlas</h2><p>Эти данные задают рабочий контекст ответов. Их можно изменить позже.</p><div class="onboarding-identity"><i>A</i><span><b>Рабочая идентичность</b><small>сервер · фракция · персонаж · ранг</small></span></div><label>Сервер<select id="onboarding-server" name="server_code" required></select></label><label>Фракция<select id="onboarding-faction" name="faction_code" required></select></label><label>Игровой ник<input id="onboarding-nickname" name="nickname" minlength="2" maxlength="80" required placeholder="Имя Фамилия"></label><label>Ранг / должность<input id="onboarding-rank" name="rank" maxlength="100" required placeholder="Например: Офицер II"></label><label>Направление работы<input id="onboarding-direction" name="direction" maxlength="120" placeholder="Патруль, юстиция, кадровый отдел..."></label><button class="primary" type="submit">Войти в Atlas <span>→</span></button>
       </form>
     </dialog>
 
@@ -263,6 +263,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js" defer></script>
+    <script src="/atlas/assets/app.js?v=20260809-account-stream" defer></script>
   </body>
 </html>

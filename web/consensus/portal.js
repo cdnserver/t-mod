@@ -659,7 +659,7 @@
     byId("portal-profile-status").textContent = profile.status || "активен";
     byId("identity-note").textContent = profile.status_note ||
       profile.responsibilities ||
-      "Настройки профиля доступны через /profile в Discord.";
+      "Настройки аккаунта доступны через /account в Discord.";
     byId("identity-positions").replaceChildren(
       ...(data.legal_positions || []).map((item) =>
         el("span", "", `${item.emoji} ${item.label}`)

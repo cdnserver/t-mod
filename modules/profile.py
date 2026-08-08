@@ -901,6 +901,17 @@ class WebAccessModal(ProfileModal, title="Веб-доступ T-Mod"):
                 ephemeral=True,
             )
             return
+        characters = await asyncio.to_thread(
+            storage.list_profile_characters,
+            self.member.guild.id,
+            self.member.id,
+        )
+        if not characters:
+            await interaction.response.send_message(
+                "Сначала добавьте хотя бы одного персонажа через `/account`.",
+                ephemeral=True,
+            )
+            return
         # Modal submissions created directly by /reset do not have an original
         # message. A thinking response creates one that can be safely edited.
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1033,6 +1044,318 @@ class CharacterModal(ProfileModal):
             await _send_profile_error(interaction, exc)
             return
         await _edit_profile_home(interaction, self.requester_id, self.member)
+
+
+def _tmod_account_embed(
+    user: discord.abc.User,
+    characters: list[Any],
+    credential: Any | None,
+) -> discord.Embed:
+    active = bool(characters and credential)
+    embed = discord.Embed(
+        title="T-Mod Account",
+        description=(
+            "Единая учётная запись активна. Она узнаёт вас в сервисах T-Mod."
+            if active
+            else "Создайте персонажа, затем задайте логин и восьмизначный PIN."
+        ),
+        color=0x57F2C8 if active else 0x5865F2,
+    )
+    embed.add_field(
+        name="Статус",
+        value="🟢 Активен" if active else "◌ Требуется настройка",
+        inline=True,
+    )
+    embed.add_field(
+        name="Уровень",
+        value="Нулевой пользователь" if not isinstance(user, discord.Member) else "Участник T-Mod",
+        inline=True,
+    )
+    embed.add_field(
+        name="Персонажи",
+        value=(
+            "\n".join(f"**{item.nickname}** · `{item.static_id}`" for item in characters)
+            if characters
+            else "Персонаж ещё не добавлен"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Веб-вход",
+        value=f"Логин: `{credential.login}`" if credential else "Логин и PIN ещё не заданы",
+        inline=False,
+    )
+    if not isinstance(user, discord.Member):
+        embed.set_footer(text="Нулевой уровень не открывает Товарищество и персональный Reactor")
+    return embed
+
+
+async def _edit_tmod_account(
+    interaction: discord.Interaction,
+    guild_id: int,
+    requester_id: int,
+) -> None:
+    characters, credential = await asyncio.gather(
+        asyncio.to_thread(storage.list_profile_characters, guild_id, requester_id),
+        asyncio.to_thread(web_auth_storage.get_web_credential, guild_id, requester_id),
+    )
+    guild = interaction.client.get_guild(int(guild_id))
+    account_user = guild.get_member(int(requester_id)) if guild is not None else None
+    await interaction.edit_original_response(
+        embed=_tmod_account_embed(account_user or interaction.user, characters, credential),
+        view=TModAccountView(guild_id, requester_id, characters, credential),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+class TModAccountCharacterModal(ProfileModal, title="Персонаж T-Mod Account"):
+    nickname = discord.ui.TextInput(
+        label="Ник персонажа",
+        placeholder="Например: Robert Williams",
+        min_length=2,
+        max_length=storage.PROFILE_NICKNAME_MAX_LENGTH,
+    )
+    static_id = discord.ui.TextInput(
+        label="Статик",
+        placeholder="Только цифры",
+        min_length=1,
+        max_length=12,
+    )
+
+    def __init__(self, guild_id: int, requester_id: int, character: Any | None = None) -> None:
+        super().__init__(timeout=300)
+        self.guild_id = int(guild_id)
+        self.requester_id = int(requester_id)
+        self.character_id = int(character.id) if character is not None else None
+        if character is not None:
+            self.nickname.default = str(character.nickname)
+            self.static_id.default = str(character.static_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Нельзя изменить чужой аккаунт.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if self.character_id is None:
+                await asyncio.to_thread(
+                    storage.add_profile_character,
+                    self.guild_id,
+                    self.requester_id,
+                    str(self.nickname.value),
+                    str(self.static_id.value),
+                )
+            else:
+                await asyncio.to_thread(
+                    storage.update_profile_character,
+                    self.guild_id,
+                    self.requester_id,
+                    self.character_id,
+                    str(self.nickname.value),
+                    str(self.static_id.value),
+                )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await _edit_tmod_account(interaction, self.guild_id, self.requester_id)
+
+
+class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"):
+    login = discord.ui.TextInput(label="Логин", placeholder="latin.login", min_length=3, max_length=32)
+    pin = discord.ui.TextInput(label="PIN — ровно 8 цифр", placeholder="••••••••", min_length=8, max_length=8)
+    pin_repeat = discord.ui.TextInput(label="Повторите PIN", placeholder="••••••••", min_length=8, max_length=8)
+
+    def __init__(self, guild_id: int, requester_id: int, credential: Any | None) -> None:
+        super().__init__(timeout=300)
+        self.guild_id = int(guild_id)
+        self.requester_id = int(requester_id)
+        if credential is not None:
+            self.login.default = str(credential.login)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Нельзя изменить чужой аккаунт.", ephemeral=True)
+            return
+        if str(self.pin.value) != str(self.pin_repeat.value):
+            await interaction.response.send_message(PROFILE_ERROR_MESSAGES["web_pin_mismatch"], ephemeral=True)
+            return
+        characters = await asyncio.to_thread(
+            storage.list_profile_characters, self.guild_id, self.requester_id
+        )
+        if not characters:
+            await interaction.response.send_message("Сначала добавьте хотя бы одного персонажа.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await asyncio.to_thread(
+                web_auth_storage.configure_web_credential,
+                self.guild_id,
+                self.requester_id,
+                str(self.login.value),
+                str(self.pin.value),
+            )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await _edit_tmod_account(interaction, self.guild_id, self.requester_id)
+
+
+def _tmod_account_character_embed(character: Any) -> discord.Embed:
+    return discord.Embed(
+        title=str(character.nickname)[:250],
+        description=f"Игровой персонаж · статик `{character.static_id}`",
+        color=0x5865F2,
+    )
+
+
+class TModAccountCharacterSelect(discord.ui.Select):
+    def __init__(self, guild_id: int, requester_id: int, characters: list[Any]) -> None:
+        super().__init__(
+            placeholder="Выберите персонажа",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label=str(item.nickname)[:100],
+                    description=f"Статик {item.static_id}"[:100],
+                    value=str(item.id),
+                )
+                for item in characters
+            ],
+        )
+        self.guild_id = int(guild_id)
+        self.requester_id = int(requester_id)
+        self.characters = {int(item.id): item for item in characters}
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        character = self.characters.get(int(self.values[0]))
+        if character is None:
+            await interaction.response.send_message("Персонаж уже изменён. Обновите аккаунт.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=_tmod_account_character_embed(character),
+            view=TModAccountCharacterDetailView(self.guild_id, self.requester_id, character),
+        )
+
+
+class TModAccountCharactersView(ProfileBaseView):
+    def __init__(self, guild_id: int, requester_id: int, characters: list[Any]) -> None:
+        super().__init__(requester_id)
+        self.guild_id = int(guild_id)
+        self.add_item(TModAccountCharacterSelect(guild_id, requester_id, characters))
+
+    @discord.ui.button(label="К аккаунту", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await _edit_tmod_account(interaction, self.guild_id, self.requester_id)
+
+
+class TModAccountDeleteConfirmView(ProfileBaseView):
+    def __init__(self, guild_id: int, requester_id: int, character: Any) -> None:
+        super().__init__(requester_id)
+        self.guild_id = int(guild_id)
+        self.character = character
+
+    @discord.ui.button(label="Удалить", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        try:
+            await asyncio.to_thread(
+                storage.delete_profile_character,
+                self.guild_id,
+                self.requester_id,
+                int(self.character.id),
+            )
+        except ValueError as exc:
+            await _send_profile_error(interaction, exc)
+            return
+        await _edit_tmod_account(interaction, self.guild_id, self.requester_id)
+
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            embed=_tmod_account_character_embed(self.character),
+            view=TModAccountCharacterDetailView(self.guild_id, self.requester_id, self.character),
+        )
+
+
+class TModAccountCharacterDetailView(ProfileBaseView):
+    def __init__(self, guild_id: int, requester_id: int, character: Any) -> None:
+        super().__init__(requester_id)
+        self.guild_id = int(guild_id)
+        self.character = character
+
+    @discord.ui.button(label="Изменить", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def edit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            TModAccountCharacterModal(self.guild_id, self.requester_id, self.character)
+        )
+
+    @discord.ui.button(label="Удалить", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="Удалить персонажа?",
+            description=f"**{self.character.nickname}** · `{self.character.static_id}` будет удалён.",
+            color=0xED4245,
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=TModAccountDeleteConfirmView(self.guild_id, self.requester_id, self.character),
+        )
+
+    @discord.ui.button(label="К списку", emoji="↩️", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        characters = await asyncio.to_thread(
+            storage.list_profile_characters,
+            self.guild_id,
+            self.requester_id,
+        )
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Персонажи T-Mod Account",
+                description="Выберите запись, чтобы изменить или удалить её.",
+                color=0x5865F2,
+            ),
+            view=TModAccountCharactersView(self.guild_id, self.requester_id, characters),
+        )
+
+
+class TModAccountView(ProfileBaseView):
+    def __init__(
+        self,
+        guild_id: int,
+        requester_id: int,
+        characters: list[Any],
+        credential: Any | None,
+    ) -> None:
+        super().__init__(requester_id)
+        self.guild_id = int(guild_id)
+        self.characters = characters
+        self.credential = credential
+        self.add_character.disabled = len(characters) >= storage.PROFILE_MAX_CHARACTERS
+        self.manage_characters.disabled = not bool(characters)
+        self.web_access.disabled = not bool(characters)
+
+    @discord.ui.button(label="Добавить персонажа", emoji="＋", style=discord.ButtonStyle.primary)
+    async def add_character(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(TModAccountCharacterModal(self.guild_id, self.requester_id))
+
+    @discord.ui.button(label="Персонажи", emoji="🎭", style=discord.ButtonStyle.secondary)
+    async def manage_characters(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Персонажи T-Mod Account",
+                description="Выберите запись, чтобы изменить или удалить её.",
+                color=0x5865F2,
+            ),
+            view=TModAccountCharactersView(self.guild_id, self.requester_id, self.characters),
+        )
+
+    @discord.ui.button(label="Логин и PIN", emoji="🔑", style=discord.ButtonStyle.secondary)
+    async def web_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            TModAccountCredentialModal(self.guild_id, self.requester_id, self.credential)
+        )
 
 
 class StatusNoteModal(ProfileModal, title="Подпись доступности"):
@@ -1829,23 +2152,70 @@ def setup_profile(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None] | None = None,
 ) -> None:
-    @bot.tree.command(name="profile", description="Открыть профиль участника и его персонажей")
-    @app_commands.guild_only()
-    @app_commands.describe(user="Участник, чей профиль нужно посмотреть")
-    async def profile(interaction: discord.Interaction, user: discord.Member | None = None) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Команда работает на сервере.", ephemeral=True)
+    def account_guild_id(interaction: discord.Interaction) -> int | None:
+        configured = str(os.getenv("DISCORD_GUILD_ID", "")).strip()
+        if configured.isdigit():
+            return int(configured)
+        if interaction.guild_id:
+            return int(interaction.guild_id)
+        return int(bot.guilds[0].id) if bot.guilds else None
+
+    async def resolve_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
+        member = guild.get_member(int(user_id))
+        if member is not None:
+            return member
+        try:
+            return await guild.fetch_member(int(user_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+    @bot.tree.command(name="account", description="Открыть единый аккаунт и персонажей T-Mod")
+    @app_commands.describe(user="Участник, чей аккаунт нужно посмотреть")
+    async def account(
+        interaction: discord.Interaction,
+        user: discord.User | None = None,
+    ) -> None:
+        selected_guild_id = account_guild_id(interaction)
+        if selected_guild_id is None:
+            await interaction.response.send_message("T-Mod ещё подключается. Повторите через минуту.", ephemeral=True)
             return
-        target = user or interaction.user
-        if remember_command_activity is not None:
-            details = "/profile" if target.id == interaction.user.id else f"/profile user:{target.id}"
-            remember_command_activity(interaction, "command_profile", details)
         await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = bot.get_guild(int(selected_guild_id))
+        requester = (
+            await resolve_member(guild, int(interaction.user.id))
+            if guild is not None
+            else None
+        )
+        if requester is None:
+            if user is not None and int(user.id) != int(interaction.user.id):
+                await interaction.edit_original_response(
+                    content="Нулевой аккаунт может управлять только собственными данными.",
+                    embed=None,
+                    view=None,
+                )
+                return
+            await _edit_tmod_account(interaction, selected_guild_id, int(interaction.user.id))
+            return
+
+        target = requester
+        if user is not None and int(user.id) != int(requester.id):
+            target = await resolve_member(guild, int(user.id)) if guild is not None else None
+            if target is None:
+                await interaction.edit_original_response(
+                    content="Этот пользователь не является участником Товарищества.",
+                    embed=None,
+                    view=None,
+                )
+                return
+        if remember_command_activity is not None:
+            details = "/account" if target.id == requester.id else f"/account user:{target.id}"
+            remember_command_activity(interaction, "command_profile", details)
         profile_data, characters, activity = await _load_profile(target)
-        editable = target.id == interaction.user.id
+        editable = target.id == requester.id
         await interaction.edit_original_response(
             embed=profile_embed(target, profile_data, characters, activity, editable=editable),
-            view=ProfileHomeView(interaction.user.id, target, characters, editable=editable),
+            view=ProfileHomeView(requester.id, target, characters, editable=editable),
+            content=None,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -1854,34 +2224,20 @@ def setup_profile(
         description="Сбросить заблокированный логин и PIN веб-панели T-Mod",
     )
     async def reset_web_access(interaction: discord.Interaction) -> None:
-        member: discord.Member | None = None
-        if isinstance(interaction.user, discord.Member):
-            member = interaction.user
-        else:
-            configured = str(os.getenv("DISCORD_GUILD_ID", "")).strip()
-            ordered_guilds = list(bot.guilds)
-            if configured.isdigit():
-                ordered_guilds.sort(
-                    key=lambda item: 0 if int(item.id) == int(configured) else 1
-                )
-            for guild in ordered_guilds:
-                candidate = guild.get_member(int(interaction.user.id))
-                if candidate is not None:
-                    member = candidate
-                    break
-        if member is None:
+        selected_guild_id = account_guild_id(interaction)
+        if selected_guild_id is None:
             await interaction.response.send_message(
-                "Не удалось подтвердить ваше участие на сервере T-Mod.",
+                "T-Mod ещё подключается. Повторите через минуту.",
                 ephemeral=True,
             )
             return
         credential = await asyncio.to_thread(
             web_auth_storage.get_web_credential,
-            member.guild.id,
-            member.id,
+            selected_guild_id,
+            interaction.user.id,
         )
         await interaction.response.send_modal(
-            WebAccessModal(interaction.user.id, member, credential)
+            TModAccountCredentialModal(selected_guild_id, interaction.user.id, credential)
         )
 
     @bot.listen("on_member_update")
@@ -1910,7 +2266,7 @@ def setup_profile(
             title="Добро пожаловать в Товарищество",
             description=(
                 "Ваш профиль стал частью общего справочника участников. "
-                "Откройте `/profile`, нажмите **«О себе»** и заполните единую карточку: "
+                "Откройте `/account`, нажмите **«О себе»** и заполните единую карточку: "
                 "кто вы, чем занимаетесь, как давно состоите и ваша зона ответственности."
             ),
             color=PROFILE_COLOR,
@@ -1954,6 +2310,7 @@ __all__ = [
     "ProfileWebAccessView",
     "StatusNoteModal",
     "WebAccessModal",
+    "TModAccountView",
     "character_embed",
     "character_manager_embed",
     "member_position_text",

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from modules.atlas_ai import (
     AtlasAIError,
     _chunks,
     atlas_answer,
+    atlas_answer_stream,
     atlas_ensure_collection,
     atlas_index_source,
     atlas_probe_collection,
@@ -261,6 +263,34 @@ class AtlasRepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "atlas_thread_not_found"):
             atlas_repository.atlas_thread_messages(organization_id, 42, foreign)
 
+    def test_discord_thread_binding_and_atlas_audit_are_durable(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(organization_id, 42, "Задержание")
+        bound = atlas_repository.atlas_bind_discord_thread(
+            discord_thread_id=9001,
+            guild_id=77,
+            parent_channel_id=1494602485485277194,
+            organization_id=organization_id,
+            atlas_thread_id=thread_id,
+            owner_user_id=42,
+        )
+        atlas_repository.atlas_record_event(
+            organization_id,
+            42,
+            "ai_answer_created",
+            "Atlas ответил в Discord",
+            target_type="discord_thread",
+            target_id=9001,
+        )
+
+        self.assertEqual(bound["atlas_thread_id"], thread_id)
+        self.assertEqual(atlas_repository.atlas_discord_thread(9001)["owner_user_id"], 42)
+        self.assertEqual(
+            atlas_repository.atlas_admin_snapshot(77)["recent_events"][0]["target_id"],
+            "9001",
+        )
+
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     def test_chunker_is_bounded_and_preserves_overlap(self) -> None:
@@ -401,6 +431,50 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("modules.atlas_ai._json_request", corrupted):
             self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
+
+    async def test_openrouter_answer_is_delivered_as_real_sse_deltas(self) -> None:
+        async def completion(request: web.Request) -> web.StreamResponse:
+            self.assertTrue((await request.json())["stream"])
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write('data: {"choices":[{"delta":{"content":"Первый "}}]}\n\n'.encode())
+            await response.write('data: {"choices":[{"delta":{"content":"фрагмент"}}]}\n\n'.encode())
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        chunks: list[str] = []
+
+        async def receive(text: str) -> None:
+            chunks.append(text)
+
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search",
+                AsyncMock(return_value=[]),
+            ):
+                result = await atlas_answer_stream(77, "Ответь по частям", on_delta=receive)
+        finally:
+            await server.close()
+
+        self.assertEqual(chunks, ["Первый ", "фрагмент"])
+        self.assertEqual(result["answer"], "Первый фрагмент")
+        self.assertEqual(result["model"], "atlas-tvr-a")
 
     async def test_creative_answer_uses_current_history_cross_chat_memory_and_sources(self) -> None:
         config = AtlasAIConfig(
@@ -679,9 +753,24 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "latency_ms": 12,
             }
         )
+        async def stream_answer(_organization_id, _question, *, on_delta, **_kwargs):
+            await on_delta("Поток")
+            await on_delta("овый ответ")
+            return {
+                "answer": "Потоковый ответ",
+                "citations": [],
+                "model": "atlas-tvr-a",
+                "response_mode": "balanced",
+                "requested_response_mode": "balanced",
+                "latency_ms": 8,
+            }
+
         headers = {"X-CSRF-Token": "admin-csrf"}
         try:
-            with patch("modules.atlas_web.atlas_answer", answer):
+            with patch("modules.atlas_web.atlas_answer", answer), patch(
+                "modules.atlas_web.atlas_answer_stream",
+                stream_answer,
+            ):
                 async with TestClient(TestServer(app)) as client:
                     first = await client.post(
                         "/api/atlas/chat",
@@ -698,6 +787,19 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         },
                         headers={**headers, "X-Idempotency-Key": "chat-2"},
                     )
+                    streamed = await client.post(
+                        "/api/atlas/chat/stream",
+                        json={
+                            "question": "Покажи поток",
+                            "thread_id": first_payload["thread_id"],
+                        },
+                        headers={**headers, "X-Idempotency-Key": "chat-3"},
+                    )
+                    stream_events = [
+                        json.loads(line.removeprefix("data:"))
+                        for line in (await streamed.text()).splitlines()
+                        if line.strip().startswith(("data:", "{"))
+                    ]
                     threads = await client.get("/api/atlas/threads")
                     detail = await client.get(
                         f"/api/atlas/threads/{first_payload['thread_id']}"
@@ -707,8 +809,14 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(first.status, 200)
             self.assertEqual(second.status, 200)
+            self.assertEqual(streamed.status, 200)
+            self.assertEqual(
+                "".join(item.get("text", "") for item in stream_events if item["type"] == "delta"),
+                "Потоковый ответ",
+            )
+            self.assertEqual(stream_events[-1]["type"], "done")
             self.assertEqual(len(threads_payload["items"]), 1)
-            self.assertEqual(len(detail_payload["messages"]), 4)
+            self.assertEqual(len(detail_payload["messages"]), 6)
             second_history = answer.await_args_list[1].kwargs["history"]
             self.assertEqual(
                 [item["role"] for item in second_history],

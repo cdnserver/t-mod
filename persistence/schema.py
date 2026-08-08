@@ -472,6 +472,26 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_ai_messages_thread
             ON atlas_ai_messages(thread_id, id);
 
+            CREATE TABLE IF NOT EXISTS atlas_discord_threads (
+                discord_thread_id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                parent_channel_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                atlas_thread_id INTEGER NOT NULL UNIQUE,
+                owner_user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'closed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(atlas_thread_id) REFERENCES atlas_ai_threads(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_discord_threads_owner
+            ON atlas_discord_threads(guild_id, owner_user_id, status);
+
             CREATE TABLE IF NOT EXISTS atlas_audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,

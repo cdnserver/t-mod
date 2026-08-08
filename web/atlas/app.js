@@ -12,6 +12,8 @@ const appState = {
   threadId: null,
   threadReady: false,
   responseMode: "balanced",
+  modelId: "atlas-tvr-a",
+  onboardingPrompted: false,
 };
 const screenMeta = {
   home: ["ATLAS", "Командный центр"],
@@ -250,6 +252,9 @@ function renderCatalog(data) {
   fillSelect(byId("atlas-faction"), catalog.factions || [], appState.factionCode);
   fillSelect(byId("onboarding-server"), catalog.servers || [], appState.serverCode);
   fillSelect(byId("onboarding-faction"), catalog.factions || [], appState.factionCode);
+  byId("onboarding-nickname").value = profile.nickname || "";
+  byId("onboarding-rank").value = profile.rank || profile.role || "";
+  byId("onboarding-direction").value = profile.direction || "";
   byId("vault-scope").textContent = scopeLabel();
   byId("source-library-title").textContent = scopeLabel();
 }
@@ -345,6 +350,11 @@ function render(data) {
   renderOnboarding(membership);
 
   const ai = data.ai || {};
+  const modelSelect = byId("atlas-model");
+  clear(modelSelect);
+  (ai.models || [{ id: "atlas-tvr-a", name: "atlas-tvr-a" }]).forEach((model) => {
+    modelSelect.append(new Option(model.name || model.id, model.id, false, model.id === appState.modelId));
+  });
   const aiState = byId("ai-state");
   aiState.classList.toggle("warning", !ai.configured || ai.qdrant !== "ok");
   aiState.querySelector("small").textContent = ai.configured && ai.qdrant === "ok" ? "готов" : "настройка";
@@ -382,6 +392,12 @@ function messageNode(role, text, citations = []) {
   const copy = element("div");
   if (role !== "user") copy.append(element("small", "", "ATLAS · ОТВЕТ С КОНТЕКСТОМ"));
   copy.append(element("p", "", text));
+  appendCitations(copy, citations);
+  row.append(copy);
+  return row;
+}
+
+function appendCitations(copy, citations = []) {
   if (citations.length) {
     const list = element("div", "citation-list");
     citations.forEach((citation) => {
@@ -395,8 +411,6 @@ function messageNode(role, text, citations = []) {
     });
     copy.append(list);
   }
-  row.append(copy);
-  return row;
 }
 
 async function sendQuestion(question) {
@@ -407,29 +421,102 @@ async function sendQuestion(question) {
   stream.scrollTop = stream.scrollHeight;
   const button = byId("atlas-chat-form").querySelector("button[type='submit']");
   button.disabled = true;
-  button.textContent = "Atlas думает…";
+  button.textContent = "Atlas отвечает…";
+  const assistant = messageNode("assistant", "");
+  assistant.classList.add("streaming");
+  const answerNode = assistant.querySelector("p");
+  const answerCopy = answerNode.parentElement;
+  stream.append(assistant);
+  let responseTimeout = null;
   try {
-    const result = await api("/api/atlas/chat", {
+    const controller = new AbortController();
+    responseTimeout = setTimeout(() => controller.abort(), 90000);
+    const response = await fetch("/api/atlas/chat/stream", {
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": appState.data?.viewer?.csrf_token || "",
+        "X-Idempotency-Key": requestId(),
+      },
       body: JSON.stringify({
         question,
         thread_id: appState.threadId,
         response_mode: appState.responseMode,
+        model: appState.modelId,
         server_code: appState.serverCode,
         faction_code: appState.factionCode,
       }),
-      timeout: 60000,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
     });
-    stream.append(messageNode("assistant", result.answer, result.citations || []));
+    if (response.status === 401) {
+      location.assign("/login?next=%2Fatlas");
+      throw new Error("Требуется вход");
+    }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.message || `Atlas вернул HTTP ${response.status}`);
+    }
+    if (!response.body?.getReader) throw new Error("Браузер не поддерживает потоковые ответы Atlas.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let result = null;
+    let streamError = null;
+    const acceptEvent = (event) => {
+      if (event.type === "delta" && event.text) {
+        answerNode.textContent += String(event.text);
+        assistant.classList.add("has-content");
+        stream.scrollTop = stream.scrollHeight;
+      } else if (event.type === "done") {
+        result = event;
+      } else if (event.type === "error") {
+        streamError = new Error(event.message || "Ответ Atlas прерван.");
+      }
+    };
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        lines.filter(Boolean).forEach((line) => {
+          try {
+            const payloadLine = line.startsWith("data:") ? line.slice(5).trim() : line;
+            if (payloadLine) acceptEvent(JSON.parse(payloadLine));
+          }
+          catch (_error) { /* incomplete/foreign event is safely ignored */ }
+        });
+        if (done) break;
+      }
+      if (buffer.trim()) {
+        const payloadLine = buffer.startsWith("data:") ? buffer.slice(5).trim() : buffer;
+        if (payloadLine) acceptEvent(JSON.parse(payloadLine));
+      }
+    } finally {
+      clearTimeout(responseTimeout);
+      responseTimeout = null;
+      reader.releaseLock();
+    }
+    if (streamError) throw streamError;
+    if (!result) throw new Error("Atlas не подтвердил завершение ответа.");
+    if (!answerNode.textContent) answerNode.textContent = result.answer || "Ответ готов.";
+    appendCitations(answerCopy, result.citations || []);
+    assistant.classList.remove("streaming");
     appState.threadId = Number(result.thread_id);
     byId("current-thread-title").textContent = result.thread?.title || question.slice(0, 100);
     try { await loadThreads(); }
     catch (_error) { showToast("Ответ готов, но список диалогов обновится позже."); }
     byId("atlas-question").value = "";
   } catch (error) {
-    stream.append(messageNode("assistant", error.message || "Ответ временно недоступен."));
+    if (!answerNode.textContent) answerNode.textContent = error.message || "Ответ временно недоступен.";
+    else answerCopy.append(element("small", "stream-interrupted", "Связь прервалась — ответ сохранится только после полного завершения."));
+    assistant.classList.remove("streaming");
+    assistant.classList.add("stream-error");
     showToast(error.message, true);
   } finally {
+    clearTimeout(responseTimeout);
     appState.busy = false;
     button.disabled = false;
     button.textContent = "Отправить ↑";
@@ -532,6 +619,10 @@ async function updateScope() {
 function bind() {
   byId("atlas-server").addEventListener("change", () => void updateScope());
   byId("atlas-faction").addEventListener("change", () => void updateScope());
+  byId("atlas-model").addEventListener("change", (event) => {
+    appState.modelId = event.currentTarget.value || "atlas-tvr-a";
+    showToast(`Модель: ${appState.modelId}`);
+  });
   document.querySelectorAll(".atlas-nav [data-screen]").forEach((button) => {
     button.addEventListener("click", () => switchScreen(button.dataset.screen));
   });
@@ -671,12 +762,22 @@ async function bootstrap() {
     await reload();
     byId("loading").hidden = true;
     if (appState.data?.preview) {
+      if (appState.data?.viewer?.account_tier === "zero") {
+        const link = byId("preview-return");
+        link.href = "/logout";
+        link.querySelector("span").textContent = "T-Mod Account";
+        link.querySelector("b").textContent = "Сменить аккаунт";
+      }
       byId("atlas-preview").hidden = false;
       bindPreviewMotion();
       return;
     }
     byId("atlas-app").hidden = false;
     switchScreen(location.hash.replace(/^#\//, "") || "home", false);
+    if (Number(appState.data?.membership?.onboarding_step || 0) < 4 && !appState.onboardingPrompted) {
+      appState.onboardingPrompted = true;
+      setTimeout(() => openDialog(byId("onboarding-dialog")), 380);
+    }
     setInterval(() => {
       if (!document.hidden && appState.screen === "forum") void loadForumSync().catch(() => {});
     }, 30000);

@@ -30,6 +30,7 @@ from modules.error_inbox import setup_error_inbox_runtime
 from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 from modules.reliability import setup_reliability
+from modules.atlas_discord import setup_atlas_discord
 from persistence.database_guard import ensure_startup_recovery_point
 
 
@@ -1002,6 +1003,8 @@ boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
 boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
+boot_module("Atlas Discord")
+setup_atlas_discord(bot)
 boot_module("T-Mod Music")
 setup_music(bot, remember_command_activity)
 boot_module("SGL Bureau")

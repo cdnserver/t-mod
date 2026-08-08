@@ -482,6 +482,17 @@ def register_reactor_web_routes(
                 text=json.dumps({"error": "personal_login_required"}),
                 content_type="application/json",
             )
+        if not principal.guild_member:
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "zero_account_reactor_forbidden",
+                        "message": "Нулевой аккаунт не имеет доступа к данным Товарищества.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
         return principal
 
     async def admin_request(request: web.Request) -> ConsensusWebPrincipal:
@@ -616,6 +627,7 @@ def register_reactor_web_routes(
             "id": int(principal.user_id),
             "name": str(principal.display_name),
             "administrator": bool(principal.administrator),
+            "account_tier": str(principal.account_tier),
             "csrf_token": str(principal.csrf_token),
         }
 

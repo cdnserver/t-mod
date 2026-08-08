@@ -977,6 +977,80 @@ def atlas_add_message(
         return int(cursor.lastrowid)
 
 
+def atlas_bind_discord_thread(
+    *,
+    discord_thread_id: int,
+    guild_id: int,
+    parent_channel_id: int,
+    organization_id: int,
+    atlas_thread_id: int,
+    owner_user_id: int,
+) -> dict[str, Any]:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            INSERT INTO atlas_discord_threads(
+                discord_thread_id, guild_id, parent_channel_id, organization_id,
+                atlas_thread_id, owner_user_id, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(discord_thread_id) DO UPDATE SET
+                status = 'active', updated_at = excluded.updated_at
+            """,
+            (
+                int(discord_thread_id), int(guild_id), int(parent_channel_id),
+                int(organization_id), int(atlas_thread_id), int(owner_user_id), now, now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_discord_threads WHERE discord_thread_id = ?",
+            (int(discord_thread_id),),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
+def atlas_discord_thread(discord_thread_id: int) -> dict[str, Any] | None:
+    with connect_readonly() as con:
+        row = con.execute(
+            """
+            SELECT * FROM atlas_discord_threads
+            WHERE discord_thread_id = ? AND status = 'active'
+            """,
+            (int(discord_thread_id),),
+        ).fetchone()
+    return _row(row) if row is not None else None
+
+
+def atlas_record_event(
+    organization_id: int,
+    actor_user_id: int,
+    event_type: str,
+    summary: str,
+    *,
+    target_type: str | None = None,
+    target_id: str | int | None = None,
+    details: dict[str, Any] | None = None,
+) -> int:
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            INSERT INTO atlas_audit_events(
+                organization_id, actor_user_id, event_type, target_type,
+                target_id, summary, details_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(organization_id), int(actor_user_id), str(event_type)[:80],
+                str(target_type)[:80] if target_type else None,
+                str(target_id)[:160] if target_id is not None else None,
+                str(summary)[:500], _json(details or {}), utc_now_iso(),
+            ),
+        )
+        con.commit()
+        return int(cursor.lastrowid)
+
+
 def atlas_threads(
     organization_id: int,
     user_id: int,
