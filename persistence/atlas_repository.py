@@ -977,6 +977,121 @@ def atlas_add_message(
         return int(cursor.lastrowid)
 
 
+def atlas_threads(
+    organization_id: int,
+    user_id: int,
+    *,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    """List only the viewer's conversations inside the selected workspace."""
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT t.*,
+                   (SELECT COUNT(*) FROM atlas_ai_messages m
+                     WHERE m.thread_id = t.id) AS message_count,
+                   (SELECT substr(m.content_text, 1, 240)
+                      FROM atlas_ai_messages m
+                     WHERE m.thread_id = t.id
+                     ORDER BY m.id DESC LIMIT 1) AS preview
+            FROM atlas_ai_threads t
+            WHERE t.organization_id = ? AND t.user_id = ? AND t.status = 'active'
+            ORDER BY t.updated_at DESC, t.id DESC
+            LIMIT ?
+            """,
+            (
+                int(organization_id),
+                int(user_id),
+                max(1, min(200, int(limit))),
+            ),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def atlas_thread_messages(
+    organization_id: int,
+    user_id: int,
+    thread_id: int,
+    *,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Return one owned thread and its messages in chronological order."""
+
+    with connect_readonly() as con:
+        thread = con.execute(
+            """
+            SELECT * FROM atlas_ai_threads
+            WHERE id = ? AND organization_id = ? AND user_id = ? AND status = 'active'
+            """,
+            (int(thread_id), int(organization_id), int(user_id)),
+        ).fetchone()
+        if thread is None:
+            raise ValueError("atlas_thread_not_found")
+        rows = con.execute(
+            """
+            SELECT * FROM (
+                SELECT * FROM atlas_ai_messages
+                WHERE thread_id = ? ORDER BY id DESC LIMIT ?
+            ) ORDER BY id ASC
+            """,
+            (int(thread_id), max(1, min(500, int(limit)))),
+        ).fetchall()
+    return {"thread": _row(thread), "messages": [_row(row) for row in rows]}
+
+
+def atlas_recent_chat_memory(
+    organization_id: int,
+    user_id: int,
+    *,
+    exclude_thread_id: int | None = None,
+    limit: int = 80,
+    max_chars: int = 14_000,
+) -> list[dict[str, Any]]:
+    """Build a bounded, private continuity window from the user's other chats."""
+
+    params: list[Any] = [int(organization_id), int(user_id)]
+    exclusion = ""
+    if exclude_thread_id is not None:
+        exclusion = "AND t.id != ?"
+        params.append(int(exclude_thread_id))
+    params.append(max(1, min(100, int(limit))))
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"""
+            WITH ranked AS (
+                SELECT m.*, t.title AS thread_title,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY m.thread_id ORDER BY m.id DESC
+                       ) AS message_rank
+                FROM atlas_ai_messages m
+                JOIN atlas_ai_threads t ON t.id = m.thread_id
+                WHERE t.organization_id = ? AND t.user_id = ?
+                  AND t.status = 'active' AND m.role IN ('user', 'assistant')
+                  {exclusion}
+            )
+            SELECT * FROM ranked
+            WHERE message_rank <= 4
+            ORDER BY id DESC LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    selected: list[dict[str, Any]] = []
+    remaining = max(1_000, min(40_000, int(max_chars)))
+    for row in rows:
+        item = _row(row)
+        content = str(item.get("content_text") or "")[:remaining]
+        if not content:
+            continue
+        item["content_text"] = content
+        selected.append(item)
+        remaining -= len(content)
+        if remaining <= 0:
+            break
+    selected.reverse()
+    return selected
+
+
 def atlas_dashboard(guild_id: int, user_id: int, display_name: str) -> dict[str, Any]:
     atlas_seed_templates()
     personal = atlas_ensure_personal_space(guild_id, user_id, display_name)
@@ -1005,6 +1120,7 @@ def atlas_dashboard(guild_id: int, user_id: int, display_name: str) -> dict[str,
         "counts": dict(counts),
         "templates": atlas_templates(organization_id),
         "documents": atlas_documents(organization_id, limit=12),
+        "threads": atlas_threads(organization_id, user_id, limit=60),
         "knowledge_sources": atlas_knowledge_sources(organization_id, limit=40),
         "catalog": atlas_catalog(),
     }

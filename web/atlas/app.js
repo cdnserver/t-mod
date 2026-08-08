@@ -9,6 +9,9 @@ const appState = {
   scopeReady: false,
   serverCode: "phoenix-15",
   factionCode: "lspd",
+  threadId: null,
+  threadReady: false,
+  responseMode: "balanced",
 };
 const screenMeta = {
   home: ["ATLAS", "Командный центр"],
@@ -155,6 +158,48 @@ function renderOnboarding(membership) {
   });
 }
 
+function threadCard(thread) {
+  const button = element("button", "atlas-thread-card");
+  button.type = "button";
+  button.dataset.threadId = String(thread.id);
+  button.classList.toggle("active", Number(thread.id) === Number(appState.threadId));
+  const copy = element("span");
+  copy.append(
+    element("b", "", thread.title || "Новый диалог"),
+    element("small", "", thread.preview || "Диалог без сообщений"),
+  );
+  const date = element("time", "", readableTime(thread.updated_at, ""));
+  button.append(copy, date);
+  button.addEventListener("click", async () => {
+    if (appState.busy) {
+      showToast("Дождитесь ответа Atlas перед переключением диалога.");
+      return;
+    }
+    try { await loadThread(Number(thread.id)); }
+    catch (error) { showToast(error.message || "Не удалось открыть диалог.", true); }
+  });
+  return button;
+}
+
+function renderThreads(items) {
+  const threads = Array.isArray(items) ? items : [];
+  const list = byId("atlas-thread-list");
+  clear(list);
+  threads.forEach((thread) => list.append(threadCard(thread)));
+  if (!threads.length) list.append(element("div", "empty", "Диалогов пока нет."));
+}
+
+function resetChatStream() {
+  const stream = byId("chat-stream");
+  clear(stream);
+  const welcome = messageNode(
+    "assistant",
+    "Я могу проверить норму, продолжить прошлую мысль или создать речь и документ на основе правил. Факты останутся проверяемыми, а творческая часть — свободной.",
+  );
+  welcome.classList.add("welcome");
+  stream.append(welcome);
+}
+
 function selectedServer() {
   return (appState.data?.catalog?.servers || []).find((item) => item.code === appState.serverCode) || { label: "Phoenix (15)" };
 }
@@ -296,6 +341,7 @@ function render(data) {
   byId("metric-threads").textContent = String(counts.threads || 0);
   renderKnowledgeSources(data.knowledge_sources || []);
   renderForumSync(data.forum_sync);
+  renderThreads(data.threads || []);
   renderOnboarding(membership);
 
   const ai = data.ai || {};
@@ -334,7 +380,7 @@ function messageNode(role, text, citations = []) {
   const row = element("div", role === "user" ? "user-message" : "assistant-message");
   if (role !== "user") row.append(element("span", "", "A"));
   const copy = element("div");
-  if (role !== "user") copy.append(element("small", "", "ATLAS · GROUNDED RESPONSE"));
+  if (role !== "user") copy.append(element("small", "", "ATLAS · ОТВЕТ С КОНТЕКСТОМ"));
   copy.append(element("p", "", text));
   if (citations.length) {
     const list = element("div", "citation-list");
@@ -354,6 +400,8 @@ function messageNode(role, text, citations = []) {
 }
 
 async function sendQuestion(question) {
+  if (appState.busy) return;
+  appState.busy = true;
   const stream = byId("chat-stream");
   stream.append(messageNode("user", question));
   stream.scrollTop = stream.scrollHeight;
@@ -363,15 +411,26 @@ async function sendQuestion(question) {
   try {
     const result = await api("/api/atlas/chat", {
       method: "POST",
-      body: JSON.stringify({ question, server_code: appState.serverCode, faction_code: appState.factionCode }),
+      body: JSON.stringify({
+        question,
+        thread_id: appState.threadId,
+        response_mode: appState.responseMode,
+        server_code: appState.serverCode,
+        faction_code: appState.factionCode,
+      }),
       timeout: 60000,
     });
     stream.append(messageNode("assistant", result.answer, result.citations || []));
+    appState.threadId = Number(result.thread_id);
+    byId("current-thread-title").textContent = result.thread?.title || question.slice(0, 100);
+    try { await loadThreads(); }
+    catch (_error) { showToast("Ответ готов, но список диалогов обновится позже."); }
     byId("atlas-question").value = "";
   } catch (error) {
     stream.append(messageNode("assistant", error.message || "Ответ временно недоступен."));
     showToast(error.message, true);
   } finally {
+    appState.busy = false;
     button.disabled = false;
     button.textContent = "Отправить ↑";
     stream.scrollTop = stream.scrollHeight;
@@ -390,7 +449,45 @@ async function reload() {
   else {
     render(data);
     await loadKnowledgeSources();
+    if (!appState.threadReady) {
+      appState.threadReady = true;
+      const latest = (data.threads || [])[0];
+      if (latest) await loadThread(Number(latest.id));
+      else newChat();
+    }
   }
+}
+
+async function loadThreads() {
+  const result = await api("/api/atlas/threads");
+  appState.data.threads = result.items || [];
+  renderThreads(appState.data.threads);
+}
+
+async function loadThread(threadId) {
+  const result = await api(`/api/atlas/threads/${encodeURIComponent(threadId)}`);
+  appState.threadId = Number(result.thread.id);
+  byId("current-thread-title").textContent = result.thread.title || "Диалог";
+  const stream = byId("chat-stream");
+  clear(stream);
+  (result.messages || []).forEach((message) => {
+    stream.append(messageNode(message.role, message.content_text, message.citations || []));
+  });
+  if (!(result.messages || []).length) resetChatStream();
+  renderThreads(appState.data?.threads || []);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+function newChat() {
+  if (appState.busy) {
+    showToast("Дождитесь ответа Atlas перед созданием нового диалога.");
+    return;
+  }
+  appState.threadId = null;
+  byId("current-thread-title").textContent = "Новый диалог";
+  resetChatStream();
+  renderThreads(appState.data?.threads || []);
+  byId("atlas-question").focus();
 }
 
 async function loadKnowledgeSources() {
@@ -469,6 +566,19 @@ function bind() {
     event.preventDefault();
     const question = byId("atlas-question").value.trim();
     if (question) void sendQuestion(question);
+  });
+  byId("new-atlas-chat").addEventListener("click", newChat);
+  document.querySelectorAll("[data-response-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (appState.busy) {
+        showToast("Режим можно сменить после завершения текущего ответа.");
+        return;
+      }
+      appState.responseMode = button.dataset.responseMode || "balanced";
+      document.querySelectorAll("[data-response-mode]").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+    });
   });
   byId("new-document").addEventListener("click", () => openDocumentDialog());
   byId("document-form").addEventListener("submit", async (event) => {

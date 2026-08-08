@@ -207,6 +207,43 @@ def register_atlas_web_routes(
         saved = receipts.get((int(user_id), key))
         return key, saved[1] if saved else None
 
+    async def threads(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"atlas_closed_preview"}',
+                content_type="application/json",
+            )
+        dashboard = await asyncio.to_thread(
+            storage.atlas_dashboard,
+            int(guild_id),
+            int(selected.user_id),
+            str(selected.display_name),
+        )
+        organization_id = int(dashboard["organization"]["id"])
+        raw_thread_id = request.match_info.get("thread_id")
+        if raw_thread_id is None:
+            items = await asyncio.to_thread(
+                storage.atlas_threads,
+                organization_id,
+                int(selected.user_id),
+            )
+            return web.json_response({"items": items})
+        try:
+            thread_id = int(raw_thread_id)
+            result = await asyncio.to_thread(
+                storage.atlas_thread_messages,
+                organization_id,
+                int(selected.user_id),
+                thread_id,
+            )
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": "atlas_thread_not_found", "message": "Диалог не найден."},
+                status=404,
+            )
+        return web.json_response(result)
+
     async def chat(request: web.Request) -> web.Response:
         selected = await principal(request)
         if not selected.administrator:
@@ -231,12 +268,40 @@ def register_atlas_web_routes(
             str(selected.display_name),
         )
         organization_id = int(dashboard["organization"]["id"])
+        thread_id: int | None = None
+        history: list[dict[str, Any]] = []
+        raw_thread_id = payload.get("thread_id")
+        if raw_thread_id is not None and raw_thread_id != "":
+            try:
+                thread_id = int(raw_thread_id)
+                thread = await asyncio.to_thread(
+                    storage.atlas_thread_messages,
+                    organization_id,
+                    int(selected.user_id),
+                    thread_id,
+                    limit=80,
+                )
+                history = list(thread["messages"])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
+                    status=404,
+                )
+        memory = await asyncio.to_thread(
+            storage.atlas_recent_chat_memory,
+            organization_id,
+            int(selected.user_id),
+            exclude_thread_id=thread_id,
+        )
         try:
             answer = await atlas_answer(
                 organization_id,
                 question,
                 server_code=server_code,
                 faction_code=faction_code,
+                history=history,
+                memory=memory,
+                response_mode=str(payload.get("response_mode") or "balanced"),
             )
         except AtlasAIError as exc:
             if exc.code in {
@@ -250,12 +315,13 @@ def register_atlas_web_routes(
                 {"error": exc.code, "message": str(exc), "retryable": exc.retryable},
                 status=503 if exc.retryable or exc.code.endswith("not_configured") else 400,
             )
-        thread_id = await asyncio.to_thread(
-            storage.atlas_create_thread,
-            organization_id,
-            int(selected.user_id),
-            question[:100],
-        )
+        if thread_id is None:
+            thread_id = await asyncio.to_thread(
+                storage.atlas_create_thread,
+                organization_id,
+                int(selected.user_id),
+                question[:100],
+            )
         await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
         await asyncio.to_thread(
             storage.atlas_add_message,
@@ -266,7 +332,14 @@ def register_atlas_web_routes(
             model=answer["model"],
             latency_ms=answer["latency_ms"],
         )
-        response = {**answer, "thread_id": thread_id}
+        stored_thread = await asyncio.to_thread(
+            storage.atlas_thread_messages,
+            organization_id,
+            int(selected.user_id),
+            thread_id,
+            limit=1,
+        )
+        response = {**answer, "thread_id": thread_id, "thread": stored_thread["thread"]}
         receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, response)
         return web.json_response(response)
 
@@ -628,6 +701,8 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/bootstrap", bootstrap)
     app.router.add_post("/api/atlas/onboarding", onboarding)
     app.router.add_post("/api/atlas/chat", chat)
+    app.router.add_get("/api/atlas/threads", threads)
+    app.router.add_get("/api/atlas/threads/{thread_id}", threads)
     app.router.add_get("/api/atlas/documents", documents)
     app.router.add_post("/api/atlas/documents", documents)
     app.router.add_get("/api/atlas/knowledge", knowledge)

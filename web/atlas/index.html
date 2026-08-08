@@ -171,21 +171,27 @@
           </section>
 
           <section id="screen-ai" class="screen">
-            <div class="section-intro"><span>ATLAS AI</span><h2>Навигатор по знаниям</h2><p>Выберите сервер и фракцию. Atlas найдёт ответ только в подтверждённых материалах выбранного раздела и покажет источники.</p></div>
+            <div class="section-intro"><span>ATLAS AI</span><h2>Диалог, который помнит</h2><p>Atlas сохраняет контекст текущего разговора, учитывает ваши прежние диалоги и отличает подтверждённые нормы от анализа и творческой работы.</p></div>
             <div class="ai-workspace">
+              <aside class="chat-history-panel">
+                <header><span>ВАШИ ДИАЛОГИ</span><button id="new-atlas-chat" type="button" title="Новый диалог">+</button></header>
+                <div id="atlas-thread-list" class="atlas-thread-list"><div class="empty">Диалогов пока нет.</div></div>
+                <footer><i></i><span><b>Личная память</b><small>история видна только вам в этом пространстве</small></span></footer>
+              </aside>
               <article class="chat-panel">
+                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button></div></header>
                 <div id="chat-stream" class="chat-stream">
-                  <div class="assistant-message welcome"><span>A</span><div><small>ATLAS · СИСТЕМНОЕ СООБЩЕНИЕ</small><p>Задайте вопрос по регламенту, памяткам или рабочим материалам. Я покажу источники, на которых основан ответ.</p></div></div>
+                  <div class="assistant-message welcome"><span>A</span><div><small>ATLAS · НОВЫЙ ДИАЛОГ</small><p>Я могу проверить норму, продолжить прошлую мысль или создать речь и документ на основе правил. Факты останутся проверяемыми, а творческая часть — свободной.</p></div></div>
                 </div>
                 <form id="atlas-chat-form" class="chat-composer">
                   <label for="atlas-question">Ваш вопрос</label>
-                  <textarea id="atlas-question" name="question" rows="3" maxlength="8000" placeholder="Например: какие документы нужны для оформления задержания?" required></textarea>
-                  <div><span><i></i>Ответ будет ограничен базой вашей организации</span><button type="submit">Отправить <b>↑</b></button></div>
+                  <textarea id="atlas-question" name="question" rows="3" maxlength="8000" placeholder="Например: составь убедительную речь с учётом действующего закона…" required></textarea>
+                  <div><span><i></i>Факты — по источникам, идеи — с творческой свободой</span><button type="submit">Отправить <b>↑</b></button></div>
                 </form>
               </article>
               <aside class="ai-context">
-                <span>КАК СТРОИТСЯ ОТВЕТ</span><h3>Проверяемый результат</h3>
-                <ol><li><i>1</i><span><b>Находит</b><small>подходящие правила и памятки</small></span></li><li><i>2</i><span><b>Собирает</b><small>короткий и понятный ответ</small></span></li><li><i>3</i><span><b>Показывает</b><small>материалы, на которых основан ответ</small></span></li></ol>
+                <span>КАК СТРОИТСЯ ОТВЕТ</span><h3>Факты и мышление</h3>
+                <ol><li><i>1</i><span><b>Помнит контекст</b><small>текущий разговор и ваши прошлые диалоги</small></span></li><li><i>2</i><span><b>Проверяет основу</b><small>правила, законы и памятки из Atlas</small></span></li><li><i>3</i><span><b>Создаёт результат</b><small>анализ, речь, план или готовый документ</small></span></li></ol>
                 <div class="context-health"><i></i><span><b id="context-model">Atlas AI подключается</b><small id="context-collection">проверяем библиотеку</small></span></div>
               </aside>
             </div>

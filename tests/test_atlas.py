@@ -11,8 +11,10 @@ from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from docx import Document
 from modules.atlas_ai import (
+    AtlasAIConfig,
     AtlasAIError,
     _chunks,
+    atlas_answer,
     atlas_ensure_collection,
     atlas_index_source,
     atlas_probe_collection,
@@ -226,6 +228,39 @@ class AtlasRepositoryTests(unittest.TestCase):
                 visibility_scope="unknown",
             )
 
+    def test_chat_history_is_ordered_and_private_between_users(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        first = atlas_repository.atlas_create_thread(organization_id, 42, "Первый чат")
+        second = atlas_repository.atlas_create_thread(organization_id, 42, "Второй чат")
+        foreign = atlas_repository.atlas_create_thread(organization_id, 999, "Чужой чат")
+        atlas_repository.atlas_add_message(first, "user", "Подготовь речь о реформе")
+        atlas_repository.atlas_add_message(first, "assistant", "Начнём с правовой основы.")
+        atlas_repository.atlas_add_message(second, "user", "Предпочитаю спокойный официальный стиль")
+        atlas_repository.atlas_add_message(foreign, "user", "Секрет другого пользователя")
+
+        threads = atlas_repository.atlas_threads(organization_id, 42)
+        first_history = atlas_repository.atlas_thread_messages(
+            organization_id,
+            42,
+            first,
+        )
+        memory = atlas_repository.atlas_recent_chat_memory(
+            organization_id,
+            42,
+            exclude_thread_id=first,
+        )
+
+        self.assertEqual({item["id"] for item in threads}, {first, second})
+        self.assertEqual(
+            [item["role"] for item in first_history["messages"]],
+            ["user", "assistant"],
+        )
+        self.assertEqual([item["thread_title"] for item in memory], ["Второй чат"])
+        self.assertNotIn("Секрет другого пользователя", str(memory))
+        with self.assertRaisesRegex(ValueError, "atlas_thread_not_found"):
+            atlas_repository.atlas_thread_messages(organization_id, 42, foreign)
+
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     def test_chunker_is_bounded_and_preserves_overlap(self) -> None:
@@ -366,6 +401,94 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("modules.atlas_ai._json_request", corrupted):
             self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
+
+    async def test_creative_answer_uses_current_history_cross_chat_memory_and_sources(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        sources = [
+            {
+                "source_id": 7,
+                "title": "Закон",
+                "url": "https://example.test/law",
+                "text": "Публичная речь должна соблюдать требования закона.",
+                "score": 0.91,
+            }
+        ]
+        response = {"choices": [{"message": {"content": "Готовая убедительная речь [1]"}}]}
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=sources),
+        ) as search, patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value=response),
+        ) as request:
+            result = await atlas_answer(
+                77,
+                "Теперь составь полную речь",
+                history=[
+                    {"role": "user", "content_text": "Мы обсуждаем судебную реформу"},
+                    {"role": "assistant", "content_text": "Правовую основу я нашёл"},
+                ],
+                memory=[
+                    {
+                        "role": "user",
+                        "thread_title": "Стиль выступления",
+                        "content_text": "Предпочитаю спокойный официальный тон",
+                    }
+                ],
+                response_mode="creative",
+            )
+
+        payload = request.await_args.kwargs["payload"]
+        messages = payload["messages"]
+        self.assertEqual(payload["temperature"], 0.68)
+        self.assertIn("судебную реформу", search.await_args.args[1])
+        self.assertTrue(any("Предпочитаю спокойный" in item["content"] for item in messages))
+        self.assertTrue(any(item == {"role": "assistant", "content": "Правовую основу я нашёл"} for item in messages))
+        self.assertEqual(messages[-1], {"role": "user", "content": "Теперь составь полную речь"})
+        self.assertEqual(result["response_mode"], "creative")
+        self.assertEqual(result["citations"][0]["source_id"], 7)
+
+    async def test_balanced_answer_can_help_when_search_has_no_confirmed_source(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        response = {"choices": [{"message": {"content": "Могу предложить творческий черновик."}}]}
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value=response),
+        ) as request:
+            result = await atlas_answer(77, "Помоги составить вступление к речи")
+
+        self.assertEqual(result["answer"], "Могу предложить творческий черновик.")
+        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["requested_response_mode"], "balanced")
+        self.assertEqual(result["response_mode"], "creative")
+        self.assertEqual(request.await_args.kwargs["payload"]["temperature"], 0.68)
+        self.assertIn(
+            "источников для этого запроса не найдено",
+            request.await_args.kwargs["payload"]["messages"][1]["content"],
+        )
 
 
 class AtlasKnowledgeFileTests(unittest.TestCase):
@@ -510,6 +633,88 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["items"][0]["visibility_scope"], "server")
             self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
             self.assertEqual(payload["items"][0]["status"], "indexed")
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
+    async def test_chat_endpoint_continues_thread_and_exposes_owned_history(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-chat-test.db"
+        storage.init_db()
+        member = SimpleNamespace(
+            id=42,
+            display_name="Администратор",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=member,
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        answer = AsyncMock(
+            return_value={
+                "answer": "Продолжение ответа",
+                "citations": [],
+                "model": "test/model",
+                "response_mode": "creative",
+                "latency_ms": 12,
+            }
+        )
+        headers = {"X-CSRF-Token": "admin-csrf"}
+        try:
+            with patch("modules.atlas_web.atlas_answer", answer):
+                async with TestClient(TestServer(app)) as client:
+                    first = await client.post(
+                        "/api/atlas/chat",
+                        json={"question": "Подготовь речь", "response_mode": "creative"},
+                        headers={**headers, "X-Idempotency-Key": "chat-1"},
+                    )
+                    first_payload = await first.json()
+                    second = await client.post(
+                        "/api/atlas/chat",
+                        json={
+                            "question": "Сделай её короче",
+                            "thread_id": first_payload["thread_id"],
+                            "response_mode": "creative",
+                        },
+                        headers={**headers, "X-Idempotency-Key": "chat-2"},
+                    )
+                    threads = await client.get("/api/atlas/threads")
+                    detail = await client.get(
+                        f"/api/atlas/threads/{first_payload['thread_id']}"
+                    )
+                    threads_payload = await threads.json()
+                    detail_payload = await detail.json()
+
+            self.assertEqual(first.status, 200)
+            self.assertEqual(second.status, 200)
+            self.assertEqual(len(threads_payload["items"]), 1)
+            self.assertEqual(len(detail_payload["messages"]), 4)
+            second_history = answer.await_args_list[1].kwargs["history"]
+            self.assertEqual(
+                [item["role"] for item in second_history],
+                ["user", "assistant"],
+            )
+            self.assertEqual(answer.await_args_list[1].kwargs["response_mode"], "creative")
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file
