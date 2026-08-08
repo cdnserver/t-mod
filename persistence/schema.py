@@ -282,6 +282,30 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
             ON reactor_notifications(guild_id, user_id, read_at, id DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_servers (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                number INTEGER,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_factions (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                short_name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS atlas_organizations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -1738,6 +1762,23 @@ def init_db() -> None:
                 """
             )
 
+        atlas_taxonomy_migration = "migration:atlas-taxonomy:2026-08-09-v1"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_taxonomy_migration,),
+        ).fetchone() is None:
+            # The Qdrant index is derived data. Rebuild payload metadata while
+            # preserving every canonical source and revision in SQLite.
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = CASE WHEN status = 'archived' THEN status ELSE 'pending' END,
+                    qdrant_point_id = NULL,
+                    last_error = NULL
+                """
+            )
+            set_meta(con, atlas_taxonomy_migration, utc_now_iso())
+
         con.execute(
             """
             UPDATE craft_plans
@@ -2046,6 +2087,28 @@ def init_db() -> None:
             migrated_case_profiles += 1
         set_meta(con, "client_profiles_last_case_migration_count", str(migrated_case_profiles))
         set_meta(con, "client_profiles_last_case_migration_at", utc_now_iso())
+
+        catalog_now = utc_now_iso()
+        con.execute(
+            """
+            INSERT OR IGNORE INTO atlas_servers(
+                code, name, number, label, created_at, updated_at
+            ) VALUES('phoenix-15', 'Phoenix', 15, 'Phoenix (15)', ?, ?)
+            """,
+            (catalog_now, catalog_now),
+        )
+        for code, name, short_name in (
+            ('lspd', 'Los Santos Police Department', 'LSPD'),
+            ('gov', 'Government', 'GOV'),
+        ):
+            con.execute(
+                """
+                INSERT OR IGNORE INTO atlas_factions(
+                    code, name, short_name, label, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (code, name, short_name, short_name, catalog_now, catalog_now),
+            )
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)

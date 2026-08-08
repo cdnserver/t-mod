@@ -13,9 +13,11 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
+from modules.atlas_taxonomy import atlas_classify_knowledge
+
 
 _HEALTH_CACHE: tuple[float, dict[str, Any]] | None = None
-_RESPONSE_MODES = frozenset({"balanced", "strict", "creative"})
+_RESPONSE_MODES = frozenset({"balanced", "strict", "creative", "aristotle"})
 _CREATIVE_REQUEST_RE = re.compile(
     r"\b(?:"
     r"состав(?:ь|ьте|ить)|напиш(?:и|ите)|написать|придум(?:ай|айте|ать)|"
@@ -58,6 +60,7 @@ class _AtlasAnswerRequest:
     started: float
     response_mode: str
     requested_response_mode: str
+    research_plan: list[dict[str, Any]]
 
 
 def atlas_ai_config() -> AtlasAIConfig:
@@ -296,6 +299,15 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     server_code = str(source.get("server_code") or "phoenix-15")
     faction_code = str(source.get("faction_code") or "lspd")
     visibility_scope = str(source.get("visibility_scope") or "workspace")
+    source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    taxonomy = source_metadata.get("taxonomy") if isinstance(source_metadata.get("taxonomy"), dict) else {}
+    if not taxonomy:
+        taxonomy = atlas_classify_knowledge(
+            title=str(source.get("title") or ""),
+            content=str(source.get("content_text") or source.get("content") or ""),
+            source_url=str(source.get("source_url") or "") or None,
+            source_kind=str(source.get("source_kind") or "memo"),
+        )
     access_scope = _atlas_access_scope(
         organization_id,
         server_code,
@@ -321,6 +333,9 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                     "title": str(source.get("title") or "Источник")[:300],
                     "source_url": str(source.get("source_url") or "")[:1000] or None,
                     "source_kind": str(source.get("source_kind") or "memo"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
                     "chunk": index,
                     "text": chunk,
                 },
@@ -350,6 +365,71 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     return point_ids
 
 
+def _atlas_query_variants(query: str) -> list[str]:
+    clean = " ".join(str(query or "").split())[:8000]
+    lowered = clean.casefold()
+    variants = [clean]
+    if not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered):
+        variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
+    if not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
+        variants.append(f"{clean}\nOOC правила сервера и требования проекта")
+    if re.search(r"суд|иск|жалоб|прокур|адвокат|дел[аоу]", lowered):
+        variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
+    if re.search(r"организац|фракц|департамент|полиц|правительств|устав|ранг", lowered):
+        variants.append(f"{clean}\nустав организации, внутренний регламент и зона полномочий")
+    return list(dict.fromkeys(item for item in variants if item))[:4]
+
+
+def atlas_research_plan(question: str) -> list[dict[str, Any]]:
+    """Expose a useful work plan without leaking hidden model reasoning."""
+
+    lowered = str(question or "").casefold()
+    steps: list[dict[str, Any]] = [
+        {
+            "id": "scope",
+            "agent": "Навигатор",
+            "title": "Определить сервер, фракцию и границы вопроса",
+            "status": "pending",
+        }
+    ]
+    if not re.search(r"\b(?:ooc|оо[сc])\b", lowered):
+        steps.append(
+            {
+                "id": "ic",
+                "agent": "Нормативист",
+                "title": "Проверить IC-законы, уставы и полномочия",
+                "status": "pending",
+            }
+        )
+    if not re.search(r"\b(?:ic|и[сc])\b", lowered):
+        steps.append(
+            {
+                "id": "ooc",
+                "agent": "Арбитр правил",
+                "title": "Сверить OOC-правила сервера и проекта",
+                "status": "pending",
+            }
+        )
+    if re.search(r"суд|иск|жалоб|прокур|адвокат|дел[аоу]", lowered):
+        steps.append(
+            {
+                "id": "practice",
+                "agent": "Практик",
+                "title": "Найти судебную практику и процессуальные материалы",
+                "status": "pending",
+            }
+        )
+    steps.append(
+        {
+            "id": "synthesis",
+            "agent": "Аристотель",
+            "title": "Сопоставить источники и подготовить итог",
+            "status": "pending",
+        }
+    )
+    return steps
+
+
 async def atlas_search(
     organization_id: int,
     query: str,
@@ -357,9 +437,11 @@ async def atlas_search(
     server_code: str | None = None,
     faction_code: str | None = None,
     limit: int = 6,
+    expanded: bool = False,
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
-    vector = (await atlas_embed([str(query)[:8000]]))[0]
+    variants = _atlas_query_variants(query) if expanded else [str(query)[:8000]]
+    vectors = await atlas_embed(variants)
     clean_server = str(server_code or "phoenix-15")
     clean_faction = str(faction_code or "lspd")
     access_scopes = [
@@ -372,18 +454,23 @@ async def atlas_search(
         {"key": "access_scope", "match": {"any": access_scopes}}
     ]
     try:
-        body = await _json_request(
-            "POST",
-            f"{config.qdrant_url}/collections/{config.collection}/points/query",
-            headers=_qdrant_headers(config),
-            payload={
-                "query": vector,
-                "filter": {"must": filters},
-                "limit": max(1, min(12, int(limit))),
-                "with_payload": True,
-                "with_vector": False,
-            },
-            timeout=12,
+        bodies = await asyncio.gather(
+            *(
+                _json_request(
+                    "POST",
+                    f"{config.qdrant_url}/collections/{config.collection}/points/query",
+                    headers=_qdrant_headers(config),
+                    payload={
+                        "query": vector,
+                        "filter": {"must": filters},
+                        "limit": max(1, min(24, int(limit) * (2 if expanded else 1))),
+                        "with_payload": True,
+                        "with_vector": False,
+                    },
+                    timeout=12,
+                )
+                for vector in vectors
+            )
         )
     except AtlasAIError as exc:
         if exc.code == "upstream_not_found":
@@ -399,28 +486,47 @@ async def atlas_search(
                 retryable=True,
             ) from exc
         raise
-    result = body.get("result")
-    points = result.get("points") if isinstance(result, dict) else result
-    if not isinstance(points, list):
-        return []
-    sources = []
-    for point in points:
-        payload = point.get("payload") if isinstance(point, dict) else None
-        if not isinstance(payload, dict):
+    candidates: dict[tuple[int, int], dict[str, Any]] = {}
+    for variant_index, body in enumerate(bodies):
+        result = body.get("result")
+        points = result.get("points") if isinstance(result, dict) else result
+        if not isinstance(points, list):
             continue
-        sources.append(
-            {
-                "source_id": int(payload.get("source_id") or 0),
+        for point in points:
+            payload = point.get("payload") if isinstance(point, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            source_id = int(payload.get("source_id") or 0)
+            chunk = int(payload.get("chunk") or 0)
+            score = float(point.get("score") or 0) + (0.018 if variant_index == 0 else 0)
+            item = {
+                "source_id": source_id,
                 "server_code": str(payload.get("server_code") or ""),
                 "faction_code": str(payload.get("faction_code") or ""),
                 "visibility_scope": str(payload.get("visibility_scope") or "workspace"),
+                "knowledge_domain": str(payload.get("knowledge_domain") or "mixed"),
+                "corpus_kind": str(payload.get("corpus_kind") or "other"),
+                "authority_scope": str(payload.get("authority_scope") or "operational"),
                 "title": str(payload.get("title") or "Источник"),
                 "url": str(payload.get("source_url") or "") or None,
                 "text": str(payload.get("text") or "")[:7000],
-                "score": round(float(point.get("score") or 0), 4),
+                "score": round(score, 4),
             }
-        )
-    return sources
+            key = (source_id, chunk)
+            if key not in candidates or float(candidates[key]["score"]) < score:
+                candidates[key] = item
+
+    selected: list[dict[str, Any]] = []
+    source_counts: dict[int, int] = {}
+    for item in sorted(candidates.values(), key=lambda row: float(row["score"]), reverse=True):
+        source_id = int(item["source_id"])
+        if source_counts.get(source_id, 0) >= 2:
+            continue
+        selected.append(item)
+        source_counts[source_id] = source_counts.get(source_id, 0) + 1
+        if len(selected) >= max(1, min(12, int(limit))):
+            break
+    return selected
 
 
 def _atlas_access_scope(
@@ -478,6 +584,14 @@ def _cross_chat_context(memory: list[dict[str, Any]] | None) -> str:
     return "\n\n".join(rows)[-14_000:]
 
 
+async def _atlas_progress(
+    callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    event: dict[str, Any],
+) -> None:
+    if callback is not None:
+        await callback(event)
+
+
 async def _prepare_atlas_answer(
     organization_id: int,
     question: str,
@@ -489,6 +603,7 @@ async def _prepare_atlas_answer(
     response_mode: str = "balanced",
     model_id: str = "atlas-tvr-a",
     user_profile: dict[str, Any] | None = None,
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> _AtlasAnswerRequest:
     clean_question = str(question or "").strip()[:8000]
     if len(clean_question) < 2:
@@ -516,6 +631,21 @@ async def _prepare_atlas_answer(
         if requested_mode == "balanced" and _CREATIVE_REQUEST_RE.search(clean_question)
         else requested_mode
     )
+    research_plan = atlas_research_plan(clean_question) if mode == "aristotle" else []
+    if research_plan:
+        await _atlas_progress(
+            on_progress,
+            {"phase": "plan", "title": "План исследования", "steps": research_plan},
+        )
+        await _atlas_progress(
+            on_progress,
+            {
+                "phase": "stage",
+                "step_id": "scope",
+                "status": "running",
+                "detail": f"{server_code} · {faction_code}",
+            },
+        )
     dialog_messages = _bounded_dialog_messages(history)
     recent_user_context = "\n".join(
         item["content"] for item in dialog_messages[-6:] if item["role"] == "user"
@@ -526,9 +656,38 @@ async def _prepare_atlas_answer(
         search_query,
         server_code=server_code,
         faction_code=faction_code,
+        limit=10 if mode == "aristotle" else 7,
+        expanded=True,
     )
+    if research_plan:
+        taxonomy_counts: dict[str, int] = {}
+        for source in sources:
+            domain = str(source.get("knowledge_domain") or "mixed").upper()
+            taxonomy_counts[domain] = taxonomy_counts.get(domain, 0) + 1
+        await _atlas_progress(
+            on_progress,
+            {
+                "phase": "evidence",
+                "status": "complete",
+                "source_count": len(sources),
+                "domains": taxonomy_counts,
+            },
+        )
+        for step in research_plan:
+            if step["id"] != "synthesis":
+                await _atlas_progress(
+                    on_progress,
+                    {"phase": "stage", "step_id": step["id"], "status": "complete"},
+                )
+        await _atlas_progress(
+            on_progress,
+            {"phase": "stage", "step_id": "synthesis", "status": "running"},
+        )
     context = "\n\n".join(
-        f"[Источник {index}: {item['title']}]\n{item['text']}"
+        (
+            f"[Источник {index} | {str(item.get('knowledge_domain') or 'mixed').upper()} | "
+            f"{str(item.get('corpus_kind') or 'other')} | {item['title']}]\n{item['text']}"
+        )
         for index, item in enumerate(sources, 1)
     ) or "Подходящих подтверждённых источников для этого запроса не найдено."
     memory_context = _cross_chat_context(memory)
@@ -546,6 +705,12 @@ async def _prepare_atlas_answer(
             "Работай в универсальном режиме: надёжно используй источники для фактов, но свободно "
             "анализируй, структурируй и создавай новые тексты по просьбе пользователя."
         ),
+        "aristotle": (
+            "Работай как руководитель исследования «Аристотель»: последовательно сопоставь IC-нормы, "
+            "OOC-правила, внутренние уставы и практику, если они релевантны. Выдай структурированный "
+            "итог с кратким выводом, применимыми правилами, противоречиями, рисками и планом действий. "
+            "Не раскрывай скрытые рассуждения и не изображай несуществующие источники."
+        ),
     }[mode]
     messages: list[dict[str, str]] = [
         {
@@ -557,6 +722,9 @@ async def _prepare_atlas_answer(
                 "Отвечай по-русски и сохраняй контекст диалога. Разделяй подтверждённые факты, "
                 "выводы и творческую работу. Правила, даты, полномочия, наказания и иные проверяемые "
                 "факты можно утверждать только по источникам и нужно отмечать ссылками [1], [2]. "
+                "Строго различай IC-законодательство игрового мира и OOC-правила сервера: не подменяй "
+                "одно другим. Устав действует внутри соответствующей организации; судебная практика "
+                "помогает толковать применение, но не становится законом автоматически. "
                 "При этом разрешено рассуждать, предлагать варианты и создавать оригинальные речи, "
                 "документы и формулировки, если ясно не выдавать вымысел за действующую норму. "
                 "Не показывай скрытые рассуждения: выдавай только полезный итог. "
@@ -586,13 +754,14 @@ async def _prepare_atlas_answer(
         config=config,
         payload={
             "model": config.chat_model,
-            "temperature": {"strict": 0.15, "balanced": 0.38, "creative": 0.68}[mode],
+            "temperature": {"strict": 0.15, "balanced": 0.38, "creative": 0.68, "aristotle": 0.28}[mode],
             "messages": messages,
         },
         sources=sources,
         started=started,
         response_mode=mode,
         requested_response_mode=requested_mode,
+        research_plan=research_plan,
     )
 
 
@@ -634,6 +803,7 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         "model": "atlas-tvr-a",
         "response_mode": prepared.response_mode,
         "requested_response_mode": prepared.requested_response_mode,
+        "research_plan": prepared.research_plan,
         "latency_ms": round((time.monotonic() - prepared.started) * 1000),
     }
 
@@ -676,6 +846,7 @@ async def atlas_answer_stream(
     question: str,
     *,
     on_delta: Callable[[str], Awaitable[None]],
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
     history: list[dict[str, Any]] | None = None,
@@ -696,6 +867,7 @@ async def atlas_answer_stream(
         response_mode=response_mode,
         model_id=model_id,
         user_profile=user_profile,
+        on_progress=on_progress,
     )
     timeout = aiohttp.ClientTimeout(total=90, connect=5, sock_read=45)
     answer_parts: list[str] = []
@@ -771,7 +943,18 @@ async def atlas_answer_stream(
         if full_text:
             answer_parts.append(full_text[:30000])
             await on_delta(answer_parts[0])
-    return _atlas_answer_result(prepared, "".join(answer_parts))
+    result = _atlas_answer_result(prepared, "".join(answer_parts))
+    if prepared.research_plan:
+        await _atlas_progress(
+            on_progress,
+            {
+                "phase": "complete",
+                "step_id": "synthesis",
+                "status": "complete",
+                "source_count": len(prepared.sources),
+            },
+        )
+    return result
 
 
 async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
@@ -817,5 +1000,6 @@ __all__ = [
     "atlas_normalize_response_mode",
     "atlas_probe_collection",
     "atlas_reset_collection",
+    "atlas_research_plan",
     "atlas_search",
 ]

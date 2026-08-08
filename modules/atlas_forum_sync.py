@@ -385,6 +385,14 @@ class AtlasForumBrowser:
             inventory_complete=not hit_thread_limit and not listing_queue,
         )
 
+    def scrape_thread(self, url: str) -> AtlasForumSnapshot:
+        """Import one authenticated Majestic forum thread without allowing arbitrary hosts."""
+
+        thread_url = _canonical_url(self.config.root_url, str(url or ""))
+        if thread_url is None or "/threads/" not in thread_url:
+            raise AtlasForumSyncError("atlas_forum_thread_url_invalid")
+        return parse_forum_thread(self._load(thread_url), thread_url)
+
     def close(self) -> None:
         driver, self._driver = self._driver, None
         if driver is not None:
@@ -421,6 +429,14 @@ class AtlasForumSyncRunner:
             return False
         self._wake.set()
         return True
+
+    async def fetch_thread(self, url: str) -> AtlasForumSnapshot:
+        """Reuse the signed-in browser while serializing it with scheduled sync."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        async with self._lock:
+            return await asyncio.to_thread(self.browser.scrape_thread, url)
 
     async def _technical_log(
         self,

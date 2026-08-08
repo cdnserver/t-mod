@@ -20,9 +20,12 @@ from modules.atlas_ai import (
     atlas_ensure_collection,
     atlas_index_source,
     atlas_probe_collection,
+    atlas_research_plan,
     atlas_search,
 )
 from modules.atlas_knowledge import AtlasKnowledgeFileError, atlas_extract_knowledge_file
+from modules.atlas_taxonomy import atlas_classify_knowledge
+from modules.atlas_forum_sync import AtlasForumSnapshot
 from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
@@ -230,6 +233,93 @@ class AtlasRepositoryTests(unittest.TestCase):
                 visibility_scope="unknown",
             )
 
+    def test_admin_catalog_and_private_space_are_dynamic_and_isolated(self) -> None:
+        server = atlas_repository.atlas_upsert_server(
+            42,
+            code="legacy-16",
+            name="Legacy",
+            number=16,
+        )
+        faction = atlas_repository.atlas_upsert_faction(
+            42,
+            code="ems",
+            name="Emergency Medical Services",
+            short_name="EMS",
+        )
+        private_space = atlas_repository.atlas_create_organization(
+            77,
+            42,
+            name="Медицинский контур",
+            owner_user_id=84,
+            server_code=server["code"],
+            faction_code=faction["code"],
+        )
+        selected = atlas_repository.atlas_dashboard(
+            77,
+            84,
+            "Врач",
+            organization_id=int(private_space["id"]),
+        )
+        outsider = atlas_repository.atlas_dashboard(77, 99, "Посторонний")
+
+        self.assertEqual(selected["organization"]["id"], private_space["id"])
+        self.assertEqual(selected["organization"]["branding"]["faction_code"], "ems")
+        self.assertIn("legacy-16", {item["code"] for item in selected["catalog"]["servers"]})
+        self.assertIn("ems", {item["code"] for item in selected["catalog"]["factions"]})
+        self.assertNotIn(
+            int(private_space["id"]),
+            {int(item["id"]) for item in outsider["spaces"]},
+        )
+
+    def test_knowledge_taxonomy_is_saved_with_source(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        source = atlas_repository.atlas_add_knowledge(
+            int(dashboard["organization"]["id"]),
+            42,
+            title="Правила сервера Phoenix",
+            content=(
+                "OOC правила сервера устанавливают требования администрации и наказания "
+                "за нарушения игрового процесса."
+            ),
+            source_kind="url",
+        )
+
+        self.assertEqual(source["metadata"]["taxonomy"]["domain"], "ooc")
+        self.assertEqual(source["metadata"]["taxonomy"]["corpus_kind"], "server_rule")
+
+    def test_taxonomy_migration_preserves_canonical_source_and_rebuilds_only_index(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        source = atlas_repository.atlas_add_knowledge(
+            int(dashboard["organization"]["id"]),
+            42,
+            title="Сохранённый кодекс",
+            content="Полная сохранённая редакция кодекса длиной больше двадцати символов.",
+        )
+        atlas_repository.atlas_mark_knowledge_indexed(int(source["id"]), point_id="old-point")
+        with connect() as con:
+            con.execute(
+                "UPDATE atlas_knowledge_sources SET metadata_json = '{}' WHERE id = ?",
+                (int(source["id"]),),
+            )
+            con.execute("DELETE FROM meta WHERE key = ?", ("migration:atlas-taxonomy:2026-08-09-v1",))
+            con.commit()
+
+        storage.init_db()
+
+        with connect() as con:
+            stored = con.execute(
+                "SELECT * FROM atlas_knowledge_sources WHERE id = ?",
+                (int(source["id"]),),
+            ).fetchone()
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["content_text"], source["content_text"])
+        self.assertEqual(stored["status"], "pending")
+        self.assertIsNone(stored["qdrant_point_id"])
+        visible = atlas_repository.atlas_knowledge_sources(
+            int(dashboard["organization"]["id"])
+        )[0]
+        self.assertEqual(visible["metadata"]["taxonomy"]["corpus_kind"], "law")
+
     def test_chat_history_is_ordered_and_private_between_users(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])
@@ -293,6 +383,31 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
+        ooc = atlas_classify_knowledge(
+            title="Правила сервера",
+            content="OOC требования проекта и наказания администрации за нарушения.",
+        )
+        charter = atlas_classify_knowledge(
+            title="Устав LSPD",
+            content="Настоящий устав определяет полномочия сотрудников полиции и ранги.",
+        )
+        practice = atlas_classify_knowledge(
+            title="Судебная практика",
+            content="Решение суда по исковому заявлению и толкованию положений закона.",
+        )
+
+        self.assertEqual((ooc["domain"], ooc["corpus_kind"]), ("ooc", "server_rule"))
+        self.assertEqual((charter["domain"], charter["corpus_kind"]), ("ic", "charter"))
+        self.assertEqual(practice["corpus_kind"], "case_law")
+        self.assertEqual(practice["authority_scope"], "court")
+
+    def test_aristotle_plan_adapts_to_legal_case(self) -> None:
+        plan = atlas_research_plan("Составь позицию по иску и судебной практике")
+        self.assertEqual(plan[0]["agent"], "Навигатор")
+        self.assertEqual(plan[-1]["agent"], "Аристотель")
+        self.assertIn("practice", {item["id"] for item in plan})
+
     def test_chunker_is_bounded_and_preserves_overlap(self) -> None:
         chunks = _chunks("слово " * 4000, size=1000, overlap=100)
         self.assertGreater(len(chunks), 2)
@@ -376,6 +491,8 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         point = put_call.kwargs["payload"]["points"][0]
         self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
         self.assertEqual(point["payload"]["visibility_scope"], "server")
+        self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
+        self.assertEqual(point["payload"]["corpus_kind"], "procedure")
         self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
         self.assertLess(
             request.await_args_list.index(put_call),
@@ -475,6 +592,71 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, ["Первый ", "фрагмент"])
         self.assertEqual(result["answer"], "Первый фрагмент")
         self.assertEqual(result["model"], "atlas-tvr-a")
+
+    async def test_aristotle_stream_reports_visible_research_progress(self) -> None:
+        async def completion(request: web.Request) -> web.StreamResponse:
+            body = await request.json()
+            self.assertEqual(body["temperature"], 0.28)
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write('data: {"choices":[{"delta":{"content":"Итог [1]"}}]}\n\n'.encode())
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        progress: list[dict] = []
+
+        async def receive(_text: str) -> None:
+            return None
+
+        async def report(event: dict) -> None:
+            progress.append(event)
+
+        sources = [{
+            "source_id": 4,
+            "title": "Процессуальный кодекс",
+            "text": "Проверенная норма",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "score": 0.9,
+            "url": None,
+        }]
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search",
+                AsyncMock(return_value=sources),
+            ) as search:
+                result = await atlas_answer_stream(
+                    77,
+                    "Проведи полное исследование по задержанию",
+                    response_mode="aristotle",
+                    on_delta=receive,
+                    on_progress=report,
+                )
+        finally:
+            await server.close()
+
+        self.assertEqual(result["response_mode"], "aristotle")
+        self.assertTrue(result["research_plan"])
+        self.assertTrue(search.await_args.kwargs["expanded"])
+        self.assertIn("plan", {event["phase"] for event in progress})
+        self.assertIn("evidence", {event["phase"] for event in progress})
+        self.assertEqual(progress[-1]["phase"], "complete")
 
     async def test_creative_answer_uses_current_history_cross_chat_memory_and_sources(self) -> None:
         config = AtlasAIConfig(
@@ -707,6 +889,74 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["items"][0]["visibility_scope"], "server")
             self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
             self.assertEqual(payload["items"][0]["status"], "indexed")
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
+    async def test_admin_can_import_and_auto_classify_authenticated_forum_thread(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-forum-import-test.db"
+        storage.init_db()
+        member = SimpleNamespace(
+            id=42,
+            display_name="Администратор",
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=member,
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/ustav-gov.700/",
+            title="Устав GOV",
+            content="Настоящий устав определяет полномочия и порядок службы Government.",
+            author="Author",
+        )
+        try:
+            with patch(
+                "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
+                AsyncMock(return_value=snapshot),
+            ), patch("modules.atlas_web.atlas_index_source", AsyncMock(return_value=["point-1"])):
+                async with TestClient(TestServer(app)) as client:
+                    response = await client.post(
+                        "/api/atlas/knowledge/import-forum",
+                        json={
+                            "source_url": snapshot.url,
+                            "server_code": "phoenix-15",
+                            "faction_code": "gov",
+                            "visibility_scope": "faction",
+                        },
+                        headers={
+                            "X-CSRF-Token": "admin-csrf",
+                            "X-Idempotency-Key": "forum-import-1",
+                        },
+                    )
+                    payload = await response.json()
+
+            self.assertEqual(response.status, 202, payload)
+            self.assertEqual(payload["taxonomy"]["domain"], "ic")
+            self.assertEqual(payload["taxonomy"]["corpus_kind"], "charter")
+            self.assertEqual(payload["source"]["faction_code"], "gov")
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

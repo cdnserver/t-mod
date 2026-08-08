@@ -23,11 +23,9 @@ from modules.atlas_ai import (
     atlas_reset_collection,
 )
 from modules.atlas_catalog import (
-    atlas_catalog,
     atlas_normalize_knowledge_scope,
-    atlas_normalize_scope,
 )
-from modules.atlas_forum_sync import AtlasForumSyncRunner
+from modules.atlas_forum_sync import AtlasForumSyncError, AtlasForumSyncRunner
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
@@ -153,7 +151,26 @@ def register_atlas_web_routes(
             component="atlas",
         )
 
-    async def dashboard_for(selected: ConsensusWebPrincipal) -> dict[str, Any]:
+    async def user_dashboard(
+        request: web.Request,
+        selected: ConsensusWebPrincipal,
+    ) -> dict[str, Any]:
+        try:
+            requested_space = int(request.headers.get("X-Atlas-Space-ID") or 0) or None
+        except (TypeError, ValueError):
+            requested_space = None
+        return await asyncio.to_thread(
+            storage.atlas_dashboard,
+            int(guild_id),
+            int(selected.user_id),
+            str(selected.display_name),
+            requested_space,
+        )
+
+    async def dashboard_for(
+        request: web.Request,
+        selected: ConsensusWebPrincipal,
+    ) -> dict[str, Any]:
         allowed = await atlas_allowed(selected)
         if not allowed:
             return {
@@ -170,15 +187,10 @@ def register_atlas_web_routes(
                     "status": "closed_preview",
                     "modules": ["Atlas AI", "Документы", "База знаний", "Forum Desk"],
                 },
-                "catalog": atlas_catalog(),
+                "catalog": await asyncio.to_thread(storage.atlas_catalog),
             }
         dashboard, health, forum_sync = await asyncio.gather(
-            asyncio.to_thread(
-                storage.atlas_dashboard,
-                int(guild_id),
-                int(selected.user_id),
-                str(selected.display_name),
-            ),
+            user_dashboard(request, selected),
             atlas_ai_health(),
             asyncio.to_thread(storage.atlas_forum_sync_status, int(guild_id)),
         )
@@ -206,7 +218,7 @@ def register_atlas_web_routes(
 
     async def bootstrap(request: web.Request) -> web.Response:
         selected = await principal(request)
-        payload = await dashboard_for(selected)
+        payload = await dashboard_for(request, selected)
         return web.json_response(payload)
 
     async def onboarding(request: web.Request) -> web.Response:
@@ -215,7 +227,8 @@ def register_atlas_web_routes(
         payload = await body(request, selected)
         profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
         try:
-            server_code, faction_code = atlas_normalize_scope(
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
                 str(profile.get("server_code") or "phoenix-15"),
                 str(profile.get("faction_code") or "lspd"),
             )
@@ -239,12 +252,7 @@ def register_atlas_web_routes(
             "nickname": nickname,
             "rank": rank,
         }
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         result = await asyncio.to_thread(
             storage.atlas_update_onboarding,
             int(dashboard["organization"]["id"]),
@@ -283,12 +291,7 @@ def register_atlas_web_routes(
     async def threads(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas(selected)
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
         raw_thread_id = request.match_info.get("thread_id")
         if raw_thread_id is None:
@@ -323,18 +326,14 @@ def register_atlas_web_routes(
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
         try:
-            server_code, faction_code = atlas_normalize_scope(
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
                 str(payload.get("server_code") or "phoenix-15"),
                 str(payload.get("faction_code") or "lspd"),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
         thread_id: int | None = None
         history: list[dict[str, Any]] = []
@@ -476,7 +475,8 @@ def register_atlas_web_routes(
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
         try:
-            server_code, faction_code = atlas_normalize_scope(
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
                 str(payload.get("server_code") or "phoenix-15"),
                 str(payload.get("faction_code") or "lspd"),
             )
@@ -485,12 +485,7 @@ def register_atlas_web_routes(
                 {"error": str(exc), "message": "Выберите доступный сервер и фракцию."},
                 status=400,
             )
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
         thread_id: int | None = None
         history: list[dict[str, Any]] = []
@@ -544,6 +539,7 @@ def register_atlas_web_routes(
                 organization_id,
                 question,
                 on_delta=lambda text: emit({"type": "delta", "text": text}),
+                on_progress=lambda event: emit({"type": "progress", **event}),
                 server_code=server_code,
                 faction_code=faction_code,
                 history=history,
@@ -636,12 +632,7 @@ def register_atlas_web_routes(
     async def documents(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas(selected)
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
         if request.method == "GET":
             return web.json_response(
@@ -791,16 +782,12 @@ def register_atlas_web_routes(
                 text='{"error":"atlas_knowledge_admin_required"}',
                 content_type="application/json",
             )
-        dashboard = await asyncio.to_thread(
-            storage.atlas_dashboard,
-            int(guild_id),
-            int(selected.user_id),
-            str(selected.display_name),
-        )
+        dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
         if request.method == "GET":
             try:
-                server_code, faction_code = atlas_normalize_scope(
+                server_code, faction_code = await asyncio.to_thread(
+                    storage.atlas_normalize_scope,
                     str(request.query.get("server_code") or "phoenix-15"),
                     str(request.query.get("faction_code") or "lspd"),
                 )
@@ -816,7 +803,8 @@ def register_atlas_web_routes(
 
         payload = await body(request, selected)
         try:
-            server_code, faction_code = atlas_normalize_scope(
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
                 str(payload.get("server_code") or "phoenix-15"),
                 str(payload.get("faction_code") or "lspd"),
             )
@@ -834,6 +822,8 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
             )
         except (TypeError, ValueError) as exc:
             return web.json_response(
@@ -877,22 +867,20 @@ def register_atlas_web_routes(
                     "server_code",
                     "faction_code",
                     "visibility_scope",
+                    "knowledge_domain",
+                    "corpus_kind",
                 }:
                     values[str(field.name)] = (await field.text()).strip()
             extracted = await asyncio.to_thread(atlas_extract_knowledge_file, filename, bytes(file_data))
-            server_code, faction_code = atlas_normalize_scope(
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
                 values.get("server_code", "phoenix-15"),
                 values.get("faction_code", "lspd"),
             )
             visibility_scope = atlas_normalize_knowledge_scope(
                 values.get("visibility_scope", "server")
             )
-            dashboard = await asyncio.to_thread(
-                storage.atlas_dashboard,
-                int(guild_id),
-                int(selected.user_id),
-                str(selected.display_name),
-            )
+            dashboard = await user_dashboard(request, selected)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
                 int(dashboard["organization"]["id"]),
@@ -905,6 +893,8 @@ def register_atlas_web_routes(
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
                 original_filename=str(extracted["filename"]),
+                knowledge_domain=values.get("knowledge_domain") or None,
+                corpus_kind=values.get("corpus_kind") or None,
             )
         except (AtlasKnowledgeFileError, ValueError) as exc:
             return web.json_response(
@@ -917,8 +907,76 @@ def register_atlas_web_routes(
             status=202,
         )
 
-    async def admin_overview(request: web.Request) -> web.Response:
+    async def knowledge_import_forum(request: web.Request) -> web.Response:
         selected = await principal(request)
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"atlas_knowledge_admin_required"}',
+                content_type="application/json",
+            )
+        payload = await body(request, selected)
+        if forum_sync_runner is None:
+            return web.json_response(
+                {
+                    "error": "atlas_forum_sync_disabled",
+                    "message": "Браузер Atlas ещё запускается. Повторите через несколько секунд.",
+                },
+                status=503,
+            )
+        try:
+            server_code, faction_code = await asyncio.to_thread(
+                storage.atlas_normalize_scope,
+                str(payload.get("server_code") or "phoenix-15"),
+                str(payload.get("faction_code") or "lspd"),
+            )
+            visibility_scope = atlas_normalize_knowledge_scope(
+                str(payload.get("visibility_scope") or "server")
+            )
+            snapshot = await forum_sync_runner.fetch_thread(str(payload.get("source_url") or ""))
+            dashboard = await user_dashboard(request, selected)
+            source = await asyncio.to_thread(
+                storage.atlas_add_knowledge,
+                int(dashboard["organization"]["id"]),
+                int(selected.user_id),
+                title=snapshot.title,
+                content=snapshot.content,
+                source_kind="forum",
+                source_url=snapshot.url,
+                server_code=server_code,
+                faction_code=faction_code,
+                visibility_scope=visibility_scope,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                metadata={
+                    "author": snapshot.author,
+                    "source_updated_at": snapshot.source_updated_at,
+                    "import_mode": "authenticated_forum_thread",
+                },
+            )
+        except (AtlasForumSyncError, TypeError, ValueError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": (
+                        "Не удалось прочитать тему. Проверьте ссылку и авторизацию "
+                        "в локальном браузере Atlas."
+                    ),
+                },
+                status=400,
+            )
+        queue_knowledge_index(source)
+        taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+        return web.json_response(
+            {
+                "source": source,
+                "taxonomy": taxonomy,
+                "queued": True,
+                "message": "Тема прочитана, классифицирована и добавлена в библиотеку.",
+            },
+            status=202,
+        )
+
+    async def require_atlas_admin(selected: ConsensusWebPrincipal) -> None:
         if not selected.administrator:
             grants = await asyncio.to_thread(
                 web_auth_storage.web_section_grants,
@@ -927,6 +985,10 @@ def register_atlas_web_routes(
             )
             if not any(str(item["section"]) == "atlas" for item in grants):
                 raise web.HTTPForbidden(text='{"error":"atlas_admin_required"}', content_type="application/json")
+
+    async def admin_overview(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas_admin(selected)
         snapshot, health = await asyncio.gather(
             asyncio.to_thread(storage.atlas_admin_snapshot, int(guild_id)),
             atlas_ai_health(),
@@ -949,6 +1011,66 @@ def register_atlas_web_routes(
                 },
             }
         )
+
+    async def admin_catalog_control(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas_admin(selected)
+        payload = await body(request, selected)
+        resource = str(payload.get("resource") or "").strip().lower()
+        try:
+            if resource == "server":
+                item = await asyncio.to_thread(
+                    storage.atlas_upsert_server,
+                    int(selected.user_id),
+                    code=str(payload.get("code") or ""),
+                    name=str(payload.get("name") or ""),
+                    number=payload.get("number"),
+                    enabled=bool(payload.get("enabled", True)),
+                )
+            elif resource == "faction":
+                item = await asyncio.to_thread(
+                    storage.atlas_upsert_faction,
+                    int(selected.user_id),
+                    code=str(payload.get("code") or ""),
+                    name=str(payload.get("name") or ""),
+                    short_name=str(payload.get("short_name") or ""),
+                    enabled=bool(payload.get("enabled", True)),
+                )
+            else:
+                raise ValueError("atlas_catalog_resource_invalid")
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Проверьте код и название элемента Atlas."},
+                status=400,
+            )
+        return web.json_response(
+            {"item": item, "catalog": await asyncio.to_thread(storage.atlas_catalog)},
+            status=201,
+        )
+
+    async def admin_space_control(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas_admin(selected)
+        payload = await body(request, selected)
+        try:
+            item = await asyncio.to_thread(
+                storage.atlas_create_organization,
+                int(guild_id),
+                int(selected.user_id),
+                name=str(payload.get("name") or ""),
+                slug=str(payload.get("slug") or "") or None,
+                owner_user_id=int(payload.get("owner_user_id") or 0),
+                kind=str(payload.get("kind") or "government"),
+                description=str(payload.get("description") or "") or None,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Не удалось создать пространство Atlas."},
+                status=400,
+            )
+        return web.json_response({"organization": item}, status=201)
 
     async def forum_sync_control(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -1000,9 +1122,12 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge/upload", knowledge_upload)
+    app.router.add_post("/api/atlas/knowledge/import-forum", knowledge_import_forum)
     app.router.add_get("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_get("/api/admin/atlas", admin_overview)
+    app.router.add_post("/api/admin/atlas/catalog", admin_catalog_control)
+    app.router.add_post("/api/admin/atlas/spaces", admin_space_control)
 
 
 __all__ = ["register_atlas_web_routes"]

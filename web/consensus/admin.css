@@ -4621,6 +4621,50 @@ body[data-reactor-state="critical"] .backdrop-glow.glow-two {
   color: var(--reactor-warning);
 }
 
+/* Atlas catalog and private-space controls */
+.atlas-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+.atlas-config-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 100% 0, rgba(79, 136, 220, .1), transparent 18rem),
+    var(--panel-bg, rgba(12, 20, 29, .86));
+}
+.atlas-space-builder { grid-column: 1 / -1; }
+.atlas-catalog-chips { display: flex; flex-wrap: wrap; gap: 7px; min-height: 35px; margin: 15px 0; }
+.atlas-catalog-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px;
+  border: 1px solid rgba(135, 201, 230, .13); border-radius: 999px;
+  color: #a8c2cc; background: rgba(68, 144, 178, .055); font-size: 11px;
+}
+.atlas-catalog-chip i { width: 6px; height: 6px; border-radius: 50%; background: #6eddb8; box-shadow: 0 0 10px rgba(110, 221, 184, .4); }
+.atlas-catalog-chip.disabled { opacity: .45; }
+.atlas-config-form { display: grid; grid-template-columns: .75fr 1.4fr .55fr auto; align-items: end; gap: 9px; }
+.atlas-config-form.wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.atlas-config-form label { display: grid; gap: 6px; min-width: 0; }
+.atlas-config-form label > span { color: #718994; font-size: 11px; font-weight: 750; }
+.atlas-config-form input, .atlas-config-form select {
+  width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid rgba(144, 201, 223, .12);
+  border-radius: 11px; outline: none; color: #c9dce3; background: rgba(5, 16, 24, .78);
+}
+.atlas-config-form input:focus, .atlas-config-form select:focus { border-color: rgba(117, 213, 248, .36); box-shadow: 0 0 0 3px rgba(76, 161, 197, .06); }
+.atlas-config-form .wide { grid-column: 1 / -1; }
+.atlas-config-form.wide > button { align-self: end; min-height: 42px; }
+@media (max-width: 1050px) {
+  .atlas-config-grid { grid-template-columns: 1fr; }
+  .atlas-space-builder { grid-column: auto; }
+  .atlas-config-form, .atlas-config-form.wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .atlas-config-form, .atlas-config-form.wide { grid-template-columns: 1fr; }
+  .atlas-config-form .wide { grid-column: auto; }
+}
+
 .minecraft-tabs {
   align-items: center;
   background: rgba(10, 15, 13, 0.92);

@@ -1,6 +1,10 @@
 "use strict";
 
 const byId = (id) => document.getElementById(id);
+function storedAtlasSpace() {
+  try { return Number(localStorage.getItem("tmod-atlas-space")) || null; }
+  catch (_error) { return null; }
+}
 const appState = {
   data: null,
   screen: "home",
@@ -14,6 +18,7 @@ const appState = {
   responseMode: "balanced",
   modelId: "atlas-tvr-a",
   onboardingPrompted: false,
+  organizationId: storedAtlasSpace(),
 };
 const screenMeta = {
   home: ["ATLAS", "Командный центр"],
@@ -35,6 +40,96 @@ function clear(node) {
   while (node.firstChild) node.firstChild.remove();
 }
 
+function appendInlineMarkdown(parent, value) {
+  const text = String(value || "");
+  const token = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*[^*\n]+\*)/g;
+  let cursor = 0;
+  for (const match of text.matchAll(token)) {
+    if (match.index > cursor) parent.append(document.createTextNode(text.slice(cursor, match.index)));
+    const raw = match[0];
+    if (raw.startsWith("**")) parent.append(element("strong", "", raw.slice(2, -2)));
+    else if (raw.startsWith("`")) parent.append(element("code", "", raw.slice(1, -1)));
+    else if (raw.startsWith("[")) {
+      const parts = raw.match(/^\[([^\]]+)]\((https?:\/\/[^\s)]+)\)$/);
+      if (parts) {
+        const link = element("a", "", parts[1]);
+        link.href = parts[2];
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        parent.append(link);
+      } else parent.append(document.createTextNode(raw));
+    } else parent.append(element("em", "", raw.slice(1, -1)));
+    cursor = match.index + raw.length;
+  }
+  if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
+}
+
+function tableCells(line) {
+  return String(line || "").trim().replace(/^\||\|$/g, "").split("|").map((item) => item.trim());
+}
+
+function renderRichText(target, value) {
+  clear(target);
+  const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+  let list = null;
+  let inCode = false;
+  let codeLines = [];
+  const resetList = () => { list = null; };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^```/.test(line.trim())) {
+      resetList();
+      if (inCode) {
+        const pre = element("pre");
+        pre.append(element("code", "", codeLines.join("\n")));
+        target.append(pre);
+        codeLines = [];
+      }
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) { codeLines.push(line); continue; }
+    if (!line.trim()) { resetList(); continue; }
+    if (line.includes("|") && index + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1])) {
+      resetList();
+      const table = element("table");
+      const head = element("thead");
+      const headRow = element("tr");
+      tableCells(line).forEach((cell) => { const th = element("th"); appendInlineMarkdown(th, cell); headRow.append(th); });
+      head.append(headRow); table.append(head);
+      const body = element("tbody");
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        const row = element("tr");
+        tableCells(lines[index]).forEach((cell) => { const td = element("td"); appendInlineMarkdown(td, cell); row.append(td); });
+        body.append(row); index += 1;
+      }
+      index -= 1; table.append(body); target.append(table); continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      resetList();
+      const node = element(`h${heading[1].length + 2}`);
+      appendInlineMarkdown(node, heading[2]); target.append(node); continue;
+    }
+    const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (bullet || ordered) {
+      const kind = ordered ? "ol" : "ul";
+      if (!list || list.tagName.toLowerCase() !== kind) { list = element(kind); target.append(list); }
+      const item = element("li"); appendInlineMarkdown(item, (bullet || ordered)[1]); list.append(item); continue;
+    }
+    resetList();
+    if (/^>\s?/.test(line)) {
+      const quote = element("blockquote"); appendInlineMarkdown(quote, line.replace(/^>\s?/, "")); target.append(quote); continue;
+    }
+    const paragraph = element("p"); appendInlineMarkdown(paragraph, line); target.append(paragraph);
+  }
+  if (inCode && codeLines.length) {
+    const pre = element("pre"); pre.append(element("code", "", codeLines.join("\n"))); target.append(pre);
+  }
+}
+
 function showToast(message, error = false) {
   const toast = byId("toast");
   clearTimeout(toastTimer);
@@ -50,6 +145,7 @@ function requestId() {
 
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
+  if (appState.organizationId) headers["X-Atlas-Space-ID"] = String(appState.organizationId);
   if (options.body) {
     if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
     headers["X-CSRF-Token"] = appState.data?.viewer?.csrf_token || "";
@@ -113,17 +209,49 @@ function bindPreviewMotion() {
 
 function switchScreen(screen, updateHash = true) {
   const selected = screenMeta[screen] ? screen : "home";
-  appState.screen = selected;
-  document.querySelectorAll(".screen").forEach((node) => {
-    node.classList.toggle("active", node.id === `screen-${selected}`);
+  const changed = appState.screen !== selected;
+  const applyScreen = () => {
+    appState.screen = selected;
+    document.querySelectorAll(".screen").forEach((node) => {
+      node.classList.toggle("active", node.id === `screen-${selected}`);
+    });
+    document.querySelectorAll(".atlas-nav [data-screen]").forEach((button) => {
+      const active = button.dataset.screen === selected;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+    });
+    byId("screen-kicker").textContent = screenMeta[selected][0];
+    byId("screen-title").textContent = screenMeta[selected][1];
+    if (updateHash) history.replaceState(null, "", `#/${selected}`);
+  };
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (changed && !reducedMotion && typeof document.startViewTransition === "function") {
+    document.startViewTransition(applyScreen);
+  } else {
+    applyScreen();
+  }
+  if (changed) window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
+}
+
+function bindWorkspaceMotion() {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || !matchMedia("(pointer: fine)").matches) return;
+  document.querySelectorAll(".atlas-hero, .module-card").forEach((surface) => {
+    let frame = 0;
+    surface.addEventListener("pointermove", (event) => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const bounds = surface.getBoundingClientRect();
+        const x = ((event.clientX - bounds.left) / Math.max(bounds.width, 1)) * 100;
+        const y = ((event.clientY - bounds.top) / Math.max(bounds.height, 1)) * 100;
+        surface.style.setProperty("--mx", `${x.toFixed(1)}%`);
+        surface.style.setProperty("--my", `${y.toFixed(1)}%`);
+      });
+    }, { passive: true });
+    surface.addEventListener("pointerleave", () => {
+      surface.style.removeProperty("--mx");
+      surface.style.removeProperty("--my");
+    }, { passive: true });
   });
-  document.querySelectorAll(".atlas-nav [data-screen]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.screen === selected);
-  });
-  byId("screen-kicker").textContent = screenMeta[selected][0];
-  byId("screen-title").textContent = screenMeta[selected][1];
-  if (updateHash) history.replaceState(null, "", `#/${selected}`);
-  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function templateCard(template) {
@@ -269,7 +397,13 @@ function knowledgeSourceCard(item) {
   const card = element("article", "knowledge-source-card");
   const icon = element("i", "", item.original_filename ? "⇧" : "≡");
   const copy = element("span");
-  const details = [knowledgeScopeLabel(item.visibility_scope), item.source_kind || "материал", item.original_filename || "текст"];
+  const taxonomy = item.metadata?.taxonomy || {};
+  const details = [
+    knowledgeScopeLabel(item.visibility_scope),
+    taxonomy.domain ? String(taxonomy.domain).toUpperCase() : null,
+    taxonomy.corpus_kind || item.source_kind || "материал",
+    item.original_filename || "текст",
+  ].filter(Boolean);
   if (item.updated_at) details.push(new Date(item.updated_at).toLocaleDateString("ru-RU"));
   copy.append(element("b", "", item.title), element("small", "", details.join(" · ")));
   const [statusClass, statusText] = sourceStatus(item);
@@ -336,7 +470,17 @@ function render(data) {
   const membership = data.membership || {};
   byId("viewer-name").textContent = viewer.name || "Участник";
   byId("viewer-avatar").textContent = String(viewer.name || "A").charAt(0).toUpperCase();
-  byId("space-name").textContent = organization.name || "Личное пространство";
+  const spaceSelect = byId("atlas-space");
+  clear(spaceSelect);
+  (data.spaces || [organization]).forEach((space) => {
+    spaceSelect.append(new Option(space.name || "Личное пространство", String(space.id)));
+  });
+  appState.organizationId = Number(organization.id) || null;
+  if (appState.organizationId) {
+    spaceSelect.value = String(appState.organizationId);
+    try { localStorage.setItem("tmod-atlas-space", String(appState.organizationId)); }
+    catch (_error) { /* private mode can disable local storage */ }
+  }
   byId("space-role").textContent = `${membership.role || "member"} · ${organization.kind || "project"}`;
   byId("atlas-admin-link").hidden = !viewer.administrator;
   const counts = data.counts || {};
@@ -391,10 +535,46 @@ function messageNode(role, text, citations = []) {
   if (role !== "user") row.append(element("span", "", "A"));
   const copy = element("div");
   if (role !== "user") copy.append(element("small", "", "ATLAS · ОТВЕТ С КОНТЕКСТОМ"));
-  copy.append(element("p", "", text));
+  const richText = element("div", "rich-text");
+  renderRichText(richText, text);
+  copy.append(richText);
   appendCitations(copy, citations);
   row.append(copy);
   return row;
+}
+
+function updateResearchProgress(copy, event) {
+  let panel = copy.querySelector(".research-progress");
+  if (!panel) {
+    panel = element("section", "research-progress");
+    panel.append(element("header", "", "АРИСТОТЕЛЬ · ПЛАН ИССЛЕДОВАНИЯ"), element("ol", "research-steps"), element("footer", "", "Формируем задачи…"));
+    copy.insertBefore(panel, copy.querySelector(".rich-text"));
+  }
+  if (event.phase === "plan") {
+    const list = panel.querySelector("ol");
+    clear(list);
+    (event.steps || []).forEach((step) => {
+      const item = element("li", "pending");
+      item.dataset.stepId = step.id;
+      item.append(element("i", "", "○"), element("span", "", `${step.agent} · ${step.title}`));
+      list.append(item);
+    });
+    panel.querySelector("footer").textContent = "Задачи распределены по исследовательским контурам";
+  } else if (event.phase === "stage") {
+    const item = [...panel.querySelectorAll("[data-step-id]")].find(
+      (candidate) => candidate.dataset.stepId === String(event.step_id || ""),
+    );
+    if (item) {
+      item.className = event.status || "pending";
+      item.querySelector("i").textContent = event.status === "complete" ? "✓" : "●";
+    }
+  } else if (event.phase === "evidence") {
+    const domains = Object.entries(event.domains || {}).map(([key, count]) => `${key}: ${count}`).join(" · ");
+    panel.querySelector("footer").textContent = `Найдено источников: ${event.source_count || 0}${domains ? ` · ${domains}` : ""}`;
+  } else if (event.phase === "complete") {
+    panel.classList.add("complete");
+    panel.querySelector("footer").textContent = `Исследование завершено · источников: ${event.source_count || 0}`;
+  }
 }
 
 function appendCitations(copy, citations = []) {
@@ -424,7 +604,7 @@ async function sendQuestion(question) {
   button.textContent = "Atlas отвечает…";
   const assistant = messageNode("assistant", "");
   assistant.classList.add("streaming");
-  const answerNode = assistant.querySelector("p");
+  const answerNode = assistant.querySelector(".rich-text");
   const answerCopy = answerNode.parentElement;
   stream.append(assistant);
   let responseTimeout = null;
@@ -437,6 +617,7 @@ async function sendQuestion(question) {
         "Content-Type": "application/json",
         "X-CSRF-Token": appState.data?.viewer?.csrf_token || "",
         "X-Idempotency-Key": requestId(),
+        ...(appState.organizationId ? { "X-Atlas-Space-ID": String(appState.organizationId) } : {}),
       },
       body: JSON.stringify({
         question,
@@ -464,10 +645,15 @@ async function sendQuestion(question) {
     let buffer = "";
     let result = null;
     let streamError = null;
+    let streamedText = "";
     const acceptEvent = (event) => {
       if (event.type === "delta" && event.text) {
-        answerNode.textContent += String(event.text);
+        streamedText += String(event.text);
+        answerNode.textContent = streamedText;
         assistant.classList.add("has-content");
+        stream.scrollTop = stream.scrollHeight;
+      } else if (event.type === "progress") {
+        updateResearchProgress(answerCopy, event);
         stream.scrollTop = stream.scrollHeight;
       } else if (event.type === "done") {
         result = event;
@@ -501,7 +687,7 @@ async function sendQuestion(question) {
     }
     if (streamError) throw streamError;
     if (!result) throw new Error("Atlas не подтвердил завершение ответа.");
-    if (!answerNode.textContent) answerNode.textContent = result.answer || "Ответ готов.";
+    renderRichText(answerNode, result.answer || streamedText || "Ответ готов.");
     appendCitations(answerCopy, result.citations || []);
     assistant.classList.remove("streaming");
     appState.threadId = Number(result.thread_id);
@@ -617,6 +803,17 @@ async function updateScope() {
 }
 
 function bind() {
+  byId("atlas-space").addEventListener("change", async (event) => {
+    appState.organizationId = Number(event.currentTarget.value) || null;
+    appState.threadId = null;
+    appState.threadReady = false;
+    try {
+      if (appState.organizationId) localStorage.setItem("tmod-atlas-space", String(appState.organizationId));
+    } catch (_error) { /* selection still works for the current tab */ }
+    try { await reload(); showToast("Рабочее пространство переключено."); }
+    catch (error) { showToast(error.message || "Не удалось открыть пространство.", true); }
+  });
+  bindWorkspaceMotion();
   byId("atlas-server").addEventListener("change", () => void updateScope());
   byId("atlas-faction").addEventListener("change", () => void updateScope());
   byId("atlas-model").addEventListener("change", (event) => {
@@ -657,6 +854,18 @@ function bind() {
     event.preventDefault();
     const question = byId("atlas-question").value.trim();
     if (question) void sendQuestion(question);
+  });
+  const composer = byId("atlas-question");
+  const resizeComposer = () => {
+    composer.style.height = "auto";
+    composer.style.height = `${Math.min(composer.scrollHeight, 190)}px`;
+  };
+  composer.addEventListener("input", resizeComposer);
+  composer.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      byId("atlas-chat-form").requestSubmit();
+    }
   });
   byId("new-atlas-chat").addEventListener("click", newChat);
   document.querySelectorAll("[data-response-mode]").forEach((button) => {
@@ -723,12 +932,32 @@ function bind() {
     } catch (error) { showToast(error.message, true); }
     finally { button.disabled = false; button.textContent = "Загрузить в библиотеку →"; }
   });
+  byId("knowledge-forum-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    button.textContent = "Читаем тему…";
+    try {
+      const result = await api("/api/atlas/knowledge/import-forum", {
+        method: "POST",
+        body: JSON.stringify({ ...values, server_code: appState.serverCode, faction_code: appState.factionCode }),
+        timeout: 90000,
+      });
+      form.reset();
+      await loadKnowledgeSources();
+      showToast(result.message || "Тема добавлена в библиотеку.");
+    } catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; button.textContent = "Прочитать и добавить →"; }
+  });
   document.querySelectorAll("[data-knowledge-mode]").forEach((button) => {
     button.addEventListener("click", () => {
-      const fileMode = button.dataset.knowledgeMode === "file";
+      const mode = button.dataset.knowledgeMode;
       document.querySelectorAll("[data-knowledge-mode]").forEach((item) => item.classList.toggle("active", item === button));
-      byId("knowledge-upload-form").hidden = !fileMode;
-      byId("knowledge-form").hidden = fileMode;
+      byId("knowledge-upload-form").hidden = mode !== "file";
+      byId("knowledge-forum-form").hidden = mode !== "forum";
+      byId("knowledge-form").hidden = mode !== "text";
     });
   });
   byId("refresh-sources").addEventListener("click", async () => {
@@ -773,6 +1002,7 @@ async function bootstrap() {
       return;
     }
     byId("atlas-app").hidden = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add("atlas-ready")));
     switchScreen(location.hash.replace(/^#\//, "") || "home", false);
     if (Number(appState.data?.membership?.onboarding_step || 0) < 4 && !appState.onboardingPrompted) {
       appState.onboardingPrompted = true;

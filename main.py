@@ -453,12 +453,20 @@ class TModBot(commands.Bot):
         try:
             if GUILD_ID:
                 guild = discord.Object(id=int(GUILD_ID))
-                self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                print(t("console.synced_guild", count=len(synced), guild_id=GUILD_ID))
+                # Commands used to be copied into the home guild and then
+                # published globally as well. Discord exposes both scopes in
+                # the picker, producing two visually identical commands.
+                # Keep a single global catalog (it also works in DMs) and
+                # explicitly remove the obsolete guild-scoped copies.
+                self.tree.clear_commands(guild=guild)
+                removed = await self.tree.sync(guild=guild)
+                print(
+                    "Guild command duplicates removed: "
+                    f"{len(removed)} command(s) remain for guild {GUILD_ID}"
+                )
                 global_synced = await self.tree.sync()
                 print(
-                    "Global commands synchronized for Discord DMs: "
+                    "Global commands synchronized for Discord and DMs: "
                     f"{len(global_synced)}"
                 )
             else:

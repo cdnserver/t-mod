@@ -1485,6 +1485,41 @@
                 <div id="atlas-ai-metrics" class="system-metrics"></div>
               </article>
             </div>
+            <div class="atlas-config-grid">
+              <article class="panel atlas-config-card">
+                <header class="panel-head"><div><span class="panel-kicker">SERVER CATALOG</span><h2>Серверы Atlas</h2><p>Сервер задаёт общий контур IC- и OOC-материалов.</p></div></header>
+                <div id="atlas-server-list" class="atlas-catalog-chips"></div>
+                <form id="atlas-server-form" class="atlas-config-form">
+                  <label><span>Код</span><input name="code" pattern="[a-z0-9-]{2,40}" required placeholder="phoenix-15"></label>
+                  <label><span>Название</span><input name="name" maxlength="100" required placeholder="Phoenix"></label>
+                  <label><span>Номер</span><input name="number" type="number" min="1" max="999" placeholder="15"></label>
+                  <button class="primary-button" type="submit">Добавить сервер</button>
+                </form>
+              </article>
+              <article class="panel atlas-config-card">
+                <header class="panel-head"><div><span class="panel-kicker">FACTION CATALOG</span><h2>Организации</h2><p>Список фракций общий для каждого сервера.</p></div></header>
+                <div id="atlas-faction-list" class="atlas-catalog-chips"></div>
+                <form id="atlas-faction-form" class="atlas-config-form">
+                  <label><span>Код</span><input name="code" pattern="[a-z0-9-]{2,40}" required placeholder="fib"></label>
+                  <label><span>Полное название</span><input name="name" maxlength="140" required placeholder="Federal Investigation Bureau"></label>
+                  <label><span>Коротко</span><input name="short_name" maxlength="24" required placeholder="FIB"></label>
+                  <button class="primary-button" type="submit">Добавить организацию</button>
+                </form>
+              </article>
+              <article class="panel atlas-config-card atlas-space-builder">
+                <header class="panel-head"><div><span class="panel-kicker">PRIVATE AI CONTOUR</span><h2>Новое пространство</h2><p>Частная память, документы и источники конкретной команды.</p></div></header>
+                <form id="atlas-space-form" class="atlas-config-form wide">
+                  <label><span>Название</span><input name="name" maxlength="120" required placeholder="LSPD · Руководство"></label>
+                  <label><span>Владелец · Discord ID</span><input name="owner_user_id" inputmode="numeric" pattern="[0-9]{5,24}" required placeholder="721577061143019555"></label>
+                  <label><span>Сервер</span><select id="atlas-space-server" name="server_code" required></select></label>
+                  <label><span>Организация</span><select id="atlas-space-faction" name="faction_code" required></select></label>
+                  <label><span>Тип</span><select name="kind"><option value="government">Государственная структура</option><option value="bureau">Бюро</option><option value="project">Проект</option></select></label>
+                  <label><span>Код пространства</span><input name="slug" pattern="[a-z0-9-]{2,40}" placeholder="lspd-command"></label>
+                  <label class="wide"><span>Описание</span><input name="description" maxlength="500" placeholder="Для каких задач существует этот закрытый контур"></label>
+                  <button class="primary-button" type="submit">Создать частный контур</button>
+                </form>
+              </article>
+            </div>
             <article class="panel">
               <header class="panel-head"><div><span class="panel-kicker">ATLAS AUDIT</span><h2>Последние события</h2></div></header>
               <div id="atlas-event-list" class="compact-list"></div>

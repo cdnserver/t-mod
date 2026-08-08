@@ -3312,6 +3312,30 @@ async function loadAtlas(silent = false) {
     setText("atlas-documents", formatNumber(totals.documents || 0));
     setText("atlas-sources", formatNumber(totals.indexed_sources || 0));
     const organizations = Array.isArray(data.organizations) ? data.organizations : [];
+    const catalog = data.catalog || {};
+    const catalogChip = (item) => node(
+      "span",
+      { className: `atlas-catalog-chip${item.enabled === false || item.enabled === 0 ? " disabled" : ""}` },
+      [node("i"), node("b", { text: item.label || item.short_name || item.name || item.code })],
+    );
+    replaceChildren(
+      "atlas-server-list",
+      (catalog.servers || []).map(catalogChip),
+    );
+    replaceChildren(
+      "atlas-faction-list",
+      (catalog.factions || []).map(catalogChip),
+    );
+    const fillCatalogSelect = (id, items) => {
+      const select = byId(id);
+      const selected = select.value;
+      select.replaceChildren(...items
+        .filter((item) => item.enabled !== false && item.enabled !== 0)
+        .map((item) => node("option", { value: item.code, text: item.label || item.name })));
+      if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+    };
+    fillCatalogSelect("atlas-space-server", catalog.servers || []);
+    fillCatalogSelect("atlas-space-faction", catalog.factions || []);
     setText("atlas-space-state", `${organizations.length} пространств`);
     replaceChildren(
       "atlas-organization-list",
@@ -3595,6 +3619,57 @@ function bindEvents() {
     } finally {
       button.disabled = false;
     }
+  });
+  byId("atlas-server-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("atlas-server-form");
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      await postJSON("/api/admin/atlas/catalog", {
+        resource: "server",
+        code: values.code,
+        name: values.name,
+        number: values.number || null,
+        enabled: true,
+      });
+      event.currentTarget.reset();
+      showToast("Сервер добавлен в Atlas.", false, { title: "Каталог обновлён", icon: "◎" });
+      await loadAtlas(true);
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
+  });
+  byId("atlas-faction-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("atlas-faction-form");
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      await postJSON("/api/admin/atlas/catalog", {
+        resource: "faction",
+        code: values.code,
+        name: values.name,
+        short_name: values.short_name,
+        enabled: true,
+      });
+      event.currentTarget.reset();
+      showToast("Организация добавлена для всех серверов Atlas.", false, { title: "Каталог обновлён", icon: "◇" });
+      await loadAtlas(true);
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
+  });
+  byId("atlas-space-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("atlas-space-form");
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      await postJSON("/api/admin/atlas/spaces", values);
+      event.currentTarget.reset();
+      showToast("Частное пространство Atlas создано.", false, { title: "Контур готов", icon: "✦" });
+      await loadAtlas(true);
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
   });
   document.querySelectorAll("[data-section]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.section));

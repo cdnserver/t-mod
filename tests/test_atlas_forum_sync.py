@@ -12,6 +12,7 @@ from modules.atlas_forum_sync import (
     AtlasForumScrapeBatch,
     AtlasForumSnapshot,
     AtlasForumSyncConfig,
+    AtlasForumSyncError,
     AtlasForumSyncRunner,
     forum_interstitial_kind,
     parse_forum_listing,
@@ -121,6 +122,28 @@ class AtlasForumParserTests(unittest.TestCase):
 
         self.assertEqual(len(batch.snapshots), 1)
         self.assertFalse(batch.inventory_complete)
+
+    def test_single_thread_import_uses_saved_browser_and_rejects_foreign_host(self) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        page = """
+        <h1 class="p-title-value">Устав LSPD</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+        <p>Настоящий устав определяет полномочия сотрудников и порядок службы.</p>
+        </div></div></article>
+        """
+        browser._load = lambda _url: page
+
+        snapshot = browser.scrape_thread(
+            "https://forum.majestic-rp.ru/threads/ustav-lspd.500/?ref=atlas"
+        )
+
+        self.assertEqual(snapshot.title, "Устав LSPD")
+        self.assertEqual(
+            snapshot.url,
+            "https://forum.majestic-rp.ru/threads/ustav-lspd.500/",
+        )
+        with self.assertRaisesRegex(AtlasForumSyncError, "thread_url_invalid"):
+            browser.scrape_thread("https://example.org/threads/secret.1/")
 
     @patch("modules.atlas_forum_sync.time.sleep")
     def test_empty_listing_becomes_manual_action_after_retries(self, _sleep) -> None:

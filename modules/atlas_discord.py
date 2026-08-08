@@ -142,8 +142,10 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
         message: discord.Message,
         mapping: dict,
         question: str,
+        channel: discord.TextChannel | discord.Thread | None = None,
     ) -> None:
-        async with locks[int(message.channel.id)]:
+        conversation_channel = channel or message.channel
+        async with locks[int(conversation_channel.id)]:
             history = await asyncio.to_thread(
                 atlas_storage.atlas_thread_messages,
                 int(mapping["organization_id"]),
@@ -164,7 +166,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 str(getattr(message.author, "display_name", message.author.name)),
             )
             profile = dict(dashboard["membership"].get("profile") or {})
-            async with message.channel.typing():
+            async with conversation_channel.typing():
                 result = await atlas_answer(
                     int(mapping["organization_id"]),
                     question,
@@ -190,7 +192,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 model=result["model"],
                 latency_ms=result["latency_ms"],
             )
-            await _send_answer(message.channel, result)
+            await _send_answer(conversation_channel, result)
             await asyncio.to_thread(
                 atlas_storage.atlas_record_event,
                 int(mapping["organization_id"]),
@@ -198,7 +200,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 "ai_answer_created",
                 "Atlas ответил в Discord",
                 target_type="discord_thread",
-                target_id=int(message.channel.id),
+                target_id=int(conversation_channel.id),
                 details={"source": "discord", "model": result["model"]},
             )
 
@@ -208,6 +210,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
             return
         question = ""
         mapping: dict | None = None
+        conversation_channel = message.channel
         if isinstance(message.channel, discord.Thread):
             if int(message.channel.parent_id or 0) != ATLAS_CHANNEL_ID:
                 return
@@ -248,6 +251,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 name=f"Atlas · {question[:72]}",
                 auto_archive_duration=1440,
             )
+            conversation_channel = thread
             dashboard = await asyncio.to_thread(
                 atlas_storage.atlas_dashboard,
                 int(message.guild.id),
@@ -270,15 +274,19 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 atlas_thread_id=atlas_thread_id,
                 owner_user_id=int(message.author.id),
             )
-            message = await thread.fetch_message(message.id)
         else:
             return
         if not question or mapping is None:
             return
         try:
-            await answer_in_thread(message, mapping, question[:8000])
+            await answer_in_thread(
+                message,
+                mapping,
+                question[:8000],
+                channel=conversation_channel,
+            )
         except AtlasAIError as exc:
-            await message.channel.send(
+            await conversation_channel.send(
                 f"Atlas временно не смог ответить: **{str(exc)}**",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -287,7 +295,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 message.guild,
                 title="Atlas · ответ временно недоступен",
                 details=(
-                    f"Канал: <#{message.channel.id}>\nПользователь: <@{message.author.id}>\n"
+                    f"Канал: <#{conversation_channel.id}>\nПользователь: <@{message.author.id}>\n"
                     f"Код: `{exc.code}`\nОшибка: `{str(exc)[:900]}`"
                 ),
                 level="warning" if exc.retryable else "error",
@@ -303,7 +311,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 message.guild,
                 title="Atlas · ошибка Discord-диалога",
                 details=(
-                    f"Канал: <#{message.channel.id}>\nПользователь: <@{message.author.id}>\n"
+                    f"Канал: <#{conversation_channel.id}>\nПользователь: <@{message.author.id}>\n"
                     f"Ошибка: `{type(exc).__name__}: {str(exc)[:900]}`"
                 ),
                 dedupe_key=f"atlas-discord:{type(exc).__name__}",
@@ -312,7 +320,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 component="atlas",
             )
             try:
-                await message.channel.send("Atlas столкнулся с ошибкой. Событие уже передано в технический журнал.")
+                await conversation_channel.send("Atlas столкнулся с ошибкой. Событие уже передано в технический журнал.")
             except discord.DiscordException:
                 pass
 

@@ -131,6 +131,15 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         command_sync = source.index("self.tree.sync", setup_hook)
         self.assertLess(early_web, command_sync)
 
+    def test_discord_commands_use_one_global_scope_without_guild_duplicates(self) -> None:
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+        setup_hook = source[source.index("async def setup_hook") : source.index("intents =")]
+
+        self.assertNotIn("copy_global_to", setup_hook)
+        self.assertIn("self.tree.clear_commands(guild=guild)", setup_hook)
+        self.assertIn("await self.tree.sync(guild=guild)", setup_hook)
+        self.assertIn("global_synced = await self.tree.sync()", setup_hook)
+
     def test_standard_launcher_verifies_minecraft_rcon_after_startup(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
 

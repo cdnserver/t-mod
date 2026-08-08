@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-account-stream">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-atlas-intelligence-v3">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -85,20 +85,20 @@
         <div class="space-card">
           <span class="space-orbit" aria-hidden="true"></span>
           <small>АКТИВНОЕ ПРОСТРАНСТВО</small>
-          <strong id="space-name">—</strong>
+          <select id="atlas-space" aria-label="Активное пространство Atlas"><option value="">Подключение…</option></select>
           <span id="space-role">подключение</span>
         </div>
 
         <nav class="atlas-nav" aria-label="Навигация Atlas">
-          <button class="active" type="button" data-screen="home"><i>⌂</i><span>Командный центр</span></button>
-          <button type="button" data-screen="ai"><i>✦</i><span>Atlas AI</span><b>NEW</b></button>
-          <button type="button" data-screen="documents"><i>▤</i><span>Документы</span></button>
-          <button type="button" data-screen="knowledge"><i>◎</i><span>База знаний</span></button>
-          <button type="button" data-screen="forum"><i>↗</i><span>Форум и памятки</span></button>
+          <button class="active" type="button" data-screen="home"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20h-5v-6H9v6H4z"/></svg></i><span>Командный центр</span></button>
+          <button type="button" data-screen="ai"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></i><span>Atlas AI</span><b>NEW</b></button>
+          <button type="button" data-screen="documents"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4M9 12h7M9 16h7"/></svg></i><span>Документы</span></button>
+          <button type="button" data-screen="knowledge"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H11v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H13v18h3.5A3.5 3.5 0 0 1 20 23z"/></svg></i><span>База знаний</span></button>
+          <button type="button" data-screen="forum"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/><path d="M18 13v7H4V6h7"/></svg></i><span>Форум и памятки</span></button>
         </nav>
 
         <div class="sidebar-bottom">
-          <a id="atlas-admin-link" href="https://reactor.tvr.lat/#/atlas" hidden><i>⚛</i><span>Управление в Реакторе</span></a>
+          <a id="atlas-admin-link" href="https://reactor.tvr.lat/#/atlas" hidden><i class="reactor-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><ellipse cx="12" cy="12" rx="10" ry="4.5"/><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(120 12 12)"/></svg></i><span>Управление в Реакторе</span></a>
           <div class="secure-note"><i></i><span><strong>Защищено T‑Mod</strong><small>данные разделены по организациям</small></span></div>
         </div>
       </aside>
@@ -163,10 +163,10 @@
             </article>
 
             <div class="module-grid">
-              <article class="module-card ai" data-jump="ai"><span class="module-index">01</span><i>✦</i><h3>Atlas AI</h3><p>Ответы только по вашей проверенной базе знаний с точными источниками.</p><b>Открыть навигатор →</b></article>
-              <article class="module-card docs" data-jump="documents"><span class="module-index">02</span><i>▤</i><h3>Документооборот</h3><p>Шаблоны, версии, согласование и единый стандарт для каждой структуры.</p><b>Открыть студию →</b></article>
-              <article class="module-card knowledge" data-jump="knowledge"><span class="module-index">03</span><i>◎</i><h3>База знаний</h3><p>Регламенты, материалы форума, памятки и документы в одной проверенной библиотеке.</p><b>Управлять знаниями →</b></article>
-              <article class="module-card forum" data-jump="forum"><span class="module-index">04</span><i>↗</i><h3>Работа с форумом</h3><p>Подготовка публикаций, проверка требований и будущая синхронизация с форумом.</p><b>Посмотреть возможности →</b></article>
+              <article class="module-card ai" data-jump="ai"><span class="module-index">01</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></i><h3>Atlas AI</h3><p>Ответы по проверенной базе знаний, память диалога и свободное мышление там, где оно уместно.</p><b>Открыть навигатор <span>→</span></b></article>
+              <article class="module-card docs" data-jump="documents"><span class="module-index">02</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4M9 12h7M9 16h7"/></svg></i><h3>Документооборот</h3><p>Шаблоны, версии, согласование и единый стандарт для каждой структуры.</p><b>Открыть студию <span>→</span></b></article>
+              <article class="module-card knowledge" data-jump="knowledge"><span class="module-index">03</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H11v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H13v18h3.5A3.5 3.5 0 0 1 20 23z"/></svg></i><h3>База знаний</h3><p>Регламенты, материалы форума, памятки и документы в одной проверенной библиотеке.</p><b>Управлять знаниями <span>→</span></b></article>
+              <article class="module-card forum" data-jump="forum"><span class="module-index">04</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/><path d="M18 13v7H4V6h7"/></svg></i><h3>Работа с форумом</h3><p>Живая законодательная база, история редакций и безопасное обновление источников.</p><b>Открыть контур <span>→</span></b></article>
             </div>
           </section>
 
@@ -179,7 +179,7 @@
                 <footer><i></i><span><b>Личная память</b><small>история видна только вам в этом пространстве</small></span></footer>
               </aside>
               <article class="chat-panel">
-                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="chat-controls"><label class="model-picker"><small>МОДЕЛЬ</small><select id="atlas-model" aria-label="Модель Atlas"><option value="atlas-tvr-a">atlas-tvr-a</option></select></label><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button></div></div></header>
+                <header class="chat-toolbar"><span><small>ТЕКУЩИЙ ДИАЛОГ</small><b id="current-thread-title">Новый диалог</b></span><div class="chat-controls"><label class="model-picker"><small>МОДЕЛЬ</small><select id="atlas-model" aria-label="Модель Atlas"><option value="atlas-tvr-a">atlas-tvr-a</option></select></label><div class="response-mode-switch" role="group" aria-label="Стиль ответа"><button type="button" data-response-mode="strict">Точный</button><button class="active" type="button" data-response-mode="balanced">Умный</button><button type="button" data-response-mode="creative">Творческий</button><button class="aristotle-mode" type="button" data-response-mode="aristotle">Аристотель</button></div></div></header>
                 <div id="chat-stream" class="chat-stream">
                   <div class="assistant-message welcome"><span>A</span><div><small>ATLAS · НОВЫЙ ДИАЛОГ</small><p>Я могу проверить норму, продолжить прошлую мысль или создать речь и документ на основе правил. Факты останутся проверяемыми, а творческая часть — свободной.</p></div></div>
                 </div>
@@ -209,18 +209,30 @@
               <article class="vault-visual"><div class="vault-core"><span></span><strong id="vault-count">0</strong><small>ГОТОВЫХ<br>ИСТОЧНИКОВ</small></div><h3 id="vault-scope">Phoenix (15) · LSPD</h3><p>Общие знания объединяются, внутренние остаются изолированными.</p></article>
               <article id="knowledge-editor" class="knowledge-editor">
                 <span>ДОБАВИТЬ МАТЕРИАЛ</span><h3>Пополнить библиотеку</h3>
-                <div class="knowledge-modes"><button class="active" type="button" data-knowledge-mode="file">Загрузить файл</button><button type="button" data-knowledge-mode="text">Вставить текст</button></div>
+                <div class="knowledge-modes"><button class="active" type="button" data-knowledge-mode="file">Загрузить файл</button><button type="button" data-knowledge-mode="forum">Ссылка форума</button><button type="button" data-knowledge-mode="text">Вставить текст</button></div>
                 <form id="knowledge-upload-form">
                   <label class="wide upload-drop">Файл<input name="file" type="file" accept=".txt,.md,.docx,.pdf" required><span><b>Выберите TXT, Markdown, DOCX или PDF</b><small>до 8 МБ · по одному материалу за раз</small></span></label>
                   <label>Название, если нужно<input name="title" maxlength="180" placeholder="Будет взято из имени файла"></label>
                   <label>Тип<select name="source_kind"><option value="regulation">Регламент</option><option value="manual">Памятка</option><option value="forum">Материал форума</option><option value="document">Документ</option><option value="memo">Заметка</option></select></label>
+                  <label>Мир материала<select name="knowledge_domain"><option value="">Определить автоматически</option><option value="ic">IC · игровой мир</option><option value="ooc">OOC · правила проекта</option><option value="mixed">Смешанный</option></select></label>
+                  <label>Раздел знаний<select name="corpus_kind"><option value="">Определить автоматически</option><option value="law">Законодательство</option><option value="server_rule">Правила сервера</option><option value="charter">Устав организации</option><option value="case_law">Судебная практика</option><option value="lawsuit">Иск / судебный материал</option><option value="department_order">Приказ / распоряжение</option><option value="procedure">Процедура / регламент</option><option value="manual">Памятка / обучение</option><option value="other">Другой материал</option></select></label>
                   <label class="wide">Кому доступен материал<select name="visibility_scope"><option value="server">Всем организациям Phoenix (15)</option><option value="faction">Только выбранной организации</option><option value="workspace">Только этой рабочей группе</option><option value="global">Всем серверам Atlas</option></select></label>
                   <label class="wide">Ссылка на оригинал, если есть<input name="source_url" type="url" maxlength="1000" placeholder="https://..."></label>
                   <button type="submit">Загрузить в библиотеку <span>→</span></button>
                 </form>
+                <form id="knowledge-forum-form" hidden>
+                  <label class="wide">Ссылка на тему форума<input name="source_url" type="url" required maxlength="1000" placeholder="https://forum.majestic-rp.ru/threads/..."></label>
+                  <label>Мир материала<select name="knowledge_domain"><option value="">Определить автоматически</option><option value="ic">IC · игровой мир</option><option value="ooc">OOC · правила проекта</option><option value="mixed">Смешанный</option></select></label>
+                  <label>Раздел знаний<select name="corpus_kind"><option value="">Определить автоматически</option><option value="law">Законодательство</option><option value="server_rule">Правила сервера</option><option value="charter">Устав организации</option><option value="case_law">Судебная практика</option><option value="lawsuit">Иск / судебный материал</option><option value="department_order">Приказ / распоряжение</option><option value="procedure">Процедура / регламент</option><option value="manual">Памятка / обучение</option><option value="other">Другой материал</option></select></label>
+                  <label class="wide">Кому доступен материал<select name="visibility_scope"><option value="server">Всем организациям Phoenix (15)</option><option value="faction">Только выбранной организации</option><option value="workspace">Только этой рабочей группе</option><option value="global">Всем серверам Atlas</option></select></label>
+                  <p class="form-hint wide">Atlas откроет тему через авторизованный локальный браузер, извлечёт основной текст и сам определит тип материала. Произвольные сайты не открываются.</p>
+                  <button type="submit">Прочитать и добавить <span>→</span></button>
+                </form>
                 <form id="knowledge-form" hidden>
                   <label>Название<input name="title" maxlength="180" required placeholder="Регламент проведения задержаний"></label>
                   <label>Тип<select name="source_kind"><option value="regulation">Регламент</option><option value="manual">Памятка</option><option value="forum">Материал форума</option><option value="document">Документ</option><option value="memo">Заметка</option></select></label>
+                  <label>Мир материала<select name="knowledge_domain"><option value="">Определить автоматически</option><option value="ic">IC · игровой мир</option><option value="ooc">OOC · правила проекта</option><option value="mixed">Смешанный</option></select></label>
+                  <label>Раздел знаний<select name="corpus_kind"><option value="">Определить автоматически</option><option value="law">Законодательство</option><option value="server_rule">Правила сервера</option><option value="charter">Устав организации</option><option value="case_law">Судебная практика</option><option value="lawsuit">Иск / судебный материал</option><option value="department_order">Приказ / распоряжение</option><option value="procedure">Процедура / регламент</option><option value="manual">Памятка / обучение</option><option value="other">Другой материал</option></select></label>
                   <label class="wide">Кому доступен материал<select name="visibility_scope"><option value="server">Всем организациям Phoenix (15)</option><option value="faction">Только выбранной организации</option><option value="workspace">Только этой рабочей группе</option><option value="global">Всем серверам Atlas</option></select></label>
                   <label class="wide">Ссылка на оригинал, если есть<input name="source_url" type="url" maxlength="1000" placeholder="https://..."></label>
                   <label class="wide">Проверенный текст<textarea name="content" rows="8" minlength="20" required placeholder="Вставьте полный материал без паролей и личных данных..."></textarea></label>
@@ -263,6 +275,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js?v=20260809-account-stream" defer></script>
+    <script src="/atlas/assets/app.js?v=20260809-atlas-intelligence-v3" defer></script>
   </body>
 </html>
