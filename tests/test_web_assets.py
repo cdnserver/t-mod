@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web" / "consensus"
+ATLAS_WEB = ROOT / "web" / "atlas"
 
 
 class WebAssetContractTests(unittest.TestCase):
@@ -12,6 +13,7 @@ class WebAssetContractTests(unittest.TestCase):
         "admin.html": ("admin.js", "reactor.js"),
         "index.html": ("app.js",),
         "portal.html": ("portal.js",),
+        "games.html": ("games.js",),
         "login.html": ("login.js",),
         "egg.html": ("egg.js",),
     }
@@ -62,6 +64,18 @@ class WebAssetContractTests(unittest.TestCase):
                 if float(size) < 10:
                     offenders.append(f"{name}: {size}px")
         self.assertEqual(offenders, [])
+
+    def test_atlas_dom_contract_and_assets(self) -> None:
+        html = (ATLAS_WEB / "index.html").read_text(encoding="utf-8")
+        source = (ATLAS_WEB / "app.js").read_text(encoding="utf-8")
+        id_values = re.findall(r'\bid=["\']([^"\']+)', html)
+        ids = set(id_values)
+        references = set(re.findall(r'byId\(["\']([^"\']+)', source))
+
+        self.assertEqual(sorted(item for item in ids if id_values.count(item) > 1), [])
+        self.assertEqual(sorted(references - ids), [])
+        self.assertTrue((ATLAS_WEB / "style.css").is_file())
+        self.assertTrue((ATLAS_WEB / "favicon.svg").is_file())
 
 
 if __name__ == "__main__":

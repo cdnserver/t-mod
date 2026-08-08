@@ -155,7 +155,7 @@ def consensus_web_entry_url(
     ticket = create_entry_ticket(guild_id=guild_id, user_id=user_id)
     selected_destination = (
         str(destination)
-        if str(destination) in {"/", "/admin", "/reactor"}
+        if str(destination) in {"/", "/admin", "/reactor", "/atlas", "/games"}
         else "/"
     )
     query = urlencode(

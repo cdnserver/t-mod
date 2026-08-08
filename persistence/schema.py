@@ -282,6 +282,210 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
             ON reactor_notifications(guild_id, user_id, read_at, id DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_organizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                slug TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'project'
+                    CHECK(kind IN ('government', 'bureau', 'project', 'personal')),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'suspended', 'archived')),
+                owner_user_id INTEGER NOT NULL,
+                description TEXT,
+                branding_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, slug)
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_memberships (
+                organization_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member'
+                    CHECK(role IN ('owner', 'administrator', 'editor', 'member', 'viewer')),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('invited', 'active', 'suspended')),
+                onboarding_step INTEGER NOT NULL DEFAULT 0
+                    CHECK(onboarding_step BETWEEN 0 AND 4),
+                profile_json TEXT NOT NULL DEFAULT '{}',
+                preferences_json TEXT NOT NULL DEFAULT '{}',
+                last_seen_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(organization_id, user_id),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_memberships_user
+            ON atlas_memberships(guild_id, user_id, status);
+
+            CREATE TABLE IF NOT EXISTS atlas_knowledge_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'memo'
+                    CHECK(source_kind IN ('document', 'forum', 'memo', 'regulation', 'manual', 'url')),
+                source_url TEXT,
+                content_text TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                qdrant_point_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'indexed', 'failed', 'archived')),
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL,
+                indexed_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(organization_id, checksum),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_status
+            ON atlas_knowledge_sources(organization_id, status, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_document_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                description TEXT,
+                schema_json TEXT NOT NULL DEFAULT '{}',
+                template_text TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('draft', 'active', 'archived')),
+                created_by_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(organization_id, code, version),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_templates_catalog
+            ON atlas_document_templates(organization_id, status, category, name);
+
+            CREATE TABLE IF NOT EXISTS atlas_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                template_id INTEGER,
+                author_user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK(status IN ('draft', 'review', 'approved', 'published', 'archived')),
+                fields_json TEXT NOT NULL DEFAULT '{}',
+                rendered_text TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 1,
+                reviewed_by_id INTEGER,
+                approved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(template_id) REFERENCES atlas_document_templates(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_documents_workspace
+            ON atlas_documents(organization_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_ai_threads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                title TEXT NOT NULL DEFAULT 'Новый диалог',
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_ai_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                content_text TEXT NOT NULL,
+                citations_json TEXT NOT NULL DEFAULT '[]',
+                model TEXT,
+                latency_ms INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(thread_id) REFERENCES atlas_ai_threads(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_ai_messages_thread
+            ON atlas_ai_messages(thread_id, id);
+
+            CREATE TABLE IF NOT EXISTS atlas_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                actor_user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                target_type TEXT,
+                target_id TEXT,
+                summary TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_audit_timeline
+            ON atlas_audit_events(organization_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS game_matches (
+                id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                game_type TEXT NOT NULL
+                    CHECK(game_type IN ('chess', 'backgammon')),
+                mode TEXT NOT NULL
+                    CHECK(mode IN ('bot', 'friend')),
+                host_user_id INTEGER NOT NULL,
+                host_display TEXT NOT NULL,
+                guest_user_id INTEGER,
+                guest_display TEXT,
+                host_side TEXT NOT NULL
+                    CHECK(host_side IN ('white', 'black')),
+                bot_level INTEGER NOT NULL DEFAULT 1
+                    CHECK(bot_level BETWEEN 1 AND 3),
+                status TEXT NOT NULL DEFAULT 'waiting'
+                    CHECK(status IN ('waiting', 'active', 'finished', 'cancelled')),
+                turn_side TEXT NOT NULL DEFAULT 'white'
+                    CHECK(turn_side IN ('white', 'black')),
+                state_json TEXT NOT NULL,
+                result TEXT,
+                winner_side TEXT CHECK(winner_side IN ('white', 'black')),
+                version INTEGER NOT NULL DEFAULT 1,
+                last_action_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_game_matches_member
+            ON game_matches(guild_id, host_user_id, guest_user_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS game_match_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id TEXT NOT NULL,
+                actor_user_id INTEGER,
+                action TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(match_id) REFERENCES game_matches(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_game_match_events_timeline
+            ON game_match_events(match_id, id DESC);
+
             CREATE TABLE IF NOT EXISTS reactor_preferences (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

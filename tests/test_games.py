@@ -1,0 +1,199 @@
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import chess
+import storage
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+from modules.consensus_web_auth import ConsensusWebPrincipal
+from modules.games_engine import (
+    GameRuleError,
+    backgammon_legal_moves,
+    backgammon_move,
+    chess_bot_move,
+    chess_legal_moves,
+    chess_move,
+    new_backgammon_state,
+    new_chess_state,
+)
+from modules.games_web import register_games_web_routes
+from persistence import game_repository as games
+
+
+class GameEngineTests(unittest.TestCase):
+    def test_chess_uses_complete_legal_move_rules(self) -> None:
+        state = new_chess_state()
+        self.assertIn("e2e4", chess_legal_moves(state))
+        updated, turn, status, _, _ = chess_move(state, "e2e4")
+        self.assertEqual(turn, "black")
+        self.assertEqual(status, "active")
+        self.assertEqual(chess.Board(updated["fen"]).piece_at(chess.E4).symbol(), "P")
+        with self.assertRaisesRegex(GameRuleError, "chess_move_illegal"):
+            chess_move(updated, "e2e5")
+
+    def test_chess_bot_always_returns_a_valid_position(self) -> None:
+        state, *_ = chess_move(new_chess_state(), "e2e4")
+        updated, turn, status, _, _ = chess_bot_move(state, 3)
+        board = chess.Board(updated["fen"])
+        self.assertTrue(board.is_valid())
+        self.assertEqual(turn, "white")
+        self.assertEqual(status, "active")
+
+    def test_backgammon_move_consumes_a_die_and_preserves_checkers(self) -> None:
+        state = new_backgammon_state()
+        legal = backgammon_legal_moves(state, "white")
+        self.assertTrue(legal)
+        move = legal[0]
+        updated, turn, status, _, _ = backgammon_move(
+            state, "white", move["from"], move["to"], move["die"]
+        )
+        total = sum(value for value in updated["board"] if value > 0) + updated["bar"]["white"] + updated["off"]["white"]
+        self.assertEqual(total, 15)
+        self.assertEqual(status, "active")
+        self.assertIn(turn, {"white", "black"})
+
+    def test_backgammon_forces_bar_entry(self) -> None:
+        state = new_backgammon_state()
+        state["board"][0] -= 1
+        state["bar"]["white"] = 1
+        state["dice"] = [1, 2]
+        legal = backgammon_legal_moves(state, "white")
+        self.assertTrue(legal)
+        self.assertEqual({move["from"] for move in legal}, {"bar"})
+
+
+class GameRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.old_data_dir = storage.DATA_DIR
+        self.old_database_file = storage.DATABASE_FILE
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(self.temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "games-test.db"
+        storage.init_db()
+
+    def tearDown(self) -> None:
+        storage.DATA_DIR = self.old_data_dir
+        storage.DATABASE_FILE = self.old_database_file
+        self.temp_dir.cleanup()
+
+    def test_friend_match_join_and_version_conflict_are_safe(self) -> None:
+        match = games.game_create(
+            guild_id=1,
+            game_type="chess",
+            mode="friend",
+            host_user_id=10,
+            host_display="Первый",
+            host_side="white",
+            bot_level=1,
+            state=new_chess_state(),
+        )
+        joined = games.game_join(1, match["id"], 20, "Второй")
+        self.assertEqual(joined["status"], "active")
+        self.assertEqual(joined["guest_user_id"], 20)
+        state, turn, status, result, winner = chess_move(joined["state"], "e2e4")
+        saved = games.game_update(
+            1,
+            match["id"],
+            expected_version=joined["version"],
+            actor_user_id=10,
+            action="move",
+            state=state,
+            turn_side=turn,
+            status=status,
+            result=result,
+            winner_side=winner,
+        )
+        self.assertEqual(saved["version"], joined["version"] + 1)
+        with self.assertRaisesRegex(games.GameStorageError, "game_version_conflict"):
+            games.game_update(
+                1,
+                match["id"],
+                expected_version=joined["version"],
+                actor_user_id=10,
+                action="duplicate",
+                state=state,
+                turn_side=turn,
+                status=status,
+            )
+
+    def test_matches_are_isolated_by_guild(self) -> None:
+        match = games.game_create(
+            guild_id=1,
+            game_type="backgammon",
+            mode="bot",
+            host_user_id=10,
+            host_display="Игрок",
+            host_side="white",
+            bot_level=2,
+            state=new_backgammon_state(),
+        )
+        self.assertIsNotNone(games.game_get(1, match["id"]))
+        self.assertIsNone(games.game_get(2, match["id"]))
+
+
+class GameWebTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.old_data_dir = storage.DATA_DIR
+        self.old_database_file = storage.DATABASE_FILE
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(self.temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "games-web-test.db"
+        storage.init_db()
+
+    def tearDown(self) -> None:
+        storage.DATA_DIR = self.old_data_dir
+        storage.DATABASE_FILE = self.old_database_file
+        self.temp_dir.cleanup()
+
+    async def test_chess_bot_match_create_and_move(self) -> None:
+        member = SimpleNamespace(
+            id=10,
+            display_name="Игрок",
+            guild_permissions=SimpleNamespace(administrator=False),
+            roles=[],
+        )
+        selected = ConsensusWebPrincipal(
+            user_id=10,
+            guild_id=1,
+            display_name="Игрок",
+            csrf_token="games-csrf",
+            member=member,
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application()
+        register_games_web_routes(
+            app,
+            SimpleNamespace(),
+            guild_id=1,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "consensus",
+            authenticate=authenticate,
+        )
+        headers = {"X-CSRF-Token": "games-csrf"}
+        async with TestClient(TestServer(app)) as client:
+            created_response = await client.post(
+                "/api/games/matches",
+                json={"game_type": "chess", "mode": "bot", "side": "white", "bot_level": 2},
+                headers=headers,
+            )
+            created = (await created_response.json())["match"]
+            moved_response = await client.post(
+                f"/api/games/matches/{created['id']}/command",
+                json={"action": "move", "version": created["version"], "move": "e2e4"},
+                headers=headers,
+            )
+            moved = (await moved_response.json())["match"]
+
+        self.assertEqual(created_response.status, 201)
+        self.assertEqual(moved_response.status, 200)
+        self.assertEqual(moved["turn_side"], "white")
+        self.assertTrue(moved["can_move"])
+        self.assertEqual(len(moved["state"]["history"]), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

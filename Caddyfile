@@ -70,6 +70,16 @@ consensus.tvr.lat {
 	import tmod_backend
 }
 
+atlas.tvr.lat {
+	handle / {
+		rewrite * /atlas
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 zigmund.tvr.lat {
 	handle / {
 		rewrite * /egg

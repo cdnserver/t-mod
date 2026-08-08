@@ -6,7 +6,7 @@ const pin = document.querySelector("#credential-pin");
 const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
 const requestedNext = params.get("next");
-const next = ["/admin", "/reactor"].includes(requestedNext) ? requestedNext : "/";
+const next = ["/admin", "/reactor", "/atlas", "/games"].includes(requestedNext) ? requestedNext : "/";
 const errors = {
   invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
   locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",

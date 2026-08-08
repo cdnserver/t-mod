@@ -49,6 +49,7 @@ ADMIN_SECTION_LABELS = {
     "profile": "Мой профиль",
     "discord": "Discord-аудит",
     "system": "Технический контур",
+    "atlas": "T-Mod Atlas",
     "minecraft": "Minecraft",
 }
 
@@ -370,6 +371,7 @@ def register_admin_web_routes(
             "media": "media",
             "profile": "profile",
             "system": "system",
+            "atlas": "atlas",
         }
         endpoint = request.path.removeprefix("/api/admin/").split("/", 1)[0]
         section = section_map.get(endpoint, "overview")

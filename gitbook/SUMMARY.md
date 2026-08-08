@@ -54,6 +54,8 @@
 
 ## Общие инструменты
 
+* [T-Mod Atlas](tools/atlas.md)
+* [Игровой зал: шахматы и нарды](tools/games.md)
 * [Профиль участника и персонажи](tools/member-profile.md)
 * [T-Mod Music и голосовое управление](tools/music.md)
 * [Ссылки и активность](tools/links-and-activity.md)

@@ -44,6 +44,8 @@ from modules.consensus_web_control import (
 from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from modules.reactor_web import register_reactor_web_routes
+from modules.atlas_web import register_atlas_web_routes
+from modules.games_web import register_games_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
@@ -115,6 +117,10 @@ PORTAL_WEB_PUBLIC_URL = _configured_surface_url(
     "PORTAL_WEB_PUBLIC_URL",
     CONSENSUS_WEB_PUBLIC_URL,
 )
+ATLAS_WEB_PUBLIC_URL = _configured_surface_url(
+    "ATLAS_WEB_PUBLIC_URL",
+    "https://atlas.tvr.lat",
+)
 
 
 def _configured_guild_id() -> int:
@@ -127,6 +133,7 @@ def _configured_guild_id() -> int:
 CONSENSUS_WEB_GUILD_ID = _configured_guild_id()
 _TOKEN_META_KEY = "consensus_web:access_token:v1"
 _ASSET_DIR = Path(__file__).resolve().parents[1] / "web" / "consensus"
+_ATLAS_ASSET_DIR = Path(__file__).resolve().parents[1] / "web" / "atlas"
 _runner: web.AppRunner | None = None
 _start_lock = asyncio.Lock()
 _runtime_token: str | None = None
@@ -181,6 +188,8 @@ def consensus_web_entry_url(
         base_url = REACTOR_WEB_PUBLIC_URL
     elif destination == "/reactor" and PORTAL_WEB_PUBLIC_URL:
         base_url = PORTAL_WEB_PUBLIC_URL
+    elif destination == "/atlas" and ATLAS_WEB_PUBLIC_URL:
+        base_url = ATLAS_WEB_PUBLIC_URL
     return _authenticated_entry_url(
         base_url,
         guild_id=guild_id,
@@ -852,6 +861,8 @@ def create_consensus_web_app(
             "portal.css",
             "portal-theme.css",
             "portal.js",
+            "games.css",
+            "games.js",
             "manrope-cyrillic.woff2",
             "manrope-latin.woff2",
             "unbounded-cyrillic.woff2",
@@ -934,7 +945,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
             else f"/?mode={mode}"
         )
         response = web.Response(
@@ -956,7 +967,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1420,6 +1431,20 @@ def create_consensus_web_app(
         bot,
         guild_id=int(guild_id),
         asset_dir=_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
+    register_games_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
+    register_atlas_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ATLAS_ASSET_DIR,
         authenticate=authenticated_request,
     )
     return app

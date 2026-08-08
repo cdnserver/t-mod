@@ -125,6 +125,10 @@
             <span class="nav-icon">⟡</span>
             <span>Система</span>
           </button>
+          <button class="nav-item" type="button" data-section="atlas">
+            <span class="nav-icon">A</span>
+            <span>T-Mod Atlas</span>
+          </button>
           <button class="nav-item minecraft-nav" type="button" data-section="minecraft">
             <span class="nav-icon">▣</span>
             <span>Minecraft</span>
@@ -1397,10 +1401,41 @@
             </div>
           </section>
 
+          <section id="screen-atlas" class="screen" data-screen="atlas">
+            <div class="section-intro atlas-admin-intro">
+              <div>
+                <span class="section-number">13 / ATLAS CONTROL</span>
+                <h2>T-Mod Atlas</h2>
+                <p>Организации, база знаний, документооборот и состояние интеллектуального контура.</p>
+              </div>
+              <a class="icon-button" href="https://atlas.tvr.lat/" target="_blank" rel="noreferrer">Открыть Atlas ↗</a>
+            </div>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi-card accent-blue"><div class="kpi-head"><span>Организации</span><i>◎</i></div><strong id="atlas-organizations">—</strong><small>активные пространства</small></article>
+              <article class="kpi-card accent-mint"><div class="kpi-head"><span>Участники</span><i>♙</i></div><strong id="atlas-members">—</strong><small>активные доступы</small></article>
+              <article class="kpi-card accent-violet"><div class="kpi-head"><span>Документы</span><i>▤</i></div><strong id="atlas-documents">—</strong><small>во всех организациях</small></article>
+              <article class="kpi-card accent-amber"><div class="kpi-head"><span>Источники</span><i>✦</i></div><strong id="atlas-sources">—</strong><small>проиндексировано</small></article>
+            </div>
+            <div class="dual-grid">
+              <article class="panel">
+                <header class="panel-head"><div><span class="panel-kicker">ATLAS ORGANIZATIONS</span><h2>Рабочие пространства</h2></div><span id="atlas-space-state" class="health-pill">загрузка</span></header>
+                <div id="atlas-organization-list" class="compact-list"></div>
+              </article>
+              <article class="panel">
+                <header class="panel-head"><div><span class="panel-kicker">RAG HEALTH</span><h2>Интеллектуальный контур</h2></div><span id="atlas-ai-state" class="health-pill">диагностика</span></header>
+                <div id="atlas-ai-metrics" class="system-metrics"></div>
+              </article>
+            </div>
+            <article class="panel">
+              <header class="panel-head"><div><span class="panel-kicker">ATLAS AUDIT</span><h2>Последние события</h2></div></header>
+              <div id="atlas-event-list" class="compact-list"></div>
+            </article>
+          </section>
+
           <section id="screen-minecraft" class="screen" data-screen="minecraft">
             <div class="section-intro minecraft-intro">
               <div>
-                <span class="section-number">13 / MINECRAFT NODE</span>
+                <span class="section-number">14 / MINECRAFT NODE</span>
                 <h2>Сервер mc.tvr.lat</h2>
                 <p>Полноценный центр управления Paper: мир, файлы, плагины, консоль, резервные копии и журналы.</p>
               </div>

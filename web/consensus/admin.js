@@ -8,6 +8,7 @@ const REFRESH_INTERVALS = Object.freeze({
   craft: 20000,
   discord: 20000,
   communications: 30000,
+  atlas: 30000,
   minecraft: 30000,
   system: 30000,
   audit: 45000,
@@ -36,6 +37,7 @@ const sectionMeta = {
   profile: ["PERSONAL SPACE", "Мой профиль"],
   discord: ["DISCORD INTELLIGENCE", "Discord-аудит"],
   system: ["SYSTEM CONTROL", "Технический контур"],
+  atlas: ["ATLAS CONTROL", "T-Mod Atlas"],
   minecraft: ["MINECRAFT NODE", "Игровой сервер"],
 };
 
@@ -2628,6 +2630,59 @@ async function loadSystem(silent = false) {
   }
 }
 
+async function loadAtlas(silent = false) {
+  if (!silent) setLoading(true);
+  try {
+    const data = await fetchJSON("/api/admin/atlas");
+    if (!showApplication(data)) return;
+    const totals = data.totals || {};
+    setText("atlas-organizations", formatNumber(totals.organizations || 0));
+    setText("atlas-members", formatNumber(totals.members || 0));
+    setText("atlas-documents", formatNumber(totals.documents || 0));
+    setText("atlas-sources", formatNumber(totals.indexed_sources || 0));
+    const organizations = Array.isArray(data.organizations) ? data.organizations : [];
+    setText("atlas-space-state", `${organizations.length} пространств`);
+    replaceChildren(
+      "atlas-organization-list",
+      organizations.length
+        ? organizations.map((item) => compactItem(
+            item.name || item.slug,
+            `${item.kind || "project"} · ${item.member_count || 0} участников`,
+            `${item.document_count || 0} док.`,
+            () => openDetails("Пространство Atlas", item),
+          ))
+        : [node("div", { className: "empty-state", text: "Пространства появятся после первого входа в Atlas." })],
+    );
+    const ai = data.ai || {};
+    const aiReady = ai.configured && ai.qdrant === "ok";
+    const aiState = byId("atlas-ai-state");
+    aiState.className = `health-pill ${aiReady ? "ok" : "warning"}`;
+    aiState.textContent = aiReady ? "готов" : "требует настройки";
+    replaceChildren("atlas-ai-metrics", [
+      compactItem("OpenRouter", ai.openrouter || "disabled", ai.chat_model || "—"),
+      compactItem("Qdrant", ai.qdrant || "disabled", ai.collection || "—"),
+      compactItem("Embeddings", "векторизация базы знаний", ai.embedding_model || "—"),
+      compactItem("Ошибки индекса", "источники для повторной обработки", formatNumber(totals.failed_sources || 0)),
+    ]);
+    const events = Array.isArray(data.recent_events) ? data.recent_events : [];
+    replaceChildren(
+      "atlas-event-list",
+      events.length
+        ? events.map((item) => compactItem(
+            item.summary || item.event_type,
+            item.target_type || "Atlas",
+            relativeTime(item.created_at),
+            () => openDetails("Событие Atlas", item),
+          ))
+        : [node("div", { className: "empty-state", text: "Событий Atlas пока нет." })],
+    );
+  } catch (error) {
+    handleError(error);
+  } finally {
+    if (!silent) setLoading(false);
+  }
+}
+
 function friendlyKey(key) {
   const labels = {
     id: "ID записи",
@@ -2771,6 +2826,7 @@ async function loadCurrentSection() {
   if (appState.section === "profile") await loadProfile();
   if (appState.section === "discord") await loadDiscord();
   if (appState.section === "system") await loadSystem();
+  if (appState.section === "atlas") await loadAtlas();
   if (appState.section === "minecraft") {
     await globalThis.TModReactor?.activateMinecraft?.();
   }

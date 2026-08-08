@@ -37,6 +37,7 @@ WEB_GRANTABLE_SECTIONS = frozenset(
         "profile",
         "discord",
         "system",
+        "atlas",
         "minecraft",
     }
 )

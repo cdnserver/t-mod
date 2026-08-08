@@ -12,6 +12,7 @@ services:
       - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
     environment:
       TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
+      ATLAS_QDRANT_URL: "http://atlas-qdrant:6333"
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
@@ -32,6 +33,19 @@ services:
       timeout: 4s
       retries: 10
       start_period: 90s
+
+  atlas-qdrant:
+    image: qdrant/qdrant:v1.15.5
+    container_name: tmod-atlas-qdrant
+    restart: unless-stopped
+    expose:
+      - "6333"
+    volumes:
+      - "C:/Users/Admin/Documents/SGLDiscordBot/atlas/qdrant:/qdrant/storage"
+    environment:
+      QDRANT__SERVICE__ENABLE_CORS: "false"
+    security_opt:
+      - no-new-privileges:true
 
   tmod-caddy:
     image: caddy:2.10.2-alpine
