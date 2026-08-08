@@ -1,3 +1,5 @@
+import asyncio
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -221,11 +223,17 @@ class AtlasForumParserTests(unittest.TestCase):
                         "path": "/",
                         "sameSite": "Lax",
                     }
-                ]
+                ],
+                execute_script=lambda _script: {"forum-theme": "dark"},
             )
 
             self.assertEqual(browser._save_cookies(source), 1)
-            target = SimpleNamespace(get=Mock(), add_cookie=Mock())
+            target = SimpleNamespace(
+                get=Mock(),
+                add_cookie=Mock(),
+                execute_script=Mock(),
+                refresh=Mock(),
+            )
             self.assertEqual(browser._restore_cookies(target), 1)
 
             target.get.assert_called_once_with("https://forum.majestic-rp.ru/")
@@ -234,6 +242,32 @@ class AtlasForumParserTests(unittest.TestCase):
                 target.add_cookie.call_args.args[0]["value"],
                 "signed-in",
             )
+            target.execute_script.assert_called_once()
+            self.assertEqual(
+                target.execute_script.call_args.args[1],
+                {"forum-theme": "dark"},
+            )
+            target.refresh.assert_called_once_with()
+
+    def test_browser_restores_legacy_cookie_list(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            cookie_file = Path(directory) / "legacy-cookies.json"
+            cookie_file.write_text(
+                json.dumps([{"name": "xf_user", "value": "legacy", "path": "/"}]),
+                encoding="utf-8",
+            )
+            browser = AtlasForumBrowser(
+                replace(sync_config(), cookie_file=str(cookie_file))
+            )
+            target = SimpleNamespace(
+                get=Mock(),
+                add_cookie=Mock(),
+                refresh=Mock(),
+            )
+
+            self.assertEqual(browser._restore_cookies(target), 1)
+            target.add_cookie.assert_called_once()
+            target.refresh.assert_called_once_with()
 
     @patch("modules.atlas_forum_sync.time.sleep")
     def test_empty_listing_becomes_manual_action_after_retries(self, _sleep) -> None:
@@ -343,6 +377,20 @@ class _FakeBrowser:
         self.closed = True
 
 
+class _ManualBrowser(_FakeBrowser):
+    def __init__(self):
+        super().__init__(
+            AtlasForumManualActionRequired("Форум запросил ручное подтверждение.")
+        )
+        self.active = True
+        self.checkpoints = 0
+
+    def checkpoint_authentication(self):
+        self.checkpoints += 1
+        self.active = False
+        return 1
+
+
 class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.old_data_dir = storage.DATA_DIR
@@ -401,6 +449,22 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         feed = atlas_repository.atlas_forum_sync_status(77)
         self.assertIsNone(feed["last_success_at"])
         self.assertEqual(atlas_repository.atlas_indexable_knowledge_sources(), [])
+
+    async def test_manual_login_starts_immediate_auth_checkpoint(self) -> None:
+        browser = _ManualBrowser()
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=[]),
+        )
+
+        await runner.sync_once()
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(browser.checkpoints, 1)
+        await runner.close()
 
     async def test_failed_index_is_retried_even_when_forum_text_is_unchanged(self) -> None:
         snapshot = AtlasForumSnapshot(

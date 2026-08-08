@@ -312,7 +312,7 @@ class AtlasForumBrowser:
         return driver
 
     def _save_cookies(self, driver: Any) -> int:
-        """Persist authentication without persisting Chromium's lock-prone profile."""
+        """Persist browser auth without persisting Chromium's lock-prone profile."""
 
         cookie_file = str(self.config.cookie_file or "").strip()
         if not cookie_file:
@@ -320,11 +320,52 @@ class AtlasForumBrowser:
         cookies = driver.get_cookies()
         if not isinstance(cookies, list) or not cookies:
             return 0
+        cookies = sorted(
+            (dict(item) for item in cookies if isinstance(item, dict)),
+            key=lambda item: (
+                str(item.get("domain") or ""),
+                str(item.get("path") or ""),
+                str(item.get("name") or ""),
+            ),
+        )
+        local_storage: dict[str, str] = {}
+        try:
+            stored = driver.execute_script(
+                "return Object.fromEntries(Object.entries(window.localStorage || {}));"
+            )
+            if isinstance(stored, dict):
+                local_storage = {
+                    str(key)[:300]: str(value)[:100_000]
+                    for key, value in stored.items()
+                }
+        except Exception:
+            pass
         path = Path(cookie_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.tmp")
+        serialized = json.dumps(
+            {
+                "version": 1,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "cookies": cookies,
+                "local_storage": local_storage,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        try:
+            current = path.read_text(encoding="utf-8")
+            current_payload = json.loads(current)
+            if isinstance(current_payload, dict):
+                current_payload.pop("saved_at", None)
+                candidate = json.loads(serialized)
+                candidate.pop("saved_at", None)
+                if current_payload == candidate:
+                    return len(cookies)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
         temporary.write_text(
-            json.dumps(cookies, ensure_ascii=False, separators=(",", ":")),
+            serialized,
             encoding="utf-8",
         )
         try:
@@ -346,6 +387,14 @@ class AtlasForumBrowser:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return 0
+        local_storage: dict[str, Any] = {}
+        if isinstance(payload, dict):
+            local_storage = (
+                payload.get("local_storage")
+                if isinstance(payload.get("local_storage"), dict)
+                else {}
+            )
+            payload = payload.get("cookies")
         if not isinstance(payload, list):
             return 0
         parsed = urlsplit(self.config.root_url)
@@ -384,7 +433,31 @@ class AtlasForumBrowser:
             except Exception:
                 # One obsolete forum cookie must not invalidate the whole session.
                 continue
+        if local_storage:
+            try:
+                driver.execute_script(
+                    "for (const [key, value] of Object.entries(arguments[0])) "
+                    "window.localStorage.setItem(key, value);",
+                    {str(key): str(value) for key, value in local_storage.items()},
+                )
+            except Exception:
+                pass
+        if restored:
+            try:
+                driver.refresh()
+            except Exception:
+                pass
         return restored
+
+    @property
+    def active(self) -> bool:
+        return self._driver is not None
+
+    def checkpoint_authentication(self) -> int:
+        driver = self._driver
+        if driver is None:
+            return 0
+        return self._save_cookies(driver)
 
     @staticmethod
     def _exception_detail(exc: BaseException) -> str:
@@ -440,6 +513,10 @@ class AtlasForumBrowser:
                 source = str(driver.page_source or "")
                 kind = forum_interstitial_kind(source)
                 if kind is None:
+                    try:
+                        self._save_cookies(driver)
+                    except Exception:
+                        pass
                     return source
                 if kind == "manual":
                     visible = bool(
@@ -570,6 +647,31 @@ class AtlasForumSyncRunner:
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._closed = False
+        self._auth_checkpoint_task: asyncio.Task[None] | None = None
+
+    def _start_auth_checkpoint(self) -> None:
+        checkpoint = getattr(self.browser, "checkpoint_authentication", None)
+        if not callable(checkpoint):
+            return
+        if self._auth_checkpoint_task is not None and not self._auth_checkpoint_task.done():
+            return
+        self._auth_checkpoint_task = asyncio.create_task(
+            self._checkpoint_authentication_loop(),
+            name="atlas-forum-auth-checkpoint",
+        )
+
+    async def _checkpoint_authentication_loop(self) -> None:
+        """Keep a manual browser session alive and capture login as soon as it changes."""
+
+        while not self._closed and bool(getattr(self.browser, "active", False)):
+            async with self._lock:
+                if not bool(getattr(self.browser, "active", False)):
+                    return
+                try:
+                    await asyncio.to_thread(self.browser.checkpoint_authentication)
+                except Exception:
+                    return
+            await asyncio.sleep(3)
 
     def trigger(self) -> bool:
         if not self.config.enabled or self._closed:
@@ -723,6 +825,7 @@ class AtlasForumSyncRunner:
                 await asyncio.to_thread(self.browser.close)
                 return state
             except AtlasForumManualActionRequired as exc:
+                self._start_auth_checkpoint()
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
                     int(feed["id"]),
@@ -810,6 +913,9 @@ class AtlasForumSyncRunner:
     async def close(self) -> None:
         self._closed = True
         self._wake.set()
+        if self._auth_checkpoint_task is not None:
+            self._auth_checkpoint_task.cancel()
+            await asyncio.gather(self._auth_checkpoint_task, return_exceptions=True)
         await asyncio.to_thread(self.browser.close)
 
 
