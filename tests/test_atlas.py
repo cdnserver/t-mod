@@ -475,6 +475,39 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["source_id"], 91)
         self.assertEqual(result[0]["title"], "Уголовный кодекс")
 
+    async def test_search_returns_explicitly_requested_legal_chapter(self) -> None:
+        source = {
+            "id": 93,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "Глава 15.\nПредыдущие нормы.\n"
+                "Глава 16.\nПреступления против правосудия.\nСтатья 16.1. Точный текст.\n"
+                "Глава 17.\nСледующие нормы."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.3/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Напиши мне 16 главу УК", expanded=True)
+
+        self.assertTrue(result[0]["structured"])
+        self.assertIn("Глава 16", result[0]["text"])
+        self.assertIn("Статья 16.1", result[0]["text"])
+        self.assertNotIn("Глава 17", result[0]["text"])
+
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
             "id": 92,

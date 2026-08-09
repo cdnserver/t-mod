@@ -559,6 +559,96 @@ def _atlas_lexical_candidates(
     return candidates
 
 
+def _atlas_structured_legal_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return an explicitly requested chapter instead of hoping embeddings rank it."""
+
+    focused = str(query or "")[-2500:]
+    expanded = focused
+    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+        expanded = re.sub(
+            rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
+            meaning,
+            expanded,
+            flags=re.IGNORECASE,
+        )
+    references = list(
+        re.finditer(
+            r"\bглав(?:а|ы|е|у|ой)\s*(?:№\s*)?(\d{1,3}|[ivxlcdm]{1,8})\b"
+            r"|\b(\d{1,3}|[ivxlcdm]{1,8})\s+глав\w*\b",
+            expanded,
+            re.IGNORECASE,
+        )
+    )
+    if not references:
+        return []
+    reference = references[-1]
+    chapter = str(reference.group(1) or reference.group(2) or "").strip()
+    if not chapter:
+        return []
+    query_folded = expanded.casefold()
+    document_stems = tuple(
+        stems
+        for marker, stems in (
+            ("уголовн", ("уголовн", "кодекс")),
+            ("процессуальн", ("процессуальн", "кодекс")),
+            ("гражданск", ("гражданск", "кодекс")),
+            ("административн", ("административн", "кодекс")),
+            ("судебн", ("судебн", "кодекс")),
+            ("трудов", ("трудов", "кодекс")),
+            ("дорожн", ("дорожн", "кодекс")),
+        )
+        if marker in query_folded
+    )
+    heading = re.compile(
+        rf"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
+        rf"{re.escape(chapter)}(?=[.\s:—-]|$)"
+    )
+    next_heading = re.compile(
+        r"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
+        r"(?:\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+    )
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        title = str(source.get("title") or "Источник")
+        title_folded = title.casefold()
+        if document_stems and not any(
+            all(stem in title_folded for stem in stems) for stems in document_stems
+        ):
+            continue
+        content = str(source.get("content_text") or "")
+        match = heading.search(content)
+        if match is None:
+            continue
+        following = next_heading.search(content, match.end())
+        section = content[match.start() : following.start() if following else len(content)].strip()
+        if len(section) < 20:
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        for part_index, part in enumerate(_chunks(section, size=6200, overlap=180)[:4]):
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+                    "title": title,
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": part[:7000],
+                    "score": round(10.0 - part_index * 0.01, 4),
+                    "chunk": 10_000 + part_index,
+                    "structured": True,
+                }
+            )
+    return candidates
+
+
 def atlas_research_plan(question: str) -> list[dict[str, Any]]:
     """Build a resilient fallback plan when the live planner is unavailable."""
 
@@ -646,6 +736,9 @@ async def atlas_search(
         )
     except Exception:
         canonical_sources = []
+    structured_candidates = _atlas_structured_legal_candidates(
+        str(query), canonical_sources
+    )
     lexical_candidates = _atlas_lexical_candidates(str(query), canonical_sources)
     raw_queries = [str(query)[:8000], *(str(item)[:1200] for item in query_variants or [])]
     variants: list[str] = []
@@ -739,7 +832,7 @@ async def atlas_search(
             if key not in candidates or float(candidates[key]["score"]) < score:
                 candidates[key] = item
 
-    for item in lexical_candidates:
+    for item in [*structured_candidates, *lexical_candidates]:
         key = (int(item["source_id"]), int(item.get("chunk") or 0))
         if key not in candidates or float(candidates[key]["score"]) < float(item["score"]):
             candidates[key] = item
@@ -748,7 +841,8 @@ async def atlas_search(
     source_counts: dict[int, int] = {}
     for item in sorted(candidates.values(), key=lambda row: float(row["score"]), reverse=True):
         source_id = int(item["source_id"])
-        if source_counts.get(source_id, 0) >= 2:
+        per_source_limit = 4 if item.get("structured") else 2
+        if source_counts.get(source_id, 0) >= per_source_limit:
             continue
         selected.append(item)
         source_counts[source_id] = source_counts.get(source_id, 0) + 1
@@ -1173,7 +1267,9 @@ async def _prepare_atlas_answer(
                 "Учитывай уточнения из текущего диалога и не проси заново контекст, который уже дан. "
                 "Если нужной нормы нет среди найденных фрагментов, говори именно о пробеле текущей "
                 "библиотеки, а не о секретности документа или отсутствии нормы вообще. Не придумывай "
-                "причины недоступности. Сначала дай ясный ответ, затем основания и практические шаги. "
+                "причины недоступности. Если запрошена конкретная глава или статья и она присутствует "
+                "в источниках, приведи её текст полностью и не заменяй его общим пересказом. Сначала "
+                "дай ясный ответ, затем основания и практические шаги. "
                 f"{mode_instruction}"
             ),
         },
@@ -1215,7 +1311,10 @@ async def _prepare_atlas_answer(
         payload={
             "model": config.chat_model,
             "temperature": {"strict": 0.15, "balanced": 0.38, "creative": 0.68, "aristotle": 0.28}[mode],
-            "max_tokens": _output_token_limit(mode),
+            "max_tokens": max(
+                _output_token_limit(mode),
+                6000 if any(item.get("structured") for item in sources) else 0,
+            ),
             **_reasoning_options(
                 config.chat_model,
                 "medium",
