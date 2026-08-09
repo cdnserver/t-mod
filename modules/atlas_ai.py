@@ -563,9 +563,9 @@ def _atlas_structured_legal_candidates(
     query: str,
     sources: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return an explicitly requested chapter instead of hoping embeddings rank it."""
+    """Resolve exact chapters, sections and articles before semantic ranking."""
 
-    focused = str(query or "")[-2500:]
+    focused = str(query or "")[-1200:]
     expanded = focused
     for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
         expanded = re.sub(
@@ -574,19 +574,32 @@ def _atlas_structured_legal_candidates(
             expanded,
             flags=re.IGNORECASE,
         )
-    references = list(
-        re.finditer(
+    references: list[tuple[int, str, str]] = []
+    patterns = (
+        (
+            "chapter",
             r"\bглав(?:а|ы|е|у|ой)\s*(?:№\s*)?(\d{1,3}|[ivxlcdm]{1,8})\b"
             r"|\b(\d{1,3}|[ivxlcdm]{1,8})\s+глав\w*\b",
-            expanded,
-            re.IGNORECASE,
-        )
+        ),
+        (
+            "section",
+            r"\bраздел(?:а|у|е|ом)?\s*(?:№\s*)?(\d{1,3}|[ivxlcdm]{1,8})\b",
+        ),
+        (
+            "article",
+            r"\b(?:стать(?:я|и|ю|е|ёй)|ст\.)\s*(?:№\s*)?(\d+(?:\.\d+){0,3})\b",
+        ),
     )
+    for kind, pattern in patterns:
+        for match in re.finditer(pattern, expanded, re.IGNORECASE):
+            value = next((str(group) for group in match.groups() if group), "")
+            if value:
+                references.append((match.start(), kind, value))
+    if re.search(r"\b(?:кодекс|ук|упк|коап|гк|гпк|тк|пдд)\b", focused, re.IGNORECASE):
+        for match in re.finditer(r"\b(\d+\.\d+(?:\.\d+){0,2})\b", focused):
+            references.append((match.start(), "article", match.group(1)))
+    references = sorted(dict.fromkeys(references), key=lambda item: item[0])[-4:]
     if not references:
-        return []
-    reference = references[-1]
-    chapter = str(reference.group(1) or reference.group(2) or "").strip()
-    if not chapter:
         return []
     query_folded = expanded.casefold()
     document_stems = tuple(
@@ -602,14 +615,6 @@ def _atlas_structured_legal_candidates(
         )
         if marker in query_folded
     )
-    heading = re.compile(
-        rf"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
-        rf"{re.escape(chapter)}(?=[.\s:—-]|$)"
-    )
-    next_heading = re.compile(
-        r"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
-        r"(?:\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
-    )
     candidates: list[dict[str, Any]] = []
     for source in sources:
         title = str(source.get("title") or "Источник")
@@ -619,34 +624,114 @@ def _atlas_structured_legal_candidates(
         ):
             continue
         content = str(source.get("content_text") or "")
-        match = heading.search(content)
-        if match is None:
-            continue
-        following = next_heading.search(content, match.end())
-        section = content[match.start() : following.start() if following else len(content)].strip()
-        if len(section) < 20:
-            continue
         metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
         taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
-        for part_index, part in enumerate(_chunks(section, size=6200, overlap=180)[:4]):
-            candidates.append(
-                {
-                    "source_id": int(source["id"]),
-                    "server_code": str(source.get("server_code") or ""),
-                    "faction_code": str(source.get("faction_code") or ""),
-                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
-                    "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
-                    "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
-                    "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
-                    "title": title,
-                    "url": str(source.get("source_url") or "") or None,
-                    "text": part[:7000],
-                    "score": round(10.0 - part_index * 0.01, 4),
-                    "chunk": 10_000 + part_index,
-                    "structured": True,
-                }
-            )
+        for reference_index, (_position, kind, value) in enumerate(references):
+            escaped = re.escape(value)
+            if kind == "chapter":
+                heading = re.compile(
+                    rf"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
+                    rf"{escaped}(?=[.\s:—-]|$)"
+                )
+                next_heading = re.compile(
+                    r"(?im)^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
+                    r"(?:\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+                )
+            elif kind == "section":
+                heading = re.compile(
+                    rf"(?im)^[^\S\r\n]*раздел[^\S\r\n]+(?:№[^\S\r\n]*)?"
+                    rf"{escaped}(?=[.\s:—-]|$)"
+                )
+                next_heading = re.compile(
+                    r"(?im)^[^\S\r\n]*раздел[^\S\r\n]+(?:№[^\S\r\n]*)?"
+                    r"(?:\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+                )
+            else:
+                heading = re.compile(
+                    rf"(?im)^[^\S\r\n]*(?:стать(?:я|и)[^\S\r\n]+)?{escaped}"
+                    r"(?!\.\d)(?=[.\s:—-]|$)"
+                )
+                next_heading = re.compile(
+                    r"(?im)^[^\S\r\n]*(?:стать(?:я|и)[^\S\r\n]+)?"
+                    r"\d+(?:\.\d+){1,3}(?!\.\d)(?=[.\s:—-]|$)"
+                    r"|^[^\S\r\n]*глава[^\S\r\n]+(?:№[^\S\r\n]*)?"
+                    r"(?:\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+                )
+            match = heading.search(content)
+            if match is None:
+                continue
+            following = next_heading.search(content, match.end())
+            section = content[
+                match.start() : following.start() if following else len(content)
+            ].strip()
+            if len(section) < 20:
+                continue
+            for part_index, part in enumerate(_chunks(section, size=6200, overlap=180)[:4]):
+                candidates.append(
+                    {
+                        "source_id": int(source["id"]),
+                        "server_code": str(source.get("server_code") or ""),
+                        "faction_code": str(source.get("faction_code") or ""),
+                        "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                        "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+                        "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+                        "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+                        "title": title,
+                        "url": str(source.get("source_url") or "") or None,
+                        "text": part[:7000],
+                        "score": round(10.0 - reference_index * 0.1 - part_index * 0.01, 4),
+                        "chunk": 10_000 + reference_index * 100 + part_index,
+                        "structured": True,
+                        "reference": f"{kind}:{value}",
+                    }
+                )
     return candidates
+
+
+def _atlas_merge_source_fragments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose one citation per document while retaining its useful fragments."""
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for item in items:
+        url = str(item.get("url") or "").strip().lower()
+        canonical_url = re.sub(r"/(?:unread|latest)/?$", "/", url)
+        key = canonical_url or f"source:{int(item.get('source_id') or 0)}"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(item)
+    merged: list[dict[str, Any]] = []
+    for key in order:
+        group = groups[key]
+        structured = [item for item in group if item.get("structured")]
+        fragments = structured or group
+        seen_text: set[str] = set()
+        texts: list[str] = []
+        budget = 26_000 if structured else 11_000
+        for item in fragments:
+            text = str(item.get("text") or "").strip()
+            fingerprint = text.casefold()
+            if not text or fingerprint in seen_text:
+                continue
+            remaining = budget - sum(len(value) for value in texts)
+            if remaining <= 0:
+                break
+            texts.append(text[:remaining])
+            seen_text.add(fingerprint)
+        if not texts:
+            continue
+        selected = dict(fragments[0])
+        selected["text"] = "\n\n".join(texts)
+        selected["score"] = max(float(item.get("score") or 0) for item in fragments)
+        selected["structured"] = bool(structured)
+        selected["fragment_count"] = len(texts)
+        merged.append(selected)
+    if any(item.get("structured") for item in merged):
+        exact = [item for item in merged if item.get("structured")]
+        supporting = [item for item in merged if not item.get("structured")][:3]
+        return [*exact, *supporting]
+    return merged
 
 
 def atlas_research_plan(question: str) -> list[dict[str, Any]]:
@@ -1182,6 +1267,7 @@ async def _prepare_atlas_answer(
         expanded=True,
         query_variants=research_queries,
     )
+    sources = _atlas_merge_source_fragments(sources)
     context = "\n\n".join(
         (
             f"[Источник {index} | {str(item.get('knowledge_domain') or 'mixed').upper()} | "
