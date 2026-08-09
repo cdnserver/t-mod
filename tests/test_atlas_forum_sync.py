@@ -58,6 +58,18 @@ class AtlasForumParserTests(unittest.TestCase):
 
         self.assertIsNone(forum_interstitial_kind(page))
 
+    def test_hidden_login_overlay_does_not_mask_authenticated_thread(self) -> None:
+        page = """
+        <html><body>
+          <form action="/login"><input type="password" /></form>
+          <div class="message-userContent">
+            <article class="message-body"><div class="bbWrapper">Глава 16</div></article>
+          </div>
+        </body></html>
+        """
+
+        self.assertIsNone(forum_interstitial_kind(page))
+
     def test_listing_collects_canonical_threads_and_next_page(self) -> None:
         page = """
         <html><body>

@@ -275,8 +275,14 @@ def forum_interstitial_kind(page_html: str) -> str | None:
             tree.xpath(
                 "//div[contains(@class,'structItem-title')]"
                 "//a[contains(@href,'/threads/')]"
-                " | //article[contains(@class,'message')]"
-                "//div[contains(@class,'message-body')]"
+                " | //*[contains(concat(' ', normalize-space(@class), ' '),"
+                " ' message-userContent ')]"
+                "//*[contains(concat(' ', normalize-space(@class), ' '),"
+                " ' bbWrapper ')]"
+                " | //*[contains(concat(' ', normalize-space(@class), ' '),"
+                " ' message-body ')]"
+                "//*[contains(concat(' ', normalize-space(@class), ' '),"
+                " ' bbWrapper ')]"
             )
         )
         if has_forum_content:
