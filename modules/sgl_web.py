@@ -65,11 +65,19 @@ def register_sgl_web_routes(
 
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
-        if name not in {"app.js", "style.css", "favicon.svg", "logo.webp"}:
+        if name not in {
+            "app.js",
+            "style.css",
+            "favicon.svg",
+            "logo.webp",
+            "logo-lockup.png",
+        }:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         if name == "logo.webp":
             response.content_type = "image/webp"
+        elif name == "logo-lockup.png":
+            response.content_type = "image/png"
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
         return response
 
