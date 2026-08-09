@@ -70,14 +70,14 @@ def register_sgl_web_routes(
             "style.css",
             "favicon.svg",
             "logo.webp",
-            "logo-lockup.png",
+            "logo-vector.svg",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         if name == "logo.webp":
             response.content_type = "image/webp"
-        elif name == "logo-lockup.png":
-            response.content_type = "image/png"
+        elif name == "logo-vector.svg":
+            response.content_type = "image/svg+xml"
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
         return response
 

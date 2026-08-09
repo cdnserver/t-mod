@@ -18,7 +18,7 @@
 .public-site{position:relative;min-height:100vh;overflow:hidden;background:radial-gradient(circle at 78% 14%,rgba(202,164,85,.1),transparent 27%),#080d14}
 .public-nav{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;width:min(1320px,calc(100% - 56px));height:92px;margin:auto;border-bottom:1px solid rgba(216,187,119,.12)}
 .public-brand{display:flex;align-items:center;gap:13px;color:var(--ink);text-decoration:none}
-.public-brand-mark{position:relative;width:72px;height:44px;overflow:hidden;border:1px solid rgba(216,187,119,.32);border-radius:12px;background:#020304;box-shadow:0 12px 34px rgba(0,0,0,.35)}
+.public-brand-mark{position:relative;width:88px;height:44px;overflow:hidden;border:1px solid rgba(216,187,119,.2);border-radius:12px;background:transparent;box-shadow:0 12px 34px rgba(0,0,0,.25)}
 .public-brand-mark img{position:absolute;width:122%;max-width:none;left:-11%;top:-43%;filter:contrast(1.08) brightness(1.1)}
 .public-brand>span:last-child{display:grid;gap:5px}.public-brand b{font:750 13px/1 "Unbounded",sans-serif;letter-spacing:.1em}.public-brand small{color:#756f63;font-size:7px;letter-spacing:.18em}
 .public-nav nav{display:flex;align-items:center;gap:28px}.public-nav nav a{color:#818992;text-decoration:none;font-size:10px;transition:.2s}.public-nav nav a:hover{color:#ede7d8}.public-nav .public-nav-cta{padding:11px 15px;border:1px solid rgba(216,187,119,.22);border-radius:10px;color:var(--gold)}
@@ -39,10 +39,15 @@
 @media(prefers-reduced-motion:reduce){.public-site *{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 /* Exact SVG lockup: no zoomed bitmap crop, no clipped letters. */
-.sgl-lockup,.docket .hero-logo,.public-brand-mark,.public-logo-window{isolation:isolate}
+.sgl-lockup,.docket .hero-logo,.public-brand-mark,.public-logo-window{isolation:isolate;background:transparent;border-color:rgba(216,187,119,.16)}
 .sgl-lockup img,.brand-seal.sgl-lockup img,.logo-seal .sgl-lockup img,.docket .hero-logo img,.public-brand-mark img,.public-logo-window img{position:relative;z-index:1;inset:auto;width:100%;height:100%;max-width:100%;object-fit:contain;filter:none}
 .sgl-lockup::after,.docket .hero-logo::after,.public-brand-mark::after,.public-logo-window::after{content:"";position:absolute;z-index:2;top:-35%;bottom:-35%;left:-55%;width:28%;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent);transform:skewX(-18deg);animation:sgl-sheen 6.5s var(--ease) infinite}
 .brand-seal.sgl-lockup,.logo-seal,.docket .hero-logo,.public-brand-mark,.public-logo-window{animation:sgl-logo-breathe 4.8s ease-in-out infinite}
+.public-logo-window,.docket .hero-logo{border-color:transparent;box-shadow:none;background:radial-gradient(circle,rgba(216,187,119,.055),transparent 68%)}
+.public-logo-window img,.docket .hero-logo img{opacity:.72;transform:scale(.94);filter:drop-shadow(0 18px 24px rgba(0,0,0,.42));animation:sgl-mark-float 5.6s ease-in-out infinite}
+.public-logo-window::after,.docket .hero-logo::after{inset:0;left:0;width:100%;background:linear-gradient(110deg,#777 8%,#f5f5f2 30%,#a98a4d 48%,#fff 62%,#777 86%);background-size:240% 100%;transform:none;opacity:.84;-webkit-mask:url('/sgl/assets/logo-vector.svg') center/94% auto no-repeat;mask:url('/sgl/assets/logo-vector.svg') center/94% auto no-repeat;animation:sgl-metal-flow 5.8s ease-in-out infinite}
 @keyframes sgl-sheen{0%,58%{left:-55%;opacity:0}64%{opacity:.8}82%,100%{left:130%;opacity:0}}
 @keyframes sgl-logo-breathe{0%,100%{box-shadow:0 16px 45px rgba(0,0,0,.34),0 0 0 rgba(216,187,119,0)}50%{box-shadow:0 19px 55px rgba(0,0,0,.42),0 0 28px rgba(216,187,119,.09)}}
-@media(prefers-reduced-motion:reduce){.sgl-lockup::after,.docket .hero-logo::after,.public-brand-mark::after,.public-logo-window::after,.brand-seal.sgl-lockup,.logo-seal,.docket .hero-logo,.public-brand-mark,.public-logo-window{animation:none!important}}
+@keyframes sgl-mark-float{0%,100%{transform:translateY(0) scale(.94)}50%{transform:translateY(-5px) scale(.965)}}
+@keyframes sgl-metal-flow{0%,18%{background-position:110% 0;opacity:.58}50%{opacity:.96}82%,100%{background-position:-105% 0;opacity:.62}}
+@media(prefers-reduced-motion:reduce){.sgl-lockup::after,.docket .hero-logo::after,.public-brand-mark::after,.public-logo-window::after,.brand-seal.sgl-lockup,.logo-seal,.docket .hero-logo,.public-brand-mark,.public-logo-window,.public-logo-window img,.docket .hero-logo img{animation:none!important}}
