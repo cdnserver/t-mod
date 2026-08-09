@@ -17,6 +17,7 @@ from modules.atlas_ai import (
     AtlasAIError,
     _atlas_corpus_abbreviations,
     _atlas_query_variants,
+    _bounded_dialog_messages,
     _chunks,
     atlas_ai_config,
     atlas_answer,
@@ -480,6 +481,17 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aliases["кэ"], "Кодекс этики и служебного поведения")
         self.assertNotIn("упк", aliases)
         self.assertNotIn("коап", aliases)
+
+    def test_bad_answer_is_not_reused_inside_current_dialog(self) -> None:
+        messages = _bounded_dialog_messages(
+            [
+                {"role": "user", "content_text": "Вопрос"},
+                {"role": "assistant", "content_text": "Ошибка", "feedback_rating": "bad"},
+                {"role": "user", "content_text": "Попробуй ещё раз"},
+            ]
+        )
+
+        self.assertEqual([item["content"] for item in messages], ["Вопрос", "Попробуй ещё раз"])
 
     async def test_hybrid_search_finds_saved_source_when_qdrant_returns_nothing(self) -> None:
         source = {

@@ -1008,6 +1008,8 @@ def _bounded_dialog_messages(
         role = str(item.get("role") or "")
         if role not in {"user", "assistant"}:
             continue
+        if role == "assistant" and str(item.get("feedback_rating") or "") == "bad":
+            continue
         content = str(item.get("content_text") or item.get("content") or "").strip()
         if not content:
             continue
@@ -1023,6 +1025,8 @@ def _bounded_dialog_messages(
 def _cross_chat_context(memory: list[dict[str, Any]] | None) -> str:
     rows = []
     for item in list(memory or []):
+        if item.get("role") == "assistant" and str(item.get("feedback_rating") or "") == "bad":
+            continue
         role = "Пользователь" if item.get("role") == "user" else "Atlas"
         title = str(item.get("thread_title") or "Предыдущий диалог").strip()[:120]
         content = str(item.get("content_text") or "").strip()[:4000]
