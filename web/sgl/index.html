@@ -6,17 +6,17 @@
   <meta name="theme-color" content="#0a1019">
   <meta name="description" content="T-Mod SGL — цифровое бюро дел, документов и архивов.">
   <title>SGL · T-Mod</title>
-  <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/sgl/assets/logo.webp" type="image/webp">
   <link rel="stylesheet" href="/assets/fonts.css">
   <link rel="stylesheet" href="/sgl/assets/style.css?v=20260809-sgl-v1">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
-  <section id="loading" class="loading"><div class="seal"><span>S</span></div><b>Открываем защищённый реестр</b><small>сверяем дела и архивы</small></section>
+  <section id="loading" class="loading"><div class="seal logo-seal"><span class="sgl-lockup"><img src="/sgl/assets/logo.webp" alt="SGL"></span></div><b>Открываем защищённый реестр</b><small>сверяем дела и архивы</small></section>
 
   <div id="app" class="shell" hidden>
     <aside class="rail">
-      <a class="brand" href="/"><span class="brand-seal">S</span><span><b>SGL</b><small>T‑MOD LEGAL SYSTEM</small></span></a>
+      <a class="brand" href="/"><span class="brand-seal sgl-lockup"><img src="/sgl/assets/logo.webp" alt="SGL"></span><span><b>LAW BUREAU</b><small>T‑MOD · CASE SYSTEM</small></span></a>
       <nav>
         <button class="active" data-screen="desk"><span>⌂</span><b>Оперативный стол</b></button>
         <button data-screen="cases"><span>§</span><b>Реестр дел</b></button>
@@ -36,7 +36,7 @@
         <section id="screen-desk" class="screen active">
           <article class="hero">
             <div><span class="eyebrow">T‑MOD · SGL</span><h2>Каждое дело.<br><em>В правильном порядке.</em></h2><p>Единая рабочая система бюро: от первого обращения и назначения команды до закрытия и долговечного архива.</p><button data-jump="cases">Открыть реестр <span>→</span></button></div>
-            <div class="docket" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><strong>§</strong><small>CASE<br>CONTROL</small><i class="pin p1"></i><i class="pin p2"></i><i class="pin p3"></i></div>
+            <div class="docket" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><strong class="hero-logo"><img src="/sgl/assets/logo.webp" alt=""></strong><i class="pin p1"></i><i class="pin p2"></i><i class="pin p3"></i></div>
           </article>
           <div class="metrics"><article><small>ВСЕГО ДЕЛ</small><strong id="count-all">0</strong><span>в едином реестре</span></article><article><small>В РАБОТЕ</small><strong id="count-open">0</strong><span>требуют внимания</span></article><article><small>ЗАКРЫТО</small><strong id="count-closed">0</strong><span>работа завершена</span></article><article><small>В АРХИВЕ</small><strong id="count-archives">0</strong><span>сохранено полностью</span></article></div>
           <div class="desk-grid"><article class="priority"><header><span>ПОСЛЕДНИЕ ДЕЛА</span><button data-jump="cases">Весь реестр →</button></header><div id="recent-cases"></div></article><article class="principles"><span>КОНТУР БЮРО</span><h3>Всё важное остаётся связанным</h3><ol><li><i>01</i><span><b>Дело и команда</b><small>клиент, ведущий юрист и секретарь</small></span></li><li><i>02</i><span><b>Ход работы</b><small>события, документы, чек и статус</small></span></li><li><i>03</i><span><b>Безопасный архив</b><small>история восстанавливается по номеру</small></span></li></ol></article></div>
