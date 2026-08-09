@@ -1007,6 +1007,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("судебную реформу", search.await_args.args[1])
         self.assertTrue(any("Предпочитаю спокойный" in item["content"] for item in messages))
         self.assertTrue(any("не повторяй обращение" in item["content"] for item in messages))
+        self.assertTrue(any("не переноси названия" in item["content"].casefold() for item in messages))
         self.assertTrue(any(item == {"role": "assistant", "content": "Правовую основу я нашёл"} for item in messages))
         self.assertEqual(messages[-1], {"role": "user", "content": "Теперь составь полную речь"})
         self.assertEqual(result["response_mode"], "creative")
