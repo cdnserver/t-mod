@@ -40,7 +40,7 @@ def _public_discord_url(guild_id: int) -> str:
 
 
 def _public_secretary_url() -> str:
-    secretary_id = _env_int("SGL_PUBLIC_SECRETARY_ID", 902235631952998410)
+    secretary_id = _env_int("SGL_PUBLIC_SECRETARY_ID", 811862068214890537)
     return f"https://discord.com/users/{secretary_id}"
 
 
