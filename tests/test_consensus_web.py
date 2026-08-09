@@ -519,16 +519,20 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sgl.status, 308)
         self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
 
-    async def test_sgl_surface_is_separate_and_requires_account(self) -> None:
+    async def test_sgl_surface_has_public_bureau_landing(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         async with TestClient(TestServer(app)) as client:
             page = await client.get("/sgl", headers={"Host": "sgl.tvr.lat"})
             page_text = await page.text()
             registry = await client.get("/api/sgl/bootstrap", headers={"Host": "sgl.tvr.lat"})
+            payload = await registry.json()
 
         self.assertEqual(page.status, 200)
         self.assertIn("T-Mod SGL", page_text)
-        self.assertEqual(registry.status, 401)
+        self.assertEqual(registry.status, 200)
+        self.assertEqual(payload["mode"], "public")
+        self.assertIn("discord.com", payload["public"]["discord_url"])
+        self.assertIn("discord.com/users/", payload["public"]["secretary_url"])
 
     async def test_sgl_registry_uses_shared_administrator_identity(self) -> None:
         principal = self._principal(user_id=42)
@@ -544,8 +548,27 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 payload = await response.json()
 
         self.assertEqual(response.status, 200)
+        self.assertEqual(payload["mode"], "management")
         self.assertTrue(payload["viewer"]["administrator"])
         self.assertEqual(payload["counts"]["all"], 0)
+
+    async def test_sgl_public_landing_hides_registry_from_regular_member(self) -> None:
+        principal = self._principal(user_id=43)
+        principal.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                response = await client.get(
+                    "/api/sgl/bootstrap", headers={"Host": "sgl.tvr.lat"}
+                )
+                payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["mode"], "public")
+        self.assertNotIn("cases", payload)
 
     async def test_existing_tmod_account_session_skips_repeated_login(self) -> None:
         principal = self._principal(user_id=42)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +22,34 @@ from persistence import web_portal_repository as portal_storage
 AuthenticatedRequest = Callable[
     [web.Request], Awaitable[tuple[ConsensusWebPrincipal | None, bool]]
 ]
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, default)).strip())
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _public_discord_url(guild_id: int) -> str:
+    configured = str(os.getenv("SGL_PUBLIC_DISCORD_URL") or "").strip()
+    if configured.startswith(("https://discord.com/", "https://discord.gg/")):
+        return configured
+    channel_id = _env_int("SGL_PUBLIC_DISCORD_CHANNEL_ID", 1500838151219052574)
+    return f"https://discord.com/channels/{int(guild_id)}/{channel_id}"
+
+
+def _public_secretary_url() -> str:
+    secretary_id = _env_int("SGL_PUBLIC_SECRETARY_ID", 902235631952998410)
+    return f"https://discord.com/users/{secretary_id}"
+
+
+def _is_bureau_staff(principal: ConsensusWebPrincipal) -> bool:
+    staff_role_id = _env_int("SGBUREAU_STAFF_ROLE_ID", 1500488424191295518)
+    return any(
+        int(getattr(role, "id", 0) or 0) == staff_role_id
+        for role in getattr(principal.member, "roles", ())
+    )
 
 
 def register_sgl_web_routes(
@@ -51,8 +80,8 @@ def register_sgl_web_routes(
                 text=json.dumps({"error": "sgl_login_required", "message": "Войдите в T-Mod SGL."}, ensure_ascii=False),
                 content_type="application/json",
             )
-        if selected.administrator:
-            return selected, True
+        if selected.administrator or _is_bureau_staff(selected):
+            return selected, bool(selected.administrator)
         try:
             grants = await asyncio.to_thread(
                 web_auth_storage.web_section_grants, int(guild_id), int(selected.user_id)
@@ -67,7 +96,38 @@ def register_sgl_web_routes(
         return selected, False
 
     async def bootstrap(request: web.Request) -> web.Response:
-        selected, administrator = await principal(request)
+        selected, legacy = await authenticate(request)
+        administrator = bool(selected and not legacy and selected.administrator)
+        management_access = bool(
+            selected and not legacy and (administrator or _is_bureau_staff(selected))
+        )
+        if selected is not None and not legacy and not management_access:
+            try:
+                grants = await asyncio.to_thread(
+                    web_auth_storage.web_section_grants,
+                    int(guild_id),
+                    int(selected.user_id),
+                )
+            except (OSError, sqlite3.Error):
+                grants = []
+            management_access = any(
+                str(item.get("section")) == "sgl" for item in grants
+            )
+        if request.query.get("public") == "1" or not management_access:
+            return web.json_response(
+                {
+                    "mode": "public",
+                    "viewer": {
+                        "authenticated": bool(selected is not None and not legacy),
+                        "name": str(selected.display_name) if selected is not None else None,
+                    },
+                    "public": {
+                        "discord_url": _public_discord_url(int(guild_id)),
+                        "secretary_url": _public_secretary_url(),
+                    },
+                }
+            )
+        assert selected is not None
         query = str(request.query.get("q") or "").strip() or None
         status = str(request.query.get("status") or "").strip() or None
         cases, archives = await asyncio.gather(
@@ -91,6 +151,7 @@ def register_sgl_web_routes(
             )
         return web.json_response(
             {
+                "mode": "management",
                 "viewer": {
                     "id": int(selected.user_id),
                     "name": str(selected.display_name),

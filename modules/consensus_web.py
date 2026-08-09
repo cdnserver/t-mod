@@ -1006,7 +1006,11 @@ def create_consensus_web_app(
             guild_id=int(guild_id),
         )
         if principal is not None:
-            if not principal.guild_member and not request.path.startswith("/api/atlas"):
+            if (
+                not principal.guild_member
+                and not request.path.startswith("/api/atlas")
+                and request.path != "/api/sgl/bootstrap"
+            ):
                 raise web.HTTPForbidden(
                     text=json.dumps(
                         {
@@ -1022,6 +1026,10 @@ def create_consensus_web_app(
         supplied = _request_token(request)
         if supplied and hmac.compare_digest(supplied, _access_token()):
             return None, True
+        if request.path == "/api/sgl/bootstrap":
+            # The SGL landing is public. The route itself returns only contact
+            # information unless a verified manager identity is present.
+            return None, False
         remote = _request_remote(request)
         now = asyncio.get_running_loop().time()
         failures = _failed_auth[remote]
