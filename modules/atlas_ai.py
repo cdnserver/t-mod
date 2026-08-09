@@ -40,13 +40,6 @@ _ATLAS_RETIRED_DEFAULTS = frozenset(
 )
 _ATLAS_ABBREVIATIONS = {
     "ук": "уголовный кодекс",
-    "упк": "уголовно-процессуальный кодекс",
-    "коап": "кодекс об административных правонарушениях",
-    "гк": "гражданский кодекс",
-    "гпк": "гражданский процессуальный кодекс",
-    "тк": "трудовой кодекс",
-    "пдд": "правила дорожного движения",
-    "нпа": "нормативный правовой акт",
 }
 _ATLAS_SEARCH_STOP_WORDS = frozenset(
     {
@@ -455,12 +448,51 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     return point_ids
 
 
-def _atlas_query_variants(query: str) -> list[str]:
+def _atlas_corpus_abbreviations(
+    sources: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Derive aliases from the corpus instead of importing real-world code names."""
+
+    candidates: dict[str, dict[str, set[str]]] = {}
+    for source in sources:
+        title = " ".join(str(source.get("title") or "").split())
+        words = re.findall(r"[а-яё]+", title.casefold())
+        if "кодекс" not in words:
+            continue
+        code_index = words.index("кодекс")
+        if code_index == 0:
+            descriptor = next(
+                (word for word in words[1:] if word not in {"штата", "сан", "андреас", "и"}),
+                "",
+            )
+            alias = f"к{descriptor[:1]}"
+        else:
+            descriptor = next(
+                (word for word in reversed(words[:code_index]) if word not in {"штата", "сан", "андреас"}),
+                "",
+            )
+            alias = f"{descriptor[:1]}к"
+        if len(alias) != 2:
+            continue
+        identity = f"{descriptor} кодекс" if code_index else f"кодекс {descriptor}"
+        candidates.setdefault(alias, {}).setdefault(identity, set()).add(title)
+    aliases = dict(_ATLAS_ABBREVIATIONS)
+    for alias, identities in candidates.items():
+        if len(identities) == 1:
+            titles = next(iter(identities.values()))
+            aliases[alias] = max(titles, key=len)
+    return aliases
+
+
+def _atlas_query_variants(
+    query: str,
+    abbreviations: dict[str, str] | None = None,
+) -> list[str]:
     clean = " ".join(str(query or "").split())[:8000]
     variants = [clean]
     expanded = clean
     matched_expansions: list[str] = []
-    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+    for abbreviation, meaning in (abbreviations or _ATLAS_ABBREVIATIONS).items():
         if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", expanded, re.IGNORECASE):
             expanded = re.sub(
                 rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
@@ -489,7 +521,8 @@ def _atlas_lexical_candidates(
 ) -> list[dict[str, Any]]:
     focused_query = query[-2500:]
     expanded = focused_query
-    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+    abbreviations = _atlas_corpus_abbreviations(sources)
+    for abbreviation, meaning in abbreviations.items():
         expanded = re.sub(
             rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
             meaning,
@@ -507,7 +540,7 @@ def _atlas_lexical_candidates(
     )[:16]
     phrases = [
         meaning
-        for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items()
+        for abbreviation, meaning in abbreviations.items()
         if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", query, re.IGNORECASE)
     ]
     if not terms and not phrases:
@@ -567,7 +600,8 @@ def _atlas_structured_legal_candidates(
 
     focused = str(query or "")[-1200:]
     expanded = focused
-    for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
+    abbreviations = _atlas_corpus_abbreviations(sources)
+    for abbreviation, meaning in abbreviations.items():
         expanded = re.sub(
             rf"(?<!\w){re.escape(abbreviation)}(?!\w)",
             meaning,
@@ -595,7 +629,8 @@ def _atlas_structured_legal_candidates(
             value = next((str(group) for group in match.groups() if group), "")
             if value:
                 references.append((match.start(), kind, value))
-    if re.search(r"\b(?:кодекс|ук|упк|коап|гк|гпк|тк|пдд)\b", focused, re.IGNORECASE):
+    alias_pattern = "|".join(re.escape(item) for item in abbreviations)
+    if re.search(rf"\b(?:кодекс|{alias_pattern})\b", focused, re.IGNORECASE):
         for match in re.finditer(r"\b(\d+\.\d+(?:\.\d+){0,2})\b", focused):
             references.append((match.start(), "article", match.group(1)))
     references = sorted(dict.fromkeys(references), key=lambda item: item[0])[-4:]
@@ -825,10 +860,15 @@ async def atlas_search(
         str(query), canonical_sources
     )
     lexical_candidates = _atlas_lexical_candidates(str(query), canonical_sources)
+    corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
     raw_queries = [str(query)[:8000], *(str(item)[:1200] for item in query_variants or [])]
     variants: list[str] = []
     for raw_query in raw_queries:
-        generated = _atlas_query_variants(raw_query) if expanded else [raw_query]
+        generated = (
+            _atlas_query_variants(raw_query, corpus_abbreviations)
+            if expanded
+            else [raw_query]
+        )
         for item in generated:
             if item and item not in variants:
                 variants.append(item)

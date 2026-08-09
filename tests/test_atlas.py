@@ -15,6 +15,7 @@ from docx import Document
 from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
+    _atlas_corpus_abbreviations,
     _atlas_query_variants,
     _chunks,
     atlas_ai_config,
@@ -62,6 +63,27 @@ class AtlasRepositoryTests(unittest.TestCase):
             self.assertEqual(
                 con.execute("SELECT COUNT(*) FROM atlas_document_templates").fetchone()[0],
                 3,
+            )
+
+    def test_answer_feedback_is_saved_and_bad_answer_is_excluded_from_memory(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(organization_id, 42, "Проверка")
+        atlas_repository.atlas_add_message(thread_id, "user", "Вопрос")
+        message_id = atlas_repository.atlas_add_message(thread_id, "assistant", "Неточный ответ")
+
+        feedback = atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, message_id, "bad"
+        )
+        thread = atlas_repository.atlas_thread_messages(organization_id, 42, thread_id)
+        memory = atlas_repository.atlas_recent_chat_memory(organization_id, 42)
+
+        self.assertEqual(feedback["rating"], "bad")
+        self.assertEqual(thread["messages"][-1]["feedback_rating"], "bad")
+        self.assertNotIn(message_id, {int(item["id"]) for item in memory})
+        with self.assertRaisesRegex(ValueError, "atlas_feedback_message_not_found"):
+            atlas_repository.atlas_set_message_feedback(
+                organization_id, 99, message_id, "good"
             )
 
     def test_onboarding_and_document_are_persisted(self) -> None:
@@ -443,6 +465,21 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         variants = _atlas_query_variants("Что такое УК?")
 
         self.assertTrue(any("уголовный кодекс" in item.casefold() for item in variants))
+
+    def test_corpus_abbreviations_follow_actual_atlas_documents(self) -> None:
+        aliases = _atlas_corpus_abbreviations(
+            [
+                {"title": "Процессуальный Кодекс штата San Andreas"},
+                {"title": "Административный кодекс штата San Andreas"},
+                {"title": "Кодекс этики и служебного поведения"},
+            ]
+        )
+
+        self.assertEqual(aliases["пк"], "Процессуальный Кодекс штата San Andreas")
+        self.assertEqual(aliases["ак"], "Административный кодекс штата San Andreas")
+        self.assertEqual(aliases["кэ"], "Кодекс этики и служебного поведения")
+        self.assertNotIn("упк", aliases)
+        self.assertNotIn("коап", aliases)
 
     async def test_hybrid_search_finds_saved_source_when_qdrant_returns_nothing(self) -> None:
         source = {

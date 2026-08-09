@@ -576,7 +576,7 @@ function render(data) {
   }
 }
 
-function messageNode(role, text, citations = []) {
+function messageNode(role, text, citations = [], options = {}) {
   const row = element("div", role === "user" ? "user-message" : "assistant-message");
   if (role !== "user") row.append(element("span", "", "A"));
   const copy = element("div");
@@ -585,8 +585,48 @@ function messageNode(role, text, citations = []) {
   renderRichText(richText, text);
   copy.append(richText);
   appendCitations(copy, citations);
+  if (role !== "user") appendAnswerFeedback(copy, options.messageId, options.feedback);
   row.append(copy);
   return row;
+}
+
+function appendAnswerFeedback(copy, messageId, current = "") {
+  if (!Number(messageId) || copy.querySelector(".answer-feedback")) return;
+  const panel = element("div", "answer-feedback");
+  panel.append(element("small", "", "Ответ был полезен?"));
+  const actions = element("div", "answer-feedback-actions");
+  const good = element("button", "feedback-good", "✓ Хороший ответ");
+  const bad = element("button", "feedback-bad", "× Плохой ответ");
+  [good, bad].forEach((button) => { button.type = "button"; });
+  const paint = (rating) => {
+    good.classList.toggle("selected", rating === "good");
+    bad.classList.toggle("selected", rating === "bad");
+  };
+  const submit = async (rating) => {
+    good.disabled = true;
+    bad.disabled = true;
+    try {
+      await api(`/api/atlas/messages/${encodeURIComponent(messageId)}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({ rating }),
+      });
+      paint(rating);
+      panel.querySelector("small").textContent = rating === "good"
+        ? "Спасибо — удачный ответ отмечен"
+        : "Спасибо — этот ответ не попадёт в память Atlas";
+    } catch (error) {
+      showToast(error.message || "Оценка не сохранена", true);
+    } finally {
+      good.disabled = false;
+      bad.disabled = false;
+    }
+  };
+  good.addEventListener("click", () => submit("good"));
+  bad.addEventListener("click", () => submit("bad"));
+  paint(current);
+  actions.append(good, bad);
+  panel.append(actions);
+  copy.append(panel);
 }
 
 function updateResearchProgress(copy, event) {
@@ -751,6 +791,7 @@ async function sendQuestion(question) {
     if (!result) throw new Error("Atlas не подтвердил завершение ответа.");
     renderRichText(answerNode, result.answer || streamedText || "Ответ готов.");
     appendCitations(answerCopy, result.citations || []);
+    appendAnswerFeedback(answerCopy, result.message_id, "");
     assistant.classList.remove("streaming");
     appState.threadId = Number(result.thread_id);
     byId("current-thread-title").textContent = result.thread?.title || question.slice(0, 100);
@@ -806,7 +847,10 @@ async function loadThread(threadId) {
   const stream = byId("chat-stream");
   clear(stream);
   (result.messages || []).forEach((message) => {
-    stream.append(messageNode(message.role, message.content_text, message.citations || []));
+    stream.append(messageNode(message.role, message.content_text, message.citations || [], {
+      messageId: message.id,
+      feedback: message.feedback_rating || "",
+    }));
   });
   if (!(result.messages || []).length) resetChatStream();
   renderThreads(appState.data?.threads || []);

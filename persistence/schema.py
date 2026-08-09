@@ -496,6 +496,28 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_ai_messages_thread
             ON atlas_ai_messages(thread_id, id);
 
+            CREATE TABLE IF NOT EXISTS atlas_ai_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                thread_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                rating TEXT NOT NULL CHECK(rating IN ('good', 'bad')),
+                comment_text TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(message_id, user_id),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(thread_id) REFERENCES atlas_ai_threads(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES atlas_ai_messages(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_ai_feedback_review
+            ON atlas_ai_feedback(organization_id, rating, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS atlas_discord_threads (
                 discord_thread_id INTEGER PRIMARY KEY,
                 guild_id INTEGER NOT NULL,

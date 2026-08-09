@@ -414,7 +414,7 @@ def register_atlas_web_routes(
                 question[:100],
             )
         await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
-        await asyncio.to_thread(
+        assistant_message_id = await asyncio.to_thread(
             storage.atlas_add_message,
             thread_id,
             "assistant",
@@ -444,7 +444,12 @@ def register_atlas_web_routes(
             thread_id,
             limit=1,
         )
-        response = {**answer, "thread_id": thread_id, "thread": stored_thread["thread"]}
+        response = {
+            **answer,
+            "thread_id": thread_id,
+            "message_id": assistant_message_id,
+            "thread": stored_thread["thread"],
+        }
         receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, response)
         return web.json_response(response)
 
@@ -556,7 +561,7 @@ def register_atlas_web_routes(
                     question[:100],
                 )
             await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
-            await asyncio.to_thread(
+            assistant_message_id = await asyncio.to_thread(
                 storage.atlas_add_message,
                 thread_id,
                 "assistant",
@@ -586,7 +591,12 @@ def register_atlas_web_routes(
                 thread_id,
                 limit=1,
             )
-            result = {**answer, "thread_id": thread_id, "thread": stored_thread["thread"]}
+            result = {
+                **answer,
+                "thread_id": thread_id,
+                "message_id": assistant_message_id,
+                "thread": stored_thread["thread"],
+            }
             receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, result)
             await emit({"type": "done", **result})
         except AtlasAIError as exc:
@@ -652,6 +662,38 @@ def register_atlas_web_routes(
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc), "message": "Документ не создан."}, status=400)
         return web.json_response({"document": created}, status=201)
+
+    async def message_feedback(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        dashboard = await user_dashboard(request, selected)
+        try:
+            message_id = int(request.match_info.get("message_id") or 0)
+            feedback = await asyncio.to_thread(
+                storage.atlas_set_message_feedback,
+                int(dashboard["organization"]["id"]),
+                int(selected.user_id),
+                message_id,
+                str(payload.get("rating") or ""),
+                comment=str(payload.get("comment") or "") or None,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Не удалось сохранить оценку ответа."},
+                status=400,
+            )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            int(dashboard["organization"]["id"]),
+            int(selected.user_id),
+            "ai_answer_feedback",
+            "Пользователь оценил ответ Atlas",
+            target_type="ai_message",
+            target_id=message_id,
+            details={"rating": feedback["rating"]},
+        )
+        return web.json_response({"feedback": feedback})
 
     async def index_source(source: dict[str, Any]) -> None:
         point_ids = await atlas_index_source(source)
@@ -1136,6 +1178,7 @@ def register_atlas_web_routes(
     app.router.add_post("/api/atlas/onboarding", onboarding)
     app.router.add_post("/api/atlas/chat", chat)
     app.router.add_post("/api/atlas/chat/stream", chat_stream)
+    app.router.add_post("/api/atlas/messages/{message_id}/feedback", message_feedback)
     app.router.add_get("/api/atlas/threads", threads)
     app.router.add_get("/api/atlas/threads/{thread_id}", threads)
     app.router.add_get("/api/atlas/documents", documents)

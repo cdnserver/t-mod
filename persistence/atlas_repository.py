@@ -827,6 +827,55 @@ def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any
     return [_row(row) for row in rows]
 
 
+def atlas_archive_duplicate_forum_sources() -> dict[str, int]:
+    """Archive obsolete /unread copies while retaining the richest canonical source."""
+
+    with _db_lock, connect() as con:
+        rows = con.execute(
+            """
+            SELECT id, organization_id, source_url, content_text, updated_at
+            FROM atlas_knowledge_sources
+            WHERE status != 'archived' AND source_url IS NOT NULL
+              AND source_url LIKE 'https://forum.majestic-rp.ru/threads/%'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        groups: dict[tuple[int, str], list[Any]] = {}
+        for row in rows:
+            url = re.sub(
+                r"/(?:unread|latest)/?$",
+                "/",
+                str(row["source_url"] or "").strip(),
+                flags=re.IGNORECASE,
+            )
+            groups.setdefault((int(row["organization_id"]), url), []).append(row)
+        archived = 0
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            keep = max(
+                group,
+                key=lambda row: (
+                    len(str(row["content_text"] or "")),
+                    not bool(re.search(r"/(?:unread|latest)/?$", str(row["source_url"] or ""), re.I)),
+                    str(row["updated_at"] or ""),
+                    int(row["id"]),
+                ),
+            )
+            duplicate_ids = [int(row["id"]) for row in group if int(row["id"]) != int(keep["id"])]
+            if not duplicate_ids:
+                continue
+            placeholders = ",".join("?" for _ in duplicate_ids)
+            con.execute(
+                f"UPDATE atlas_knowledge_sources SET status = 'archived', updated_at = ? "
+                f"WHERE id IN ({placeholders})",
+                (utc_now_iso(), *duplicate_ids),
+            )
+            archived += len(duplicate_ids)
+        con.commit()
+    return {"groups": sum(len(group) > 1 for group in groups.values()), "archived": archived}
+
+
 def atlas_mark_knowledge_indexed(
     source_id: int,
     *,
@@ -1251,6 +1300,55 @@ def atlas_add_message(
         return int(cursor.lastrowid)
 
 
+def atlas_set_message_feedback(
+    organization_id: int,
+    user_id: int,
+    message_id: int,
+    rating: str,
+    *,
+    comment: str | None = None,
+) -> dict[str, Any]:
+    selected = str(rating or "").strip().lower()
+    if selected not in {"good", "bad"}:
+        raise ValueError("atlas_feedback_rating_invalid")
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        message = con.execute(
+            """
+            SELECT m.id, m.thread_id FROM atlas_ai_messages m
+            JOIN atlas_ai_threads t ON t.id = m.thread_id
+            WHERE m.id = ? AND m.role = 'assistant'
+              AND t.organization_id = ? AND t.user_id = ? AND t.status = 'active'
+            """,
+            (int(message_id), int(organization_id), int(user_id)),
+        ).fetchone()
+        if message is None:
+            raise ValueError("atlas_feedback_message_not_found")
+        con.execute(
+            """
+            INSERT INTO atlas_ai_feedback(
+                organization_id, thread_id, message_id, user_id, rating,
+                comment_text, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, user_id) DO UPDATE SET
+                rating = excluded.rating,
+                comment_text = excluded.comment_text,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(organization_id), int(message["thread_id"]), int(message_id),
+                int(user_id), selected, str(comment or "").strip()[:2000] or None,
+                now, now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_ai_feedback WHERE message_id = ? AND user_id = ?",
+            (int(message_id), int(user_id)),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
 def atlas_bind_discord_thread(
     *,
     discord_thread_id: int,
@@ -1379,11 +1477,14 @@ def atlas_thread_messages(
         rows = con.execute(
             """
             SELECT * FROM (
-                SELECT * FROM atlas_ai_messages
-                WHERE thread_id = ? ORDER BY id DESC LIMIT ?
+                SELECT m.*, f.rating AS feedback_rating
+                FROM atlas_ai_messages m
+                LEFT JOIN atlas_ai_feedback f
+                  ON f.message_id = m.id AND f.user_id = ?
+                WHERE m.thread_id = ? ORDER BY m.id DESC LIMIT ?
             ) ORDER BY id ASC
             """,
-            (int(thread_id), max(1, min(500, int(limit)))),
+            (int(user_id), int(thread_id), max(1, min(500, int(limit)))),
         ).fetchall()
     return {"thread": _row(thread), "messages": [_row(row) for row in rows]}
 
@@ -1416,6 +1517,13 @@ def atlas_recent_chat_memory(
                 JOIN atlas_ai_threads t ON t.id = m.thread_id
                 WHERE t.organization_id = ? AND t.user_id = ?
                   AND t.status = 'active' AND m.role IN ('user', 'assistant')
+                  AND NOT (
+                    m.role = 'assistant' AND EXISTS (
+                      SELECT 1 FROM atlas_ai_feedback f
+                      WHERE f.message_id = m.id AND f.user_id = t.user_id
+                        AND f.rating = 'bad'
+                    )
+                  )
                   {exclusion}
             )
             SELECT * FROM ranked
