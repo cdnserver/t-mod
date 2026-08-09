@@ -394,6 +394,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(atlas_ai_config().chat_model, "openai/gpt-5-mini")
 
+    def test_weak_legacy_default_is_upgraded_to_economy_model(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ATLAS_OPENROUTER_MODEL": "openai/gpt-4.1-mini"},
+        ):
+            self.assertEqual(atlas_ai_config().chat_model, "openai/gpt-5-mini")
+
     def test_custom_atlas_model_is_preserved(self) -> None:
         with patch.dict(
             os.environ,
@@ -848,7 +855,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         config = AtlasAIConfig(
             openrouter_key="test",
             openrouter_url="https://openrouter.test/chat",
-            chat_model="test/model",
+            chat_model="openai/gpt-5-mini",
             embedding_model="test/embed",
             qdrant_url="http://qdrant",
             qdrant_key="",
@@ -893,8 +900,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         payload = request.await_args.kwargs["payload"]
         messages = payload["messages"]
         self.assertEqual(payload["temperature"], 0.68)
+        self.assertEqual(payload["reasoning"]["effort"], "medium")
         self.assertIn("судебную реформу", search.await_args.args[1])
         self.assertTrue(any("Предпочитаю спокойный" in item["content"] for item in messages))
+        self.assertTrue(any("не повторяй обращение" in item["content"] for item in messages))
         self.assertTrue(any(item == {"role": "assistant", "content": "Правовую основу я нашёл"} for item in messages))
         self.assertEqual(messages[-1], {"role": "user", "content": "Теперь составь полную речь"})
         self.assertEqual(result["response_mode"], "creative")

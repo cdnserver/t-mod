@@ -70,6 +70,20 @@ class AtlasForumParserTests(unittest.TestCase):
             "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/page-2",
         )
 
+    def test_listing_normalizes_unread_thread_suffix(self) -> None:
+        page = """
+        <div class="structItem-title">
+          <a href="/threads/zakon.100/unread?new=1">Закон</a>
+        </div>
+        """
+
+        links, _next_url = parse_forum_listing(page, ROOT_URL)
+
+        self.assertEqual(
+            links,
+            ["https://forum.majestic-rp.ru/threads/zakon.100/"],
+        )
+
     def test_thread_extracts_only_first_post_without_quote(self) -> None:
         page = """
         <html><head><meta property="og:title" content="Уголовный кодекс" /></head><body>
@@ -97,6 +111,24 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertIn("Положение номер два", snapshot.content)
         self.assertNotIn("Старая цитата", snapshot.content)
         self.assertNotIn("Чужой ответ", snapshot.content)
+
+    def test_thread_preserves_text_from_rich_divs_and_tables(self) -> None:
+        page = """
+        <h1 class="p-title-value">Уголовный кодекс</h1>
+        <article class="message message--post">
+          <div class="message-body"><div class="bbWrapper">
+            <p>Глава 1. Общие положения</p>
+            <div class="law-section"><span>Статья 1. Основные понятия.</span></div>
+            <table><tr><td>Глава 16.</td><td>Преступления против правосудия.</td></tr></table>
+          </div></div>
+        </article>
+        """
+
+        snapshot = parse_forum_thread(page, "https://forum.majestic-rp.ru/threads/uk.1/")
+
+        self.assertIn("Статья 1. Основные понятия.", snapshot.content)
+        self.assertIn("Глава 16.", snapshot.content)
+        self.assertIn("Преступления против правосудия.", snapshot.content)
 
     def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
         self.assertEqual(

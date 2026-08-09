@@ -159,7 +159,11 @@ def _canonical_url(base_url: str, href: str) -> str | None:
     parsed = urlsplit(absolute)
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
         return None
-    return urlunsplit(("https", parsed.netloc.lower(), parsed.path, "", ""))
+    path = parsed.path
+    thread_match = re.match(r"^(/threads/[^/]+\.\d+)(?:/.*)?$", path, re.IGNORECASE)
+    if thread_match:
+        path = f"{thread_match.group(1)}/"
+    return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
 
 
 def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str | None]:
@@ -235,12 +239,12 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
         parent = unwanted.getparent()
         if parent is not None:
             parent.remove(unwanted)
-    blocks: list[str] = []
-    for node in body.xpath(".//h1 | .//h2 | .//h3 | .//h4 | .//p | .//li | .//blockquote"):
-        text = _clean_text(node.text_content())
-        if text and (not blocks or text != blocks[-1]):
-            blocks.append(text)
-    content = "\n\n".join(blocks) if blocks else _clean_text("\n".join(body.itertext()))
+    # XenForo documents frequently keep articles, tables and numbered clauses
+    # in nested div/span nodes rather than p/li elements. Selecting only a few
+    # block tags silently reduced whole codes to a handful of list items. Every
+    # text node inside the first post is authoritative after quotes/scripts
+    # have been removed, so preserve all of them in document order.
+    content = _clean_text("\n".join(body.itertext()))
     if not title:
         title = content.splitlines()[0][:180] if content else "Материал форума"
     if len(content) < 20:
