@@ -8,38 +8,101 @@
   <title>SGL · T-Mod</title>
   <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/fonts.css">
-  <link rel="stylesheet" href="/sgl/assets/style.css?v=20260809-sgl-v1">
+  <link rel="stylesheet" href="/sgl/assets/style.css?v=20260810-public-redesign">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
   <section id="loading" class="loading"><div class="seal logo-seal"><span class="sgl-lockup"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span></div><b>Открываем защищённый реестр</b><small>сверяем дела и архивы</small></section>
 
   <section id="public-site" class="public-site" hidden>
-    <header class="public-nav">
-      <a class="public-brand" href="/sgl"><span class="public-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span><span><b>SAOUL GOODMAN</b><small>LAW BUREAU · T‑MOD</small></span></a>
-      <nav><a href="#help">Помощь</a><a href="#process">Как обратиться</a><a id="public-discord-top" class="public-nav-cta" target="_blank" rel="noreferrer">Открыть Discord ↗</a></nav>
+    <header class="public-nav" data-public-nav>
+      <a class="public-brand" href="/sgl" aria-label="SGL · Saoul Goodman Law Bureau">
+        <span class="public-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span>
+        <span><b>SAOUL GOODMAN</b><small>LAW BUREAU · T‑MOD</small></span>
+      </a>
+      <nav aria-label="Навигация публичной страницы">
+        <a href="#help">Услуги</a>
+        <a href="#standards">Стандарты</a>
+        <a href="#process">Порядок</a>
+        <a id="public-discord-top" class="public-nav-cta" target="_blank" rel="noreferrer">Приёмная ↗</a>
+      </nav>
     </header>
+
     <main class="public-main">
-      <section class="public-hero">
+      <section class="public-hero" aria-labelledby="public-title">
         <div class="public-hero-copy">
-          <span class="public-eyebrow"><i></i> ЮРИДИЧЕСКОЕ БЮРО · PHOENIX</span>
-          <h1>Право должно<br><em>работать на вас.</em></h1>
-          <p>Разбираем ситуацию, готовим иски и жалобы, выстраиваем позицию и сопровождаем дело до понятного результата.</p>
-          <div class="public-actions"><a id="public-discord" class="public-primary" target="_blank" rel="noreferrer">Обратиться в Discord <span>→</span></a><a id="public-secretary" class="public-secondary" target="_blank" rel="noreferrer"><span class="contact-dot"></span> Связаться с секретарём</a></div>
-          <div class="public-proof"><span><b>Единое досье</b><small>ход работы всегда понятен</small></span><span><b>Конфиденциально</b><small>доступ только у команды дела</small></span><span><b>На связи</b><small>общение прямо в Discord</small></span></div>
+          <span class="public-eyebrow"><i></i> SGL · PHOENIX LEGAL BUREAU</span>
+          <h1 id="public-title">Юридическая помощь<br><em>без хаоса и лишнего шума.</em></h1>
+          <p>Принимаем обращение, собираем факты, готовим позицию и ведём дело в едином контуре T‑Mod: понятно, аккуратно и с сохранением всей истории.</p>
+          <div class="public-actions">
+            <a id="public-discord" class="public-primary" target="_blank" rel="noreferrer">Открыть приёмную <span>→</span></a>
+            <a id="public-secretary" class="public-secondary" target="_blank" rel="noreferrer"><span class="contact-dot"></span> Связаться с секретарём</a>
+          </div>
+          <div class="public-trust-row" aria-label="Преимущества бюро">
+            <span><b>01</b><strong>Единое досье</strong><small>материалы и ход работы не теряются</small></span>
+            <span><b>02</b><strong>Тихая работа</strong><small>без лишних публичных обсуждений</small></span>
+            <span><b>03</b><strong>Discord‑контур</strong><small>быстрая связь с командой дела</small></span>
+          </div>
         </div>
-        <div class="public-visual" aria-hidden="true"><span class="public-orbit orbit-a"></span><span class="public-orbit orbit-b"></span><div class="public-logo-window"><img src="/sgl/assets/logo-vector.svg" alt=""></div><i class="spark s1"></i><i class="spark s2"></i><i class="spark s3"></i></div>
+
+        <aside class="public-hero-card" aria-label="Карточка бюро">
+          <div class="public-card-top"><span>AUTHORIZED DESK</span><i></i></div>
+          <div class="public-logo-window"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></div>
+          <div class="public-case-line"><small>Текущий статус</small><b>Приём обращений открыт</b></div>
+          <div class="public-card-grid">
+            <span><b>§</b><small>Иски</small></span>
+            <span><b>◇</b><small>Жалобы</small></span>
+            <span><b>◎</b><small>Сопровождение</small></span>
+          </div>
+        </aside>
       </section>
 
       <section id="help" class="public-section public-services">
-        <header><span>ЧЕМ МЫ ПОМОГАЕМ</span><h2>От первого вопроса<br>до готовой позиции</h2><p>Без лишней бюрократии: изучаем обстоятельства и сразу объясняем, что можно сделать.</p></header>
-        <div class="service-grid"><article><span>01</span><i>§</i><h3>Исковые заявления</h3><p>Соберём факты, правовые основания, доказательства и требования в цельный документ.</p></article><article><span>02</span><i>◇</i><h3>Жалобы и обращения</h3><p>Определим адресата, проверим сроки и подготовим убедительное обжалование.</p></article><article><span>03</span><i>⌁</i><h3>Правовая консультация</h3><p>Разложим сложную ситуацию по шагам, обозначим риски и доступные варианты.</p></article><article><span>04</span><i>◎</i><h3>Сопровождение дела</h3><p>Закрепим команду, сохраним историю и проведём дело через все необходимые этапы.</p></article></div>
+        <header>
+          <span>ЧЕМ МЫ ПОМОГАЕМ</span>
+          <h2>Всё, что нужно для<br>сильной правовой позиции.</h2>
+          <p>Страница должна сразу объяснять клиенту: куда нажать, что вы делаете и почему бюро выглядит серьёзно. Поэтому блоки стали короче, чище и визуально спокойнее.</p>
+        </header>
+        <div class="service-grid">
+          <article><span>01</span><i>§</i><h3>Исковые заявления</h3><p>Собираем факты, доказательства, требования и правовые основания в цельный документ.</p></article>
+          <article><span>02</span><i>◇</i><h3>Жалобы и обращения</h3><p>Определяем адресата, проверяем сроки и формулируем позицию без воды.</p></article>
+          <article><span>03</span><i>⌁</i><h3>Консультации</h3><p>Разбираем ситуацию по шагам: перспективы, риски, варианты и следующий ход.</p></article>
+          <article><span>04</span><i>◎</i><h3>Сопровождение дела</h3><p>Закрепляем команду, сохраняем историю и доводим работу до понятного результата.</p></article>
+        </div>
       </section>
 
-      <section id="process" class="public-process"><div><span>ПОРЯДОК ОБРАЩЕНИЯ</span><h2>Начать проще,<br>чем кажется.</h2></div><ol><li><b>1</b><span><strong>Откройте Discord</strong><small>Перейдите в приёмную бюро и опишите ситуацию.</small></span></li><li><b>2</b><span><strong>Получите команду</strong><small>Вам назначат юриста и, при необходимости, секретаря.</small></span></li><li><b>3</b><span><strong>Следите за делом</strong><small>Документы, решения и история останутся в одном защищённом контуре.</small></span></li></ol></section>
+      <section id="standards" class="public-standards">
+        <div class="public-panel public-panel-main">
+          <span>SGL STANDARD</span>
+          <h2>Аккуратность важнее громких обещаний.</h2>
+          <p>Каждое обращение проходит через единый порядок: первичный разбор, фиксация материалов, назначение команды, подготовка документа и сопровождение дальнейших шагов.</p>
+        </div>
+        <div class="public-panel-list">
+          <article><b>01</b><span><strong>Сначала факты</strong><small>без поспешных выводов и лишней драмы</small></span></article>
+          <article><b>02</b><span><strong>Потом позиция</strong><small>структура, требования, доказательства</small></span></article>
+          <article><b>03</b><span><strong>Затем контроль</strong><small>история дела остаётся в одном контуре</small></span></article>
+        </div>
+      </section>
 
-      <section class="public-final"><span>SGL · ПРИЁМНАЯ</span><h2>Расскажите, что произошло.<br><em>Остальное мы возьмём на себя.</em></h2><div class="public-actions"><a id="public-discord-bottom" class="public-primary" target="_blank" rel="noreferrer">Перейти в Discord <span>→</span></a><a id="public-secretary-bottom" class="public-secondary" target="_blank" rel="noreferrer">Написать секретарю</a></div></section>
+      <section id="process" class="public-process">
+        <div><span>ПОРЯДОК ОБРАЩЕНИЯ</span><h2>Три шага<br>до начала работы.</h2></div>
+        <ol>
+          <li><b>1</b><span><strong>Откройте приёмную</strong><small>Перейдите в Discord и коротко опишите, что произошло.</small></span></li>
+          <li><b>2</b><span><strong>Передайте материалы</strong><small>Скриншоты, видео, документы, имена и важные даты попадут в досье.</small></span></li>
+          <li><b>3</b><span><strong>Получите план</strong><small>Команда объяснит следующий шаг и начнёт подготовку позиции.</small></span></li>
+        </ol>
+      </section>
+
+      <section class="public-final">
+        <span>SGL · ПРИЁМНАЯ</span>
+        <h2>Когда ситуация становится сложной,<br><em>её нужно привести в порядок.</em></h2>
+        <div class="public-actions">
+          <a id="public-discord-bottom" class="public-primary" target="_blank" rel="noreferrer">Перейти в Discord <span>→</span></a>
+          <a id="public-secretary-bottom" class="public-secondary" target="_blank" rel="noreferrer">Написать секретарю</a>
+        </div>
+      </section>
     </main>
+
     <footer class="public-footer"><span>© SGL · SAOUL GOODMAN LAW BUREAU</span><span>POWERED BY T‑MOD</span></footer>
   </section>
 
@@ -89,6 +152,6 @@
   <dialog id="case-dialog"><button class="close" data-close>×</button><div id="case-detail"></div></dialog>
   <dialog id="confirm-dialog" class="confirm"><div class="confirm-mark">!</div><small>ЗАЩИЩЁННОЕ ДЕЙСТВИЕ</small><h3>Восстановить архив?</h3><p id="confirm-copy"></p><div><button data-close>Отмена</button><button id="confirm-action" class="danger">Восстановить</button></div></dialog>
   <div id="toast" class="toast" hidden></div>
-  <script src="/sgl/assets/app.js?v=20260809-sgl-v1" defer></script>
+  <script src="/sgl/assets/app.js?v=20260810-public-redesign" defer></script>
 </body>
 </html>
