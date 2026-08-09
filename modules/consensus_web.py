@@ -46,6 +46,7 @@ from modules.web_snapshot_cache import AsyncSnapshotCache
 from modules.reactor_web import register_reactor_web_routes
 from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
+from modules.sgl_web import register_sgl_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
@@ -128,6 +129,10 @@ ZIGMUND_WEB_PUBLIC_URL = _configured_surface_url(
     "ZIGMUND_WEB_PUBLIC_URL",
     "https://zigmund.tvr.lat",
 )
+SGL_WEB_PUBLIC_URL = _configured_surface_url(
+    "SGL_WEB_PUBLIC_URL",
+    "https://sgl.tvr.lat",
+)
 
 
 def _configured_guild_id() -> int:
@@ -197,6 +202,8 @@ def consensus_web_entry_url(
         base_url = PORTAL_WEB_PUBLIC_URL
     elif destination == "/atlas" and ATLAS_WEB_PUBLIC_URL:
         base_url = ATLAS_WEB_PUBLIC_URL
+    elif destination == "/sgl" and SGL_WEB_PUBLIC_URL:
+        base_url = SGL_WEB_PUBLIC_URL
     return _authenticated_entry_url(
         base_url,
         guild_id=guild_id,
@@ -794,6 +801,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = PORTAL_WEB_PUBLIC_URL
     elif belongs_to("/atlas"):
         target_url = ATLAS_WEB_PUBLIC_URL
+    elif belongs_to("/sgl"):
+        target_url = SGL_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
@@ -803,6 +812,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             target_url = PORTAL_WEB_PUBLIC_URL
         elif next_path == "/atlas":
             target_url = ATLAS_WEB_PUBLIC_URL
+        elif next_path == "/sgl":
+            target_url = SGL_WEB_PUBLIC_URL
         else:
             target_url = consensus_url
     if not target_url:
@@ -956,7 +967,7 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
@@ -1055,7 +1066,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
             else f"/?mode={mode}"
         )
         response = web.Response(
@@ -1078,7 +1089,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1579,6 +1590,13 @@ def create_consensus_web_app(
         bot,
         guild_id=int(guild_id),
         asset_dir=_ATLAS_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
+    register_sgl_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=Path(__file__).resolve().parents[1] / "web" / "sgl",
         authenticate=authenticated_request,
     )
     return app

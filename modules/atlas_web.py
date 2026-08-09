@@ -335,6 +335,7 @@ def register_atlas_web_routes(
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
         dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
+        agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
         history: list[dict[str, Any]] = []
         raw_thread_id = payload.get("thread_id")
@@ -349,6 +350,7 @@ def register_atlas_web_routes(
                     limit=80,
                 )
                 history = list(thread["messages"])
+                agent_id = str(thread["thread"].get("agent_id") or "atlas-tvr-a")
             except (TypeError, ValueError):
                 return web.json_response(
                     {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
@@ -359,6 +361,7 @@ def register_atlas_web_routes(
             organization_id,
             int(selected.user_id),
             exclude_thread_id=thread_id,
+            agent_id=agent_id,
         )
         try:
             answer = await atlas_answer(
@@ -369,7 +372,7 @@ def register_atlas_web_routes(
                 history=history,
                 memory=memory,
                 response_mode=str(payload.get("response_mode") or "balanced"),
-                model_id=str(payload.get("model") or "atlas-tvr-a"),
+                model_id=agent_id,
                 user_profile=dict(dashboard["membership"].get("profile") or {}),
             )
         except AtlasAIError as exc:
@@ -412,6 +415,7 @@ def register_atlas_web_routes(
                 organization_id,
                 int(selected.user_id),
                 question[:100],
+                agent_id=agent_id,
             )
         await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
         assistant_message_id = await asyncio.to_thread(
@@ -492,6 +496,7 @@ def register_atlas_web_routes(
             )
         dashboard = await user_dashboard(request, selected)
         organization_id = int(dashboard["organization"]["id"])
+        agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
         history: list[dict[str, Any]] = []
         raw_thread_id = payload.get("thread_id")
@@ -506,6 +511,7 @@ def register_atlas_web_routes(
                     limit=80,
                 )
                 history = list(thread["messages"])
+                agent_id = str(thread["thread"].get("agent_id") or "atlas-tvr-a")
             except (TypeError, ValueError):
                 return web.json_response(
                     {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
@@ -516,6 +522,7 @@ def register_atlas_web_routes(
             organization_id,
             int(selected.user_id),
             exclude_thread_id=thread_id,
+            agent_id=agent_id,
         )
         response = web.StreamResponse(
             status=200,
@@ -550,7 +557,7 @@ def register_atlas_web_routes(
                 history=history,
                 memory=memory,
                 response_mode=str(payload.get("response_mode") or "balanced"),
-                model_id=str(payload.get("model") or "atlas-tvr-a"),
+                model_id=agent_id,
                 user_profile=dict(dashboard["membership"].get("profile") or {}),
             )
             if thread_id is None:
@@ -559,6 +566,7 @@ def register_atlas_web_routes(
                     organization_id,
                     int(selected.user_id),
                     question[:100],
+                    agent_id=agent_id,
                 )
             await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
             assistant_message_id = await asyncio.to_thread(

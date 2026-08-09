@@ -471,6 +471,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
+                agent_id TEXT NOT NULL DEFAULT 'atlas-tvr-a',
                 title TEXT NOT NULL DEFAULT 'Новый диалог',
                 status TEXT NOT NULL DEFAULT 'active'
                     CHECK(status IN ('active', 'archived')),
@@ -1772,6 +1773,12 @@ def init_db() -> None:
             "TEXT NOT NULL DEFAULT 'workspace'",
         )
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
+        _add_column_if_missing(
+            con,
+            "atlas_ai_threads",
+            "agent_id",
+            "TEXT NOT NULL DEFAULT 'atlas-tvr-a'",
+        )
         if atlas_scope_missing:
             # Existing material remains private. Marking it pending replaces
             # old Qdrant payloads with the new access-scope token on startup.

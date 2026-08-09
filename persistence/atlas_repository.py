@@ -1250,15 +1250,25 @@ def atlas_knowledge_revisions(source_id: int) -> list[dict[str, Any]]:
     return [_row(row) for row in rows]
 
 
-def atlas_create_thread(organization_id: int, user_id: int, title: str) -> int:
+def atlas_create_thread(
+    organization_id: int,
+    user_id: int,
+    title: str,
+    *,
+    agent_id: str = "atlas-tvr-a",
+) -> int:
     now = utc_now_iso()
     with _db_lock, connect() as con:
         cursor = con.execute(
             """
-            INSERT INTO atlas_ai_threads(organization_id, user_id, title, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO atlas_ai_threads(
+                organization_id, user_id, agent_id, title, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?)
             """,
-            (int(organization_id), int(user_id), str(title or "Новый диалог")[:120], now, now),
+            (
+                int(organization_id), int(user_id), str(agent_id or "atlas-tvr-a")[:80],
+                str(title or "Новый диалог")[:120], now, now,
+            ),
         )
         con.commit()
         return int(cursor.lastrowid)
@@ -1494,6 +1504,7 @@ def atlas_recent_chat_memory(
     user_id: int,
     *,
     exclude_thread_id: int | None = None,
+    agent_id: str | None = None,
     limit: int = 80,
     max_chars: int = 14_000,
 ) -> list[dict[str, Any]]:
@@ -1504,6 +1515,10 @@ def atlas_recent_chat_memory(
     if exclude_thread_id is not None:
         exclusion = "AND t.id != ?"
         params.append(int(exclude_thread_id))
+    agent_filter = ""
+    if agent_id:
+        agent_filter = "AND t.agent_id = ?"
+        params.append(str(agent_id)[:80])
     params.append(max(1, min(100, int(limit))))
     with connect_readonly() as con:
         rows = con.execute(
@@ -1525,6 +1540,7 @@ def atlas_recent_chat_memory(
                     )
                   )
                   {exclusion}
+                  {agent_filter}
             )
             SELECT * FROM ranked
             WHERE message_rank <= 4

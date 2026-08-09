@@ -158,6 +158,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 int(mapping["organization_id"]),
                 int(mapping["owner_user_id"]),
                 exclude_thread_id=int(mapping["atlas_thread_id"]),
+                agent_id="atlas-tvr-a",
             )
             dashboard = await asyncio.to_thread(
                 atlas_storage.atlas_dashboard,

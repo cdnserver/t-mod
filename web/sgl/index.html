@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0a1019">
+  <meta name="description" content="T-Mod SGL — цифровое бюро дел, документов и архивов.">
+  <title>SGL · T-Mod</title>
+  <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/fonts.css">
+  <link rel="stylesheet" href="/sgl/assets/style.css?v=20260809-sgl-v1">
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
+  <section id="loading" class="loading"><div class="seal"><span>S</span></div><b>Открываем защищённый реестр</b><small>сверяем дела и архивы</small></section>
+
+  <div id="app" class="shell" hidden>
+    <aside class="rail">
+      <a class="brand" href="/"><span class="brand-seal">S</span><span><b>SGL</b><small>T‑MOD LEGAL SYSTEM</small></span></a>
+      <nav>
+        <button class="active" data-screen="desk"><span>⌂</span><b>Оперативный стол</b></button>
+        <button data-screen="cases"><span>§</span><b>Реестр дел</b></button>
+        <button data-screen="archive"><span>◇</span><b>Архив</b></button>
+      </nav>
+      <div class="rail-note"><i></i><span><b>Единый реестр</b><small>синхронизирован с Discord</small></span></div>
+      <a class="reactor-link" href="https://reactor.tvr.lat/#/sgl">Ядерный Реактор <span>↗</span></a>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><small id="section-kicker">SGL · COMMAND DESK</small><h1 id="section-title">Оперативный стол</h1></div>
+        <div class="top-actions"><button id="refresh" title="Обновить">↻</button><span class="live"><i></i>ЖИВОЙ РЕЕСТР</span><span class="viewer"><b id="viewer-name">—</b><small>защищённая сессия</small></span></div>
+      </header>
+
+      <div class="content">
+        <section id="screen-desk" class="screen active">
+          <article class="hero">
+            <div><span class="eyebrow">T‑MOD · SGL</span><h2>Каждое дело.<br><em>В правильном порядке.</em></h2><p>Единая рабочая система бюро: от первого обращения и назначения команды до закрытия и долговечного архива.</p><button data-jump="cases">Открыть реестр <span>→</span></button></div>
+            <div class="docket" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><strong>§</strong><small>CASE<br>CONTROL</small><i class="pin p1"></i><i class="pin p2"></i><i class="pin p3"></i></div>
+          </article>
+          <div class="metrics"><article><small>ВСЕГО ДЕЛ</small><strong id="count-all">0</strong><span>в едином реестре</span></article><article><small>В РАБОТЕ</small><strong id="count-open">0</strong><span>требуют внимания</span></article><article><small>ЗАКРЫТО</small><strong id="count-closed">0</strong><span>работа завершена</span></article><article><small>В АРХИВЕ</small><strong id="count-archives">0</strong><span>сохранено полностью</span></article></div>
+          <div class="desk-grid"><article class="priority"><header><span>ПОСЛЕДНИЕ ДЕЛА</span><button data-jump="cases">Весь реестр →</button></header><div id="recent-cases"></div></article><article class="principles"><span>КОНТУР БЮРО</span><h3>Всё важное остаётся связанным</h3><ol><li><i>01</i><span><b>Дело и команда</b><small>клиент, ведущий юрист и секретарь</small></span></li><li><i>02</i><span><b>Ход работы</b><small>события, документы, чек и статус</small></span></li><li><i>03</i><span><b>Безопасный архив</b><small>история восстанавливается по номеру</small></span></li></ol></article></div>
+        </section>
+
+        <section id="screen-cases" class="screen">
+          <div class="intro"><div><small>SGL · CASE REGISTRY</small><h2>Реестр дел</h2><p>Поиск по номеру, клиенту, сотрудникам, типу обращения и статику.</p></div></div>
+          <form id="case-filter" class="filter"><label><span>Поиск</span><input name="q" placeholder="Номер, клиент, сотрудник…"></label><label><span>Состояние</span><select name="status"><option value="">Все состояния</option></select></label><button>Найти</button></form>
+          <div id="case-list" class="case-list"></div>
+        </section>
+
+        <section id="screen-archive" class="screen">
+          <div class="intro"><div><small>SGL · DURABLE ARCHIVE</small><h2>Архив дел</h2><p>Снимки переписки и вложений. Администратор может открыть временную восстановленную копию в Discord.</p></div></div>
+          <div id="archive-list" class="archive-list"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="case-dialog"><button class="close" data-close>×</button><div id="case-detail"></div></dialog>
+  <dialog id="confirm-dialog" class="confirm"><div class="confirm-mark">!</div><small>ЗАЩИЩЁННОЕ ДЕЙСТВИЕ</small><h3>Восстановить архив?</h3><p id="confirm-copy"></p><div><button data-close>Отмена</button><button id="confirm-action" class="danger">Восстановить</button></div></dialog>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/sgl/assets/app.js?v=20260809-sgl-v1" defer></script>
+</body>
+</html>

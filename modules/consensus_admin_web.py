@@ -135,6 +135,7 @@ PORTAL_CAPABILITIES = (
         "section": "sgl",
         "scope": "administrator",
         "state": "integrated",
+        "url": "https://sgl.tvr.lat/",
     },
     {
         "id": "members",

@@ -80,6 +80,16 @@ atlas.tvr.lat {
 	}
 }
 
+sgl.tvr.lat {
+	handle / {
+		rewrite * /sgl
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 zigmund.tvr.lat {
 	handle / {
 		rewrite * /egg

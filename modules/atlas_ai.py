@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from modules.atlas_taxonomy import atlas_classify_knowledge
+from modules.atlas_agents import AtlasAgent, atlas_agent_catalog, atlas_resolve_agent
 from persistence import atlas_repository as atlas_storage
 
 
@@ -96,6 +97,7 @@ class _AtlasAnswerRequest:
     response_mode: str
     requested_response_mode: str
     research_plan: list[dict[str, Any]]
+    agent: AtlasAgent
 
 
 def atlas_ai_config() -> AtlasAIConfig:
@@ -1181,6 +1183,7 @@ async def _run_aristotle_agents(
         )
 
     async def execute(step: dict[str, Any]) -> dict[str, str]:
+        agent_started = time.monotonic()
         try:
             body = await _json_request(
                 "POST",
@@ -1216,9 +1219,15 @@ async def _run_aristotle_agents(
             report = _answer_text(body).strip()
             if not report:
                 raise ValueError("atlas_agent_answer_empty")
-            return {"step_id": str(step["id"]), "status": "complete", "report": report[:6000]}
+            return {
+                "step_id": str(step["id"]), "status": "complete", "report": report[:6000],
+                "elapsed_ms": str(round((time.monotonic() - agent_started) * 1000)),
+            }
         except (AtlasAIError, TypeError, ValueError):
-            return {"step_id": str(step["id"]), "status": "degraded", "report": ""}
+            return {
+                "step_id": str(step["id"]), "status": "degraded", "report": "",
+                "elapsed_ms": str(round((time.monotonic() - agent_started) * 1000)),
+            }
 
     results = await asyncio.gather(*(execute(step) for step in workers))
     by_id = {str(step["id"]): step for step in workers}
@@ -1235,6 +1244,8 @@ async def _run_aristotle_agents(
                 "step_id": result["step_id"],
                 "status": result["status"],
                 "detail": preview or "Агент не ответил; синтез продолжится по доступным материалам",
+                "report": result["report"][:1800],
+                "elapsed_ms": int(result["elapsed_ms"]),
             },
         )
     return [result for result in results if result["report"]]
@@ -1257,9 +1268,10 @@ async def _prepare_atlas_answer(
     if len(clean_question) < 2:
         raise AtlasAIError("question_required", "Введите вопрос для Atlas.")
     config = atlas_ai_config()
-    selected_model = str(model_id or "atlas-tvr-a").strip().lower()
-    if selected_model != "atlas-tvr-a":
-        raise AtlasAIError("atlas_model_invalid", "Выбранная модель Atlas недоступна.")
+    try:
+        selected_agent = atlas_resolve_agent(model_id)
+    except ValueError:
+        raise AtlasAIError("atlas_model_invalid", "Выбранная модель Atlas недоступна.") from None
     if not config.configured:
         raise AtlasAIError("atlas_ai_not_configured", "ИИ-контур Atlas ещё не настроен администратором.")
     started = time.monotonic()
@@ -1380,6 +1392,7 @@ async def _prepare_atlas_answer(
             "role": "system",
             "content": (
                 "Ты — Atlas, интеллектуальный помощник государственных структур Majestic RP. "
+                f"Активный профиль: {selected_agent.name}. {selected_agent.instruction} "
                 f"Текущий сервер: {server_code}; текущая фракция: {faction_code}. "
                 f"Рабочий профиль пользователя: {profile_context or 'не заполнен'}. "
                 "Отвечай по-русски и сохраняй контекст диалога. Разделяй подтверждённые факты, "
@@ -1460,6 +1473,7 @@ async def _prepare_atlas_answer(
         response_mode=mode,
         requested_response_mode=requested_mode,
         research_plan=research_plan,
+        agent=selected_agent,
     )
 
 
@@ -1501,7 +1515,8 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
     return {
         "answer": clean_answer[:30000],
         "citations": citations,
-        "model": "atlas-tvr-a",
+        "model": prepared.agent.id,
+        "agent": prepared.agent.public(),
         "response_mode": prepared.response_mode,
         "requested_response_mode": prepared.requested_response_mode,
         "research_plan": prepared.research_plan,
@@ -1676,13 +1691,7 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
         "qdrant": qdrant,
         "openrouter": "configured" if bool(config.openrouter_key) else "disabled",
         "chat_model": "atlas-tvr-a",
-        "models": [
-            {
-                "id": "atlas-tvr-a",
-                "name": "atlas-tvr-a",
-                "description": "Основная интеллектуальная модель Atlas",
-            }
-        ],
+        "models": atlas_agent_catalog(),
         "embedding_model": config.embedding_model,
         "collection": config.collection,
     }

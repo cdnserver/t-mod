@@ -501,6 +501,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Host": "atlas.tvr.lat"},
                 allow_redirects=False,
             )
+            sgl = await client.get(
+                "/sgl",
+                headers={"Host": "reactor.tvr.lat"},
+                allow_redirects=False,
+            )
         finally:
             await client.close()
 
@@ -511,6 +516,36 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ticket.status, 308)
         self.assertIn("https://reactor.tvr.lat/auth/ticket?", ticket.headers["Location"])
         self.assertEqual(canonical.status, 200)
+        self.assertEqual(sgl.status, 308)
+        self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
+
+    async def test_sgl_surface_is_separate_and_requires_account(self) -> None:
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            page = await client.get("/sgl", headers={"Host": "sgl.tvr.lat"})
+            page_text = await page.text()
+            registry = await client.get("/api/sgl/bootstrap", headers={"Host": "sgl.tvr.lat"})
+
+        self.assertEqual(page.status, 200)
+        self.assertIn("T-Mod SGL", page_text)
+        self.assertEqual(registry.status, 401)
+
+    async def test_sgl_registry_uses_shared_administrator_identity(self) -> None:
+        principal = self._principal(user_id=42)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                response = await client.get(
+                    "/api/sgl/bootstrap", headers={"Host": "sgl.tvr.lat"}
+                )
+                payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["viewer"]["administrator"])
+        self.assertEqual(payload["counts"]["all"], 0)
 
     async def test_existing_tmod_account_session_skips_repeated_login(self) -> None:
         principal = self._principal(user_id=42)

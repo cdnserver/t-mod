@@ -1988,7 +1988,10 @@ function capabilityCard(capability) {
       node("b", { text: "Открыть →" }),
     ]),
   ]);
-  card.addEventListener("click", () => switchSection(capability.section));
+  card.addEventListener("click", () => {
+    if (capability.url) location.assign(capability.url);
+    else switchSection(capability.section);
+  });
   return card;
 }
 

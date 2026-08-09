@@ -29,6 +29,7 @@ from modules.atlas_ai import (
     atlas_research_plan,
     atlas_search,
 )
+from modules.atlas_agents import atlas_agent_catalog, atlas_resolve_agent
 from modules.atlas_knowledge import AtlasKnowledgeFileError, atlas_extract_knowledge_file
 from modules.atlas_taxonomy import atlas_classify_knowledge
 from modules.atlas_forum_sync import AtlasForumSnapshot
@@ -86,6 +87,27 @@ class AtlasRepositoryTests(unittest.TestCase):
             atlas_repository.atlas_set_message_feedback(
                 organization_id, 99, message_id, "good"
             )
+
+    def test_agent_threads_have_isolated_memory_lanes(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        general = atlas_repository.atlas_create_thread(
+            organization_id, 42, "Общий", agent_id="atlas-tvr-a"
+        )
+        claims = atlas_repository.atlas_create_thread(
+            organization_id, 42, "Иск", agent_id="atlas-claims"
+        )
+        atlas_repository.atlas_add_message(general, "user", "Личная общая заметка")
+        atlas_repository.atlas_add_message(claims, "user", "Факты искового дела")
+
+        memory = atlas_repository.atlas_recent_chat_memory(
+            organization_id, 42, agent_id="atlas-claims"
+        )
+        stored = atlas_repository.atlas_thread_messages(organization_id, 42, claims)
+
+        self.assertEqual(stored["thread"]["agent_id"], "atlas-claims")
+        self.assertEqual([item["content_text"] for item in memory], ["Факты искового дела"])
+        self.assertNotIn("Личная общая заметка", str(memory))
 
     def test_onboarding_and_document_are_persisted(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -410,6 +432,14 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    def test_agent_registry_preserves_general_and_adds_specialists(self) -> None:
+        catalog = atlas_agent_catalog()
+        self.assertEqual(catalog[0]["id"], "atlas-tvr-a")
+        self.assertIn("atlas-claims", {item["id"] for item in catalog})
+        self.assertIn("исков", atlas_resolve_agent("atlas-claims").specialty.casefold())
+        with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
+            atlas_resolve_agent("unknown")
+
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
             os.environ,

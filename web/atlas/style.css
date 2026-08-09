@@ -760,7 +760,9 @@ body:has(.atlas-app:not([hidden])) {
 .assistant-message.streaming.has-content .rich-text::after { content:""; display:inline-block; width:2px; height:1.05em; margin-left:4px; vertical-align:-.16em; background:#78ddff; box-shadow:0 0 12px rgba(120,221,255,.8); animation:atlas-caret .65s steps(1,end) infinite; }
 .response-mode-switch .aristotle-mode { color: #9ba6ef; }
 .response-mode-switch .aristotle-mode.active { color: #f0edff; background: linear-gradient(135deg, rgba(110, 101, 221, .22), rgba(69, 147, 181, .13)); box-shadow: inset 0 0 0 1px rgba(163, 155, 255, .13); }
-.research-progress { margin: 12px 0 16px; padding: 14px; border: 1px solid rgba(143, 137, 244, .17); border-radius: 15px; background: linear-gradient(145deg, rgba(77, 68, 162, .1), rgba(41, 105, 132, .055)); }
+.research-progress { position:relative; overflow:hidden; margin: 12px 0 16px; padding: 14px; border: 1px solid rgba(143, 137, 244, .17); border-radius: 15px; background: linear-gradient(145deg, rgba(77, 68, 162, .1), rgba(41, 105, 132, .055)); }
+.research-progress::before { content:""; position:absolute; width:180px; height:180px; right:-90px; top:-100px; border:1px solid rgba(151,143,244,.12); border-radius:50%; box-shadow:0 0 55px rgba(99,91,208,.08); animation:atlasResearchOrbit 12s linear infinite; pointer-events:none; }
+@keyframes atlasResearchOrbit { to { transform:rotate(360deg) translateX(8px); } }
 .research-progress > header { color: #9ca5ef; font: 700 8px/1.2 "Unbounded", sans-serif; letter-spacing: .1em; }
 .research-steps { display: grid; gap: 7px; margin: 12px 0; padding: 0; list-style: none; }
 .research-steps li { display: grid; grid-template-columns: 18px 1fr; align-items: start; gap: 7px; color: #6e8792; font-size: 9px; transition: .22s ease; }
@@ -771,6 +773,9 @@ body:has(.atlas-app:not([hidden])) {
 .research-steps li.running { color: #c6dce3; }.research-steps li.running i { color: #81dcf6; text-shadow: 0 0 12px rgba(129, 220, 246, .7); animation: previewStatus 1.2s ease-in-out infinite; }
 .research-steps li.complete { color: #8fa89f; }.research-steps li.complete i { color: #6ee0ba; }
 .research-steps li.degraded { color: #b7a584; }.research-steps li.degraded i { color: #e9ba70; }
+.agent-work-report { margin-top: 7px; padding: 7px 9px; border: 1px solid rgba(130,208,236,.1); border-radius: 9px; background: rgba(3,13,20,.42); }
+.agent-work-report summary { color: #8db6c5; cursor: pointer; font-size: 8px; font-weight: 750; }
+.agent-work-report p { max-height: 170px; overflow: auto; margin: 8px 0 0; color: #9db2ba; white-space: pre-wrap; font-size: 8px; line-height: 1.55; }
 .research-progress > footer { padding-top: 10px; border-top: 1px solid rgba(142, 203, 226, .08); color: #607a85; font-size: 8px; }
 .research-progress.complete { border-color: rgba(104, 221, 186, .17); }
 @media (max-width: 620px) {

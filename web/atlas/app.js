@@ -46,6 +46,11 @@ function clear(node) {
   while (node.firstChild) node.firstChild.remove();
 }
 
+function atlasAgent(agentId = appState.modelId) {
+  return (appState.data?.ai?.models || []).find((item) => item.id === agentId)
+    || { id: "atlas-tvr-a", name: "Генеральный Atlas", short_name: "Генеральный", glyph: "A", description: "Универсальный интеллектуальный помощник Atlas" };
+}
+
 function appendInlineMarkdown(parent, value) {
   const text = String(value || "");
   const token = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*[^*\n]+\*)/g;
@@ -332,9 +337,10 @@ function threadCard(thread) {
   button.dataset.threadId = String(thread.id);
   button.classList.toggle("active", Number(thread.id) === Number(appState.threadId));
   const copy = element("span");
+  const agent = atlasAgent(thread.agent_id);
   copy.append(
     element("b", "", thread.title || "Новый диалог"),
-    element("small", "", thread.preview || "Диалог без сообщений"),
+    element("small", "", `${agent.short_name || agent.name} · ${thread.preview || "Диалог без сообщений"}`),
   );
   const date = element("time", "", readableTime(thread.updated_at, ""));
   button.append(copy, date);
@@ -545,6 +551,8 @@ function render(data) {
   (ai.models || [{ id: "atlas-tvr-a", name: "atlas-tvr-a" }]).forEach((model) => {
     modelSelect.append(new Option(model.name || model.id, model.id, false, model.id === appState.modelId));
   });
+  if (![...modelSelect.options].some((option) => option.value === appState.modelId)) appState.modelId = "atlas-tvr-a";
+  modelSelect.value = appState.modelId;
   const aiState = byId("ai-state");
   aiState.classList.toggle("warning", !ai.configured || ai.qdrant !== "ok");
   aiState.querySelector("small").textContent = ai.configured && ai.qdrant === "ok" ? "готов" : "настройка";
@@ -578,9 +586,10 @@ function render(data) {
 
 function messageNode(role, text, citations = [], options = {}) {
   const row = element("div", role === "user" ? "user-message" : "assistant-message");
-  if (role !== "user") row.append(element("span", "", "A"));
+  const agent = atlasAgent(options.agentId);
+  if (role !== "user") row.append(element("span", "", agent.glyph || "A"));
   const copy = element("div");
-  if (role !== "user") copy.append(element("small", "", "ATLAS · ОТВЕТ С КОНТЕКСТОМ"));
+  if (role !== "user") copy.append(element("small", "", `${String(agent.short_name || "ATLAS").toUpperCase()} · АГЕНТ ATLAS`));
   const richText = element("div", "rich-text");
   renderRichText(richText, text);
   copy.append(richText);
@@ -645,7 +654,7 @@ function updateResearchProgress(copy, event) {
       const item = element("li", "pending");
       item.dataset.stepId = step.id;
       const description = element("span");
-      description.append(element("b", "", step.agent), element("small", "", `${step.role || "Исследователь"} · ${step.title}`));
+      description.append(element("b", "", step.agent), element("small", "agent-assignment", `${step.role || "Исследователь"} · ${step.title}`));
       item.append(element("i", "", "○"), description);
       list.append(item);
     });
@@ -669,6 +678,17 @@ function updateResearchProgress(copy, event) {
       item.querySelector("i").textContent = event.status === "complete" ? "✓" : "!";
       const detail = item.querySelector("small");
       if (detail && event.detail) detail.textContent = event.detail;
+      if (event.report) {
+        let report = item.querySelector("details");
+        if (!report) {
+          report = element("details", "agent-work-report");
+          report.append(element("summary", "", "Открыть рабочий отчёт"), element("p"));
+          item.querySelector("span").append(report);
+        }
+        report.querySelector("p").textContent = event.report;
+        const seconds = Math.max(.1, Number(event.elapsed_ms || 0) / 1000).toFixed(1);
+        report.querySelector("summary").textContent = `Рабочий отчёт · ${seconds} с`;
+      }
     }
   } else if (event.phase === "evidence") {
     const domains = Object.entries(event.domains || {}).map(([key, count]) => `${key}: ${count}`).join(" · ");
@@ -843,6 +863,11 @@ async function loadThreads() {
 async function loadThread(threadId) {
   const result = await api(`/api/atlas/threads/${encodeURIComponent(threadId)}`);
   appState.threadId = Number(result.thread.id);
+  appState.modelId = result.thread.agent_id || "atlas-tvr-a";
+  byId("atlas-model").value = appState.modelId;
+  const selectedAgent = atlasAgent(appState.modelId);
+  byId("context-model").textContent = selectedAgent.name;
+  byId("context-collection").textContent = selectedAgent.description;
   byId("current-thread-title").textContent = result.thread.title || "Диалог";
   const stream = byId("chat-stream");
   clear(stream);
@@ -850,6 +875,7 @@ async function loadThread(threadId) {
     stream.append(messageNode(message.role, message.content_text, message.citations || [], {
       messageId: message.id,
       feedback: message.feedback_rating || "",
+      agentId: message.model || result.thread.agent_id,
     }));
   });
   if (!(result.messages || []).length) resetChatStream();
@@ -923,8 +949,18 @@ function bind() {
   byId("atlas-server").addEventListener("change", () => void updateScope());
   byId("atlas-faction").addEventListener("change", () => void updateScope());
   byId("atlas-model").addEventListener("change", (event) => {
+    if (appState.busy) {
+      event.currentTarget.value = appState.modelId;
+      showToast("Дождитесь ответа Atlas перед сменой агента.");
+      return;
+    }
     appState.modelId = event.currentTarget.value || "atlas-tvr-a";
-    showToast(`Модель: ${appState.modelId}`);
+    const label = event.currentTarget.selectedOptions[0]?.textContent || appState.modelId;
+    const agent = atlasAgent(appState.modelId);
+    byId("context-model").textContent = agent.name || label;
+    byId("context-collection").textContent = agent.description || "Отдельный рабочий контур";
+    if (appState.threadId) newChat();
+    showToast(`Агент: ${label}. Создан отдельный диалог и контур памяти.`);
   });
   document.querySelectorAll(".atlas-nav [data-screen]").forEach((button) => {
     button.addEventListener("click", () => switchScreen(button.dataset.screen));
