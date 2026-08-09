@@ -46,6 +46,18 @@ def sync_config() -> AtlasForumSyncConfig:
 
 
 class AtlasForumParserTests(unittest.TestCase):
+    def test_hidden_login_overlay_does_not_mask_authenticated_listing(self) -> None:
+        page = """
+        <html><body>
+          <form action="/login"><input type="password" /></form>
+          <div class="structItem-title">
+            <a href="/threads/ugolovnyi-kodeks.123/">Уголовный кодекс</a>
+          </div>
+        </body></html>
+        """
+
+        self.assertIsNone(forum_interstitial_kind(page))
+
     def test_listing_collects_canonical_threads_and_next_page(self) -> None:
         page = """
         <html><body>

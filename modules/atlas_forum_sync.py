@@ -267,6 +267,22 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
 
 def forum_interstitial_kind(page_html: str) -> str | None:
     lowered = str(page_html or "").lower()
+    # XenForo keeps a hidden login overlay in the DOM even for authenticated
+    # visitors.  Real forum content takes precedence over that dormant form.
+    try:
+        tree = html.fromstring(str(page_html or ""))
+        has_forum_content = bool(
+            tree.xpath(
+                "//div[contains(@class,'structItem-title')]"
+                "//a[contains(@href,'/threads/')]"
+                " | //article[contains(@class,'message')]"
+                "//div[contains(@class,'message-body')]"
+            )
+        )
+        if has_forum_content:
+            return None
+    except (TypeError, ValueError):
+        pass
     if any(marker in lowered for marker in _MANUAL_MARKERS):
         return "manual"
     if "/login" in lowered and any(marker in lowered for marker in _LOGIN_FORM_MARKERS):
