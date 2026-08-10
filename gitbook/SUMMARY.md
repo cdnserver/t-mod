@@ -1,6 +1,11 @@
-# SUMMARY
+# Table of contents
 
-* [Добро пожаловать](./)
+* [README](README.md)
+* [Добро пожаловать](dobro-pozhalovat.md)
+
+## Дневник Соула
+
+* [10 08 2026 // Атлас, и мысли о будущем](dnevnik-soula/10-08-2026-atlas-i-mysli-o-budushem.md)
 
 ## Что нового
 
@@ -31,7 +36,7 @@
 
 * [Операционный центр и его каналы](tvrs/operations-center.md)
 * [Рынок RU15 и поиск цен](tvrs/market.md)
-* [Главное меню `/tvrs`](tvrs/universality.md)
+* [Главное меню /tvrs](tvrs/universality.md)
 * [Казна и финансовые операции](tvrs/finance.md)
 * [Крафты и производственные планы](tvrs/craft.md)
 * [Аудит, статистика и отмена](tvrs/audit.md)
