@@ -25,14 +25,13 @@
 
     <header class="ref-header ref-pad">
       <a class="ref-brand" href="/sgl" aria-label="SGL · Юридическое бюро Соула Гудмана">
-        <span class="ref-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span>
-        <span><strong>Юридическое бюро Соула Гудмана</strong><small>SGL · LAW BUREAU · T‑MOD</small></span>
+        <img class="ref-brand-logo" src="/sgl/assets/logo-vector.svg" alt="SGL">
+        <span><strong>Юридическое бюро Соула Гудмана</strong><small>SGL · PHOENIX LEGAL BUREAU</small></span>
       </a>
       <nav class="ref-nav" aria-label="Навигация публичной страницы">
         <a href="#services">Услуги</a>
         <a href="#process">Как работаем</a>
         <a href="#standards">Стандарты</a>
-        <a href="#registry">Реестр</a>
       </nav>
       <a id="public-discord-top" class="ref-nav-cta" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer">Обращение →</a>
     </header>
@@ -52,15 +51,28 @@
           </div>
         </div>
 
-        <aside class="ref-panel" aria-label="Живой реестр SGL">
-          <header><span>ЖИВОЙ РЕЕСТР</span><b><i></i>ЗАЩИЩЁННАЯ СЕССИЯ</b></header>
-          <div class="ref-counters">
-            <article><small>ВСЕГО ДЕЛ</small><strong id="public-count-all">0</strong><em>в едином реестре</em></article>
-            <article><small>В РАБОТЕ</small><strong id="public-count-open">0</strong><em>требуют внимания</em></article>
-            <article><small>ЗАКРЫТО</small><strong id="public-count-closed">0</strong><em>работа завершена</em></article>
-            <article><small>В АРХИВЕ</small><strong id="public-count-archives">0</strong><em>сохранено полностью</em></article>
+        <aside class="ref-intake-panel" aria-label="Приёмная SGL">
+          <header><span>ПРИЁМНАЯ SGL</span><b><i></i>LIVE</b></header>
+          <div class="ref-intake-body">
+            <small class="ref-intake-kicker">ТЕКУЩИЙ СТАТУС</small>
+            <h3>Приём обращений открыт</h3>
+            <p>Нажмите «Открыть приёмную», коротко опишите ситуацию и при необходимости приложите материалы. После первичного приёма бюро определит следующий шаг и откроет дело в системе SGL.</p>
+            <div class="ref-intake-links">
+              <a href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer">Открыть приёмную →</a>
+              <a href="https://discord.com/users/1010474387352322048" target="_blank" rel="noreferrer">Секретарь</a>
+            </div>
+            <ul class="ref-intake-points">
+              <li><b>Приём обращения</b><span>через Discord-приёмную бюро</span></li>
+              <li><b>Единый контур</b><span>дело, документы и история фиксируются в системе SGL</span></li>
+              <li><b>Конфиденциальность</b><span>доступ получают только участники дела</span></li>
+            </ul>
+            <div class="ref-intake-stats">
+              <span><strong id="public-count-all">0</strong><small>всего дел</small></span>
+              <span><strong id="public-count-open">0</strong><small>в работе</small></span>
+              <span><strong id="public-count-closed">0</strong><small>закрыто</small></span>
+              <span><strong id="public-count-archives">0</strong><small>архив</small></span>
+            </div>
           </div>
-          <footer><span id="public-registry-status">РЕЕСТР ГОТОВ К ПЕРВОМУ ДЕЛУ</span><a href="https://reactor.tvr.lat/#/sgl" target="_blank" rel="noreferrer">Открыть →</a></footer>
         </aside>
       </section>
 
@@ -101,26 +113,6 @@
         </div>
       </section>
 
-      <section id="registry" class="ref-section ref-pad">
-        <div class="ref-registry-wrap">
-          <div>
-            <span class="ref-mini-title">04 — РЕЕСТР И АРХИВ</span>
-            <h2>Дело не теряется <em class="accent">никогда.</em></h2>
-            <p>Поиск по номеру, клиенту, сотрудникам, типу обращения и статусу. Закрытые дела уходят в архив со снимками переписки и вложений — историю можно восстановить по номеру.</p>
-            <a href="https://reactor.tvr.lat/#/sgl" target="_blank" rel="noreferrer">Открыть реестр →</a>
-          </div>
-          <aside class="ref-search-card" aria-label="Превью реестра">
-            <div class="ref-search-bar"><span>Поиск по номеру или клиенту</span><b>Найти</b></div>
-            <dl>
-              <div><dt>НОМЕР ДЕЛА</dt><dd id="public-case-number">SGL-____</dd></div>
-              <div><dt>КОМАНДА</dt><dd id="public-case-team">юрист · секретарь</dd></div>
-              <div><dt>СОСТОЯНИЕ</dt><dd id="public-case-state">все состояния</dd></div>
-            </dl>
-            <p id="public-case-note">Пока ни одно дело не заведено.<br>Первое обращение откроет карточку в реестре.</p>
-          </aside>
-        </div>
-      </section>
-
       <section id="contact" class="ref-contact ref-pad">
         <div>
           <span>SGL · ПРИЁМНАЯ</span>
@@ -139,7 +131,7 @@
 
   <div id="app" class="shell" hidden>
     <aside class="rail">
-      <a class="brand" href="/"><span class="brand-seal sgl-lockup"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span><span><b>LAW BUREAU</b><small>T‑MOD · CASE SYSTEM</small></span></a>
+      <a class="brand" href="/"><img class="brand-logo" src="/sgl/assets/logo-vector.svg" alt="SGL"><span><b>LAW BUREAU</b><small>T‑MOD · CASE SYSTEM</small></span></a>
       <nav>
         <button class="active" data-screen="desk"><span>⌂</span><b>Оперативный стол</b></button>
         <button data-screen="cases"><span>§</span><b>Реестр дел</b></button>
