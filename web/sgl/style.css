@@ -71,3 +71,53 @@ html{scroll-behavior:smooth}.sgl-reference-site{position:relative;min-height:100
 .ref-brand-mark{flex:0 0 auto}
 .ref-panel,.ref-service-grid article,.ref-three article,.ref-standard-list article,.ref-search-card,.ref-contact>div{will-change:transform}
 @media(max-width:650px){.ref-brand strong{font-size:13px;white-space:normal;line-height:1.15}.ref-brand{gap:10px}.ref-brand-mark img{width:58px}}
+
+
+/* v9 public refinements */
+.ref-brand{gap:16px!important}
+.ref-brand-logo{display:block;width:112px;max-width:32vw;height:auto;flex:0 0 auto;filter:drop-shadow(0 6px 20px rgba(0,0,0,.28))}
+.ref-brand-mark{display:none!important}
+.ref-brand>span:last-child{display:grid;gap:4px}
+.ref-brand strong{font-size:15px;line-height:1.15;letter-spacing:-.015em}
+.ref-brand small{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9px;letter-spacing:.18em;color:rgba(230,235,243,.42)}
+.brand-logo{display:block;width:78px;height:auto;flex:0 0 auto;filter:drop-shadow(0 4px 14px rgba(0,0,0,.2))}
+.brand .brand-seal{display:none!important}
+.brand{gap:14px!important;align-items:center!important}
+
+.ref-intake-panel{border-radius:28px;background:linear-gradient(180deg,rgba(230,235,243,.055),rgba(230,235,243,.018));border:1px solid var(--ref-line);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.28)}
+.ref-intake-panel>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid var(--ref-line);font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10px;letter-spacing:.18em;color:rgba(230,235,243,.45)}
+.ref-intake-panel>header b{display:flex;align-items:center;gap:8px;color:var(--ref-green);font-weight:500}
+.ref-intake-panel>header i{width:6px;height:6px;background:var(--ref-green);border-radius:50%;animation:ref-pulse 2s ease-in-out infinite}
+.ref-intake-body{padding:28px 26px 24px;display:grid;gap:18px}
+.ref-intake-kicker{display:block;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:10px;letter-spacing:.18em;color:var(--ref-gold)}
+.ref-intake-body h3{margin:0;font-size:clamp(32px,4vw,52px);line-height:1.02;letter-spacing:-.04em;font-weight:400;max-width:8ch}
+.ref-intake-body>p{margin:0;max-width:50ch;font-size:15px;line-height:1.75;color:rgba(230,235,243,.58)}
+.ref-intake-links{display:flex;gap:12px;flex-wrap:wrap}
+.ref-intake-links a{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;border-radius:14px;text-decoration:none;transition:transform .35s var(--ref-ease),background .2s,border-color .2s,color .2s}
+.ref-intake-links a:first-child{background:linear-gradient(180deg,var(--ref-gold-hi),var(--ref-gold));color:#0a1019;font-weight:650;box-shadow:0 12px 28px rgba(200,176,138,.24)}
+.ref-intake-links a:first-child:hover{transform:translateY(-2px)}
+.ref-intake-links a:last-child{background:rgba(230,235,243,.04);border:1px solid rgba(230,235,243,.08);color:#e6ebf3}
+.ref-intake-links a:last-child:hover{background:rgba(230,235,243,.07)}
+.ref-intake-points{display:grid;gap:10px;list-style:none;margin:2px 0 0;padding:0}
+.ref-intake-points li{display:grid;grid-template-columns:150px 1fr;gap:18px;align-items:start;padding-top:10px;border-top:1px solid rgba(230,235,243,.06)}
+.ref-intake-points b{font-size:13px;font-weight:600;letter-spacing:-.01em}
+.ref-intake-points span{font-size:13px;line-height:1.6;color:rgba(230,235,243,.52)}
+.ref-intake-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding-top:4px}
+.ref-intake-stats span{padding:14px 14px 13px;border-radius:14px;background:rgba(230,235,243,.03);border:1px solid rgba(230,235,243,.05)}
+.ref-intake-stats strong{display:block;font-size:22px;line-height:1;font-weight:500;letter-spacing:-.03em}
+.ref-intake-stats small{display:block;margin-top:7px;font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:9px;letter-spacing:.14em;color:rgba(230,235,243,.36)}
+
+@media(max-width:1000px){
+  .ref-intake-panel{max-width:880px}
+}
+@media(max-width:650px){
+  .ref-brand{gap:12px!important;align-items:flex-start!important}
+  .ref-brand-logo{width:86px;max-width:28vw}
+  .ref-brand small{display:block!important;font-size:8px;letter-spacing:.12em}
+  .brand-logo{width:64px}
+  .ref-intake-body{padding:22px 18px}
+  .ref-intake-body h3{font-size:38px;max-width:none}
+  .ref-intake-links{display:grid}
+  .ref-intake-points li{grid-template-columns:1fr;gap:4px}
+  .ref-intake-stats{grid-template-columns:1fr 1fr}
+}
