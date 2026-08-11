@@ -17,7 +17,9 @@ from modules.atlas_ai import (
     AtlasAIError,
     _atlas_corpus_abbreviations,
     _atlas_query_variants,
+    _atlas_task_profile,
     _bounded_dialog_messages,
+    _cross_chat_context,
     _chunks,
     atlas_ai_config,
     atlas_answer,
@@ -522,6 +524,99 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([item["content"] for item in messages], ["Вопрос", "Попробуй ещё раз"])
+
+    def test_followup_search_uses_only_one_relevant_dialog_anchor(self) -> None:
+        dialog = _bounded_dialog_messages(
+            [
+                {"role": "user", "content_text": "Сначала обсуждали форму рапорта"},
+                {"role": "assistant", "content_text": "Вот форма"},
+                {"role": "user", "content_text": "Теперь обсуждаем задержание по статье 16.1"},
+                {"role": "assistant", "content_text": "Проверяю норму"},
+            ]
+        )
+
+        profile = _atlas_task_profile(
+            "А теперь объясни её простыми словами",
+            mode="balanced",
+            dialog_messages=dialog,
+        )
+
+        self.assertTrue(profile.is_followup)
+        self.assertIn("задержание по статье 16.1", profile.retrieval_query)
+        self.assertNotIn("форму рапорта", profile.retrieval_query)
+
+    def test_fresh_question_does_not_pollute_search_with_old_dialog(self) -> None:
+        profile = _atlas_task_profile(
+            "Что такое Уголовный кодекс?",
+            mode="balanced",
+            dialog_messages=[
+                {"role": "user", "content": "Составь речь про выборы"},
+                {"role": "assistant", "content": "Готовая речь"},
+            ],
+        )
+
+        self.assertFalse(profile.is_followup)
+        self.assertEqual(profile.retrieval_query, "Что такое Уголовный кодекс?")
+        self.assertNotIn("выборы", profile.retrieval_query)
+
+        second = _atlas_task_profile(
+            "А меня задержали, что делать?",
+            mode="balanced",
+            dialog_messages=[{"role": "user", "content": "Составь речь про выборы"}],
+        )
+        self.assertFalse(second.is_followup)
+        self.assertNotIn("выборы", second.retrieval_query)
+
+    def test_exact_chapter_request_is_not_treated_as_freeform_drafting(self) -> None:
+        profile = _atlas_task_profile(
+            "Напиши мне 16 главу УК полностью",
+            mode="balanced",
+        )
+
+        self.assertEqual(profile.intent, "exact_lookup")
+        self.assertEqual(profile.depth, "deep")
+
+    def test_cross_chat_memory_does_not_reuse_unrated_model_claims(self) -> None:
+        context = _cross_chat_context(
+            [
+                {
+                    "role": "user",
+                    "thread_title": "Предпочтения",
+                    "content_text": "Пиши официально и кратко",
+                },
+                {
+                    "role": "assistant",
+                    "thread_title": "Старый ответ",
+                    "content_text": "Статья якобы разрешает обыск",
+                },
+                {
+                    "role": "assistant",
+                    "feedback_rating": "good",
+                    "thread_title": "Подтверждённый ответ",
+                    "content_text": "Пользователь подтвердил этот удачный шаблон",
+                },
+            ]
+        )
+
+        self.assertIn("Пиши официально", context)
+        self.assertNotIn("якобы разрешает", context)
+        self.assertIn("удачный шаблон", context)
+
+    def test_dialog_keeps_initial_user_brief_and_recent_turns(self) -> None:
+        history = [{"role": "user", "content_text": "Главная цель: защитить клиента"}]
+        for index in range(40):
+            history.append(
+                {
+                    "role": "assistant" if index % 2 else "user",
+                    "content_text": f"Сообщение {index}",
+                }
+            )
+
+        messages = _bounded_dialog_messages(history, max_messages=8, max_chars=2000)
+
+        self.assertEqual(len(messages), 8)
+        self.assertEqual(messages[0]["content"], "Главная цель: защитить клиента")
+        self.assertEqual(messages[-1]["content"], "Сообщение 39")
 
     async def test_hybrid_search_finds_saved_source_when_qdrant_returns_nothing(self) -> None:
         source = {

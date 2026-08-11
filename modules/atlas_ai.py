@@ -98,6 +98,20 @@ class _AtlasAnswerRequest:
     requested_response_mode: str
     research_plan: list[dict[str, Any]]
     agent: AtlasAgent
+    intent: str
+    depth: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AtlasTaskProfile:
+    """A cheap, deterministic router for the final model call and RAG query."""
+
+    intent: str
+    depth: str
+    is_followup: bool
+    retrieval_query: str
+    response_brief: str
+    reasoning_effort: str
 
 
 def atlas_ai_config() -> AtlasAIConfig:
@@ -998,15 +1012,183 @@ def atlas_normalize_response_mode(value: str | None) -> str:
     return selected if selected in _RESPONSE_MODES else "balanced"
 
 
+_ATLAS_EXACT_LOOKUP_RE = re.compile(
+    r"\b(?:покаж(?:и|ите)|привед(?:и|ите)|напиш(?:и|ите))?\s*"
+    r"(?:мне\s+)?(?:(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|ст\.|раздел)\s*"
+    r"(?:№\s*)?(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})|"
+    r"(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})\s+"
+    r"(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|раздел))\b",
+    re.IGNORECASE,
+)
+_ATLAS_FOLLOWUP_RE = re.compile(
+    r"^(?:(?:а|и)\s+(?:если|тогда|теперь|ещ[её]|что|как|почему)\s+|"
+    r"но\s+|тогда\s+|теперь\s+|ещ[её]\s+|"
+    r"продолж(?:и|айте)|уточн(?:и|ите)|передел(?:ай|айте)|"
+    r"сделай\s+(?:так|его|е[её])|как\s+насч[её]т)\b|"
+    r"\b(?:это|этого|этому|этим|там|выше|предыдущ(?:ий|его|ем)|"
+    r"тот\s+же|та\s+же|так\s+же)\b",
+    re.IGNORECASE,
+)
+_ATLAS_LEGAL_RE = re.compile(
+    r"\b(?:закон|кодекс|стать|глав|норм|прав[оа]|полномочи|наказани|"
+    r"задержан|арест|обыск|суд|иск|жалоб|доказательств|устав|регламент|"
+    r"ic|и[сc]|ooc|оо[сc])\w*",
+    re.IGNORECASE,
+)
+_ATLAS_PROCEDURE_RE = re.compile(
+    r"\b(?:что\s+(?:мне\s+)?делать|как\s+(?:мне\s+)?(?:действовать|поступить)|"
+    r"порядок|процедур|пошагов|этап|алгоритм|меня\s+(?:задержали|арестовали))\b",
+    re.IGNORECASE,
+)
+_ATLAS_SUMMARY_RE = re.compile(
+    r"\b(?:кратко|суммариз|резюм|перескаж|выжимк|основн(?:ое|ые)\s+мысл)\w*",
+    re.IGNORECASE,
+)
+_ATLAS_BRAINSTORM_RE = re.compile(
+    r"\b(?:придум|вариант|иде[июй]|мозгов|концепц|названи|слоган)\w*",
+    re.IGNORECASE,
+)
+_ATLAS_DEEP_RE = re.compile(
+    r"\b(?:подробн|полност|глубок|комплексн|исслед|проанализ|сопостав|"
+    r"сравн|все\s+риски|судебн(?:ая|ой)\s+практик)\w*",
+    re.IGNORECASE,
+)
+
+
+def _last_dialog_message(
+    messages: list[dict[str, str]], role: str
+) -> str:
+    return next(
+        (
+            str(item.get("content") or "").strip()
+            for item in reversed(messages)
+            if item.get("role") == role and str(item.get("content") or "").strip()
+        ),
+        "",
+    )
+
+
+def _atlas_task_profile(
+    question: str,
+    *,
+    mode: str,
+    dialog_messages: list[dict[str, str]] | None = None,
+) -> _AtlasTaskProfile:
+    """Classify a request without adding another paid model call.
+
+    Conversation history is used only to resolve genuinely contextual follow-ups;
+    it is never dumped wholesale into the retrieval query.
+    """
+
+    clean = " ".join(str(question or "").split())[:8000]
+    lowered = clean.casefold()
+    dialog = list(dialog_messages or [])
+    has_history = bool(dialog)
+    is_followup = (
+        has_history
+        and not bool(_ATLAS_EXACT_LOOKUP_RE.search(clean))
+        and bool(_ATLAS_FOLLOWUP_RE.search(clean))
+    )
+
+    if _ATLAS_EXACT_LOOKUP_RE.search(clean):
+        intent = "exact_lookup"
+    elif _ATLAS_SUMMARY_RE.search(clean):
+        intent = "summary"
+    elif _CREATIVE_REQUEST_RE.search(clean):
+        intent = "drafting"
+    elif _ATLAS_BRAINSTORM_RE.search(clean):
+        intent = "brainstorm"
+    elif _ATLAS_PROCEDURE_RE.search(clean):
+        intent = "procedural_advice"
+    elif _ATLAS_LEGAL_RE.search(clean):
+        intent = "legal_analysis"
+    elif is_followup:
+        intent = "followup"
+    else:
+        intent = "general"
+
+    if mode == "aristotle" or _ATLAS_DEEP_RE.search(clean) or len(clean) > 900:
+        depth = "deep"
+    elif intent in {"exact_lookup", "summary"} or (
+        len(clean) < 120 and re.match(r"^(?:что|кто|где|когда|можно\s+ли)\b", lowered)
+    ):
+        depth = "quick"
+    else:
+        depth = "standard"
+
+    previous_user = _last_dialog_message(dialog, "user")
+    if is_followup and previous_user:
+        retrieval_query = f"Контекст предыдущего запроса: {previous_user[-1600:]}\nУточнение: {clean}"
+    else:
+        retrieval_query = clean
+
+    briefs = {
+        "exact_lookup": (
+            "Пользователь просит точную норму. Если она есть в материалах, приведи запрошенный "
+            "текст без замены пересказом; затем добавь только действительно нужное пояснение."
+        ),
+        "summary": (
+            "Сделай верную выжимку под запрос пользователя. Сохрани важные исключения и условия; "
+            "не превращай краткий ответ в длинный отчёт."
+        ),
+        "drafting": (
+            "Сначала выдай готовый текст, который можно сразу использовать. Не начинай с анализа "
+            "запроса. Фактические правовые основания подтверждай ссылками, а авторские формулировки "
+            "создавай свободно. Комментарии после текста добавляй лишь когда они полезны."
+        ),
+        "brainstorm": (
+            "Предлагай разные, предметные варианты вместо одного безопасного шаблона. Можно быть "
+            "изобретательным, но нельзя выдавать придуманную норму или факт за существующий."
+        ),
+        "procedural_advice": (
+            "Дай применимый порядок действий с учётом ситуации. Отдели обязательные требования от "
+            "разумных рекомендаций и обозначь критичные пробелы во входных данных."
+        ),
+        "legal_analysis": (
+            "Сопоставь факты с применимыми нормами, исключениями и пределами полномочий. Покажи "
+            "неопределённость честно, но сформулируй полезный вывод, а не перечень оговорок."
+        ),
+        "followup": (
+            "Ответь как продолжение текущего разговора: не пересказывай уже сказанное и не проси "
+            "повторить известные данные. Исправляй позицию, если новое уточнение её меняет."
+        ),
+        "general": (
+            "Ответь напрямую и естественно. Выбирай структуру под конкретный вопрос; не добавляй "
+            "универсальные разделы только ради оформления."
+        ),
+    }
+    if depth == "quick":
+        depth_note = "Предпочти короткий прямой ответ; расширяй его только при реальной необходимости."
+    elif depth == "deep":
+        depth_note = "Проведи глубокую проверку связей, исключений и противоречий перед итогом."
+    else:
+        depth_note = "Дай достаточно деталей для практического использования без лишних повторов."
+
+    reasoning_effort = (
+        "high"
+        if depth == "deep"
+        else "medium"
+        if mode == "creative" or intent in {"legal_analysis", "procedural_advice", "drafting"}
+        else "low"
+    )
+    return _AtlasTaskProfile(
+        intent=intent,
+        depth=depth,
+        is_followup=is_followup,
+        retrieval_query=retrieval_query[-8000:],
+        response_brief=f"{briefs[intent]} {depth_note}",
+        reasoning_effort=reasoning_effort,
+    )
+
+
 def _bounded_dialog_messages(
     history: list[dict[str, Any]] | None,
     *,
     max_messages: int = 24,
     max_chars: int = 28_000,
 ) -> list[dict[str, str]]:
-    selected: list[dict[str, str]] = []
-    remaining = max_chars
-    for item in reversed(list(history or [])):
+    normalized: list[dict[str, str]] = []
+    for item in list(history or []):
         role = str(item.get("role") or "")
         if role not in {"user", "assistant"}:
             continue
@@ -1015,25 +1197,54 @@ def _bounded_dialog_messages(
         content = str(item.get("content_text") or item.get("content") or "").strip()
         if not content:
             continue
-        content = content[-remaining:]
-        selected.append({"role": role, "content": content})
-        remaining -= len(content)
-        if remaining <= 0 or len(selected) >= max_messages:
+        normalized.append({"role": role, "content": content[:12_000]})
+    if not normalized:
+        return []
+
+    recent = normalized[-max_messages:]
+    anchor = next((item for item in normalized if item["role"] == "user"), None)
+    if anchor is not None and anchor not in recent and max_messages > 1:
+        recent = [anchor, *normalized[-(max_messages - 1) :]]
+
+    selected: list[dict[str, str]] = []
+    remaining = max_chars
+    anchor_present = bool(anchor is not None and recent and recent[0] is anchor)
+    if anchor_present:
+        anchor_content = anchor["content"][: min(4000, remaining)]
+        selected.append({"role": "user", "content": anchor_content})
+        remaining -= len(anchor_content)
+        recent = recent[1:]
+    tail: list[dict[str, str]] = []
+    for item in reversed(recent):
+        if remaining <= 0:
             break
-    selected.reverse()
+        content = item["content"][:remaining]
+        tail.append({"role": item["role"], "content": content})
+        remaining -= len(content)
+    selected.extend(reversed(tail))
     return selected
 
 
 def _cross_chat_context(memory: list[dict[str, Any]] | None) -> str:
-    rows = []
+    rows: list[str] = []
+    seen: set[str] = set()
     for item in list(memory or []):
-        if item.get("role") == "assistant" and str(item.get("feedback_rating") or "") == "bad":
+        role_value = str(item.get("role") or "")
+        rating = str(item.get("feedback_rating") or "")
+        # Unrated assistant prose is not durable memory: reusing it can turn a
+        # previous hallucination into context. A positively rated answer is the
+        # only assistant content allowed into the cross-chat continuity lane.
+        if role_value == "assistant" and rating != "good":
             continue
-        role = "Пользователь" if item.get("role") == "user" else "Atlas"
+        if role_value not in {"user", "assistant"}:
+            continue
+        role = "Пользователь" if role_value == "user" else "Atlas · подтверждено пользователем"
         title = str(item.get("thread_title") or "Предыдущий диалог").strip()[:120]
-        content = str(item.get("content_text") or "").strip()[:4000]
-        if content:
+        content = str(item.get("content_text") or "").strip()[:2400]
+        fingerprint = " ".join(content.casefold().split())
+        if content and fingerprint not in seen:
             rows.append(f"[{title} · {role}]\n{content}")
+            seen.add(fingerprint)
     return "\n\n".join(rows)[-14_000:]
 
 
@@ -1288,13 +1499,18 @@ async def _prepare_atlas_answer(
     )
     mode = (
         "creative"
-        if requested_mode == "balanced" and _CREATIVE_REQUEST_RE.search(clean_question)
+        if requested_mode == "balanced"
+        and _CREATIVE_REQUEST_RE.search(clean_question)
+        and not _ATLAS_EXACT_LOOKUP_RE.search(clean_question)
         else requested_mode
     )
     dialog_messages = _bounded_dialog_messages(history)
-    recent_user_context = "\n".join(
-        item["content"] for item in dialog_messages[-6:] if item["role"] == "user"
+    task_profile = _atlas_task_profile(
+        clean_question,
+        mode=mode,
+        dialog_messages=dialog_messages,
     )
+    recent_user_context = _last_dialog_message(dialog_messages, "user")
     research_plan = (
         await _generate_aristotle_plan(
             config,
@@ -1313,10 +1529,9 @@ async def _prepare_atlas_answer(
         for step in research_plan
         if step.get("id") != "synthesis" and str(step.get("search_query") or "").strip()
     ]
-    search_query = f"{recent_user_context}\n{clean_question}"[-8000:]
     sources = await atlas_search(
         organization_id,
-        search_query,
+        task_profile.retrieval_query,
         server_code=server_code,
         faction_code=faction_code,
         limit=12 if mode == "aristotle" else 9,
@@ -1368,23 +1583,20 @@ async def _prepare_atlas_answer(
     memory_context = _cross_chat_context(memory)
     mode_instruction = {
         "strict": (
-            "Работай в точном режиме: отвечай кратко и консервативно. Любые правовые и "
-            "фактические утверждения должны прямо следовать из источников."
+            "Точный режим: будь консервативен в проверяемых утверждениях. Если данных недостаточно, "
+            "назови конкретный пробел; не заполняй его догадкой."
         ),
         "creative": (
-            "Работай в творческом режиме: можешь создавать речи, обращения, планы, сценарии, "
-            "формулировки и идеи. Сначала внутренне выдели ограничения и факты из источников, "
-            "затем создай сильный естественный текст. Не выдавай художественные дополнения за закон."
+            "Творческий режим: создавай сильные речи, документы, планы и формулировки, используя "
+            "источники как рамки, а не как повод отказаться от творческой части."
         ),
         "balanced": (
-            "Работай в универсальном режиме: надёжно используй источники для фактов, но свободно "
-            "анализируй, структурируй и создавай новые тексты по просьбе пользователя."
+            "Универсальный режим: проверяй факты по библиотеке, самостоятельно анализируй их и "
+            "выбирай подходящую глубину ответа."
         ),
         "aristotle": (
-            "Работай как руководитель исследования «Аристотель»: последовательно сопоставь IC-нормы, "
-            "OOC-правила, внутренние уставы и практику, если они релевантны. Выдай структурированный "
-            "итог с кратким выводом, применимыми правилами, противоречиями, рисками и планом действий. "
-            "Не раскрывай скрытые рассуждения и не изображай несуществующие источники."
+            "Режим «Аристотель»: синтезируй только релевантные отчёты исследователей, разрешай "
+            "противоречия и формируй цельный итог. Не раскрывай скрытые рассуждения."
         ),
     }[mode]
     messages: list[dict[str, str]] = [
@@ -1412,12 +1624,14 @@ async def _prepare_atlas_answer(
                 "Отвечай сразу по существу: не повторяй обращение, имя, должность или приветствие в "
                 "каждом сообщении, если пользователь не попросил составить официальный текст. "
                 "Учитывай уточнения из текущего диалога и не проси заново контекст, который уже дан. "
+                "Не копируй одну и ту же композицию ответа из сообщения в сообщение. Заголовки, списки, "
+                "таблицы и блоки «вывод/основания/шаги» используй только когда они действительно делают "
+                "этот конкретный ответ понятнее. Не добавляй дежурное предложение помощи в конце. "
                 "Если нужной нормы нет среди найденных фрагментов, говори именно о пробеле текущей "
                 "библиотеки, а не о секретности документа или отсутствии нормы вообще. Не придумывай "
                 "причины недоступности. Если запрошена конкретная глава или статья и она присутствует "
-                "в источниках, приведи её текст полностью и не заменяй его общим пересказом. Сначала "
-                "дай ясный ответ, затем основания и практические шаги. "
-                f"{mode_instruction}"
+                "в источниках, приведи её текст полностью и не заменяй его общим пересказом. "
+                f"{mode_instruction} Индивидуальное задание для этого запроса: {task_profile.response_brief}"
             ),
         },
         {
@@ -1446,8 +1660,9 @@ async def _prepare_atlas_answer(
                 "role": "system",
                 "content": (
                     "ПАМЯТЬ ИЗ ДРУГИХ ДИАЛОГОВ ЭТОГО ЖЕ ПОЛЬЗОВАТЕЛЯ. Используй её для "
-                    "предпочтений, незавершённых задач и смысловой непрерывности, но не считай "
-                    f"правовым источником:\n{memory_context}"
+                    "предпочтений, ранее сообщённых пользователем обстоятельств и незавершённых задач. "
+                    "Не считай её правовым источником и не позволяй ей заменять текущий запрос или "
+                    f"подтверждённые материалы:\n{memory_context}"
                 ),
             }
         )
@@ -1464,7 +1679,7 @@ async def _prepare_atlas_answer(
             ),
             **_reasoning_options(
                 config.chat_model,
-                "medium",
+                task_profile.reasoning_effort,
             ),
             "messages": messages,
         },
@@ -1474,6 +1689,8 @@ async def _prepare_atlas_answer(
         requested_response_mode=requested_mode,
         research_plan=research_plan,
         agent=selected_agent,
+        intent=task_profile.intent,
+        depth=task_profile.depth,
     )
 
 
@@ -1520,6 +1737,8 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         "response_mode": prepared.response_mode,
         "requested_response_mode": prepared.requested_response_mode,
         "research_plan": prepared.research_plan,
+        "intent": prepared.intent,
+        "depth": prepared.depth,
         "latency_ms": round((time.monotonic() - prepared.started) * 1000),
     }
 

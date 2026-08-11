@@ -1525,6 +1525,9 @@ def atlas_recent_chat_memory(
             f"""
             WITH ranked AS (
                 SELECT m.*, t.title AS thread_title,
+                       (SELECT f.rating FROM atlas_ai_feedback f
+                         WHERE f.message_id = m.id AND f.user_id = t.user_id
+                         LIMIT 1) AS feedback_rating,
                        ROW_NUMBER() OVER (
                            PARTITION BY m.thread_id ORDER BY m.id DESC
                        ) AS message_rank
