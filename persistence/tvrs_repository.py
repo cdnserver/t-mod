@@ -1212,6 +1212,37 @@ def tvrs_consensus_active_sessions(guild_id: int | None = None) -> list[dict[str
     return result
 
 
+def tvrs_latest_finished_consensus_session(
+    guild_id: int,
+) -> dict[str, Any] | None:
+    """Return the latest complete, readable session snapshot for the broadcast."""
+
+    with connect_readonly() as con:
+        row = con.execute(
+            """
+            SELECT snapshot_json, engine_version, revision, updated_at, finished_at
+            FROM tvrs_consensus_sessions
+            WHERE guild_id = ? AND finished_at IS NOT NULL AND stage = 'finished'
+            ORDER BY finished_at DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (int(guild_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        snapshot = json.loads(str(row["snapshot_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    snapshot.setdefault("engine_version", int(row["engine_version"] or 2))
+    snapshot["revision"] = int(row["revision"] or 0)
+    snapshot["persisted_updated_at"] = str(row["updated_at"] or "")
+    snapshot["finished_at"] = str(row["finished_at"] or "")
+    return snapshot
+
+
 def tvrs_consensus_events(session_key: str, limit: int = 200) -> list[dict[str, Any]]:
     with _db_lock, connect() as con:
         rows = con.execute(
@@ -1936,4 +1967,4 @@ def tvrs_latest_live_result_for_bill(
     return dict(row) if row else None
 
 
-__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results', 'tvrs_public_bill_catalog', 'tvrs_latest_live_result_for_bill']
+__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_latest_finished_consensus_session', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results', 'tvrs_public_bill_catalog', 'tvrs_latest_live_result_for_bill']

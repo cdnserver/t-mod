@@ -70,6 +70,18 @@ let ballotSoundReady = false;
 let ballotSoundEnabled = localStorage.getItem("t-consensus-sound") !== "off";
 let observedSoundBill = "";
 let observedSoundStage = "";
+let ambientGain = null;
+let ambientNodes = [];
+let ambientEnabled = localStorage.getItem("t-consensus-ambient") === "on";
+let ambientVolume = Math.max(0, Math.min(1, Number(localStorage.getItem("t-consensus-volume") || 28) / 100));
+let weatherLoadedAt = 0;
+let weatherLoading = false;
+let senatorCanvasReady = false;
+let senatorCanvasDrawing = false;
+let senatorCanvasLast = null;
+let senatorBillStartedAt = Date.now();
+let senatorBillKey = "";
+let previousScheduleSeconds = null;
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -89,6 +101,14 @@ function renderSoundToggle() {
     : "Звуки заседания выключены";
   button.querySelector("span").textContent = ballotSoundEnabled ? "♪" : "×";
   button.querySelector("b").textContent = ballotSoundEnabled ? "Звук" : "Тихо";
+  const broadcastButton = byId("broadcast-sound-toggle");
+  if (broadcastButton) {
+    broadcastButton.classList.toggle("active", ambientEnabled);
+    broadcastButton.setAttribute("aria-pressed", String(ambientEnabled));
+    broadcastButton.querySelector("b").textContent = ambientEnabled
+      ? "Атмосфера включена"
+      : "Включить атмосферу";
+  }
 }
 
 function ensureBallotAudio() {
@@ -120,6 +140,70 @@ function playConsensusCue(kind) {
     oscillator.start(noteStart);
     oscillator.stop(noteStart + 0.15);
   });
+}
+
+function setAmbientVolume(value) {
+  ambientVolume = Math.max(0, Math.min(1, Number(value) || 0));
+  localStorage.setItem("t-consensus-volume", String(Math.round(ambientVolume * 100)));
+  if (ambientGain && ballotAudioContext) {
+    ambientGain.gain.setTargetAtTime(
+      ambientEnabled ? ambientVolume * 0.16 : 0.0001,
+      ballotAudioContext.currentTime,
+      0.35,
+    );
+  }
+}
+
+function startConsensusAmbience() {
+  const context = ensureBallotAudio();
+  if (!context) return;
+  ambientEnabled = true;
+  localStorage.setItem("t-consensus-ambient", "on");
+  if (!ambientGain) {
+    ambientGain = context.createGain();
+    ambientGain.gain.setValueAtTime(0.0001, context.currentTime);
+    const lowpass = context.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = 520;
+    lowpass.Q.value = 0.65;
+    ambientGain.connect(lowpass).connect(context.destination);
+    [55, 82.41, 110].forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = index === 1 ? "triangle" : "sine";
+      oscillator.frequency.value = frequency;
+      oscillator.detune.value = index * 3 - 3;
+      gain.gain.value = [0.38, 0.16, 0.08][index];
+      oscillator.connect(gain).connect(ambientGain);
+      oscillator.start();
+      ambientNodes.push(oscillator, gain);
+    });
+    const noiseBuffer = context.createBuffer(1, context.sampleRate * 4, context.sampleRate);
+    const noise = noiseBuffer.getChannelData(0);
+    for (let index = 0; index < noise.length; index += 1) {
+      noise[index] = (Math.random() * 2 - 1) * 0.13;
+    }
+    const noiseSource = context.createBufferSource();
+    const noiseFilter = context.createBiquadFilter();
+    const noiseGain = context.createGain();
+    noiseSource.buffer = noiseBuffer;
+    noiseSource.loop = true;
+    noiseFilter.type = "lowpass";
+    noiseFilter.frequency.value = 240;
+    noiseGain.gain.value = 0.12;
+    noiseSource.connect(noiseFilter).connect(noiseGain).connect(ambientGain);
+    noiseSource.start();
+    ambientNodes.push(noiseSource, noiseFilter, noiseGain);
+  }
+  setAmbientVolume(ambientVolume);
+  renderSoundToggle();
+}
+
+function stopConsensusAmbience() {
+  ambientEnabled = false;
+  localStorage.setItem("t-consensus-ambient", "off");
+  setAmbientVolume(ambientVolume);
+  renderSoundToggle();
 }
 
 function maybePlayConsensusCue(session, bill) {
@@ -322,6 +406,151 @@ function renderSchedule(data) {
   const link = byId("observer-schedule-link");
   link.hidden = !schedule.event_url;
   if (schedule.event_url) link.href = schedule.event_url;
+}
+
+function exactCountdown(deadline) {
+  if (!deadline) return "00:00:00";
+  const seconds = Math.max(0, Math.floor((new Date(deadline).getTime() - Date.now()) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600) + days * 24;
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function weatherCopy(code) {
+  const numeric = Number(code);
+  if (numeric === 0) return ["Ясно", "◯"];
+  if ([1, 2].includes(numeric)) return ["Переменная облачность", "◒"];
+  if (numeric === 3) return ["Облачно", "●"];
+  if ([45, 48].includes(numeric)) return ["Туман", "≋"];
+  if ([51, 53, 55, 56, 57].includes(numeric)) return ["Морось", "⋮"];
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(numeric)) return ["Дождь", "╱"];
+  if ([71, 73, 75, 77, 85, 86].includes(numeric)) return ["Снег", "✦"];
+  if ([95, 96, 99].includes(numeric)) return ["Гроза", "ϟ"];
+  return ["Погода обновляется", "◌"];
+}
+
+async function refreshBroadcastWeather() {
+  if (weatherLoading || Date.now() - weatherLoadedAt < 10 * 60 * 1000) return;
+  weatherLoading = true;
+  try {
+    const response = await fetch(
+      "https://api.open-meteo.com/v1/forecast?latitude=56.9496&longitude=24.1052&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&timezone=Europe%2FRiga",
+      { cache: "no-store", signal: requestTimeoutSignal(5000) },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const current = payload.current || {};
+    const [copy, icon] = weatherCopy(current.weather_code);
+    text("broadcast-weather-temp", Number.isFinite(Number(current.temperature_2m)) ? `${Math.round(Number(current.temperature_2m))}°` : "—");
+    text("broadcast-weather-copy", copy);
+    text("broadcast-weather-icon", icon);
+    weatherLoadedAt = Date.now();
+  } catch {
+    text("broadcast-weather-copy", "данные временно недоступны");
+  } finally {
+    weatherLoading = false;
+  }
+}
+
+function renderBroadcastResults(results = []) {
+  const container = byId("broadcast-results");
+  const pageSize = window.innerWidth <= 800 ? 2 : 5;
+  const pageCount = Math.max(1, Math.ceil(results.length / pageSize));
+  const page = Math.floor(Date.now() / 6500) % pageCount;
+  const pageKey = `${results.length}:${pageSize}:${page}`;
+  if (container.dataset.pageKey === pageKey) {
+    return { page: page + 1, pageCount };
+  }
+  container.dataset.pageKey = pageKey;
+  clearNode(container);
+  results.slice(page * pageSize, (page + 1) * pageSize).forEach((result) => {
+    const item = document.createElement("div");
+    item.className = `broadcast-result-pill ${result.status || ""}`;
+    const title = document.createElement("strong");
+    const meta = document.createElement("span");
+    title.textContent = `№${formatNumber(result.bill_number)} · ${result.title || "Законопроект"}`;
+    meta.textContent = `${RESULT_LABELS[result.status] || result.status || "решение"} · ${formatPercent(result.overall_percent)}`;
+    item.append(title, meta);
+    container.append(item);
+  });
+  return { page: page + 1, pageCount };
+}
+
+function renderBroadcast(data) {
+  const phase = String(data.broadcast_phase || (data.active ? "live" : data.schedule ? "scheduled" : "idle"));
+  const session = data.session;
+  const schedule = data.schedule;
+  const completed = data.last_session;
+  const bill = session?.current_bill || null;
+  document.body.dataset.broadcastPhase = phase;
+  text("broadcast-state-kicker", phase === "live" ? "ПРЯМОЙ ЭФИР · СВЕТЛЫЙ КРУГ" : "СВЕТЛЫЙ КРУГ");
+  text("broadcast-wordmark", "Т О В А Р И Щ Е С Т В О");
+
+  const countdownWrap = byId("broadcast-countdown-wrap");
+  const sessionCard = byId("broadcast-session-card");
+  const completedCard = byId("broadcast-completed");
+  countdownWrap.hidden = !["scheduled", "preparing"].includes(phase);
+  sessionCard.hidden = !["scheduled", "preparing", "live"].includes(phase);
+  completedCard.hidden = phase !== "completed";
+
+  if (phase === "idle") {
+    text("broadcast-title", "Консенсус.");
+    text("broadcast-subtitle", "Светлый круг");
+  } else if (phase === "scheduled") {
+    text("broadcast-title", `№ ${schedule?.plenary_number || "—"} · Пленарный Консенсус Товарищества`);
+    text("broadcast-subtitle", schedule?.title || "Светлый круг готовится к заседанию");
+  } else if (phase === "preparing") {
+    text("broadcast-title", `№ ${session?.plenary_number || schedule?.plenary_number || "—"} · Пленарный Консенсус Товарищества`);
+    text("broadcast-subtitle", "Состав подтверждает участие. Эфир скоро начнётся.");
+  } else if (phase === "live") {
+    text("broadcast-title", `№ ${session?.plenary_number || "—"} · Пленарный Консенсус`);
+    text("broadcast-subtitle", session?.stage === "presentation" ? "Законопроект представлен" : session?.stage_label || "Светлый круг в заседании");
+  } else {
+    text("broadcast-title", `№ ${completed?.plenary_number || "—"} · Консенсус завершён`);
+    text("broadcast-subtitle", "Решения зафиксированы. Протокол сформирован.");
+  }
+
+  const deadline = schedule?.scheduled_for;
+  text("broadcast-countdown", exactCountdown(deadline));
+  text("broadcast-countdown-label", phase === "preparing" ? "ДО НАЧАЛА ЭФИРА" : "ДО НАЧАЛА");
+  if (deadline) {
+    const date = new Date(deadline);
+    text("broadcast-scheduled-at", date.toLocaleString("ru-RU", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }));
+  }
+
+  const host = session?.leader?.name || schedule?.host?.name || "Председатель Товарищества";
+  const totalBills = Math.max(
+    Number(data.queue?.length || 0) + Number(session?.results?.length || 0) + (bill ? 1 : 0),
+    Number(session?.results?.length || 0),
+  );
+  text("broadcast-host", host);
+  text("broadcast-bills", totalBills);
+  text("broadcast-stage", session?.stage_label || (phase === "scheduled" ? "Запланировано" : "Подготовка"));
+  text("broadcast-votes", session ? `${session.voting.received} / ${session.voting.expected}` : "—");
+  byId("broadcast-bill").hidden = !bill;
+  if (bill) {
+    text("broadcast-bill-number", `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
+    text("broadcast-bill-title", bill.title || "Без названия");
+    text("broadcast-bill-summary", bill.summary || "Полный текст доступен в карточке проекта.");
+    text("broadcast-bill-timer", formatTimer(session?.timer_deadline));
+    byId("broadcast-open-bill").onclick = () => showBillDialog(bill, currentResult(session, bill));
+  }
+
+  if (phase === "completed" && completed) {
+    text("broadcast-completed-title", `№ ${completed.plenary_number} · Заседание завершено`);
+    const resultPage = renderBroadcastResults(completed.results || []);
+    text(
+      "broadcast-completed-meta",
+      `${completed.results?.length || 0} решений · ведущий ${completed.leader?.name || "—"}${resultPage.pageCount > 1 ? ` · итоги ${resultPage.page}/${resultPage.pageCount}` : ""}`,
+    );
+    const report = byId("broadcast-report-link");
+    report.hidden = !completed.key;
+    if (completed.key) report.href = `/api/reports/${encodeURIComponent(completed.key)}/consensus.pdf`;
+  }
+  if (phase === "live" && ambientEnabled) maybePlayConsensusCue(session, bill);
+  void refreshBroadcastWeather();
 }
 
 function showCommandMessage(message, kind = "success") {
@@ -1048,15 +1277,68 @@ function showBallotNotice(message, kind = "success") {
   }, 5000);
 }
 
+function renderPostSessionMonitor(session) {
+  const results = session?.results || [];
+  const panel = byId("post-session-monitor");
+  panel.hidden = !session;
+  if (!session) return;
+  text("post-session-title", `№ ${session.plenary_number} · Итоговый монитор`);
+  text("post-session-total", results.length);
+  text("post-session-accepted", results.filter((item) => item.status === "accepted").length);
+  text("post-session-rejected", results.filter((item) => ["rejected", "vetoed"].includes(item.status)).length);
+  const started = new Date(session.created_at || 0).getTime();
+  const finished = new Date(session.finished_at || Date.now()).getTime();
+  const durationMinutes = Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+    ? Math.max(1, Math.round((finished - started) / 60000))
+    : 0;
+  text("post-session-duration", durationMinutes ? `${durationMinutes} мин.` : "—");
+  const report = byId("post-session-report");
+  report.href = `/api/reports/${encodeURIComponent(session.key)}/consensus.pdf`;
+  const list = byId("post-session-results");
+  clearNode(list);
+  results.forEach((result) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `post-session-result ${result.status || ""}`;
+    const number = document.createElement("span");
+    const title = document.createElement("strong");
+    const outcome = document.createElement("em");
+    number.textContent = `№${formatNumber(result.bill_number)}`;
+    title.textContent = result.title || "Законопроект";
+    outcome.textContent = `${RESULT_LABELS[result.status] || result.status || "решение"} · ${formatPercent(result.overall_percent)}`;
+    row.append(number, title, outcome);
+    row.addEventListener("click", () => openBillRecord(result));
+    list.append(row);
+  });
+}
+
 function renderBallot(data) {
-  const session = data.session;
   const viewer = data.viewer || {};
+  const postSession = Boolean(viewer.post_session && data.last_session);
+  const session = postSession ? data.last_session : data.session;
   const bill = session?.current_bill || null;
   const result = currentResult(session, bill);
   const [stageLabel, title, detail] = ballotStageCopy(session, viewer);
   const canVote = Boolean(viewer.can_vote && session?.stage === "voting" && bill);
   const vote = String(viewer.vote || "");
   const ballotScreen = byId("ballot-screen");
+  byId("post-session-monitor").hidden = !postSession;
+  byId("ballot-phase-rail").hidden = postSession;
+  ballotScreen.querySelector(".ballot-grid").hidden = postSession;
+  ballotScreen.querySelector(".senator-timebar").hidden = postSession;
+  ballotScreen.querySelector(".senator-studio").hidden = postSession;
+  renderPostSessionMonitor(postSession ? session : null);
+  const nextBillKey = bill
+    ? `${session?.key || "session"}:${bill.id || bill.bill_number}`
+    : `${session?.key || "waiting"}:waiting`;
+  if (nextBillKey !== senatorBillKey) {
+    senatorBillKey = nextBillKey;
+    senatorBillStartedAt = Date.now();
+    const notes = byId("senator-notes");
+    notes.value = localStorage.getItem(`t-consensus-notes:${senatorBillKey}`) || "";
+    text("senator-notes-status", notes.value ? "заметки восстановлены" : "сохранено локально");
+    clearSenatorCanvas();
+  }
   const phaseIndex = renderBallotPhases(session, vote);
   if (viewer.ballot_available) maybePlayConsensusCue(session, bill);
   ballotScreen.dataset.phase = String(Math.max(0, phaseIndex));
@@ -1243,7 +1525,7 @@ function renderControls(data) {
       "Новое заседание",
       "Система повторно проверит очередь, голосовой канал и кворум.",
     );
-    actions.append(actionButton("Открыть регистрацию", "open_registration", {}, { kind: "primary" }));
+    actions.append(actionButton("Подготовить заседание", "open_registration", {}, { kind: "primary" }));
     container.append(group);
   }
 
@@ -1396,13 +1678,13 @@ function render(data) {
   const privilegedControls = (data.capabilities || []).some(
     (action) => action !== "participant_vote",
   );
-  const observerMode = selectedMode === "simulation"
-    ? !privilegedControls
-    : experience.available
-      ? !experience.ballotMode
-      : !privilegedControls;
-  document.body.classList.toggle("observer-screen-mode", observerMode);
-  byId("observer-screen").hidden = !observerMode;
+  const legacyOperatorMode = selectedMode === "simulation" && privilegedControls;
+  const broadcastMode = !experience.ballotMode && !legacyOperatorMode;
+  document.body.classList.toggle("observer-screen-mode", false);
+  document.body.classList.toggle("broadcast-screen-mode", broadcastMode);
+  byId("broadcast-screen").hidden = !broadcastMode;
+  byId("observer-screen").hidden = true;
+  renderBroadcast(data);
   renderBallot(data);
   renderControls(data);
   const session = data.session;
@@ -1495,6 +1777,61 @@ function render(data) {
   renderBlocks(session.blocks);
   renderParticipants(session.participants);
   renderObserver(data);
+}
+
+function senatorCanvasContext() {
+  const canvas = byId("senator-canvas");
+  const context = canvas?.getContext?.("2d");
+  if (!context) return null;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.lineWidth = 3;
+  context.strokeStyle = "rgba(219, 245, 224, .88)";
+  return context;
+}
+
+function clearSenatorCanvas() {
+  const canvas = byId("senator-canvas");
+  const context = senatorCanvasContext();
+  if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function senatorCanvasPoint(event) {
+  const canvas = byId("senator-canvas");
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+function initializeSenatorCanvas() {
+  if (senatorCanvasReady) return;
+  const canvas = byId("senator-canvas");
+  if (!canvas) return;
+  senatorCanvasReady = true;
+  canvas.addEventListener("pointerdown", (event) => {
+    senatorCanvasDrawing = true;
+    senatorCanvasLast = senatorCanvasPoint(event);
+    canvas.setPointerCapture?.(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!senatorCanvasDrawing || !senatorCanvasLast) return;
+    const context = senatorCanvasContext();
+    const point = senatorCanvasPoint(event);
+    context.beginPath();
+    context.moveTo(senatorCanvasLast.x, senatorCanvasLast.y);
+    context.lineTo(point.x, point.y);
+    context.stroke();
+    senatorCanvasLast = point;
+  });
+  const finish = () => {
+    senatorCanvasDrawing = false;
+    senatorCanvasLast = null;
+  };
+  canvas.addEventListener("pointerup", finish);
+  canvas.addEventListener("pointercancel", finish);
+  canvas.addEventListener("pointerleave", finish);
 }
 
 function authHeaders() {
@@ -1689,6 +2026,14 @@ byId("ballot-sound-toggle").addEventListener("click", () => {
   renderSoundToggle();
   if (ballotSoundEnabled) playConsensusCue("new-bill");
 });
+byId("broadcast-sound-toggle").addEventListener("click", () => {
+  if (!ambientEnabled || !ambientGain) startConsensusAmbience();
+  else stopConsensusAmbience();
+});
+byId("broadcast-volume").value = String(Math.round(ambientVolume * 100));
+byId("broadcast-volume").addEventListener("input", (event) => {
+  setAmbientVolume(Number(event.currentTarget.value) / 100);
+});
 document.addEventListener("pointerdown", () => {
   if (ballotSoundEnabled && !ballotSoundReady) ensureBallotAudio();
 }, { once: true, passive: true });
@@ -1727,13 +2072,43 @@ document.querySelectorAll("#bill-library-filters [data-filter]").forEach((button
   });
 });
 
+byId("senator-notes").addEventListener("input", (event) => {
+  localStorage.setItem(`t-consensus-notes:${senatorBillKey || "waiting"}`, event.currentTarget.value);
+  text("senator-notes-status", "сохранено локально");
+});
+byId("senator-notes-clear").addEventListener("click", () => {
+  byId("senator-notes").value = "";
+  localStorage.removeItem(`t-consensus-notes:${senatorBillKey || "waiting"}`);
+  text("senator-notes-status", "блокнот очищен");
+});
+byId("senator-canvas-clear").addEventListener("click", clearSenatorCanvas);
+byId("senator-canvas-save").addEventListener("click", () => {
+  const link = document.createElement("a");
+  link.download = `consensus-notes-${Date.now()}.png`;
+  link.href = byId("senator-canvas").toDataURL("image/png");
+  link.click();
+});
+initializeSenatorCanvas();
+
 clockTimer = setInterval(() => {
-  text("clock", new Date().toLocaleTimeString("ru-RU"));
+  const now = new Date();
+  const localTime = now.toLocaleTimeString("ru-RU");
+  const moscowTime = now.toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" });
+  text("clock", localTime);
+  text("broadcast-local-time", localTime);
+  text("broadcast-moscow-time", moscowTime);
+  text("ballot-local-time", localTime);
+  text("ballot-moscow-time", moscowTime);
+  text("broadcast-local-date", now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" }));
+  text("broadcast-moscow-date", now.toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow", weekday: "long", day: "numeric", month: "long" }));
+  const billElapsedSeconds = Math.max(0, Math.floor((Date.now() - senatorBillStartedAt) / 1000));
+  text("ballot-bill-elapsed", `${String(Math.floor(billElapsedSeconds / 60)).padStart(2, "0")}:${String(billElapsedSeconds % 60).padStart(2, "0")}`);
   if (state?.session) {
     const timer = formatTimer(state.session.timer_deadline);
     text("timer-value", timer);
     text("observer-timer", timer);
     text("ballot-timer", timer);
+    text("broadcast-bill-timer", timer);
     const totalSeconds = Number(state.session.timer_seconds || 0);
     const remainingSeconds = state.session.timer_deadline
       ? Math.max(0, (new Date(state.session.timer_deadline).getTime() - Date.now()) / 1000)
@@ -1745,6 +2120,31 @@ clockTimer = setInterval(() => {
   }
   if (state?.schedule) {
     text("observer-schedule-countdown", formatScheduleCountdown(state.schedule.scheduled_for));
+    text("broadcast-countdown", exactCountdown(state.schedule.scheduled_for));
+    const scheduleSeconds = Math.max(0, Math.floor((new Date(state.schedule.scheduled_for).getTime() - Date.now()) / 1000));
+    document.body.dataset.countdownWindow = scheduleSeconds <= 30
+      ? "final-30"
+      : scheduleSeconds <= 60
+        ? "final-minute"
+        : scheduleSeconds <= 90
+          ? "ballot-open"
+          : "normal";
+    if (previousScheduleSeconds !== null) {
+      if (previousScheduleSeconds > 60 && scheduleSeconds <= 60) playConsensusCue("new-bill");
+      if (previousScheduleSeconds > 30 && scheduleSeconds <= 30) playConsensusCue("vote-open");
+    }
+    previousScheduleSeconds = scheduleSeconds;
+  } else {
+    previousScheduleSeconds = null;
+    document.body.dataset.countdownWindow = "normal";
+  }
+  if (state?.broadcast_phase === "completed" && state.last_session) {
+    const completed = state.last_session;
+    const resultPage = renderBroadcastResults(completed.results || []);
+    text(
+      "broadcast-completed-meta",
+      `${completed.results?.length || 0} решений · ведущий ${completed.leader?.name || "—"}${resultPage.pageCount > 1 ? ` · итоги ${resultPage.page}/${resultPage.pageCount}` : ""}`,
+    );
   }
 }, 1000);
 

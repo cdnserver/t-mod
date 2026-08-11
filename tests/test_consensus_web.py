@@ -273,6 +273,67 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["capabilities"], ["participant_vote"])
         self.assertNotIn("'vote':", str(state["session"]["participants"]))
 
+    async def test_scheduled_ballot_stays_locked_until_final_window(self) -> None:
+        schedule = storage.save_consensus_schedule(
+            guild_id=77,
+            plenary_number=6,
+            title="Шестой пленарный консенсус",
+            description="Проверка защищённого допуска.",
+            invitation_text="Подтвердите участие в Discord.",
+            scheduled_for=datetime.now(timezone.utc) + timedelta(minutes=5),
+            duration_minutes=90,
+            voice_channel_id=88,
+            actor_id=1,
+            actor_display="Председатель",
+        )
+        storage.start_consensus_schedule(
+            77,
+            session_key=self.session.session_key,
+            schedule_id=schedule["id"],
+        )
+
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(user_id=4),
+        )
+
+        self.assertFalse(state["viewer"]["ballot_available"])
+        self.assertFalse(state["viewer"]["can_vote"])
+        self.assertEqual(state["capabilities"], [])
+        self.assertIsNotNone(state["viewer"]["ballot_unlock_at"])
+
+    async def test_scheduled_ballot_opens_for_confirmed_member_in_final_window(
+        self,
+    ) -> None:
+        schedule = storage.save_consensus_schedule(
+            guild_id=77,
+            plenary_number=6,
+            title="Шестой пленарный консенсус",
+            description="Проверка защищённого допуска.",
+            invitation_text="Подтвердите участие в Discord.",
+            scheduled_for=datetime.now(timezone.utc) + timedelta(seconds=60),
+            duration_minutes=90,
+            voice_channel_id=88,
+            actor_id=1,
+            actor_display="Председатель",
+        )
+        storage.start_consensus_schedule(
+            77,
+            session_key=self.session.session_key,
+            schedule_id=schedule["id"],
+        )
+
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(user_id=4),
+        )
+
+        self.assertTrue(state["viewer"]["ballot_available"])
+        self.assertTrue(state["viewer"]["can_vote"])
+        self.assertEqual(state["capabilities"], ["participant_vote"])
+
     async def test_nonmember_remains_broadcast_only(self) -> None:
         state = await build_consensus_web_state(  # type: ignore[arg-type]
             self.bot,
@@ -931,8 +992,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 egg_stylesheet_text,
             )
 
-            denied = await client.get("/api/state")
-            self.assertEqual(denied.status, 401)
+            public = await client.get("/api/state")
+            self.assertEqual(public.status, 200)
+            public_payload = await public.json()
+            self.assertFalse(public_payload["viewer"]["authenticated"])
+            self.assertEqual(public_payload["session"]["participants"], [])
 
             with patch(
                 "modules.consensus_web._runtime_token", "test-access-token-123456"
@@ -1137,10 +1201,12 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             atlas = await client.get("/api/atlas/bootstrap")
             atlas_payload = await atlas.json()
             protected = await client.get("/api/state")
+            protected_payload = await protected.json()
 
         self.assertEqual(atlas.status, 200)
         self.assertEqual(atlas_payload["viewer"]["account_tier"], "zero")
-        self.assertEqual(protected.status, 403)
+        self.assertEqual(protected.status, 200)
+        self.assertFalse(protected_payload["viewer"]["authenticated"])
 
     async def test_three_bad_pins_warn_owner_and_require_discord_reset(self) -> None:
         storage.add_profile_character(77, 42, "Operator Test", "42001")
@@ -2120,6 +2186,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.bot,
             77,
             mode="simulation",
+            principal=self._principal(user_id=100),
         )
 
         self.assertEqual(default_state["mode"], "live")

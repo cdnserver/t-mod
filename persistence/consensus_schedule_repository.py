@@ -60,6 +60,28 @@ def get_upcoming_consensus_schedule(guild_id: int) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def get_consensus_schedule_for_session(
+    guild_id: int,
+    session_key: str,
+) -> dict[str, Any] | None:
+    """Return the plan bound to a live or recently completed session."""
+
+    clean_key = str(session_key or "").strip()
+    if int(guild_id) <= 0 or not clean_key:
+        return None
+    with _db_lock, connect() as con:
+        row = con.execute(
+            """
+            SELECT * FROM tvrs_consensus_schedules
+            WHERE guild_id = ? AND started_session_key = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(guild_id), clean_key),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def list_consensus_schedules(
     guild_id: int,
     *,
@@ -313,12 +335,46 @@ def start_consensus_schedule(
     return dict(row) if row is not None else None
 
 
+def complete_consensus_schedule(
+    guild_id: int,
+    *,
+    session_key: str,
+) -> dict[str, Any] | None:
+    """Project a terminal live session back onto its planning record."""
+
+    clean_key = str(session_key or "").strip()
+    if int(guild_id) <= 0 or not clean_key:
+        return None
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            UPDATE tvrs_consensus_schedules
+            SET status = 'completed', revision = revision + 1, updated_at = ?
+            WHERE guild_id = ? AND started_session_key = ? AND status = 'started'
+            """,
+            (now, int(guild_id), clean_key),
+        )
+        row = con.execute(
+            """
+            SELECT * FROM tvrs_consensus_schedules
+            WHERE guild_id = ? AND started_session_key = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(guild_id), clean_key),
+        ).fetchone()
+        con.commit()
+    return dict(row) if row is not None else None
+
+
 __all__ = [
     "SCHEDULE_STATUSES",
     "bind_consensus_schedule_event",
     "bind_consensus_schedule_invitation",
     "cancel_consensus_schedule",
+    "complete_consensus_schedule",
     "get_consensus_schedule",
+    "get_consensus_schedule_for_session",
     "get_upcoming_consensus_schedule",
     "list_consensus_schedules",
     "save_consensus_schedule",

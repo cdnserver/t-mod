@@ -37,7 +37,6 @@ from modules.tvrs_delivery import (
     build_control_dm_deliveries,
     build_control_notice_deliveries,
     build_discussion_invite_deliveries,
-    build_phase_announcement_delivery,
     build_retry_bill_delivery,
     build_result_deliveries,
 )
@@ -646,29 +645,9 @@ async def reconcile_current_consensus_deliveries(
         )
         queued += len(repaired)
 
-    # Reconstruct split notification/fallback jobs introduced after older
-    # active snapshots were created. Stable semantic keys make this idempotent.
-    if session.stage == "registration":
-        queued += int(
-            await _enqueue_semantic_delivery(
-                build_phase_announcement_delivery(session, phase="registration")
-            )
-        )
-    elif (
-        session.stage == "presentation"
-        and session.current_bill is not None
-        and bill_id > 0
-    ):
-        queued += int(
-            await _enqueue_semantic_delivery(
-                build_phase_announcement_delivery(
-                    session,
-                    phase="presentation",
-                    bill_id=bill_id,
-                )
-            )
-        )
-    elif (
+    # Voting notices are private and transient. The materials channel is a
+    # clean source of truth for bills and results, not an operational feed.
+    if (
         session.stage in {"voting", "paused", "discussion_type", "discussion"}
         and not (
             session.stage == "paused" and session.previous_stage == "presentation"
@@ -683,15 +662,6 @@ async def reconcile_current_consensus_deliveries(
                 "recover_marker": True,
             }
             queued += int(await _enqueue_semantic_delivery(delivery))
-        queued += int(
-            await _enqueue_semantic_delivery(
-                build_phase_announcement_delivery(
-                    session,
-                    phase="voting",
-                    bill_id=bill_id,
-                )
-            )
-        )
     if (
         session.stage == "discussion"
         and session.current_bill is not None

@@ -200,7 +200,7 @@ class ConsensusSummaryTests(unittest.TestCase):
             rendered,
         )
 
-    def test_large_summary_is_split_into_durable_public_pages(self) -> None:
+    def test_large_summary_is_one_artifact_delivery_without_embed_limits(self) -> None:
         session = act_iii_session()
         session.stage = "finished"
         session.finished = True
@@ -228,7 +228,7 @@ class ConsensusSummaryTests(unittest.TestCase):
             if item["payload"]["destination"] == "public"
         ]
 
-        self.assertGreater(len(public), 1)
+        self.assertEqual(len(public), 1)
         self.assertEqual(
             sum(len(item["payload"]["results"]) for item in public),
             60,

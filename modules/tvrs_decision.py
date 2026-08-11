@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 from discord.ext import commands
 
@@ -33,6 +35,7 @@ from modules.tvrs_delivery import (
     build_result_deliveries,
     build_session_summary_deliveries,
 )
+from persistence import consensus_schedule_repository as schedule_storage
 
 from modules.tvrs_presentation import (
     calculate_consensus,
@@ -447,6 +450,17 @@ async def finish_session(
             session,
             **finish_kwargs,
         )
+    if not cancelled:
+        try:
+            await asyncio.to_thread(
+                schedule_storage.complete_consensus_schedule,
+                int(session.guild_id),
+                session_key=str(session.session_key),
+            )
+        except (OSError, ValueError):
+            # Completion of the live session is authoritative. Planning is a
+            # recoverable projection and must never reopen a finished vote.
+            pass
     wake_delivery_worker()
     await cancel_vote_timer(session)
     embed = build_final_summary_embed(session)

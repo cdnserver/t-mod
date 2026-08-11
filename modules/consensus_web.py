@@ -11,7 +11,7 @@ import secrets
 import time
 import traceback
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -21,7 +21,10 @@ from aiohttp import web
 from discord.ext import commands
 
 from modules.consensus_admin_web import register_admin_web_routes
-from modules.consensus_core import ConsensusStateError
+from modules.consensus_core import (
+    ConsensusStateError,
+    session_from_snapshot,
+)
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import get_consensus_simulation
 from modules.consensus_web_auth import (
@@ -54,6 +57,7 @@ from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from modules.consensus_schedule import public_schedule_payload
+from modules.consensus_artifacts import generate_session_report
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -96,6 +100,13 @@ def _configured_public_url() -> str:
 
 
 CONSENSUS_WEB_PUBLIC_URL = _configured_public_url()
+try:
+    CONSENSUS_BALLOT_UNLOCK_SECONDS = max(
+        0,
+        min(3600, int(os.getenv("CONSENSUS_BALLOT_UNLOCK_SECONDS", "90") or 90)),
+    )
+except (TypeError, ValueError):
+    CONSENSUS_BALLOT_UNLOCK_SECONDS = 90
 
 
 def _configured_surface_url(variable: str, fallback: str) -> str:
@@ -450,6 +461,7 @@ def _session_payload(
         "key": session.session_key,
         "revision": int(session.revision),
         "plenary_number": int(session.plenary_number),
+        "created_at": session.created_at.isoformat(),
         "stage": str(session.stage),
         "stage_label": {
             "registration": "Регистрация",
@@ -552,6 +564,42 @@ def _session_payload(
     }
 
 
+def _utc_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ballot_unlock_at(schedule: dict[str, Any] | None) -> datetime | None:
+    if schedule is None:
+        return None
+    scheduled_for = _utc_datetime(schedule.get("scheduled_for"))
+    if scheduled_for is None:
+        return None
+    return scheduled_for - timedelta(seconds=CONSENSUS_BALLOT_UNLOCK_SECONDS)
+
+
+def _broadcast_phase(
+    *,
+    session: Any | None,
+    schedule: dict[str, Any] | None,
+    latest_finished: dict[str, Any] | None,
+    now: datetime,
+) -> str:
+    if session is not None and not session.finished:
+        return "preparing" if session.stage == "registration" else "live"
+    if schedule is not None and str(schedule.get("status") or "") == "scheduled":
+        return "scheduled"
+    finished_at = _utc_datetime((latest_finished or {}).get("finished_at"))
+    if finished_at is not None and now - finished_at <= timedelta(hours=12):
+        return "completed"
+    return "idle"
+
+
 async def build_consensus_web_state(
     bot: discord.Client,
     guild_id: int,
@@ -565,6 +613,8 @@ async def build_consensus_web_state(
     live_session = active_sessions.get(guild_id)
     simulation = get_consensus_simulation(guild_id)
     requested_mode = str(mode or "").strip().lower()
+    if principal is None and not legacy_read_only:
+        requested_mode = "live"
     if requested_mode not in {"live", "simulation"}:
         requested_mode = (
             "live"
@@ -580,22 +630,33 @@ async def build_consensus_web_state(
         else (live_session if not selected_simulation else None)
     )
 
+    latest_finished_snapshot: dict[str, Any] | None = None
     if selected_simulation:
         queue_rows = simulation.queue_bills(3) if simulation else []
         recent_rows = list(session.results[-12:]) if session is not None else []
         schedule_row = None
     else:
-        queue_rows, recent_rows, schedule_row = await asyncio.gather(
+        if live_session is not None:
+            def schedule_loader() -> dict[str, Any] | None:
+                return schedule_storage.get_consensus_schedule_for_session(
+                    guild_id,
+                    str(live_session.session_key),
+                ) or schedule_storage.get_upcoming_consensus_schedule(guild_id)
+        else:
+            def schedule_loader() -> dict[str, Any] | None:
+                return schedule_storage.get_upcoming_consensus_schedule(guild_id)
+        queue_rows, recent_rows, schedule_row, latest_finished_snapshot = await asyncio.gather(
             asyncio.to_thread(tvrs_storage.tvrs_queue_bills, guild_id, 20),
             asyncio.to_thread(tvrs_storage.tvrs_recent_live_results, guild_id, 12),
+            asyncio.to_thread(schedule_loader),
             asyncio.to_thread(
-                schedule_storage.get_upcoming_consensus_schedule,
+                tvrs_storage.tvrs_latest_finished_consensus_session,
                 guild_id,
             ),
         )
 
     available_modes = ["live"]
-    if simulation is not None:
+    if simulation is not None and principal is not None:
         available_modes.append("simulation")
     viewer_participant = (
         session.participants.get(int(principal.user_id))
@@ -616,15 +677,56 @@ async def build_consensus_web_state(
         and viewer_participant is not None
         else None
     )
+    now = datetime.now(timezone.utc)
+    ballot_schedule = schedule_row
+    if session is not None and schedule_row is not None:
+        started_key = str(schedule_row.get("started_session_key") or "")
+        if started_key and started_key != str(session.session_key):
+            ballot_schedule = None
+        elif not started_key and str(schedule_row.get("status") or "") == "scheduled":
+            ballot_schedule = (
+                schedule_row
+                if int(schedule_row.get("plenary_number") or 0)
+                == int(session.plenary_number)
+                else None
+            )
+    ballot_unlock_at = _ballot_unlock_at(ballot_schedule)
+    ballot_time_open = ballot_unlock_at is None or now >= ballot_unlock_at
+    viewer_ballot_available = bool(
+        viewer_participant is not None
+        and viewer_participant.confirmed
+        and ballot_time_open
+    )
     viewer_can_vote = bool(
         session is not None
         and session.stage == "voting"
         and session.current_bill is not None
-        and viewer_participant is not None
-        and viewer_participant.confirmed
+        and viewer_ballot_available
+    )
+    last_session_payload: dict[str, Any] | None = None
+    finished_session = None
+    if latest_finished_snapshot is not None:
+        try:
+            finished_session = session_from_snapshot(latest_finished_snapshot)
+        except (ConsensusStateError, TypeError, ValueError):
+            finished_session = None
+        if finished_session is not None:
+            last_session_payload = _session_payload(
+                finished_session,
+                guild_id,
+                simulation=False,
+            )
+            last_session_payload["finished_at"] = str(
+                latest_finished_snapshot.get("finished_at") or ""
+            ) or None
+    phase = _broadcast_phase(
+        session=session,
+        schedule=schedule_row,
+        latest_finished=latest_finished_snapshot,
+        now=now,
     )
     state: dict[str, Any] = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": now.isoformat(),
         "guild": {
             "id": guild_id,
             "name": str(getattr(guild, "name", "") or "Товарищество"),
@@ -633,8 +735,10 @@ async def build_consensus_web_state(
         "mode_label": "Симуляция" if selected_simulation else "Рабочий контур",
         "available_modes": available_modes,
         "active": session is not None and not session.finished,
+        "broadcast_phase": phase,
         "schedule": public_schedule_payload(schedule_row),
         "session": None,
+        "last_session": last_session_payload,
         "queue": [
             {
                 "id": int(row.get("id") or 0),
@@ -680,9 +784,9 @@ async def build_consensus_web_state(
             "participant_kind": (
                 str(viewer_participant.kind) if viewer_participant is not None else None
             ),
-            "ballot_available": bool(
-                viewer_participant is not None
-                and viewer_participant.confirmed
+            "ballot_available": viewer_ballot_available,
+            "ballot_unlock_at": (
+                ballot_unlock_at.isoformat() if ballot_unlock_at is not None else None
             ),
             "can_vote": viewer_can_vote,
             "vote": viewer_vote,
@@ -694,6 +798,26 @@ async def build_consensus_web_state(
             principal=principal,
         ),
     }
+    if (
+        session is None
+        and principal is not None
+        and finished_session is not None
+        and phase == "completed"
+    ):
+        completed_participant = finished_session.participants.get(int(principal.user_id))
+        if completed_participant is not None and completed_participant.confirmed:
+            state["viewer"].update(
+                {
+                    "participant": True,
+                    "confirmed": True,
+                    "participant_kind": str(completed_participant.kind),
+                    "ballot_available": True,
+                    "can_vote": False,
+                    "post_session": True,
+                }
+            )
+    if principal is None and last_session_payload is not None:
+        last_session_payload["participants"] = []
     if session is None:
         return state
 
@@ -754,6 +878,10 @@ async def build_consensus_web_state(
                     fallback_result=bill_row,
                 )
     state["session"] = session_payload
+    if principal is None:
+        # The broadcast is public, but the named roster and private delivery
+        # diagnostics remain visible only after a verified T-Mod login.
+        session_payload["participants"] = []
     return state
 
 
@@ -897,7 +1025,8 @@ def _apply_security_headers(
         "style-src 'self' "
         "'sha256-0IYaU6NkDTflYaDbUR4nMFteY9tDTb1ADhuFP1o95po=' "
         "'sha256-kivcxaEPD+v/Ecc3Z+TNAW/Uf1rs+0/EwVf6c/m1dKc='; "
-        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+        "img-src 'self' data:; connect-src 'self' https://api.open-meteo.com; "
+        "frame-ancestors 'none'; "
         "base-uri 'none'; object-src 'none'; form-action 'self'"
     )
 
@@ -935,6 +1064,7 @@ def create_consensus_web_app(
             "app.js",
             "style.css",
             "chamber.css",
+            "consensus-v4.css",
             "egg.css",
             "egg.js",
             "zigmund-murchalki.mp3",
@@ -1045,6 +1175,23 @@ def create_consensus_web_app(
             text=json.dumps({"error": "unauthorized"}),
             content_type="application/json",
         )
+
+    async def public_consensus_request(
+        request: web.Request,
+    ) -> tuple[ConsensusWebPrincipal | None, bool]:
+        """Resolve an identity when present without locking the public broadcast."""
+
+        principal = await resolve_principal(
+            request,
+            bot,
+            guild_id=int(guild_id),
+        )
+        if principal is not None and principal.guild_member:
+            return principal, False
+        supplied = _request_token(request)
+        if supplied and hmac.compare_digest(supplied, _access_token()):
+            return None, True
+        return None, False
 
     async def ticket_login(request: web.Request) -> web.Response:
         try:
@@ -1270,7 +1417,7 @@ def create_consensus_web_app(
         return response
 
     async def state(request: web.Request) -> web.Response:
-        principal, legacy_read_only = await authenticated_request(request)
+        principal, legacy_read_only = await public_consensus_request(request)
         requested_mode = str(request.query.get("mode") or "").strip().lower()
         cache_key = (
             requested_mode,
@@ -1301,11 +1448,16 @@ def create_consensus_web_app(
         return response
 
     async def bills(request: web.Request) -> web.Response:
-        await authenticated_request(request)
+        principal, legacy_read_only = await public_consensus_request(request)
         requested_mode = (
             "simulation" if request.query.get("mode") == "simulation" else "live"
         )
         if requested_mode == "simulation":
+            if principal is None and not legacy_read_only:
+                raise web.HTTPForbidden(
+                    text=json.dumps({"error": "simulation_login_required"}),
+                    content_type="application/json",
+                )
             simulation = get_consensus_simulation(int(guild_id))
             if simulation is None:
                 return web.json_response(
@@ -1354,7 +1506,7 @@ def create_consensus_web_app(
         )
 
     async def bill_detail(request: web.Request) -> web.Response:
-        await authenticated_request(request)
+        principal, legacy_read_only = await public_consensus_request(request)
         try:
             bill_id = int(request.match_info["bill_id"])
         except (TypeError, ValueError):
@@ -1366,6 +1518,11 @@ def create_consensus_web_app(
             "simulation" if request.query.get("mode") == "simulation" else "live"
         )
         if requested_mode == "simulation":
+            if principal is None and not legacy_read_only:
+                raise web.HTTPForbidden(
+                    text=json.dumps({"error": "simulation_login_required"}),
+                    content_type="application/json",
+                )
             simulation = get_consensus_simulation(int(guild_id))
             bill_number = bill_id - 900_000
             if (
@@ -1418,6 +1575,28 @@ def create_consensus_web_app(
                 ),
             },
         )
+
+    async def consensus_report(request: web.Request) -> web.StreamResponse:
+        session_key = str(request.match_info.get("session_key") or "").strip()
+        if not session_key or len(session_key) > 180:
+            raise web.HTTPNotFound()
+        snapshot = await asyncio.to_thread(
+            tvrs_storage.tvrs_latest_finished_consensus_session,
+            int(guild_id),
+        )
+        if snapshot is None or str(snapshot.get("session_key") or "") != session_key:
+            raise web.HTTPNotFound()
+        try:
+            finished_session = session_from_snapshot(snapshot)
+        except (ConsensusStateError, TypeError, ValueError) as exc:
+            raise web.HTTPServiceUnavailable(text="Протокол временно недоступен.") from exc
+        report = await asyncio.to_thread(generate_session_report, finished_session)
+        response = web.FileResponse(report)
+        response.content_type = "application/pdf"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="consensus-{int(finished_session.plenary_number):02d}-protocol.pdf"'
+        )
+        return response
 
     async def command(request: web.Request) -> web.Response:
         principal, legacy_read_only = await authenticated_request(request)
@@ -1571,6 +1750,7 @@ def create_consensus_web_app(
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/bills", bills)
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
+    app.router.add_get("/api/reports/{session_key}/consensus.pdf", consensus_report)
     app.router.add_post("/api/command", command)
     register_admin_web_routes(
         app,

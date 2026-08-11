@@ -459,7 +459,7 @@ class ConsensusScheduleView(discord.ui.View):
             view=ConsensusScheduleView(self.requester_id, self.guild_id, latest),
         )
 
-    @discord.ui.button(label="Подготовить заседание", emoji="⚖️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Проверить готовность", emoji="⚖️", style=discord.ButtonStyle.secondary, row=1)
     async def prepare(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         from modules.tvrs_consensus_portal import open_preparation_portal
 
@@ -584,7 +584,15 @@ def public_schedule_payload(schedule: dict[str, Any] | None) -> dict[str, Any] |
         "scheduled_for": str(schedule.get("scheduled_for") or ""),
         "duration_minutes": int(schedule.get("duration_minutes") or 90),
         "voice_channel_id": int(schedule.get("voice_channel_id") or 0),
+        "host": {
+            "id": int(schedule.get("created_by_id") or 0) or None,
+            "name": str(schedule.get("created_by_display") or "").strip()
+            or "Председатель Товарищества",
+        },
         "event_url": schedule_event_url(schedule),
+        "status": str(schedule.get("status") or "scheduled"),
+        "started_at": str(schedule.get("started_at") or "") or None,
+        "created_at": str(schedule.get("created_at") or "") or None,
         "revision": int(schedule.get("revision") or 1),
     }
 

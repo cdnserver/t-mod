@@ -47,7 +47,6 @@ from modules.tvrs_embeds import build_discussion_embed
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     build_control_dm_deliveries,
-    build_phase_announcement_delivery,
     delivery_marker,
     find_delivery_marker,
 )
@@ -538,96 +537,12 @@ async def deliver_consensus_phase_announcement(
     message: OutboxMessage,
     bot: commands.Bot | discord.Client,
 ) -> DeliveryReceipt:
-    """Publish one aggregate server fallback for registration or voting."""
+    """Drain obsolete public phase notices created by older releases."""
 
-    payload = message.payload
-    if int(payload.get("payload_version") or 0) != 1:
-        raise DeliveryPermanentFailure("tvrs_phase_announcement_payload_version_unsupported")
-    guild_id = int(payload.get("guild_id") or 0)
-    session_key = str(payload.get("session_key") or "")
-    channel_id = int(payload.get("channel_id") or 0)
-    phase = str(payload.get("phase") or "")
-    bill_id = int(payload.get("bill_id") or 0)
-    if guild_id <= 0 or channel_id <= 0 or phase not in {"registration", "presentation", "voting"}:
-        raise DeliveryPermanentFailure("tvrs_phase_announcement_payload_invalid")
-    session = await _active_delivery_session(guild_id, session_key)
-    if session is None or session.finished:
-        return DeliveryReceipt()
-    if phase == "registration" and session.stage != "registration":
-        return DeliveryReceipt()
-    if phase == "presentation" and (
-        session.stage != "presentation"
-        and not (session.stage == "paused" and session.previous_stage == "presentation")
-        or int((session.current_bill or {}).get("id") or 0) != bill_id
-    ):
-        return DeliveryReceipt()
-    if phase == "voting" and (
-        session.stage not in {"voting", "paused", "discussion_type", "discussion"}
-        or int((session.current_bill or {}).get("id") or 0) != bill_id
-    ):
-        return DeliveryReceipt()
-    guild = bot.get_guild(guild_id)
-    if guild is None:
-        raise RuntimeError(f"tvrs_delivery_guild_unavailable:{guild_id}")
-    channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except discord.DiscordException as exc:
-            _raise_classified_discord_error(exc, missing_is_permanent=True)
-    if not hasattr(channel, "send"):
-        raise RuntimeError(f"tvrs_delivery_channel_unavailable:{channel_id}")
-    marker = delivery_marker(message.dedupe_key)
-    if message.attempts > 1:
-        previous = await find_delivery_marker(channel, marker)
-        if previous is not None:
-            return DeliveryReceipt(message_id=int(previous.id))
-    user_ids = sorted({int(item) for item in payload.get("user_ids") or [] if int(item) > 0})
-    content = " ".join(f"<@{user_id}>" for user_id in user_ids) or None
-    if phase == "registration":
-        title = "🟦 Открыта регистрация на консенсус"
-        description = (
-            "Подтвердите участие в личном пульте. Если ЛС закрыты, нажмите кнопку "
-            "под этим сообщением — действия на сервере полностью равнозначны ЛС."
-        )
-    elif phase == "presentation":
-        title = "📖 Законопроект представлен"
-        description = (
-            f"Законопроект №{format_bill_number(int(payload.get('bill_number') or 0))}: "
-            f"**{str(payload.get('bill_title') or 'Законопроект')[:220]}**\n"
-            "Изучите проект в личном пульте. Кнопки голосования появятся после "
-            "команды ведущего «Поставить на воут»."
-        )
-    else:
-        title = "⚖️ Открыто новое голосование"
-        description = (
-            f"Законопроект №{format_bill_number(int(payload.get('bill_number') or 0))}: "
-            f"**{str(payload.get('bill_title') or 'Законопроект')[:220]}**\n"
-            "Голосуйте через личный пульт в ЛС или через кнопку ниже."
-        )
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=TVRS_EMBED_COLOR,
-        timestamp=now_local(),
-    )
-    embed.set_footer(text=marker)
-    from modules.tvrs_consensus_portal import TVRSConsensusEntryView
-
-    try:
-        sent = await channel.send(
-            content=content,
-            embed=embed,
-            view=TVRSConsensusEntryView(),
-            allowed_mentions=discord.AllowedMentions(
-                users=True,
-                roles=False,
-                everyone=False,
-            ),
-        )
-    except discord.DiscordException as exc:
-        _raise_classified_discord_error(exc, missing_is_permanent=True)
-    return DeliveryReceipt(message_id=int(sent.id))
+    # Retired in Consensus Broadcast V4. Returning success drains durable jobs
+    # created by older versions without posting more noise into materials.
+    del message, bot
+    return DeliveryReceipt()
 
 
 async def deliver_consensus_discussion_invite(
@@ -887,21 +802,6 @@ async def begin_next_bill_vote(
                     phase="presentation",
                     bill_id=int(bill["id"]),
                 )
-                # The candidate bill is not bound to the live session until
-                # the atomic commit. Build the server fallback from a temporary
-                # current-bill reference, then restore the pre-transition state.
-                previous_bill = session.current_bill
-                session.current_bill = dict(bill)
-                try:
-                    deliveries.append(
-                        build_phase_announcement_delivery(
-                            session,
-                            phase="presentation",
-                            bill_id=int(bill["id"]),
-                        )
-                    )
-                finally:
-                    session.current_bill = previous_bill
                 await run_blocking_cancellation_safe(
                     _consensus.present_bill_atomically,
                     session,

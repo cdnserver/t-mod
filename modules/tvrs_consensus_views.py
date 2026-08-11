@@ -35,6 +35,7 @@ from modules.tvrs_presentation import (
     build_live_vote_embed,
     consensus_bill_id,
     consensus_generation_matches,
+    voice_participants,
 )
 from modules.tvrs_hub_views import TVRSBaseView
 from modules.tvrs_result_views import TVRSAfterResultView, TVRSVetoConfirmView
@@ -128,7 +129,7 @@ class TVRSRegistrationView(TVRSBaseView):
             return False
         return True
 
-    @discord.ui.button(label="Начать голосование", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Представить первый проект", style=discord.ButtonStyle.success)
     async def start_vote(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         assert interaction.guild is not None
         session = self.session(interaction.guild.id)
@@ -221,10 +222,19 @@ class TVRSRegistrationView(TVRSBaseView):
             await interaction.response.send_message("Сессия консенсуса не найдена.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
+        voice_roster, voice_error = voice_participants(interaction.guild)
+        if voice_error and not voice_roster:
+            await interaction.followup.send(voice_error, ephemeral=True)
+            return
+        added_names: list[str] = []
         async with consensus_session_lock(session.guild_id):
             if session.stage != "registration":
                 await interaction.followup.send("Регистрация уже завершена.", ephemeral=True)
                 return
+            for participant in voice_roster:
+                if int(participant.user_id) not in session.participants:
+                    session.participants[int(participant.user_id)] = participant
+                    added_names.append(str(participant.display_name))
             deliveries = build_control_dm_deliveries(
                 session,
                 phase="registration",
@@ -242,7 +252,17 @@ class TVRSRegistrationView(TVRSBaseView):
             )
         wake_delivery_worker()
         await update_host_registration_message(interaction.client, interaction.guild, session)
-        await interaction.followup.send("Приглашения поставлены в надёжную очередь доставки.", ephemeral=True)
+        suffix = (
+            " Новые участники: " + ", ".join(added_names[:12]) + "."
+            if added_names
+            else ""
+        )
+        if voice_error:
+            suffix += f" Предупреждение: {voice_error}"
+        await interaction.followup.send(
+            "Приглашения поставлены в надёжную очередь доставки." + suffix,
+            ephemeral=True,
+        )
 
 
 class TVRSConfirmView(TVRSBaseView):

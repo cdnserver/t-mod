@@ -18,7 +18,6 @@ from modules.operations_runtime import wake_operations_worker
 from modules.tvrs_delivery import (
     build_control_dm_deliveries,
     build_control_notice_deliveries,
-    build_phase_announcement_delivery,
 )
 from modules.tvrs_discussion import session_voice_quorum_ready
 from modules.tvrs_presentation import consensus_generation_matches
@@ -66,13 +65,6 @@ async def open_current_bill_vote(
             bill_id=bill_id,
         )
         deliveries.extend(build_control_notice_deliveries(session, bill_id=bill_id))
-        deliveries.append(
-            build_phase_announcement_delivery(
-                session,
-                phase="voting",
-                bill_id=bill_id,
-            )
-        )
         await run_blocking_cancellation_safe(
             _consensus.open_voting,
             session,

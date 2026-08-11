@@ -21,6 +21,7 @@ from modules.delivery_outbox import DeliveryDeferred, DeliveryReceipt, OutboxMes
 from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_embeds import build_bill_embed, build_final_summary_embed, build_result_embed
+from modules.consensus_artifacts import ensure_session_artifacts, generate_result_card
 
 
 TVRS_RESULT_TOPIC = "tvrs.consensus.result.v1"
@@ -372,44 +373,18 @@ def build_session_summary_deliveries(session: LiveConsensusSession) -> list[dict
         },
     }
     prefix = f"consensus:{session.session_key}:summary"
-    pages: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    current_size = 0
-    for item in result_payloads:
-        estimated = (
-            len(str(item.get("title") or "")[:140])
-            + len(str(item.get("source_channel_id") or ""))
-            + len(str(item.get("source_message_id") or ""))
-            + 100
-        )
-        if current and (current_size + estimated > 3200 or len(current) >= 20):
-            pages.append(current)
-            current = []
-            current_size = 0
-        current.append(item)
-        current_size += estimated
-    if current or not pages:
-        pages.append(current)
-
-    page_count = len(pages)
-    deliveries: list[dict[str, Any]] = []
-    for page_number, page_results in enumerate(pages, start=1):
-        deliveries.append({
-            "topic": TVRS_SESSION_SUMMARY_TOPIC,
-            "dedupe_key": (
-                f"{prefix}:public"
-                if page_number == 1
-                else f"{prefix}:public:{page_number}"
-            ),
-            "payload": {
-                **common,
-                "destination": "public",
-                "results": page_results,
-                "page_number": page_number,
-                "page_count": page_count,
-            },
-            "max_attempts": 12,
-        })
+    deliveries: list[dict[str, Any]] = [{
+        "topic": TVRS_SESSION_SUMMARY_TOPIC,
+        "dedupe_key": f"{prefix}:public",
+        "payload": {
+            **common,
+            "destination": "public",
+            "results": result_payloads,
+            "page_number": 1,
+            "page_count": 1,
+        },
+        "max_attempts": 12,
+    }]
     for participant in session.confirmed_participants():
         if participant.user_id == session.leader_id:
             continue
@@ -646,8 +621,32 @@ def make_result_delivery_handler(bot: Any):
             previous = await find_delivery_marker(channel, marker)
             if previous is not None:
                 return DeliveryReceipt(message_id=int(previous.id))
+            image_path = await asyncio.to_thread(
+                generate_result_card,
+                session,
+                result,
+            )
+            filename = f"consensus-result-{int(result.bill_number):03d}.png"
+            image_embed = discord.Embed(color=0x101713)
+            image_embed.set_image(url=f"attachment://{filename}")
+            image_embed.set_footer(text=marker)
+            result_view = None
+            if result.source_channel_id and result.source_message_id:
+                result_view = discord.ui.View(timeout=None)
+                result_view.add_item(
+                    discord.ui.Button(
+                        label="Оригинал законопроекта",
+                        style=discord.ButtonStyle.link,
+                        url=(
+                            f"https://discord.com/channels/{int(session.guild_id)}/"
+                            f"{int(result.source_channel_id)}/{int(result.source_message_id)}"
+                        ),
+                    )
+                )
             sent = await channel.send(
-                embed=embed,
+                embed=image_embed,
+                file=discord.File(str(image_path), filename=filename),
+                view=result_view,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
             return DeliveryReceipt(message_id=int(sent.id))
@@ -881,7 +880,20 @@ def make_session_summary_delivery_handler(bot: Any):
             previous = await find_delivery_marker(channel, marker)
             if previous is not None:
                 return DeliveryReceipt(message_id=int(previous.id))
-            sent = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            artifacts = await asyncio.to_thread(ensure_session_artifacts, session)
+            cover_name = f"consensus-{int(session.plenary_number):02d}-summary.png"
+            report_name = f"consensus-{int(session.plenary_number):02d}-protocol.pdf"
+            image_embed = discord.Embed(color=0x101713)
+            image_embed.set_image(url=f"attachment://{cover_name}")
+            image_embed.set_footer(text=marker)
+            sent = await channel.send(
+                embed=image_embed,
+                files=[
+                    discord.File(str(artifacts["cover"]), filename=cover_name),
+                    discord.File(str(artifacts["pdf"]), filename=report_name),
+                ],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return DeliveryReceipt(message_id=int(sent.id))
         if destination != "participant_dm":
             raise ValueError(f"tvrs_summary_destination_invalid:{destination}")

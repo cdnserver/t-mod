@@ -156,7 +156,7 @@ class ConsensusV3UiTests(unittest.TestCase):
                 back_to_hub=True,
             )
             labels = {str(item.label) for item in idle.children}
-            self.assertIn("Подготовить заседание", labels)
+            self.assertIn("Проверить готовность", labels)
             self.assertNotIn("Открыть заседание", labels)
             self.assertNotIn("Начать консенсус", labels)
 

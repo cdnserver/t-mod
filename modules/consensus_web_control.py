@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -48,8 +50,10 @@ from modules.tvrs_presentation import (
     consensus_bill_id,
     consensus_result_bill_id,
     is_chair,
+    voice_participants,
 )
 from modules.tvrs_vote_opening import open_current_bill_vote
+from persistence import consensus_schedule_repository as schedule_storage
 
 
 class ConsensusWebCommandError(ConsensusStateError):
@@ -68,6 +72,43 @@ class ConsensusWebCommandError(ConsensusStateError):
 
 
 _command_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _web_ballot_access_open(session: LiveConsensusSession) -> bool:
+    schedule = schedule_storage.get_consensus_schedule_for_session(
+        int(session.guild_id),
+        str(session.session_key),
+    )
+    if schedule is None:
+        candidate = schedule_storage.get_upcoming_consensus_schedule(
+            int(session.guild_id)
+        )
+        if (
+            candidate is not None
+            and int(candidate.get("plenary_number") or 0)
+            == int(session.plenary_number)
+        ):
+            schedule = candidate
+    if schedule is None:
+        return True
+    try:
+        scheduled_for = datetime.fromisoformat(
+            str(schedule.get("scheduled_for") or "").replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return True
+    if scheduled_for.tzinfo is None:
+        scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+    try:
+        unlock_seconds = max(
+            0,
+            min(3600, int(os.getenv("CONSENSUS_BALLOT_UNLOCK_SECONDS", "90") or 90)),
+        )
+    except (TypeError, ValueError):
+        unlock_seconds = 90
+    return datetime.now(timezone.utc) >= scheduled_for.astimezone(timezone.utc) - timedelta(
+        seconds=unlock_seconds
+    )
 
 
 def _is_live_leader(
@@ -121,6 +162,7 @@ def consensus_web_capabilities(
             and participant is not None
             and participant.confirmed
             and session.current_bill is not None
+            and _web_ballot_access_open(session)
             else []
         )
     if session is None:
@@ -133,6 +175,7 @@ def consensus_web_capabilities(
             and participant is not None
             and participant.confirmed
             and session.current_bill is not None
+            and _web_ballot_access_open(session)
             else []
         )
     return _stage_capabilities(
@@ -322,8 +365,17 @@ async def _execute_live(
             )
         from modules.tvrs_consensus_portal import open_consensus_registration
 
-        await open_consensus_registration(bot, guild, principal.member)
-        return "Регистрация открыта; приглашения поставлены в надёжную очередь."
+        schedule = await asyncio.to_thread(
+            schedule_storage.get_upcoming_consensus_schedule,
+            int(guild.id),
+        )
+        await open_consensus_registration(
+            bot,
+            guild,
+            principal.member,
+            schedule_id=(int(schedule["id"]) if schedule is not None else None),
+        )
+        return "Заседание подготовлено; приглашения поставлены в надёжную очередь."
 
     if session is None or session.finished:
         raise ConsensusWebCommandError(
@@ -473,6 +525,14 @@ async def _execute_live(
         return "Воут открыт; кнопки голосования отправлены участникам."
 
     if action == "resend_invitations":
+        voice_roster, voice_error = voice_participants(guild)
+        if voice_error and not voice_roster:
+            raise ConsensusWebCommandError(
+                "voice_roster_unavailable",
+                voice_error,
+                status=409,
+            )
+        added_names: list[str] = []
         async with session_lock(session.guild_id):
             if (
                 session.stage != "registration"
@@ -483,6 +543,10 @@ async def _execute_live(
                     "Регистрация уже изменилась.",
                     status=409,
                 )
+            for participant in voice_roster:
+                if int(participant.user_id) not in session.participants:
+                    session.participants[int(participant.user_id)] = participant
+                    added_names.append(str(participant.display_name))
             deliveries = build_control_dm_deliveries(
                 session,
                 phase="registration",
@@ -497,7 +561,14 @@ async def _execute_live(
             )
         wake_delivery_worker()
         await update_host_registration_message(bot, guild, session)
-        return "Приглашения повторно поставлены в очередь."
+        if added_names:
+            return (
+                "Состав обновлён, новые участники приглашены: "
+                + ", ".join(added_names[:12])
+                + ("…" if len(added_names) > 12 else "")
+                + (f" Предупреждение: {voice_error}" if voice_error else "")
+            )
+        return "Приглашения повторно поставлены в очередь текущему составу."
 
     if action == "cancel_session":
         _require_confirmation(payload, "отменить заседание")

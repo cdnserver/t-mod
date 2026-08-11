@@ -1343,7 +1343,7 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(restored, 1)
         self.assertEqual([message_id for _, message_id in added_views], [9003])
-        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 5})
+        self.assertEqual(storage.delivery_outbox_counts(), {"pending": 4})
         with storage._db_lock, storage.connect() as connection:
             rows = connection.execute(
                 "SELECT topic, dedupe_key, payload_json, priority, supersede_key "
@@ -1358,7 +1358,6 @@ class ConsensusRecoveryTests(unittest.IsolatedAsyncioTestCase):
             {
                 "tvrs.consensus.control-dm.v1",
                 "tvrs.consensus.control-notice.v1",
-                "tvrs.consensus.phase-announcement.v1",
             },
         )
         payloads = [json.loads(row["payload_json"]) for row in control_rows]

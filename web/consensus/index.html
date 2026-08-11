@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/chamber.css">
+    <link rel="stylesheet" href="/assets/consensus-v4.css?v=6">
     <script src="/assets/tab-signal.js" defer></script>
     <script src="/assets/app.js" defer></script>
   </head>
@@ -138,6 +139,78 @@
           </span>
         </aside>
 
+        <section id="broadcast-screen" class="broadcast-screen" aria-label="Трансляция консенсуса" hidden>
+          <div class="broadcast-cosmos" aria-hidden="true">
+            <span class="broadcast-halo halo-one"></span>
+            <span class="broadcast-halo halo-two"></span>
+            <span class="broadcast-scan"></span>
+            <span class="broadcast-stars"></span>
+          </div>
+          <header class="broadcast-topline">
+            <div class="broadcast-live-mark">
+              <i aria-hidden="true"></i>
+              <span id="broadcast-state-kicker">СВЕТЛЫЙ КРУГ</span>
+            </div>
+            <div class="broadcast-sound-panel">
+              <button id="broadcast-sound-toggle" type="button" aria-pressed="false">
+                <span aria-hidden="true">◖</span><b>Включить атмосферу</b>
+              </button>
+              <label>
+                <span>Громкость</span>
+                <input id="broadcast-volume" type="range" min="0" max="100" value="28" aria-label="Громкость атмосферы">
+              </label>
+            </div>
+          </header>
+
+          <div class="broadcast-center">
+            <p id="broadcast-wordmark" class="broadcast-wordmark">Т О В А Р И Щ Е С Т В О</p>
+            <h1 id="broadcast-title">Консенсус.</h1>
+            <p id="broadcast-subtitle" class="broadcast-subtitle">Светлый круг</p>
+            <div id="broadcast-countdown-wrap" class="broadcast-countdown-wrap" hidden>
+              <span id="broadcast-countdown-label">ДО НАЧАЛА</span>
+              <strong id="broadcast-countdown">00:00:00</strong>
+              <small id="broadcast-scheduled-at">—</small>
+            </div>
+          </div>
+
+          <section id="broadcast-session-card" class="broadcast-session-card" hidden>
+            <div class="broadcast-session-meta">
+              <span><small>Ведущий</small><strong id="broadcast-host">—</strong></span>
+              <span><small>Законопроектов</small><strong id="broadcast-bills">0</strong></span>
+              <span><small>Стадия</small><strong id="broadcast-stage">Ожидание</strong></span>
+              <span><small>Голосов</small><strong id="broadcast-votes">0 / 0</strong></span>
+            </div>
+            <article id="broadcast-bill" class="broadcast-bill" hidden>
+              <div>
+                <span id="broadcast-bill-number">ЗАКОНОПРОЕКТ</span>
+                <h2 id="broadcast-bill-title">—</h2>
+                <p id="broadcast-bill-summary">—</p>
+              </div>
+              <div class="broadcast-bill-aside">
+                <strong id="broadcast-bill-timer">—</strong>
+                <small>ВРЕМЯ ЭТАПА</small>
+                <button id="broadcast-open-bill" type="button">Читать проект</button>
+              </div>
+            </article>
+          </section>
+
+          <section id="broadcast-completed" class="broadcast-completed" hidden>
+            <div>
+              <span>ПРОТОКОЛ ЗАКРЫТ</span>
+              <h2 id="broadcast-completed-title">Консенсус завершён</h2>
+              <p id="broadcast-completed-meta">Решения сохранены системой T-Mod.</p>
+            </div>
+            <div id="broadcast-results" class="broadcast-results"></div>
+            <a id="broadcast-report-link" href="#" hidden>Скачать полный протокол PDF</a>
+          </section>
+
+          <footer class="broadcast-timebar">
+            <div><small>ВРЕМЯ ТОВАРИЩЕСТВА</small><strong id="broadcast-moscow-time">--:--:--</strong><span id="broadcast-moscow-date">—</span></div>
+            <div class="broadcast-weather"><i id="broadcast-weather-icon">◌</i><span><small>СЕЙЧАС</small><strong id="broadcast-weather-temp">—</strong><em id="broadcast-weather-copy">получаем данные</em></span></div>
+            <div><small>ВАШЕ ВРЕМЯ</small><strong id="broadcast-local-time">--:--:--</strong><span id="broadcast-local-date">—</span></div>
+          </footer>
+        </section>
+
         <section id="ballot-screen" class="ballot-screen" aria-label="Персональный бюллетень" hidden>
           <div class="ballot-aurora" aria-hidden="true">
             <span></span><span></span><span></span>
@@ -174,6 +247,14 @@
             <span data-phase="opened"><i>02</i><b>Воут открыт</b></span>
             <span data-phase="recorded"><i>03</i><b>Голос принят</b></span>
             <span data-phase="result"><i>04</i><b>Результат</b></span>
+          </div>
+
+          <div class="senator-timebar" aria-label="Время заседания">
+            <span><small>Время Товарищества</small><strong id="ballot-moscow-time">--:--:--</strong></span>
+            <i aria-hidden="true"></i>
+            <span><small>Ваше время</small><strong id="ballot-local-time">--:--:--</strong></span>
+            <i aria-hidden="true"></i>
+            <span><small>Время законопроекта</small><strong id="ballot-bill-elapsed">00:00</strong></span>
           </div>
 
           <div class="ballot-grid">
@@ -253,6 +334,33 @@
               </p>
             </aside>
           </div>
+
+          <section id="post-session-monitor" class="post-session-monitor" hidden>
+            <header>
+              <div><span>ПОСЛЕ ЗАСЕДАНИЯ</span><h2 id="post-session-title">Итоговый монитор</h2></div>
+              <a id="post-session-report" href="#">Скачать протокол PDF</a>
+            </header>
+            <div class="post-session-metrics">
+              <span><small>Общее время</small><strong id="post-session-duration">—</strong></span>
+              <span><small>Рассмотрено</small><strong id="post-session-total">0</strong></span>
+              <span><small>Принято</small><strong id="post-session-accepted">0</strong></span>
+              <span><small>Отклонено / вето</small><strong id="post-session-rejected">0</strong></span>
+            </div>
+            <div id="post-session-results" class="post-session-results"></div>
+          </section>
+
+          <section class="senator-studio" aria-label="Личное рабочее пространство сенатора">
+            <article class="senator-notes">
+              <header><span>ЛИЧНЫЙ БЛОКНОТ</span><small>хранится только в этом браузере</small></header>
+              <textarea id="senator-notes" maxlength="12000" placeholder="Аргументы, вопросы ведущему, заметки по проекту…"></textarea>
+              <footer><span id="senator-notes-status">сохранено локально</span><button id="senator-notes-clear" type="button">Очистить</button></footer>
+            </article>
+            <article class="senator-canvas-card">
+              <header><span>ПОЛЕ МЫСЛЕЙ</span><small>схемы и связи</small></header>
+              <canvas id="senator-canvas" width="960" height="420" aria-label="Поле для рисунков"></canvas>
+              <footer><button id="senator-canvas-clear" type="button">Очистить</button><button id="senator-canvas-save" type="button">Сохранить PNG</button></footer>
+            </article>
+          </section>
         </section>
 
         <section id="observer-screen" class="observer-screen" aria-label="Экран наблюдения" hidden>

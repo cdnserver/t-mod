@@ -53,7 +53,7 @@ def resolve_consensus_access(
         if has_chair_access:
             return ConsensusAccess(
                 primary_action="prepare",
-                primary_label="Подготовить заседание",
+                primary_label="Проверить готовность",
                 can_prepare=True,
                 can_manage=False,
                 can_participate=False,

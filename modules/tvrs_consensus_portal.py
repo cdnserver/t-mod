@@ -41,7 +41,6 @@ from modules.tvrs_config import (
 )
 from modules.tvrs_delivery import (
     build_control_dm_deliveries,
-    build_phase_announcement_delivery,
 )
 from modules.tvrs_embeds import build_final_summary_embed, build_result_embed
 from modules.tvrs_formatting import clip_text, format_bill_number, role_label, ru_ordinal
@@ -89,7 +88,7 @@ def build_preparation_embed(
         title=f"🧭 Подготовка заседания • {ru_ordinal(plenary_number)}",
         description=(
             "Проверьте повестку и состав. Рабочая сессия и приглашения будут созданы "
-            "только после нажатия **«Открыть регистрацию»**."
+            "только после нажатия **«Подготовить заседание»**."
         ),
         color=TVRS_EMBED_COLOR,
     )
@@ -187,12 +186,6 @@ async def open_consensus_registration(
             deliveries = build_control_dm_deliveries(
                 session,
                 phase="registration",
-            )
-            deliveries.append(
-                build_phase_announcement_delivery(
-                    session,
-                    phase="registration",
-                )
             )
             await run_blocking_cancellation_safe(
                 _consensus.save_with_deliveries,
@@ -599,7 +592,7 @@ class TVRSPreparationView(_RequesterPortalView):
         self.guild_id = int(guild_id)
         self.schedule_id = int(schedule_id) if schedule_id else None
         open_button = discord.ui.Button(
-            label="Открыть регистрацию",
+            label="Подготовить заседание",
             emoji="✅",
             style=discord.ButtonStyle.success,
             disabled=not report.can_open_registration,
