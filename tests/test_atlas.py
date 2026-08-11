@@ -576,6 +576,12 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.intent, "exact_lookup")
         self.assertEqual(profile.depth, "deep")
 
+    def test_corpus_abbreviation_is_understood_by_task_router(self) -> None:
+        profile = _atlas_task_profile("Что такое УК?", mode="balanced")
+
+        self.assertEqual(profile.intent, "legal_analysis")
+        self.assertEqual(profile.depth, "quick")
+
     def test_cross_chat_memory_does_not_reuse_unrated_model_claims(self) -> None:
         context = _cross_chat_context(
             [
@@ -816,6 +822,40 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             embedded,
             ["основной вопрос", "процесс задержания", "исключения из правила"],
         )
+
+    async def test_planned_queries_also_work_in_lexical_fallback(self) -> None:
+        source = {
+            "id": 95,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Процессуальный кодекс",
+            "content_text": "Специальное исключение разрешает прекратить процессуальное действие.",
+            "source_url": "https://forum.majestic-rp.ru/threads/process.5/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(
+                side_effect=AtlasAIError(
+                    "upstream_unavailable",
+                    "temporary outage",
+                    retryable=True,
+                )
+            ),
+        ):
+            result = await atlas_search(
+                77,
+                "Что делать дальше?",
+                query_variants=["специальное исключение процессуальное действие"],
+            )
+
+        self.assertEqual(result[0]["source_id"], 95)
+        self.assertIn("исключение", result[0]["text"])
 
     async def test_index_payload_contains_one_canonical_access_scope(self) -> None:
         source = {
@@ -1149,6 +1189,85 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[-1], {"role": "user", "content": "Теперь составь полную речь"})
         self.assertEqual(result["response_mode"], "creative")
         self.assertEqual(result["citations"][0]["source_id"], 7)
+
+    async def test_legal_answer_uses_generated_research_contract(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 8,
+            "title": "Процессуальный кодекс",
+            "url": "https://example.test/process",
+            "text": "Обыск проводится при наличии предусмотренного кодексом основания.",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "score": 0.94,
+        }
+        catalog = [{
+            "id": 8,
+            "title": "Процессуальный кодекс",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }]
+
+        async def complete(_method, _url, *, payload, **_kwargs):
+            if payload.get("response_format"):
+                return {
+                    "choices": [{
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "resolved_question": "Проверить законность обыска по ордеру",
+                                    "search_queries": [
+                                        "Процессуальный кодекс основания обыска",
+                                        "исключения и пределы ордера на обыск",
+                                    ],
+                                    "verification_points": [
+                                        "основание обыска",
+                                        "компетенция выдавшего ордер",
+                                    ],
+                                    "uncertainties": ["кто выдал ордер"],
+                                    "answer_strategy": "Дать вывод и перечислить проверяемые условия",
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }]
+                }
+            return {"choices": [{"message": {"content": "Законность зависит от основания [1]."}}]}
+
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=catalog,
+        ), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[source]),
+        ) as search, patch(
+            "modules.atlas_ai._json_request",
+            side_effect=complete,
+        ) as request:
+            result = await atlas_answer(
+                77,
+                "Мне выдали ордер и провели обыск. Это было законно?",
+            )
+
+        self.assertEqual(request.await_count, 2)
+        self.assertIn(
+            "исключения и пределы ордера на обыск",
+            search.await_args.kwargs["query_variants"],
+        )
+        self.assertEqual(result["intelligence"]["source"], "generated")
+        final_payload = request.await_args.kwargs["payload"]
+        self.assertTrue(
+            any("ИССЛЕДОВАТЕЛЬСКАЯ КАРТА" in item["content"] for item in final_payload["messages"])
+        )
 
     async def test_balanced_answer_can_help_when_search_has_no_confirmed_source(self) -> None:
         config = AtlasAIConfig(
