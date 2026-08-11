@@ -95,7 +95,7 @@
           </button>
           <button class="nav-item" type="button" data-section="bills">
             <span class="nav-icon">§</span>
-            <span>Законопроекты</span>
+            <span>Консенсус</span>
           </button>
           <button class="nav-item" type="button" data-section="sgl">
             <span class="nav-icon">⚖</span>
@@ -780,7 +780,7 @@
           <section id="screen-bills" class="screen" data-screen="bills">
             <div class="section-intro">
               <div>
-                <span class="section-number">06 / LEGISLATION</span>
+                <span class="section-number">06 / CONSENSUS CONTROL</span>
                 <h2>Законопроекты и консенсус</h2>
                 <p>Полный реестр проектов, редакторские пространства и результаты.</p>
               </div>
@@ -812,6 +812,42 @@
                 <small>последние решения</small>
               </article>
             </div>
+
+            <article class="panel consensus-scheduler">
+              <header class="panel-head schedule-head">
+                <div>
+                  <span class="panel-kicker">ПЛАНИРОВАНИЕ КОНСЕНСУСА</span>
+                  <h2 id="schedule-heading">Новое пленарное заседание</h2>
+                  <p id="schedule-summary">Задайте время — T-Mod создаст событие Discord и подготовит приглашения сенаторам.</p>
+                </div>
+                <div class="schedule-state">
+                  <span id="schedule-countdown">ПЛАН НЕ СОЗДАН</span>
+                  <b id="schedule-sync-state"><i></i> ожидает настройки</b>
+                  <a id="schedule-event-link" href="#" target="_blank" rel="noopener" hidden>Открыть событие Discord ↗</a>
+                </div>
+              </header>
+              <form id="consensus-schedule-form" class="schedule-form">
+                <input name="schedule_id" type="hidden">
+                <input name="expected_revision" type="hidden">
+                <label class="schedule-title-field"><span>Название заседания</span><input name="title" maxlength="100" placeholder="Пленарный консенсус Товарищества" required></label>
+                <label><span>Номер заседания</span><input name="plenary_number" type="number" min="1" step="1" required></label>
+                <label><span>Дата и время</span><input name="scheduled_for" type="datetime-local" required></label>
+                <label><span>Продолжительность</span><select name="duration_minutes"><option value="60">60 минут</option><option value="90" selected>90 минут</option><option value="120">2 часа</option><option value="180">3 часа</option><option value="240">4 часа</option></select></label>
+                <label><span>Голосовой зал</span><select id="schedule-voice-channel" name="voice_channel_id" required></select></label>
+                <label class="schedule-wide"><span>Описание и предполагаемая повестка</span><textarea name="description" maxlength="1000" rows="3" placeholder="Какие вопросы планируется рассмотреть"></textarea></label>
+                <label class="schedule-wide"><span>Текст приглашения</span><textarea name="invitation_text" maxlength="1500" rows="3" placeholder="Необязательное обращение к участникам"></textarea></label>
+                <footer class="schedule-actions">
+                  <span id="schedule-permission" class="schedule-permission"><i></i> доступ председателя подтверждён</span>
+                  <div>
+                    <button id="schedule-cancel" class="danger-button" type="button" hidden>Отменить план</button>
+                    <button id="schedule-sync" class="secondary-button" type="button" hidden>Синхронизировать</button>
+                    <button id="schedule-invite" class="secondary-button" type="button" hidden>Отправить приглашения</button>
+                    <button id="schedule-save" class="primary-button" type="submit">Создать план</button>
+                  </div>
+                </footer>
+              </form>
+              <div id="schedule-history" class="schedule-history"></div>
+            </article>
 
             <form id="bills-filters" class="filter-bar">
               <label class="search-field">

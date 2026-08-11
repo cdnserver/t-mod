@@ -22,17 +22,29 @@ from modules.admin_domain_commands import (
     execute_finance_command,
 )
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.consensus_schedule import (
+    cancel_schedule_discord_event,
+    parse_schedule_time,
+    send_schedule_invitations,
+    sync_schedule_discord_event,
+)
 from modules.delivery_runtime import wake_delivery_worker
 from modules.music_runtime_errors import MusicRuntimeError
 from modules.profile import PROFILE_ROLE_HIERARCHY
 from modules.reliability import reliability_snapshot
-from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
+from modules.tvrs_config import (
+    TVRS_CONSENSUS_VOICE_CHANNEL_ID,
+    TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
+    TVRS_SENATOR_ROLE_ID,
+)
+from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import activity_repository as activity_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import broadcast_repository as broadcast_storage
 from persistence import craft_repository as craft_storage
+from persistence import consensus_schedule_repository as schedule_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
 from persistence import profile_repository as profile_storage
@@ -52,7 +64,7 @@ ADMIN_SECTION_LABELS = {
     "treasury": "Казна",
     "craft": "Крафты",
     "market": "Рынок RU15",
-    "bills": "Законопроекты",
+    "bills": "Консенсус и законопроекты",
     "sgl": "Бюро СГЛ",
     "members": "Участники",
     "communications": "Уведомления",
@@ -1190,6 +1202,155 @@ def register_admin_web_routes(
         command_receipts[receipt_key] = (now + 300.0, payload)
         return web.json_response(payload)
 
+    async def consensus_schedule_command(request: web.Request) -> web.Response:
+        principal, body, idempotency_key = await command_request(request)
+        if not is_chair(principal.member):
+            return web.json_response(
+                {
+                    "error": "consensus_schedule_chair_required",
+                    "message": "Планировать заседание может только председатель или сопредседатель.",
+                },
+                status=403,
+            )
+        now = time.monotonic()
+        receipt_key = (int(principal.user_id), idempotency_key)
+        cached = command_receipts.get(receipt_key)
+        if cached is not None and cached[0] > now:
+            return web.json_response(cached[1])
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            return web.json_response(
+                {"error": "guild_unavailable", "message": "Discord-сервер временно недоступен."},
+                status=503,
+            )
+        action = str(body.get("action") or "save").strip().lower()
+        warning = None
+        count = None
+        try:
+            current = await asyncio.to_thread(
+                schedule_storage.get_upcoming_consensus_schedule,
+                int(guild_id),
+            )
+            if action == "save":
+                starts_at = parse_schedule_time(
+                    str(body.get("scheduled_for") or "").replace("T", " ")
+                )
+                schedule_id = int(body.get("schedule_id") or 0) or None
+                if current is not None and schedule_id is None:
+                    schedule_id = int(current["id"])
+                schedule = await asyncio.to_thread(
+                    schedule_storage.save_consensus_schedule,
+                    guild_id=int(guild_id),
+                    plenary_number=int(
+                        body.get("plenary_number")
+                        or await asyncio.to_thread(
+                            tvrs_storage.tvrs_get_next_plenary_number,
+                            int(guild_id),
+                            TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
+                        )
+                    ),
+                    title=str(body.get("title") or ""),
+                    description=str(body.get("description") or ""),
+                    invitation_text=str(body.get("invitation_text") or ""),
+                    scheduled_for=starts_at,
+                    duration_minutes=int(body.get("duration_minutes") or 90),
+                    voice_channel_id=int(
+                        body.get("voice_channel_id")
+                        or TVRS_CONSENSUS_VOICE_CHANNEL_ID
+                    ),
+                    actor_id=int(principal.user_id),
+                    actor_display=str(principal.display_name),
+                    schedule_id=schedule_id,
+                    expected_revision=(
+                        int(body.get("expected_revision") or 0)
+                        if schedule_id is not None
+                        else None
+                    ),
+                )
+                try:
+                    schedule = await sync_schedule_discord_event(guild, schedule)
+                except (discord.DiscordException, ValueError) as exc:
+                    warning = (
+                        "План сохранён, но событие Discord пока не синхронизировано: "
+                        f"{type(exc).__name__}. Нажмите «Синхронизировать»."
+                    )
+                message = "План заседания сохранён."
+            elif action == "sync":
+                if current is None:
+                    raise ValueError("consensus_schedule_missing")
+                schedule = await sync_schedule_discord_event(guild, current)
+                message = "Событие Discord синхронизировано."
+            elif action == "invite":
+                if current is None:
+                    raise ValueError("consensus_schedule_missing")
+                schedule, count = await send_schedule_invitations(
+                    guild,
+                    current,
+                    principal.member,
+                )
+                message = f"Приглашения поставлены в очередь: {count}."
+            elif action == "cancel":
+                if body.get("confirmed") is not True or current is None:
+                    raise ValueError("consensus_schedule_confirmation_required")
+                schedule = await asyncio.to_thread(
+                    schedule_storage.cancel_consensus_schedule,
+                    int(current["id"]),
+                    guild_id=int(guild_id),
+                    expected_revision=int(current["revision"]),
+                )
+                try:
+                    await cancel_schedule_discord_event(guild, schedule)
+                except discord.DiscordException as exc:
+                    warning = f"План отменён, но событие Discord не ответило: {type(exc).__name__}."
+                message = "План заседания отменён."
+            else:
+                raise ValueError("consensus_schedule_action_invalid")
+        except (TypeError, ValueError, discord.DiscordException) as exc:
+            code = str(exc)
+            messages = {
+                "consensus_schedule_time_invalid": "Укажите дату и время начала.",
+                "consensus_schedule_time_past": "Начало должно быть хотя бы через одну минуту.",
+                "consensus_schedule_time_too_far": "Заседание можно планировать максимум на год вперёд.",
+                "consensus_schedule_title_invalid": "Название должно содержать от 3 до 100 символов.",
+                "consensus_schedule_description_invalid": "Описание не должно быть длиннее 1000 символов.",
+                "consensus_schedule_invitation_invalid": "Текст приглашения не должен быть длиннее 1500 символов.",
+                "consensus_schedule_duration_invalid": "Продолжительность должна быть от 15 до 480 минут.",
+                "consensus_schedule_conflict": "План уже изменён в другом окне. Обновите раздел.",
+                "consensus_schedule_missing": "Сначала создайте план заседания.",
+                "consensus_schedule_recipients_empty": "Не найдено участников для приглашения.",
+                "consensus_schedule_voice_channel_missing": "Выбранный голосовой канал недоступен.",
+                "consensus_schedule_confirmation_required": "Подтвердите отмену заседания.",
+            }
+            return web.json_response(
+                {
+                    "error": code,
+                    "message": messages.get(code, "Не удалось изменить план заседания."),
+                },
+                status=409 if code == "consensus_schedule_conflict" else 400,
+            )
+        payload = {
+            "ok": True,
+            "message": message,
+            "warning": warning,
+            "recipient_count": count,
+            "schedule": schedule,
+        }
+        command_receipts[receipt_key] = (now + 300.0, payload)
+        await asyncio.to_thread(
+            activity_storage.bot_record_action,
+            guild_id=int(guild_id),
+            actor_id=int(principal.user_id),
+            actor_display=str(principal.display_name),
+            module="consensus",
+            action_kind=f"consensus_schedule_{action}",
+            target_type="consensus_schedule",
+            target_id=int(schedule.get("id") or 0),
+            summary=message,
+            payload={"source": "nuclear-reactor", "warning": warning},
+            reversible=False,
+        )
+        return web.json_response(payload)
+
     async def sgl_command(request: web.Request) -> web.Response:
         principal, body, idempotency_key = await command_request(request)
         now = time.monotonic()
@@ -1485,7 +1646,7 @@ def register_admin_web_routes(
 
     async def bills_registry(request: web.Request) -> web.Response:
         principal = await administrative_request(request)
-        catalog, workspaces, sessions, recent_results = await asyncio.gather(
+        catalog, workspaces, sessions, recent_results, schedule, schedule_history, next_plenary = await asyncio.gather(
             asyncio.to_thread(
                 tvrs_storage.tvrs_public_bill_catalog,
                 int(guild_id),
@@ -1503,6 +1664,20 @@ def register_admin_web_routes(
                 tvrs_storage.tvrs_recent_live_results,
                 int(guild_id),
                 50,
+            ),
+            asyncio.to_thread(
+                schedule_storage.get_upcoming_consensus_schedule,
+                int(guild_id),
+            ),
+            asyncio.to_thread(
+                schedule_storage.list_consensus_schedules,
+                int(guild_id),
+                limit=8,
+            ),
+            asyncio.to_thread(
+                tvrs_storage.tvrs_get_next_plenary_number,
+                int(guild_id),
+                TVRS_DEFAULT_NEXT_PLENARY_NUMBER,
             ),
         )
         clean_query = str(request.query.get("q", "")).strip().casefold()
@@ -1530,6 +1705,18 @@ def register_admin_web_routes(
                 "workspaces": workspaces,
                 "active_sessions": sessions,
                 "recent_results": recent_results,
+                "schedule": schedule,
+                "schedule_history": schedule_history,
+                "can_manage_schedule": bool(is_chair(principal.member)),
+                "schedule_defaults": {
+                    "plenary_number": int(next_plenary),
+                    "duration_minutes": 90,
+                    "voice_channel_id": int(TVRS_CONSENSUS_VOICE_CHANNEL_ID),
+                },
+                "voice_channels": [
+                    {"id": int(channel.id), "name": str(channel.name)}
+                    for channel in getattr(bot.get_guild(int(guild_id)), "voice_channels", ())
+                ],
             }
         )
 
@@ -2129,6 +2316,10 @@ def register_admin_web_routes(
     )
     app.router.add_get("/api/admin/bills", bills_registry)
     app.router.add_post("/api/admin/bills/command", bill_command)
+    app.router.add_post(
+        "/api/admin/bills/schedule",
+        consensus_schedule_command,
+    )
     app.router.add_get("/api/admin/sgl", sgl_registry)
     app.router.add_post("/api/admin/sgl/command", sgl_command)
     app.router.add_get("/api/admin/members", members_registry)

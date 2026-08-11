@@ -29,7 +29,7 @@ const sectionMeta = {
   treasury: ["ФИНАНСОВЫЙ КОНТУР", "Казна"],
   craft: ["ПРОИЗВОДСТВЕННЫЙ КОНТУР", "Крафты"],
   market: ["MAJESTIC MARKET", "Рынок RU15"],
-  bills: ["LEGISLATION", "Законопроекты"],
+  bills: ["CONSENSUS CONTROL", "Консенсус и законопроекты"],
   sgl: ["SGL BUREAU", "Бюро СГЛ"],
   members: ["MEMBER DIRECTORY", "Участники"],
   communications: ["COMMUNICATIONS", "Уведомления"],
@@ -172,6 +172,9 @@ const appState = {
   openingRoute: false,
   craftRecipes: [],
   operation: null,
+  scheduleDirty: false,
+  scheduleStartsAt: null,
+  scheduleTimer: null,
 };
 
 function byId(id) {
@@ -2411,6 +2414,7 @@ function billCard(item) {
 
 function renderBills(data) {
   if (!showApplication(data)) return;
+  renderConsensusSchedule(data);
   appState.rows.bills = data.items || [];
   const workspaces = data.workspaces || [];
   const sessions = data.active_sessions || [];
@@ -2444,6 +2448,160 @@ function renderBills(data) {
         )
       : [node("div", { className: "empty-state", text: "Открытых редакторских пространств нет." })],
   );
+}
+
+function dateTimeLocalValue(value) {
+  const date = value ? new Date(value) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  if (!value) date.setMinutes(0, 0, 0);
+  const part = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
+}
+
+function refreshScheduleCountdown() {
+  const target = appState.scheduleStartsAt;
+  if (!target) {
+    setText("schedule-countdown", "ПЛАН НЕ СОЗДАН");
+    return;
+  }
+  const remaining = Math.max(0, new Date(target).getTime() - Date.now());
+  if (!Number.isFinite(remaining)) {
+    setText("schedule-countdown", "ВРЕМЯ НЕ ОПРЕДЕЛЕНО");
+    return;
+  }
+  const totalSeconds = Math.floor(remaining / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const clock = [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+  setText("schedule-countdown", remaining > 0 ? `ДО НАЧАЛА ${days ? `${days} ДН. ` : ""}${clock}` : "ВРЕМЯ НАЧАЛА НАСТУПИЛО");
+}
+
+function scheduleStatusLabel(status) {
+  return {
+    scheduled: "запланирован",
+    started: "начат",
+    completed: "завершён",
+    cancelled: "отменён",
+  }[status] || status || "неизвестно";
+}
+
+function renderConsensusSchedule(data) {
+  const form = byId("consensus-schedule-form");
+  const schedule = data.schedule || null;
+  const defaults = data.schedule_defaults || {};
+  const canManage = data.can_manage_schedule === true;
+  const channels = Array.isArray(data.voice_channels) ? data.voice_channels : [];
+  const unsavedVoice = appState.scheduleDirty
+    ? String(form.elements.namedItem("voice_channel_id").value || "")
+    : "";
+  const selectedVoice = String(
+    schedule?.voice_channel_id || defaults.voice_channel_id || "",
+  );
+  const channelChoices = [...channels];
+  if (
+    selectedVoice
+    && !channelChoices.some((channel) => String(channel.id) === selectedVoice)
+  ) {
+    channelChoices.unshift({ id: selectedVoice, name: "Зал консенсуса" });
+  }
+
+  replaceChildren(
+    "schedule-voice-channel",
+    (channelChoices.length ? channelChoices : [{ id: selectedVoice, name: "Зал консенсуса" }])
+      .filter((channel) => String(channel.id || ""))
+      .map((channel) => node("option", {
+        value: String(channel.id),
+        text: channel.name || `Канал ${channel.id}`,
+      })),
+  );
+  if (unsavedVoice) form.elements.namedItem("voice_channel_id").value = unsavedVoice;
+
+  if (!appState.scheduleDirty) {
+    form.elements.namedItem("schedule_id").value = schedule ? String(schedule.id) : "";
+    form.elements.namedItem("expected_revision").value = schedule ? String(schedule.revision || 1) : "";
+    form.elements.namedItem("title").value = schedule?.title || "Пленарный консенсус Товарищества";
+    form.elements.namedItem("plenary_number").value = String(schedule?.plenary_number || defaults.plenary_number || 1);
+    form.elements.namedItem("scheduled_for").value = dateTimeLocalValue(schedule?.scheduled_for);
+    form.elements.namedItem("duration_minutes").value = String(schedule?.duration_minutes || defaults.duration_minutes || 90);
+    form.elements.namedItem("voice_channel_id").value = selectedVoice;
+    form.elements.namedItem("description").value = schedule?.description || "";
+    form.elements.namedItem("invitation_text").value = schedule?.invitation_text || "";
+  }
+
+  appState.scheduleStartsAt = schedule?.scheduled_for || null;
+  refreshScheduleCountdown();
+  setText("schedule-heading", schedule?.title || "Новое пленарное заседание");
+  setText(
+    "schedule-summary",
+    schedule
+      ? `${formatDate(schedule.scheduled_for)} · ${schedule.duration_minutes || 90} мин. · редакция ${schedule.revision || 1}`
+      : "Задайте время — T-Mod создаст событие Discord и подготовит приглашения сенаторам.",
+  );
+  setText(
+    "schedule-sync-state",
+    schedule?.discord_event_id ? "● событие Discord синхронизировано" : "○ событие Discord ещё не создано",
+  );
+  const eventLink = byId("schedule-event-link");
+  if (schedule?.discord_event_id && appState.guildId) {
+    eventLink.href = `https://discord.com/events/${appState.guildId}/${schedule.discord_event_id}`;
+    eventLink.hidden = false;
+  } else {
+    eventLink.hidden = true;
+    eventLink.removeAttribute("href");
+  }
+
+  setText(
+    "schedule-permission",
+    canManage
+      ? "● доступ председателя подтверждён"
+      : "○ просмотр — изменение доступно председателю и сопредседателю",
+  );
+  for (const control of form.querySelectorAll("input, select, textarea, button")) {
+    control.disabled = !canManage;
+  }
+  byId("schedule-save").textContent = schedule ? "Сохранить изменения" : "Создать план";
+  byId("schedule-cancel").hidden = !schedule || !canManage;
+  byId("schedule-sync").hidden = !schedule || !canManage;
+  byId("schedule-invite").hidden = !schedule || !canManage;
+
+  const history = (data.schedule_history || []).filter(
+    (item) => !schedule || Number(item.id) !== Number(schedule.id),
+  );
+  replaceChildren(
+    "schedule-history",
+    history.map((item) => node("article", { className: "schedule-history-item" }, [
+      node("strong", { text: item.title || `Заседание №${item.plenary_number}` }),
+      node("small", { text: `${formatDate(item.scheduled_for)} · ${scheduleStatusLabel(item.status)}` }),
+    ])),
+  );
+}
+
+async function sendScheduleAction(action, payload = {}) {
+  setLoading(true);
+  const buttons = ["schedule-save", "schedule-cancel", "schedule-sync", "schedule-invite"]
+    .map((id) => byId(id));
+  const disabledBefore = buttons.map((button) => button.disabled);
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const result = await postJSON("/api/admin/bills/schedule", { action, ...payload });
+    appState.scheduleDirty = false;
+    showToast(result.message || "План заседания обновлён.", false, {
+      title: action === "invite" ? "Приглашения подготовлены" : "План консенсуса обновлён",
+      icon: action === "cancel" ? "×" : "🏛",
+      sound: "success",
+    });
+    if (result.warning) {
+      showToast(result.warning, false, { title: "Нужна синхронизация", icon: "!" });
+    }
+    await loadBills();
+  } catch (error) {
+    handleError(error);
+  } finally {
+    buttons.forEach((button, index) => { button.disabled = disabledBefore[index]; });
+    setLoading(false);
+  }
 }
 
 async function loadBills() {
@@ -3597,6 +3755,39 @@ function bindEvents() {
   byId("finance-command").addEventListener("click", () => openFinanceOperation());
   byId("craft-plan-create").addEventListener("click", openCraftPlanCreate);
   byId("craft-recipe-create").addEventListener("click", openCraftRecipeCreate);
+  const scheduleForm = byId("consensus-schedule-form");
+  scheduleForm.addEventListener("input", () => {
+    appState.scheduleDirty = true;
+  });
+  scheduleForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendScheduleAction("save", formValues("consensus-schedule-form"));
+  });
+  byId("schedule-sync").addEventListener("click", () => {
+    void sendScheduleAction("sync");
+  });
+  byId("schedule-invite").addEventListener("click", async () => {
+    const approved = window.TModReactor?.confirm
+      ? await window.TModReactor.confirm({
+          title: "Разослать приглашения сенаторам?",
+          message: "Каждый участник получит личное уведомление с датой, местом и ссылкой на событие Discord.",
+          accept: "Отправить приглашения",
+          tone: "warning",
+        })
+      : globalThis.confirm("Разослать приглашения сенаторам?");
+    if (approved) void sendScheduleAction("invite");
+  });
+  byId("schedule-cancel").addEventListener("click", async () => {
+    const approved = window.TModReactor?.confirm
+      ? await window.TModReactor.confirm({
+          title: "Отменить запланированный консенсус?",
+          message: "План будет закрыт, а связанное событие Discord — отменено. Действие останется в аудите.",
+          accept: "Отменить заседание",
+          tone: "danger",
+        })
+      : globalThis.confirm("Отменить запланированный консенсус?");
+    if (approved) void sendScheduleAction("cancel", { confirmed: true });
+  });
   byId("section-access-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = formValues("section-access-form");
@@ -3894,10 +4085,14 @@ async function bootstrap() {
       loadMedia(true);
     }
   }, MEDIA_REFRESH_INTERVAL);
+  appState.scheduleTimer = setInterval(() => {
+    if (appState.section === "bills" && !document.hidden) refreshScheduleCountdown();
+  }, 1000);
   window.addEventListener("pagehide", () => {
     clearTimeout(appState.refreshTimer);
     clearInterval(appState.globalRefreshTimer);
     clearInterval(appState.mediaRefreshTimer);
+    clearInterval(appState.scheduleTimer);
   }, { once: true });
 }
 

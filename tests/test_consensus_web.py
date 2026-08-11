@@ -733,6 +733,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="screen-craft"', admin_text)
             self.assertIn('id="screen-discord"', admin_text)
             self.assertIn('id="screen-market"', admin_text)
+            self.assertIn('id="consensus-schedule-form"', admin_text)
+            self.assertIn('id="schedule-invite"', admin_text)
             self.assertIn('id="screen-sgl"', admin_text)
             self.assertIn('id="screen-media"', admin_text)
             self.assertIn('id="screen-system"', admin_text)
@@ -835,6 +837,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("TModReactor?.activateMinecraft", admin_script_text)
             self.assertIn("market-signal-list", admin_script_text)
+            self.assertIn("/api/admin/bills/schedule", admin_script_text)
+            self.assertIn("renderConsensusSchedule", admin_script_text)
             self.assertIn('!byId("admin-shell").hidden', admin_script_text)
             self.assertIn("!document.hidden", admin_script_text)
             self.assertIn(
@@ -1687,6 +1691,69 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                     for item in storage.craft_list_recipes(77, active_only=False)
                 )
             )
+        finally:
+            await client.close()
+
+    async def test_reactor_can_plan_and_cancel_consensus(self) -> None:
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        administrator = self._principal()
+        scheduled_for = (datetime.now() + timedelta(days=2)).strftime(
+            "%Y-%m-%dT%H:%M"
+        )
+        try:
+            with (
+                patch(
+                    "modules.consensus_web.resolve_principal",
+                    AsyncMock(return_value=administrator),
+                ),
+                patch(
+                    "modules.consensus_admin_web.sync_schedule_discord_event",
+                    AsyncMock(side_effect=lambda _guild, schedule: schedule),
+                ),
+                patch(
+                    "modules.consensus_admin_web.cancel_schedule_discord_event",
+                    AsyncMock(),
+                ),
+            ):
+                created = await client.post(
+                    "/api/admin/bills/schedule",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-consensus-schedule-create-1",
+                    },
+                    json={
+                        "action": "save",
+                        "title": "Девятый пленарный консенсус",
+                        "plenary_number": 9,
+                        "scheduled_for": scheduled_for,
+                        "duration_minutes": 120,
+                        "voice_channel_id": 88,
+                        "description": "Проверка повестки.",
+                        "invitation_text": "Просим прибыть заранее.",
+                    },
+                )
+                registry = await client.get("/api/admin/bills")
+                created_payload = await created.json()
+                cancelled = await client.post(
+                    "/api/admin/bills/schedule",
+                    headers={
+                        "X-CSRF-Token": "csrf-test-token",
+                        "X-Idempotency-Key": "reactor-consensus-schedule-cancel-1",
+                    },
+                    json={"action": "cancel", "confirmed": True},
+                )
+
+            self.assertEqual(created.status, 200)
+            self.assertEqual(created_payload["schedule"]["plenary_number"], 9)
+            self.assertEqual(registry.status, 200)
+            registry_payload = await registry.json()
+            self.assertTrue(registry_payload["can_manage_schedule"])
+            self.assertEqual(registry_payload["schedule"]["title"], "Девятый пленарный консенсус")
+            self.assertEqual(cancelled.status, 200)
+            self.assertEqual((await cancelled.json())["schedule"]["status"], "cancelled")
+            self.assertIsNone(storage.get_upcoming_consensus_schedule(77))
         finally:
             await client.close()
 
