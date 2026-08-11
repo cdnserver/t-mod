@@ -47,6 +47,21 @@ _LOGIN_FORM_MARKERS = (
     "autocomplete=\"current-password\"",
     "autocomplete='current-password'",
 )
+_LOGIN_TEXT_MARKERS = (
+    "you must be logged in",
+    "you must be logged-in",
+    "log in or register",
+    "войдите или зарегистрируйтесь",
+    "вам необходимо войти",
+    "необходимо авторизоваться",
+)
+_ACCESS_DENIED_MARKERS = (
+    "you do not have permission to view this page",
+    "you do not have permission to perform this action",
+    "недостаточно прав для просмотра",
+    "у вас нет прав для просмотра",
+    "у вас недостаточно прав",
+)
 
 
 class AtlasForumSyncError(RuntimeError):
@@ -230,6 +245,17 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
             "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
         )
     if not body_nodes:
+        # XenForo add-ons and newer themes sometimes remove the usual
+        # message-content wrapper while preserving the canonical bbWrapper.
+        body_nodes = tree.xpath(
+            "(//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
+            "[ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' message ')]])[1]"
+        )
+    if not body_nodes:
+        body_nodes = tree.xpath(
+            "(//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')])[1]"
+        )
+    if not body_nodes:
         raise AtlasForumSyncError("atlas_forum_thread_body_missing")
     body = body_nodes[0]
     for unwanted in body.xpath(
@@ -291,7 +317,11 @@ def forum_interstitial_kind(page_html: str) -> str | None:
         pass
     if any(marker in lowered for marker in _MANUAL_MARKERS):
         return "manual"
-    if "/login" in lowered and any(marker in lowered for marker in _LOGIN_FORM_MARKERS):
+    if any(marker in lowered for marker in _ACCESS_DENIED_MARKERS):
+        return "access"
+    if any(marker in lowered for marker in _LOGIN_TEXT_MARKERS) or (
+        "/login" in lowered and any(marker in lowered for marker in _LOGIN_FORM_MARKERS)
+    ):
         return "login"
     if any(marker in lowered for marker in _CHALLENGE_MARKERS):
         return "javascript"
@@ -557,6 +587,10 @@ class AtlasForumBrowser:
                     raise AtlasForumManualActionRequired(
                         "Форум ожидает авторизацию в локальном Chromium."
                     )
+                if kind == "access":
+                    raise AtlasForumManualActionRequired(
+                        "Авторизованный аккаунт форума не имеет доступа к этой странице."
+                    )
                 if kind == "manual":
                     visible = bool(
                         driver.execute_script(
@@ -592,8 +626,8 @@ class AtlasForumBrowser:
             self.close()
             raise AtlasForumSyncError(f"atlas_forum_page_failed:{type(exc).__name__}") from exc
 
-    def scrape(self) -> AtlasForumScrapeBatch:
-        listing_queue = [self.config.root_url]
+    def _scrape_listing(self, root_url: str) -> AtlasForumScrapeBatch:
+        listing_queue = [root_url]
         visited_listings: set[str] = set()
         thread_urls: list[str] = []
         thread_seen: set[str] = set()
@@ -657,6 +691,17 @@ class AtlasForumBrowser:
             ),
             skipped_threads=tuple(skipped_threads),
         )
+
+    def scrape(self) -> AtlasForumScrapeBatch:
+        return self._scrape_listing(self.config.root_url)
+
+    def scrape_listing(self, url: str) -> AtlasForumScrapeBatch:
+        """Import every topic from any same-host XenForo listing."""
+
+        listing_url = _canonical_url(self.config.root_url, str(url or ""))
+        if listing_url is None or "/forums/" not in listing_url:
+            raise AtlasForumSyncError("atlas_forum_listing_url_invalid")
+        return self._scrape_listing(listing_url)
 
     def scrape_thread(self, url: str) -> AtlasForumSnapshot:
         """Import one authenticated Majestic forum thread without allowing arbitrary hosts."""
@@ -742,6 +787,26 @@ class AtlasForumSyncRunner:
             and candidate.rstrip("/") == configured.rstrip("/")
         )
 
+    def is_forum_listing_url(self, url: str) -> bool:
+        candidate = _canonical_url(self.config.root_url, str(url or ""))
+        return bool(candidate and "/forums/" in candidate)
+
+    async def fetch_listing(self, url: str) -> AtlasForumScrapeBatch:
+        """Serialize an arbitrary same-host listing import with scheduled sync."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        async with self._lock:
+            try:
+                batch = await asyncio.to_thread(self.browser.scrape_listing, url)
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint()
+                raise
+            else:
+                await asyncio.to_thread(self.browser.close)
+                return batch
+
     async def fetch_thread(self, url: str) -> AtlasForumSnapshot:
         """Reuse the signed-in browser while serializing it with scheduled sync."""
 
@@ -750,7 +815,9 @@ class AtlasForumSyncRunner:
         async with self._lock:
             try:
                 snapshot = await asyncio.to_thread(self.browser.scrape_thread, url)
-            except AtlasForumManualActionRequired:
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint()
                 raise
             else:
                 await asyncio.to_thread(self.browser.close)
@@ -904,7 +971,7 @@ class AtlasForumSyncRunner:
                     title="Atlas ждёт подтверждение форума",
                     details=(
                         f"{exc}\nОткройте на домашнем сервере "
-                        "http://127.0.0.1:7900/ и завершите проверку. "
+                        "http://127.0.0.1:7900/?autoconnect=1&resize=scale и завершите проверку. "
                         "Последняя рабочая редакция продолжает использоваться."
                     ),
                     level="warning",

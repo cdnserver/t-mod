@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import time
@@ -25,7 +26,11 @@ from modules.atlas_ai import (
 from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
-from modules.atlas_forum_sync import AtlasForumSyncError, AtlasForumSyncRunner
+from modules.atlas_forum_sync import (
+    AtlasForumManualActionRequired,
+    AtlasForumSyncError,
+    AtlasForumSyncRunner,
+)
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
@@ -788,6 +793,100 @@ def register_atlas_web_routes(
         indexing_tasks.add(task)
         task.add_done_callback(indexing_tasks.discard)
 
+    def queue_forum_listing_import(
+        *,
+        source_url: str,
+        organization_id: int,
+        actor_user_id: int,
+        server_code: str,
+        faction_code: str,
+        visibility_scope: str,
+        knowledge_domain: str | None,
+        corpus_kind: str | None,
+    ) -> None:
+        """Read large forum sections asynchronously and index every topic."""
+
+        feed_key = "manual-" + hashlib.sha256(
+            source_url.strip().casefold().encode("utf-8")
+        ).hexdigest()[:20]
+
+        async def import_in_background() -> None:
+            try:
+                if forum_sync_runner is None:
+                    raise AtlasForumSyncError("atlas_forum_sync_disabled")
+                batch = await forum_sync_runner.fetch_listing(source_url)
+                created = 0
+                changed = 0
+                for snapshot in batch.snapshots:
+                    result = await asyncio.to_thread(
+                        storage.atlas_upsert_synced_knowledge,
+                        int(organization_id),
+                        title=snapshot.title,
+                        content=snapshot.content,
+                        source_url=snapshot.url,
+                        server_code=server_code,
+                        faction_code=faction_code,
+                        visibility_scope=visibility_scope,
+                        feed_key=feed_key,
+                        metadata={
+                            "author": snapshot.author,
+                            "source_updated_at": snapshot.source_updated_at,
+                            "import_mode": "authenticated_forum_listing",
+                            "listing_url": source_url,
+                            "requested_by_id": int(actor_user_id),
+                            "knowledge_domain": knowledge_domain,
+                            "corpus_kind": corpus_kind,
+                        },
+                    )
+                    created += int(bool(result["created"]))
+                    changed += int(bool(result["changed"]))
+                    source = result["source"]
+                    if result["changed"] or source.get("status") != "indexed":
+                        queue_knowledge_index(source)
+                await asyncio.to_thread(
+                    storage.atlas_record_event,
+                    int(organization_id),
+                    int(actor_user_id),
+                    "forum_listing_imported",
+                    f"Atlas прочитал раздел форума: {len(batch.snapshots)} тем",
+                    target_type="forum_listing",
+                    target_id=source_url,
+                    details={
+                        "created": created,
+                        "changed": changed,
+                        "skipped": len(batch.skipped_threads),
+                        "inventory_complete": batch.inventory_complete,
+                    },
+                )
+                await atlas_log(
+                    "раздел форума прочитан",
+                    (
+                        f"Тем: **{len(batch.snapshots)}** · новых: **{created}** · "
+                        f"обновлено: **{changed}** · пропущено: **{len(batch.skipped_threads)}**"
+                    ),
+                    level="info",
+                    dedupe_key=f"atlas-forum-listing-ok:{feed_key}",
+                )
+            except Exception as exc:
+                await atlas_log(
+                    "не удалось прочитать раздел форума",
+                    (
+                        f"Ссылка: `{source_url[:800]}`\n"
+                        f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
+                        "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
+                    ),
+                    level="warning",
+                    exception=exc,
+                    dedupe_key=f"atlas-forum-listing-error:{feed_key}",
+                )
+
+        task = asyncio.create_task(
+            import_in_background(),
+            name=f"atlas-forum-listing-{feed_key}",
+        )
+        indexing_tasks.add(task)
+        task.add_done_callback(indexing_tasks.discard)
+
     forum_sync_runner = AtlasForumSyncRunner(
         bot,
         int(guild_id),
@@ -994,6 +1093,44 @@ def register_atlas_web_routes(
                 },
                 status=202,
             )
+        if forum_sync_runner.is_forum_listing_url(source_url):
+            try:
+                server_code, faction_code = await asyncio.to_thread(
+                    storage.atlas_normalize_scope,
+                    str(payload.get("server_code") or "phoenix-15"),
+                    str(payload.get("faction_code") or "lspd"),
+                )
+                visibility_scope = atlas_normalize_knowledge_scope(
+                    str(payload.get("visibility_scope") or "server")
+                )
+                dashboard = await user_dashboard(request, selected)
+            except (TypeError, ValueError) as exc:
+                return web.json_response(
+                    {"error": str(exc), "message": "Проверьте сервер, организацию и доступ материала."},
+                    status=400,
+                )
+            queue_forum_listing_import(
+                source_url=source_url,
+                organization_id=int(dashboard["organization"]["id"]),
+                actor_user_id=int(selected.user_id),
+                server_code=server_code,
+                faction_code=faction_code,
+                visibility_scope=visibility_scope,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+            )
+            return web.json_response(
+                {
+                    "queued": True,
+                    "bulk": True,
+                    "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                    "message": (
+                        "Раздел принят. Atlas в фоне обойдёт все страницы и добавит каждую тему "
+                        "отдельным материалом."
+                    ),
+                },
+                status=202,
+            )
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,
@@ -1025,13 +1162,28 @@ def register_atlas_web_routes(
                 },
             )
         except (AtlasForumSyncError, TypeError, ValueError) as exc:
+            code = str(exc)
+            if isinstance(exc, AtlasForumManualActionRequired):
+                message = (
+                    f"{code} Откройте живой Chromium на домашнем сервере, завершите вход "
+                    "и повторите импорт."
+                )
+            elif "thread_body_missing" in code or "content_too_short" in code:
+                message = (
+                    "Страница открылась, но Atlas не нашёл в ней текст первого сообщения. "
+                    "Проверьте, что это ссылка на тему и аккаунт видит её содержимое."
+                )
+            elif "browser_unavailable" in code or "page_failed" in code:
+                message = "Chromium Atlas не смог открыть страницу. Повторите через несколько секунд."
+            elif "url_invalid" in code:
+                message = "Нужна ссылка Majestic Forum на тему /threads/... или раздел /forums/... ."
+            else:
+                message = f"Не удалось прочитать тему: {code[:300]}"
             return web.json_response(
                 {
-                    "error": str(exc),
-                    "message": (
-                        "Не удалось прочитать тему. Проверьте ссылку и авторизацию "
-                        "в локальном браузере Atlas."
-                    ),
+                    "error": code,
+                    "message": message,
+                    "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
                 },
                 status=400,
             )

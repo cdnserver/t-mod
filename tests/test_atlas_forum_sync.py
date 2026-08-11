@@ -154,6 +154,21 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertIn("Глава 16.", snapshot.content)
         self.assertIn("Преступления против правосудия.", snapshot.content)
 
+    def test_thread_supports_theme_without_standard_message_wrappers(self) -> None:
+        page = """
+        <h1 class="p-title-value">Общие правила сервера</h1>
+        <div class="message custom-theme-message">
+          <div class="bbWrapper"><p>Проверенный текст правил сервера в новой теме форума.</p></div>
+        </div>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/general-rules.2/",
+        )
+
+        self.assertIn("Проверенный текст правил", snapshot.content)
+
     def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
         self.assertEqual(
             forum_interstitial_kind("<p>Please turn JavaScript on</p><script src='vddosw3data.js'></script>"),
@@ -167,6 +182,14 @@ class AtlasForumParserTests(unittest.TestCase):
             "login",
         )
         self.assertIsNone(forum_interstitial_kind("<html><body>Обычная страница</body></html>"))
+        self.assertEqual(
+            forum_interstitial_kind("<main>You must be logged in to view this page</main>"),
+            "login",
+        )
+        self.assertEqual(
+            forum_interstitial_kind("<main>You do not have permission to view this page</main>"),
+            "access",
+        )
 
     def test_browser_marks_capped_inventory_as_incomplete(self) -> None:
         config = replace(sync_config(), max_threads=1)
@@ -462,6 +485,10 @@ class _FakeBrowser:
             raise self.result
         return self.result
 
+    def scrape_listing(self, url):
+        self.listing_url = url
+        return self.scrape()
+
     def close(self):
         self.closed = True
 
@@ -525,6 +552,32 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         index.assert_awaited_once()
         self.assertTrue(browser.closed)
 
+    async def test_runner_reads_any_same_host_forum_listing(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/general-rule.900/",
+            title="Общие правила",
+            content="Полный текст общих правил сервера для проверки импорта раздела.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(),
+        )
+
+        batch = await runner.fetch_listing(
+            "https://forum.majestic-rp.ru/forums/general-server-rules/"
+        )
+
+        self.assertEqual(batch.snapshots[0].title, "Общие правила")
+        self.assertEqual(
+            browser.listing_url,
+            "https://forum.majestic-rp.ru/forums/general-server-rules/",
+        )
+        self.assertTrue(browser.closed)
+
     def test_runner_recognizes_only_configured_forum_listing(self) -> None:
         runner = AtlasForumSyncRunner(
             SimpleNamespace(get_guild=lambda _guild_id: None),
@@ -540,7 +593,13 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "https://forum.majestic-rp.ru/forums/drugoy-razdel.10/"
             )
         )
+        self.assertTrue(
+            runner.is_forum_listing_url(
+                "https://forum.majestic-rp.ru/forums/general-server-rules/"
+            )
+        )
         self.assertFalse(runner.is_configured_listing_url("https://example.org/forums/1/"))
+        self.assertFalse(runner.is_forum_listing_url("https://example.org/forums/1/"))
 
     async def test_manual_check_sets_attention_without_changing_knowledge(self) -> None:
         browser = _FakeBrowser(

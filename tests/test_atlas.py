@@ -34,7 +34,7 @@ from modules.atlas_ai import (
 from modules.atlas_agents import atlas_agent_catalog, atlas_resolve_agent
 from modules.atlas_knowledge import AtlasKnowledgeFileError, atlas_extract_knowledge_file
 from modules.atlas_taxonomy import atlas_classify_knowledge
-from modules.atlas_forum_sync import AtlasForumSnapshot
+from modules.atlas_forum_sync import AtlasForumScrapeBatch, AtlasForumSnapshot
 from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
@@ -1368,6 +1368,12 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             content="Настоящий устав определяет полномочия и порядок службы Government.",
             author="Author",
         )
+        listing_snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/general-rule.701/",
+            title="Общие правила сервера",
+            content="Полная редакция общих правил сервера для всех организаций Phoenix.",
+            author="Forum Admin",
+        )
         try:
             with patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
@@ -1376,6 +1382,11 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.trigger",
                 return_value=True,
             ) as trigger, patch(
+                "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_listing",
+                AsyncMock(
+                    return_value=AtlasForumScrapeBatch((listing_snapshot,), True)
+                ),
+            ) as fetch_listing, patch(
                 "modules.atlas_web.atlas_index_source",
                 AsyncMock(return_value=["point-1"]),
             ):
@@ -1408,6 +1419,24 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         },
                     )
                     bulk_payload = await bulk_response.json()
+                    general_response = await client.post(
+                        "/api/atlas/knowledge/import-forum",
+                        json={
+                            "source_url": (
+                                "https://forum.majestic-rp.ru/forums/"
+                                "general-server-rules/"
+                            ),
+                            "server_code": "phoenix-15",
+                            "faction_code": "gov",
+                            "visibility_scope": "server",
+                        },
+                        headers={
+                            "X-CSRF-Token": "admin-csrf",
+                            "X-Idempotency-Key": "forum-import-general-1",
+                        },
+                    )
+                    general_payload = await general_response.json()
+                    await asyncio.sleep(0.1)
 
             self.assertEqual(response.status, 202, payload)
             self.assertEqual(payload["taxonomy"]["domain"], "ic")
@@ -1416,6 +1445,18 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bulk_response.status, 202, bulk_payload)
             self.assertTrue(bulk_payload["bulk"])
             trigger.assert_called_once_with()
+            self.assertEqual(general_response.status, 202, general_payload)
+            self.assertTrue(general_payload["bulk"])
+            self.assertIn("каждую тему", general_payload["message"])
+            fetch_listing.assert_awaited_once_with(
+                "https://forum.majestic-rp.ru/forums/general-server-rules/"
+            )
+            sources = atlas_repository.atlas_searchable_knowledge_sources(
+                int(payload["source"]["organization_id"]),
+                server_code="phoenix-15",
+                faction_code="gov",
+            )
+            self.assertIn("Общие правила сервера", {item["title"] for item in sources})
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

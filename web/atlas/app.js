@@ -1097,9 +1097,13 @@ function bind() {
         timeout: 90000,
       });
       form.reset();
+      if (result.browser_url) byId("forum-browser-link").href = result.browser_url;
       await loadKnowledgeSources();
       showToast(result.message || "Форум принят на индексирование.");
-    } catch (error) { showToast(error.message, true); }
+    } catch (error) {
+      if (error.payload?.browser_url) byId("forum-browser-link").href = error.payload.browser_url;
+      showToast(error.message, true);
+    }
     finally { button.disabled = false; button.textContent = "Прочитать и проиндексировать →"; }
   });
   document.querySelectorAll("[data-knowledge-mode]").forEach((button) => {
