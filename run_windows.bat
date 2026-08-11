@@ -184,6 +184,15 @@ if errorlevel 1 if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
 call :stage "13" "Status"
 docker compose ps
 
+if exist "%~dp0configure_auto_update_windows.ps1" (
+  powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0configure_auto_update_windows.ps1" -ProjectDir "%~dp0" -IntervalMinutes 2
+  if errorlevel 1 (
+    call :warn "Automatic GitHub update watcher could not be registered"
+  ) else (
+    call :ok "Automatic updates enabled: origin/main is checked every 2 minutes"
+  )
+)
+
 echo.
 echo ============================================================
 echo   T-Mod startup finished.
@@ -198,6 +207,7 @@ echo   MC:       mc.tvr.lat ^(Paper 26.1.2-74, 25565/TCP^)
 echo   MC data:  %MINECRAFT_DIR%
 echo   HTTPS:    Caddy on public ports 80/443
 echo   Origin:   http://127.0.0.1:8787 ^(never forward this port^)
+echo   Updates:  origin/main checked every 2 minutes
 echo ============================================================
 echo.
 echo Recent bot logs:

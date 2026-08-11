@@ -172,6 +172,32 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("stash push", updater)
         self.assertNotIn("git reset --hard", updater)
 
+    def test_git_watcher_only_runs_safe_update_for_a_new_clean_release(self) -> None:
+        runtime = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        desktop_installer = (ROOT / "install_desktop_launcher_windows.bat").read_text(
+            encoding="utf-8"
+        )
+        installer = (ROOT / "configure_auto_update_windows.ps1").read_text(
+            encoding="utf-8"
+        )
+        watcher = (ROOT / "watch_tmod_updates_windows.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("configure_auto_update_windows.ps1", runtime)
+        self.assertIn("configure_auto_update_windows.ps1", desktop_installer)
+        self.assertIn("-IntervalMinutes 2", runtime)
+        self.assertIn("schtasks.exe", installer)
+        self.assertIn("/SC MINUTE", installer)
+        self.assertIn("/MO $IntervalMinutes", installer)
+        self.assertIn("ls-remote --exit-code", watcher)
+        self.assertIn("status --porcelain", watcher)
+        self.assertIn("safe_update_windows.ps1", watcher)
+        self.assertIn('state -eq "rolled_back"', watcher)
+        self.assertIn("Local\\TModAutoUpdateWatcher", watcher)
+        self.assertNotIn("git reset --hard", watcher)
+        self.assertNotIn("stash push", watcher)
+
     def test_retired_browser_stream_is_removed_during_startup(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
