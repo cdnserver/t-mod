@@ -829,20 +829,70 @@
               <form id="consensus-schedule-form" class="schedule-form">
                 <input name="schedule_id" type="hidden">
                 <input name="expected_revision" type="hidden">
-                <label class="schedule-title-field"><span>Название заседания</span><input name="title" maxlength="100" placeholder="Пленарный консенсус Товарищества" required></label>
-                <label><span>Номер заседания</span><input name="plenary_number" type="number" min="1" step="1" required></label>
-                <label><span>Дата и время</span><input name="scheduled_for" type="datetime-local" required></label>
-                <label><span>Продолжительность</span><select name="duration_minutes"><option value="60">60 минут</option><option value="90" selected>90 минут</option><option value="120">2 часа</option><option value="180">3 часа</option><option value="240">4 часа</option></select></label>
-                <label><span>Голосовой зал</span><select id="schedule-voice-channel" name="voice_channel_id" required></select></label>
-                <label class="schedule-wide"><span>Описание и предполагаемая повестка</span><textarea name="description" maxlength="1000" rows="3" placeholder="Какие вопросы планируется рассмотреть"></textarea></label>
-                <label class="schedule-wide"><span>Текст приглашения</span><textarea name="invitation_text" maxlength="1500" rows="3" placeholder="Необязательное обращение к участникам"></textarea></label>
+                <nav class="schedule-stepper" aria-label="Этапы планирования">
+                  <button type="button" data-schedule-step-target="1"><i>01</i><span><b>Основа</b><small>название и номер</small></span></button>
+                  <button type="button" data-schedule-step-target="2"><i>02</i><span><b>Время</b><small>начало и зал</small></span></button>
+                  <button type="button" data-schedule-step-target="3"><i>03</i><span><b>Приглашение</b><small>повестка и обращение</small></span></button>
+                  <button type="button" data-schedule-step-target="4"><i>04</i><span><b>Проверка</b><small>что увидят участники</small></span></button>
+                </nav>
+
+                <section class="schedule-step" data-schedule-step="1">
+                  <div class="schedule-step-copy"><span>ШАГ 1 ИЗ 4</span><h3>Определите заседание</h3><p>Эти данные станут заголовком трансляции, приглашения и итогового протокола.</p></div>
+                  <div class="schedule-step-fields two-columns">
+                    <label class="schedule-title-field"><span>Название заседания</span><input name="title" maxlength="100" placeholder="Пленарный консенсус Товарищества" required></label>
+                    <label><span>Номер заседания</span><input name="plenary_number" type="number" min="1" step="1" required></label>
+                  </div>
+                </section>
+
+                <section class="schedule-step" data-schedule-step="2" hidden>
+                  <div class="schedule-step-copy"><span>ШАГ 2 ИЗ 4</span><h3>Назначьте время и место</h3><p>После сохранения T-Mod обновит Discord-событие, приглашения и обратный отсчёт на каждой трансляции.</p></div>
+                  <div class="schedule-step-fields three-columns">
+                    <label><span>Дата и время</span><input name="scheduled_for" type="datetime-local" required></label>
+                    <label><span>Продолжительность</span><select name="duration_minutes"><option value="60">60 минут</option><option value="90" selected>90 минут</option><option value="120">2 часа</option><option value="180">3 часа</option><option value="240">4 часа</option></select></label>
+                    <label><span>Голосовой зал</span><select id="schedule-voice-channel" name="voice_channel_id" required></select></label>
+                  </div>
+                  <div class="schedule-shift-tools">
+                    <span>Быстро перенести начало</span>
+                    <button type="button" data-schedule-shift="-15">−15 мин.</button>
+                    <button type="button" data-schedule-shift="15">+15 мин.</button>
+                    <button type="button" data-schedule-shift="30">+30 мин.</button>
+                    <button type="button" data-schedule-shift="60">+1 час</button>
+                  </div>
+                  <output id="schedule-shift-note" class="schedule-shift-note" hidden></output>
+                </section>
+
+                <section class="schedule-step" data-schedule-step="3" hidden>
+                  <div class="schedule-step-copy"><span>ШАГ 3 ИЗ 4</span><h3>Подготовьте участников</h3><p>Коротко объясните повестку и добавьте личное обращение председателя.</p></div>
+                  <div class="schedule-step-fields two-columns">
+                    <label><span>Описание и предполагаемая повестка</span><textarea name="description" maxlength="1000" rows="5" placeholder="Какие вопросы планируется рассмотреть"></textarea></label>
+                    <label><span>Текст приглашения</span><textarea name="invitation_text" maxlength="1500" rows="5" placeholder="Необязательное обращение к участникам"></textarea></label>
+                  </div>
+                </section>
+
+                <section class="schedule-step schedule-review" data-schedule-step="4" hidden>
+                  <div class="schedule-step-copy"><span>ШАГ 4 ИЗ 4</span><h3>Проверьте готовый план</h3><p>Именно так система понимает будущее заседание. После сохранения всё останется редактируемым.</p></div>
+                  <article class="schedule-preview-card">
+                    <span id="schedule-preview-kicker">ПЛЕНАРНЫЙ КОНСЕНСУС</span>
+                    <h3 id="schedule-preview-title">Пленарный консенсус Товарищества</h3>
+                    <div><b id="schedule-preview-date">Дата не выбрана</b><small id="schedule-preview-place">Зал не выбран</small></div>
+                    <p id="schedule-preview-description">Повестка будет объявлена председателем.</p>
+                    <footer><span id="schedule-preview-number">ЗАСЕДАНИЕ №—</span><span id="schedule-preview-duration">90 МИНУТ</span></footer>
+                  </article>
+                  <ul class="schedule-ready-list">
+                    <li><i>✓</i><span><b>Трансляция</b><small>покажет актуальный отсчёт и перенос времени</small></span></li>
+                    <li><i>✓</i><span><b>Discord</b><small>событие получит то же время и тот же зал</small></span></li>
+                    <li><i>✓</i><span><b>Приглашения</b><small>можно отправить после сохранения плана</small></span></li>
+                  </ul>
+                </section>
                 <footer class="schedule-actions">
                   <span id="schedule-permission" class="schedule-permission"><i></i> доступ председателя подтверждён</span>
                   <div>
                     <button id="schedule-cancel" class="danger-button" type="button" hidden>Отменить план</button>
                     <button id="schedule-sync" class="secondary-button" type="button" hidden>Синхронизировать</button>
                     <button id="schedule-invite" class="secondary-button" type="button" hidden>Отправить приглашения</button>
-                    <button id="schedule-save" class="primary-button" type="submit">Создать план</button>
+                    <button id="schedule-prev" class="secondary-button" type="button" hidden>Назад</button>
+                    <button id="schedule-next" class="primary-button" type="button">Продолжить</button>
+                    <button id="schedule-save" class="primary-button" type="submit" hidden>Создать план</button>
                   </div>
                 </footer>
               </form>

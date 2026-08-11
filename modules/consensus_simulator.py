@@ -612,6 +612,7 @@ class ConsensusSimulation:
             seconds=clean_seconds,
             deadline=datetime.now(timezone.utc) + timedelta(seconds=clean_seconds),
             actor=self.actor,
+            added_seconds=0,
         )
         self._record(f"Учебный таймер установлен на {clean_seconds // 60} мин.")
 

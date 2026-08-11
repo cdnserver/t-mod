@@ -1045,6 +1045,9 @@ def init_db() -> None:
                 description TEXT NOT NULL DEFAULT '',
                 invitation_text TEXT NOT NULL DEFAULT '',
                 scheduled_for TEXT NOT NULL,
+                initial_scheduled_for TEXT,
+                time_shift_minutes INTEGER NOT NULL DEFAULT 0,
+                last_rescheduled_at TEXT,
                 duration_minutes INTEGER NOT NULL DEFAULT 90,
                 voice_channel_id INTEGER NOT NULL,
                 created_by_id INTEGER NOT NULL,
@@ -1648,6 +1651,20 @@ def init_db() -> None:
             "editor_workspace_id": "INTEGER",
         }.items():
             _add_column_if_missing(con, "tvrs_bills", column, definition)
+
+        for column, definition in {
+            "initial_scheduled_for": "TEXT",
+            "time_shift_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "last_rescheduled_at": "TEXT",
+        }.items():
+            _add_column_if_missing(con, "tvrs_consensus_schedules", column, definition)
+        con.execute(
+            """
+            UPDATE tvrs_consensus_schedules
+            SET initial_scheduled_for = scheduled_for
+            WHERE initial_scheduled_for IS NULL OR initial_scheduled_for = ''
+            """
+        )
         con.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_bills_editor_workspace

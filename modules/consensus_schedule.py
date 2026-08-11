@@ -87,6 +87,17 @@ def build_schedule_embed(schedule: dict[str, Any]) -> discord.Embed:
         value=f"<#{int(schedule.get('voice_channel_id') or 0)}>",
         inline=True,
     )
+    shift_minutes = int(schedule.get("time_shift_minutes") or 0)
+    if shift_minutes:
+        direction = "позже" if shift_minutes > 0 else "раньше"
+        embed.add_field(
+            name="Обновление времени",
+            value=(
+                f"Начало перенесено на **{abs(shift_minutes)} мин. {direction}**. "
+                "Новое время уже учтено в событии и трансляции."
+            ),
+            inline=False,
+        )
     if event_url:
         embed.add_field(
             name="Событие Discord",
@@ -582,6 +593,13 @@ def public_schedule_payload(schedule: dict[str, Any] | None) -> dict[str, Any] |
         "title": str(schedule.get("title") or ""),
         "description": str(schedule.get("description") or ""),
         "scheduled_for": str(schedule.get("scheduled_for") or ""),
+        "initial_scheduled_for": str(
+            schedule.get("initial_scheduled_for")
+            or schedule.get("scheduled_for")
+            or ""
+        ),
+        "time_shift_minutes": int(schedule.get("time_shift_minutes") or 0),
+        "last_rescheduled_at": str(schedule.get("last_rescheduled_at") or "") or None,
         "duration_minutes": int(schedule.get("duration_minutes") or 90),
         "voice_channel_id": int(schedule.get("voice_channel_id") or 0),
         "host": {

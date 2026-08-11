@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -114,6 +115,29 @@ class ConsensusCoordinatorTests(unittest.TestCase):
         self.coordinator = ConsensusCoordinator(self.repository)
         self.session = session()
         self.actor = ConsensusActor(1, "Ведущий")
+
+    def test_timer_extension_survives_snapshot_round_trip(self) -> None:
+        self.session.stage = "voting"
+        self.session.current_bill = {"id": 10, "bill_number": 9, "title": "Новый порядок"}
+        first_deadline = datetime.now(timezone.utc) + timedelta(seconds=60)
+        self.coordinator.set_timer(
+            self.session,
+            seconds=60,
+            deadline=first_deadline,
+            actor=self.actor,
+        )
+        self.coordinator.set_timer(
+            self.session,
+            seconds=90,
+            deadline=first_deadline + timedelta(seconds=30),
+            actor=self.actor,
+        )
+
+        restored = session_from_snapshot(session_to_snapshot(self.session))
+        self.assertEqual(restored.timer_seconds, 90)
+        self.assertEqual(restored.timer_added_seconds, 30)
+        self.assertEqual(restored.timer_last_added_seconds, 30)
+        self.assertIsNotNone(restored.timer_last_adjusted_at)
 
     def test_vote_is_claimed_once_and_survives_snapshot_restore(self) -> None:
         bill = {"id": 10, "bill_number": 9, "title": "Новый порядок", "summary": "Описание"}

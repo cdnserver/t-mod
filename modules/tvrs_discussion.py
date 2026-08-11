@@ -78,6 +78,9 @@ async def cancel_vote_timer(session: LiveConsensusSession) -> None:
     await _cancel_runtime_vote_timer(session)
     session.timer_deadline = None
     session.timer_seconds = None
+    session.timer_added_seconds = 0
+    session.timer_last_added_seconds = None
+    session.timer_last_adjusted_at = None
 
 
 async def set_vote_timer(
@@ -105,12 +108,22 @@ async def set_vote_timer(
         ) or session.current_bill is None:
             raise ConsensusStateError("Таймер можно установить только во время голосования.")
         previous_task = session.timer_task
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=clean_seconds)
+        now = datetime.now(timezone.utc)
+        previous_deadline = session.timer_deadline
+        is_extension = bool(previous_deadline and previous_deadline > now)
+        if is_extension:
+            deadline = previous_deadline + timedelta(seconds=clean_seconds)
+            total_seconds = max(clean_seconds, int(session.timer_seconds or 0) + clean_seconds)
+            runtime_seconds = max(0, int((deadline - now).total_seconds()))
+        else:
+            deadline = now + timedelta(seconds=clean_seconds)
+            total_seconds = clean_seconds
+            runtime_seconds = clean_seconds
         try:
             await run_blocking_cancellation_safe(
                 _consensus.set_timer,
                 session,
-                seconds=clean_seconds,
+                seconds=total_seconds,
                 deadline=deadline,
                 actor=ConsensusActor(session.leader_id, session.leader_display),
             )
@@ -118,7 +131,7 @@ async def set_vote_timer(
             # The helper can re-raise cancellation after the blocking commit.
             # Complete the runtime half whenever that commit visibly won;
             # otherwise a new durable deadline would have no matching task.
-            if session.timer_deadline == deadline and session.timer_seconds == clean_seconds:
+            if session.timer_deadline == deadline and session.timer_seconds == total_seconds:
                 if (
                     previous_task
                     and previous_task is not asyncio.current_task()
@@ -130,14 +143,19 @@ async def set_vote_timer(
                     bot,
                     guild,
                     session,
-                    clean_seconds,
+                    runtime_seconds,
                     bill_id=consensus_bill_id(session),
                 )
 
     await update_all_vote_dms(
         guild,
         session,
-        content=f"Установлен таймер голосования: {format_timer(clean_seconds)}.",
+        content=(
+            f"К таймеру добавлено {format_timer(clean_seconds)}. "
+            f"Новое оставшееся время: {format_timer(runtime_seconds)}."
+            if is_extension
+            else f"Установлен таймер голосования: {format_timer(clean_seconds)}."
+        ),
     )
     await update_host_vote_message(bot, guild, session)
 

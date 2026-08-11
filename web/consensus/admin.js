@@ -174,6 +174,8 @@ const appState = {
   operation: null,
   scheduleDirty: false,
   scheduleStartsAt: null,
+  scheduleInitialAt: null,
+  scheduleStep: 1,
   scheduleTimer: null,
 };
 
@@ -2487,6 +2489,62 @@ function scheduleStatusLabel(status) {
   }[status] || status || "неизвестно";
 }
 
+function scheduleShiftCopy(minutes) {
+  const value = Number(minutes || 0);
+  if (!value) return "";
+  return `Начало перенесено на ${Math.abs(value)} мин. ${value > 0 ? "позже" : "раньше"}`;
+}
+
+function refreshSchedulePreview() {
+  const form = byId("consensus-schedule-form");
+  const startsAt = form.elements.namedItem("scheduled_for").value;
+  const date = startsAt ? new Date(startsAt) : null;
+  const channel = form.elements.namedItem("voice_channel_id").selectedOptions?.[0];
+  setText("schedule-preview-title", form.elements.namedItem("title").value.trim() || "Пленарный консенсус Товарищества");
+  setText("schedule-preview-number", `ЗАСЕДАНИЕ №${form.elements.namedItem("plenary_number").value || "—"}`);
+  setText("schedule-preview-duration", `${form.elements.namedItem("duration_minutes").value || 90} МИНУТ`);
+  setText("schedule-preview-date", date && !Number.isNaN(date.getTime()) ? formatDate(date.toISOString()) : "Дата не выбрана");
+  setText("schedule-preview-place", channel?.textContent || "Зал не выбран");
+  setText("schedule-preview-description", form.elements.namedItem("description").value.trim() || "Повестка будет объявлена председателем.");
+
+  const initial = appState.scheduleInitialAt ? new Date(appState.scheduleInitialAt) : null;
+  const shift = date && initial && !Number.isNaN(initial.getTime())
+    ? Math.round((date.getTime() - initial.getTime()) / 60000)
+    : 0;
+  const note = byId("schedule-shift-note");
+  note.textContent = shift
+    ? `${scheduleShiftCopy(shift)}. После сохранения это время появится во всех приглашениях и трансляциях.`
+    : "";
+  note.hidden = !shift;
+}
+
+function showScheduleStep(step, { focus = false } = {}) {
+  appState.scheduleStep = Math.max(1, Math.min(4, Number(step) || 1));
+  document.querySelectorAll("[data-schedule-step]").forEach((section) => {
+    section.hidden = Number(section.dataset.scheduleStep) !== appState.scheduleStep;
+  });
+  document.querySelectorAll("[data-schedule-step-target]").forEach((button) => {
+    const target = Number(button.dataset.scheduleStepTarget);
+    button.classList.toggle("active", target === appState.scheduleStep);
+    button.classList.toggle("complete", target < appState.scheduleStep);
+    button.setAttribute("aria-current", target === appState.scheduleStep ? "step" : "false");
+  });
+  byId("schedule-prev").hidden = appState.scheduleStep === 1;
+  byId("schedule-next").hidden = appState.scheduleStep === 4;
+  byId("schedule-save").hidden = appState.scheduleStep !== 4;
+  if (appState.scheduleStep === 4) refreshSchedulePreview();
+  if (focus) document.querySelector(`[data-schedule-step="${appState.scheduleStep}"] h3`)?.focus?.();
+}
+
+function scheduleStepIsValid() {
+  const current = document.querySelector(`[data-schedule-step="${appState.scheduleStep}"]`);
+  const invalid = [...current.querySelectorAll("input,select,textarea")].find((control) => !control.checkValidity());
+  if (!invalid) return true;
+  invalid.reportValidity();
+  invalid.focus();
+  return false;
+}
+
 function renderConsensusSchedule(data) {
   const form = byId("consensus-schedule-form");
   const schedule = data.schedule || null;
@@ -2531,12 +2589,13 @@ function renderConsensusSchedule(data) {
   }
 
   appState.scheduleStartsAt = schedule?.scheduled_for || null;
+  appState.scheduleInitialAt = schedule?.initial_scheduled_for || schedule?.scheduled_for || null;
   refreshScheduleCountdown();
   setText("schedule-heading", schedule?.title || "Новое пленарное заседание");
   setText(
     "schedule-summary",
     schedule
-      ? `${formatDate(schedule.scheduled_for)} · ${schedule.duration_minutes || 90} мин. · редакция ${schedule.revision || 1}`
+      ? `${formatDate(schedule.scheduled_for)} · ${schedule.duration_minutes || 90} мин. · редакция ${schedule.revision || 1}${schedule.time_shift_minutes ? ` · ${scheduleShiftCopy(schedule.time_shift_minutes)}` : ""}`
       : "Задайте время — T-Mod создаст событие Discord и подготовит приглашения сенаторам.",
   );
   setText(
@@ -2565,6 +2624,8 @@ function renderConsensusSchedule(data) {
   byId("schedule-cancel").hidden = !schedule || !canManage;
   byId("schedule-sync").hidden = !schedule || !canManage;
   byId("schedule-invite").hidden = !schedule || !canManage;
+  refreshSchedulePreview();
+  showScheduleStep(appState.scheduleStep);
 
   const history = (data.schedule_history || []).filter(
     (item) => !schedule || Number(item.id) !== Number(schedule.id),
@@ -3758,6 +3819,11 @@ function bindEvents() {
   const scheduleForm = byId("consensus-schedule-form");
   scheduleForm.addEventListener("input", () => {
     appState.scheduleDirty = true;
+    const value = scheduleForm.elements.namedItem("scheduled_for").value;
+    const parsed = value ? new Date(value) : null;
+    appState.scheduleStartsAt = parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : null;
+    refreshScheduleCountdown();
+    refreshSchedulePreview();
   });
   scheduleForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -3765,6 +3831,27 @@ function bindEvents() {
   });
   byId("schedule-sync").addEventListener("click", () => {
     void sendScheduleAction("sync");
+  });
+  document.querySelectorAll("[data-schedule-step-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = Number(button.dataset.scheduleStepTarget);
+      if (target > appState.scheduleStep && !scheduleStepIsValid()) return;
+      showScheduleStep(target);
+    });
+  });
+  byId("schedule-prev").addEventListener("click", () => showScheduleStep(appState.scheduleStep - 1));
+  byId("schedule-next").addEventListener("click", () => {
+    if (scheduleStepIsValid()) showScheduleStep(appState.scheduleStep + 1);
+  });
+  document.querySelectorAll("[data-schedule-shift]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = scheduleForm.elements.namedItem("scheduled_for");
+      let date = input.value ? new Date(input.value) : new Date(Date.now() + 86400000);
+      if (Number.isNaN(date.getTime())) date = new Date(Date.now() + 86400000);
+      date.setMinutes(date.getMinutes() + Number(button.dataset.scheduleShift || 0));
+      input.value = dateTimeLocalValue(date.toISOString());
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
   });
   byId("schedule-invite").addEventListener("click", async () => {
     const approved = window.TModReactor?.confirm

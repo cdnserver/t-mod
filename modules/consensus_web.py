@@ -499,6 +499,20 @@ def _session_payload(
             if getattr(session, "timer_seconds", None) is not None
             else None
         ),
+        "timer_added_seconds": max(
+            0,
+            int(getattr(session, "timer_added_seconds", 0) or 0),
+        ),
+        "timer_last_added_seconds": (
+            int(session.timer_last_added_seconds)
+            if getattr(session, "timer_last_added_seconds", None) is not None
+            else None
+        ),
+        "timer_last_adjusted_at": (
+            session.timer_last_adjusted_at.isoformat()
+            if getattr(session, "timer_last_adjusted_at", None) is not None
+            else None
+        ),
         "pause_reason": str(getattr(session, "paused_reason", "") or ""),
         "discussion": {
             "type": str(getattr(session, "discussion_type", "") or ""),
@@ -878,6 +892,19 @@ async def build_consensus_web_state(
                     fallback_result=bill_row,
                 )
     state["session"] = session_payload
+    if (
+        principal is not None
+        and int(session.leader_id) == int(principal.user_id)
+        and session.stage in {"voting", "finalizing"}
+    ):
+        # A live ballot direction is privileged operational data.  It is
+        # projected only into the verified leader's response, never into the
+        # public broadcast or another administrator's session.
+        for participant_payload in session_payload["participants"]:
+            participant_id = int(participant_payload.get("id") or 0)
+            participant_payload["vote"] = (
+                str(session.votes.get(participant_id) or "") or None
+            )
     if principal is None:
         # The broadcast is public, but the named roster and private delivery
         # diagnostics remain visible only after a verified T-Mod login.

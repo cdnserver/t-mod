@@ -266,10 +266,16 @@ class ConsensusCoordinator:
             ):
                 session.timer_deadline = None
                 session.timer_seconds = None
+                session.timer_added_seconds = 0
+                session.timer_last_added_seconds = None
+                session.timer_last_adjusted_at = None
                 repaired.append("timer_outside_voting")
             elif partial_timer:
                 session.timer_deadline = None
                 session.timer_seconds = None
+                session.timer_added_seconds = 0
+                session.timer_last_added_seconds = None
+                session.timer_last_adjusted_at = None
                 repaired.append("partial_timer_state")
 
             if (
@@ -362,6 +368,7 @@ class ConsensusCoordinator:
         seconds: int,
         deadline: datetime,
         actor: ConsensusActor,
+        added_seconds: int | None = None,
     ) -> None:
         """Persist a voting deadline as one rollback-safe state mutation."""
 
@@ -369,14 +376,43 @@ class ConsensusCoordinator:
             raise ConsensusStateError("Таймер можно установить только во время голосования.")
         clean_seconds = max(0, int(seconds))
         clean_deadline = deadline.astimezone(timezone.utc)
+        previous_deadline = session.timer_deadline
+        previous_seconds = max(0, int(session.timer_seconds or 0))
+        inferred_added = (
+            max(0, clean_seconds - previous_seconds)
+            if previous_deadline is not None
+            and previous_deadline > datetime.now(timezone.utc)
+            and clean_deadline > previous_deadline
+            else 0
+        )
+        clean_added = (
+            inferred_added
+            if added_seconds is None
+            else max(0, int(added_seconds))
+        )
         with self.mutation(session):
             session.timer_seconds = clean_seconds
             session.timer_deadline = clean_deadline
+            if clean_added:
+                session.timer_added_seconds = max(
+                    0,
+                    int(session.timer_added_seconds),
+                ) + clean_added
+                session.timer_last_added_seconds = clean_added
+                session.timer_last_adjusted_at = datetime.now(timezone.utc)
+            else:
+                session.timer_added_seconds = 0
+                session.timer_last_added_seconds = None
+                session.timer_last_adjusted_at = None
             self.save(
                 session,
-                "timer_set",
+                "timer_extended" if clean_added else "timer_set",
                 actor=actor,
-                details={"seconds": clean_seconds},
+                details={
+                    "seconds": clean_seconds,
+                    "added_seconds": clean_added,
+                    "deadline": clean_deadline.isoformat(),
+                },
             )
 
     def begin_bill(self, session: LiveConsensusSession, bill: dict[str, Any], *, actor: ConsensusActor) -> None:
@@ -575,6 +611,9 @@ class ConsensusCoordinator:
             # after this write succeeds.
             session.timer_deadline = None
             session.timer_seconds = None
+            session.timer_added_seconds = 0
+            session.timer_last_added_seconds = None
+            session.timer_last_adjusted_at = None
             self.transition(
                 session,
                 "finalizing",
@@ -615,6 +654,9 @@ class ConsensusCoordinator:
         session.pending_action = None
         session.timer_deadline = None
         session.timer_seconds = None
+        session.timer_added_seconds = 0
+        session.timer_last_added_seconds = None
+        session.timer_last_adjusted_at = None
         event_details = {
             "bill_id": result.bill_id,
             "bill_number": result.bill_number,
@@ -668,6 +710,9 @@ class ConsensusCoordinator:
         session.pending_action = candidate.pending_action
         session.timer_deadline = candidate.timer_deadline
         session.timer_seconds = candidate.timer_seconds
+        session.timer_added_seconds = candidate.timer_added_seconds
+        session.timer_last_added_seconds = candidate.timer_last_added_seconds
+        session.timer_last_adjusted_at = candidate.timer_last_adjusted_at
         session.finished = candidate.finished
         session.revision = candidate.revision
         return receipt
@@ -689,6 +734,9 @@ class ConsensusCoordinator:
             # the stage when persistence fails.
             session.timer_deadline = None
             session.timer_seconds = None
+            session.timer_added_seconds = 0
+            session.timer_last_added_seconds = None
+            session.timer_last_adjusted_at = None
             self.transition(
                 session,
                 "discussion_type",
@@ -773,6 +821,9 @@ class ConsensusCoordinator:
             # a database outage cannot silently lose the deadline.
             session.timer_deadline = None
             session.timer_seconds = None
+            session.timer_added_seconds = 0
+            session.timer_last_added_seconds = None
+            session.timer_last_adjusted_at = None
             self.transition(
                 session,
                 "paused",
@@ -821,6 +872,9 @@ class ConsensusCoordinator:
             session.pending_action = None
             session.timer_deadline = None
             session.timer_seconds = None
+            session.timer_added_seconds = 0
+            session.timer_last_added_seconds = None
+            session.timer_last_adjusted_at = None
             self.transition(
                 session,
                 target,
@@ -855,6 +909,9 @@ class ConsensusCoordinator:
         candidate.pending_action = None
         candidate.timer_deadline = None
         candidate.timer_seconds = None
+        candidate.timer_added_seconds = 0
+        candidate.timer_last_added_seconds = None
+        candidate.timer_last_adjusted_at = None
         target = "cancelled" if cancelled else "finished"
         transition_session(candidate, target)
         details = {

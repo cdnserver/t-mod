@@ -257,6 +257,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("set_timer", state["capabilities"])
         self.assertNotIn("open_registration", state["capabilities"])
         self.assertNotIn("confirm_participant", state["capabilities"])
+        directions = {
+            item["id"]: item.get("vote")
+            for item in state["session"]["participants"]
+        }
+        self.assertEqual(directions[1], "yes")
+        self.assertEqual(directions[4], "no")
+        self.assertIsNone(directions[2])
 
     async def test_confirmed_member_receives_private_web_ballot_state(self) -> None:
         state = await build_consensus_web_state(  # type: ignore[arg-type]

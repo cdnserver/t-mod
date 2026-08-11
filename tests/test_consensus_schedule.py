@@ -65,6 +65,22 @@ class ConsensusScheduleTests(unittest.IsolatedAsyncioTestCase):
                 expected_revision=created["revision"],
             )
 
+    def test_reschedule_keeps_original_time_and_exposes_the_shift(self) -> None:
+        initial_time = datetime.now(timezone.utc) + timedelta(days=2)
+        created = self._create(scheduled_for=initial_time)
+        moved = self._create(
+            schedule_id=created["id"],
+            expected_revision=created["revision"],
+            scheduled_for=initial_time + timedelta(minutes=45),
+        )
+
+        self.assertEqual(moved["initial_scheduled_for"], created["scheduled_for"])
+        self.assertEqual(moved["time_shift_minutes"], 45)
+        self.assertIsNotNone(moved["last_rescheduled_at"])
+        payload = public_schedule_payload(moved)
+        self.assertEqual(payload["time_shift_minutes"], 45)
+        self.assertEqual(payload["initial_scheduled_for"], created["scheduled_for"])
+
     def test_cancel_does_not_delete_history_and_allows_next_plan(self) -> None:
         created = self._create()
         cancelled = repository.cancel_consensus_schedule(

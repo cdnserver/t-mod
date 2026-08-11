@@ -157,10 +157,11 @@ def save_consensus_schedule(
                 """
                 INSERT INTO tvrs_consensus_schedules(
                     guild_id, plenary_number, title, description,
-                    invitation_text, scheduled_for, duration_minutes,
+                    invitation_text, scheduled_for, initial_scheduled_for,
+                    time_shift_minutes, duration_minutes,
                     voice_channel_id, created_by_id, created_by_display,
                     created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(guild_id),
@@ -168,6 +169,7 @@ def save_consensus_schedule(
                     clean_title,
                     clean_description,
                     clean_invitation,
+                    scheduled_iso,
                     scheduled_iso,
                     clean_duration,
                     int(voice_channel_id),
@@ -182,12 +184,40 @@ def save_consensus_schedule(
             if expected_revision is None:
                 con.rollback()
                 raise ValueError("consensus_schedule_revision_required")
+            existing = con.execute(
+                """
+                SELECT scheduled_for, initial_scheduled_for, last_rescheduled_at
+                FROM tvrs_consensus_schedules
+                WHERE id = ? AND guild_id = ? AND status = 'scheduled'
+                  AND revision = ?
+                """,
+                (
+                    int(schedule_id),
+                    int(guild_id),
+                    int(expected_revision),
+                ),
+            ).fetchone()
+            if existing is None:
+                con.rollback()
+                raise ValueError("consensus_schedule_conflict")
+            initial_iso = str(
+                existing["initial_scheduled_for"] or existing["scheduled_for"]
+            )
+            initial_time = datetime.fromisoformat(initial_iso.replace("Z", "+00:00"))
+            selected_time = datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00"))
+            shift_minutes = int(round((selected_time - initial_time).total_seconds() / 60))
+            was_rescheduled = str(existing["scheduled_for"]) != scheduled_iso
+            last_rescheduled_at = (
+                now if was_rescheduled else existing["last_rescheduled_at"]
+            )
             changed = con.execute(
                 """
                 UPDATE tvrs_consensus_schedules
                 SET plenary_number = ?, title = ?, description = ?,
                     invitation_text = ?, scheduled_for = ?, duration_minutes = ?,
-                    voice_channel_id = ?, revision = revision + 1, updated_at = ?
+                    voice_channel_id = ?, initial_scheduled_for = ?,
+                    time_shift_minutes = ?, last_rescheduled_at = ?,
+                    revision = revision + 1, updated_at = ?
                 WHERE id = ? AND guild_id = ? AND status = 'scheduled'
                   AND revision = ?
                 """,
@@ -199,6 +229,9 @@ def save_consensus_schedule(
                     scheduled_iso,
                     clean_duration,
                     int(voice_channel_id),
+                    initial_iso,
+                    shift_minutes,
+                    last_rescheduled_at,
                     now,
                     int(schedule_id),
                     int(guild_id),

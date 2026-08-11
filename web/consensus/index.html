@@ -15,9 +15,9 @@
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/chamber.css">
-    <link rel="stylesheet" href="/assets/consensus-v4.css?v=6">
+    <link rel="stylesheet" href="/assets/consensus-v4.css?v=9">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/app.js" defer></script>
+    <script src="/assets/app.js?v=9" defer></script>
   </head>
   <body>
     <div id="atmosphere" class="atmosphere" aria-hidden="true">
@@ -145,18 +145,29 @@
             <span class="broadcast-halo halo-two"></span>
             <span class="broadcast-scan"></span>
             <span class="broadcast-stars"></span>
+            <span class="broadcast-veil veil-one"></span>
+            <span class="broadcast-veil veil-two"></span>
+            <span class="broadcast-orbit"><i></i><i></i><i></i></span>
+            <span class="broadcast-grain"></span>
           </div>
           <header class="broadcast-topline">
             <div class="broadcast-live-mark">
               <i aria-hidden="true"></i>
-              <span id="broadcast-state-kicker">СВЕТЛЫЙ КРУГ</span>
+              <span>
+                <b id="broadcast-state-kicker">КОНСЕНСУС · ТОВАРИЩЕСТВО</b>
+                <small id="broadcast-state-meta">единая трансляция</small>
+              </span>
             </div>
             <div class="broadcast-sound-panel">
-              <button id="broadcast-sound-toggle" type="button" aria-pressed="false">
-                <span aria-hidden="true">◖</span><b>Включить атмосферу</b>
+              <button id="broadcast-sound-toggle" type="button" aria-pressed="false" title="Включить тёмный эмбиент">
+                <span class="broadcast-sound-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="broadcast-sound-copy">
+                  <b>Атмосфера</b>
+                  <small id="broadcast-sound-state">без звука</small>
+                </span>
               </button>
-              <label>
-                <span>Громкость</span>
+              <label title="Громкость атмосферы">
+                <span class="sr-only">Громкость</span>
                 <input id="broadcast-volume" type="range" min="0" max="100" value="28" aria-label="Громкость атмосферы">
               </label>
             </div>
@@ -170,6 +181,7 @@
               <span id="broadcast-countdown-label">ДО НАЧАЛА</span>
               <strong id="broadcast-countdown">00:00:00</strong>
               <small id="broadcast-scheduled-at">—</small>
+              <em id="broadcast-schedule-adjustment" class="broadcast-time-adjustment" hidden>Время обновлено</em>
             </div>
           </div>
 
@@ -189,6 +201,7 @@
               <div class="broadcast-bill-aside">
                 <strong id="broadcast-bill-timer">—</strong>
                 <small>ВРЕМЯ ЭТАПА</small>
+                <em id="broadcast-time-adjustment" class="broadcast-time-adjustment" hidden>+00:00 · добавлено</em>
                 <button id="broadcast-open-bill" type="button">Читать проект</button>
               </div>
             </article>
@@ -227,6 +240,7 @@
                 <span>
                   <small id="ballot-timer-caption">СРОК РЕШЕНИЯ</small>
                   <strong id="ballot-timer">—</strong>
+                  <em id="ballot-time-adjustment" class="ballot-time-adjustment" hidden>+00:00 добавлено ведущим</em>
                 </span>
               </div>
               <div class="ballot-security">
@@ -386,6 +400,7 @@
               <span>СЛЕДУЮЩЕЕ ПЛЕНАРНОЕ ЗАСЕДАНИЕ</span>
               <h2 id="observer-schedule-title">Заседание запланировано</h2>
               <p id="observer-schedule-description">Подробности появятся после публикации плана.</p>
+              <em id="observer-schedule-adjustment" class="observer-schedule-adjustment" hidden>Время обновлено</em>
             </div>
             <div class="observer-schedule-time">
               <small id="observer-schedule-date">—</small>
@@ -475,7 +490,7 @@
                 <div>
                   <small>Таймер</small>
                   <strong id="observer-timer">—</strong>
-                  <span>до фиксации</span>
+                  <span id="observer-timer-detail">до фиксации</span>
                 </div>
                 <div>
                   <small>Очередь</small>

@@ -631,6 +631,10 @@ async def _execute_live(
                 "invalid_timer",
                 "Доступны таймеры 30 секунд, 1, 3 или 5 минут.",
             )
+        was_extension = bool(
+            session.timer_deadline
+            and session.timer_deadline > datetime.now(timezone.utc)
+        )
         await set_vote_timer(
             bot,
             guild,
@@ -639,7 +643,11 @@ async def _execute_live(
             expected_bill_id=expected_bill_id,
             expected_revision=revision,
         )
-        return f"Таймер установлен на {seconds} секунд."
+        return (
+            f"К текущему таймеру добавлено {seconds} секунд."
+            if was_extension
+            else f"Таймер установлен на {seconds} секунд."
+        )
 
     if action == "finalize_vote":
         _require_confirmation(payload, "досрочно завершить голосование")

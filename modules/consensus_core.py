@@ -156,6 +156,9 @@ class LiveConsensusSession:
     timer_task: asyncio.Task[Any] | None = None
     timer_deadline: datetime | None = None
     timer_seconds: int | None = None
+    timer_added_seconds: int = 0
+    timer_last_added_seconds: int | None = None
+    timer_last_adjusted_at: datetime | None = None
     previous_stage: str | None = None
     paused_reason: str | None = None
     pause_is_automatic: bool = False
@@ -409,6 +412,13 @@ def session_to_snapshot(session: LiveConsensusSession) -> dict[str, Any]:
         "finished": bool(session.finished),
         "timer_deadline": session.timer_deadline.astimezone(timezone.utc).isoformat() if session.timer_deadline else None,
         "timer_seconds": session.timer_seconds,
+        "timer_added_seconds": int(session.timer_added_seconds),
+        "timer_last_added_seconds": session.timer_last_added_seconds,
+        "timer_last_adjusted_at": (
+            session.timer_last_adjusted_at.astimezone(timezone.utc).isoformat()
+            if session.timer_last_adjusted_at
+            else None
+        ),
         "previous_stage": session.previous_stage,
         "paused_reason": session.paused_reason,
         "pause_is_automatic": bool(session.pause_is_automatic),
@@ -619,6 +629,13 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             if snapshot.get("timer_seconds") is not None
             else None
         ),
+        timer_added_seconds=max(0, int(snapshot.get("timer_added_seconds") or 0)),
+        timer_last_added_seconds=(
+            max(0, int(snapshot["timer_last_added_seconds"]))
+            if snapshot.get("timer_last_added_seconds") is not None
+            else None
+        ),
+        timer_last_adjusted_at=parse_datetime(snapshot.get("timer_last_adjusted_at")),
         previous_stage=str(snapshot["previous_stage"]) if snapshot.get("previous_stage") else None,
         paused_reason=str(snapshot["paused_reason"]) if snapshot.get("paused_reason") else None,
         pause_is_automatic=bool(snapshot.get("pause_is_automatic")),

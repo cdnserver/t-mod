@@ -297,7 +297,7 @@ class ConsensusTimerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.session.timer_task)
         self.assertIsNot(self.session.timer_task, self.timer_task)
         self.assertFalse(self.session.timer_task.done())  # type: ignore[union-attr]
-        self.assertEqual(self.session.timer_seconds, 300)
+        self.assertEqual(self.session.timer_seconds, 600)
         self.assertIsNotNone(self.session.timer_deadline)
 
     async def test_cancellation_waits_for_pause_write_and_keeps_lock_serialized(self) -> None:

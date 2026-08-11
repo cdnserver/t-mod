@@ -72,6 +72,8 @@ let observedSoundBill = "";
 let observedSoundStage = "";
 let ambientGain = null;
 let ambientNodes = [];
+let ambientLowpass = null;
+let ambientNoiseFilter = null;
 let ambientEnabled = localStorage.getItem("t-consensus-ambient") === "on";
 let ambientVolume = Math.max(0, Math.min(1, Number(localStorage.getItem("t-consensus-volume") || 28) / 100));
 let weatherLoadedAt = 0;
@@ -82,6 +84,7 @@ let senatorCanvasLast = null;
 let senatorBillStartedAt = Date.now();
 let senatorBillKey = "";
 let previousScheduleSeconds = null;
+let countdownSoundProfile = "";
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -105,14 +108,14 @@ function renderSoundToggle() {
   if (broadcastButton) {
     broadcastButton.classList.toggle("active", ambientEnabled);
     broadcastButton.setAttribute("aria-pressed", String(ambientEnabled));
-    broadcastButton.querySelector("b").textContent = ambientEnabled
-      ? "Атмосфера включена"
-      : "Включить атмосферу";
+    broadcastButton.title = ambientEnabled
+      ? "Выключить тёмный эмбиент"
+      : "Включить тёмный эмбиент";
+    text("broadcast-sound-state", ambientEnabled ? "тёмный эмбиент" : "без звука");
   }
 }
 
-function ensureBallotAudio() {
-  if (!ballotSoundEnabled) return null;
+function ensureAudioContext() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!AudioContext) return null;
   if (!ballotAudioContext) ballotAudioContext = new AudioContext();
@@ -122,23 +125,39 @@ function ensureBallotAudio() {
   return ballotAudioContext;
 }
 
+function ensureBallotAudio() {
+  if (!ballotSoundEnabled) return null;
+  return ensureAudioContext();
+}
+
 function playConsensusCue(kind) {
   const context = ensureBallotAudio();
   if (!context || !ballotSoundEnabled) return;
-  const notes = kind === "vote-open" ? [659.25, 880] : [392, 523.25];
-  const start = context.currentTime + 0.015;
+  const notes = kind === "vote-open"
+    ? [174.61, 261.63, 349.23]
+    : [146.83, 220, 293.66];
+  const start = context.currentTime + 0.025;
+  const cueBus = context.createGain();
+  const cueFilter = context.createBiquadFilter();
+  cueFilter.type = "lowpass";
+  cueFilter.frequency.value = 1150;
+  cueFilter.Q.value = 0.45;
+  cueBus.gain.setValueAtTime(0.0001, start);
+  cueBus.gain.exponentialRampToValueAtTime(0.42, start + 0.08);
+  cueBus.gain.exponentialRampToValueAtTime(0.0001, start + 1.65);
+  cueBus.connect(cueFilter).connect(context.destination);
   notes.forEach((frequency, index) => {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
-    const noteStart = start + index * 0.095;
+    const noteStart = start + index * 0.13;
     oscillator.type = "sine";
     oscillator.frequency.setValueAtTime(frequency, noteStart);
     gain.gain.setValueAtTime(0.0001, noteStart);
-    gain.gain.exponentialRampToValueAtTime(0.035, noteStart + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.13);
-    oscillator.connect(gain).connect(context.destination);
+    gain.gain.exponentialRampToValueAtTime(0.026 - index * 0.004, noteStart + 0.075);
+    gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 1.2);
+    oscillator.connect(gain).connect(cueBus);
     oscillator.start(noteStart);
-    oscillator.stop(noteStart + 0.15);
+    oscillator.stop(noteStart + 1.3);
   });
 }
 
@@ -147,53 +166,97 @@ function setAmbientVolume(value) {
   localStorage.setItem("t-consensus-volume", String(Math.round(ambientVolume * 100)));
   if (ambientGain && ballotAudioContext) {
     ambientGain.gain.setTargetAtTime(
-      ambientEnabled ? ambientVolume * 0.16 : 0.0001,
+      ambientEnabled ? 0.012 + ambientVolume * 0.105 : 0.0001,
       ballotAudioContext.currentTime,
-      0.35,
+      ambientEnabled ? 1.8 : 0.7,
     );
   }
 }
 
 function startConsensusAmbience() {
-  const context = ensureBallotAudio();
+  const context = ensureAudioContext();
   if (!context) return;
   ambientEnabled = true;
   localStorage.setItem("t-consensus-ambient", "on");
   if (!ambientGain) {
     ambientGain = context.createGain();
     ambientGain.gain.setValueAtTime(0.0001, context.currentTime);
-    const lowpass = context.createBiquadFilter();
-    lowpass.type = "lowpass";
-    lowpass.frequency.value = 520;
-    lowpass.Q.value = 0.65;
-    ambientGain.connect(lowpass).connect(context.destination);
-    [55, 82.41, 110].forEach((frequency, index) => {
+    ambientLowpass = context.createBiquadFilter();
+    ambientLowpass.type = "lowpass";
+    ambientLowpass.frequency.value = 820;
+    ambientLowpass.Q.value = 0.28;
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -30;
+    compressor.knee.value = 24;
+    compressor.ratio.value = 2.4;
+    compressor.attack.value = 0.18;
+    compressor.release.value = 1.2;
+    ambientGain.connect(ambientLowpass).connect(compressor).connect(context.destination);
+
+    const dryBus = context.createGain();
+    const wetBus = context.createGain();
+    const reverb = context.createConvolver();
+    dryBus.gain.value = 0.82;
+    wetBus.gain.value = 0.18;
+    dryBus.connect(ambientGain);
+    reverb.connect(wetBus).connect(ambientGain);
+    const impulse = context.createBuffer(2, Math.floor(context.sampleRate * 4.6), context.sampleRate);
+    for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
+      const samples = impulse.getChannelData(channel);
+      let smoothed = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const decay = Math.pow(1 - index / samples.length, 3.2);
+        smoothed = smoothed * 0.72 + (Math.random() * 2 - 1) * 0.28;
+        samples[index] = smoothed * decay * 0.34;
+      }
+    }
+    reverb.buffer = impulse;
+
+    [43.65, 65.41, 87.31, 130.81].forEach((frequency, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      oscillator.type = index === 1 ? "triangle" : "sine";
+      const lfo = context.createOscillator();
+      const lfoGain = context.createGain();
+      oscillator.type = "sine";
       oscillator.frequency.value = frequency;
-      oscillator.detune.value = index * 3 - 3;
-      gain.gain.value = [0.38, 0.16, 0.08][index];
-      oscillator.connect(gain).connect(ambientGain);
+      oscillator.detune.value = [-7, 3, -2, 6][index];
+      gain.gain.value = [0.34, 0.18, 0.085, 0.025][index];
+      lfo.type = "sine";
+      lfo.frequency.value = [0.018, 0.013, 0.021, 0.009][index];
+      lfoGain.gain.value = [4.5, 3.2, 5.1, 2.4][index];
+      lfo.connect(lfoGain).connect(oscillator.detune);
+      oscillator.connect(gain);
+      gain.connect(dryBus);
+      gain.connect(reverb);
       oscillator.start();
-      ambientNodes.push(oscillator, gain);
+      lfo.start();
+      ambientNodes.push(oscillator, gain, lfo, lfoGain);
     });
-    const noiseBuffer = context.createBuffer(1, context.sampleRate * 4, context.sampleRate);
+
+    const noiseBuffer = context.createBuffer(1, context.sampleRate * 12, context.sampleRate);
     const noise = noiseBuffer.getChannelData(0);
+    let brown = 0;
+    let pink = 0;
     for (let index = 0; index < noise.length; index += 1) {
-      noise[index] = (Math.random() * 2 - 1) * 0.13;
+      const white = Math.random() * 2 - 1;
+      brown = (brown + 0.018 * white) / 1.018;
+      pink = pink * 0.985 + white * 0.015;
+      noise[index] = brown * 0.72 + pink * 0.16;
     }
     const noiseSource = context.createBufferSource();
-    const noiseFilter = context.createBiquadFilter();
+    ambientNoiseFilter = context.createBiquadFilter();
     const noiseGain = context.createGain();
     noiseSource.buffer = noiseBuffer;
     noiseSource.loop = true;
-    noiseFilter.type = "lowpass";
-    noiseFilter.frequency.value = 240;
-    noiseGain.gain.value = 0.12;
-    noiseSource.connect(noiseFilter).connect(noiseGain).connect(ambientGain);
+    ambientNoiseFilter.type = "bandpass";
+    ambientNoiseFilter.frequency.value = 155;
+    ambientNoiseFilter.Q.value = 0.42;
+    noiseGain.gain.value = 0.11;
+    noiseSource.connect(ambientNoiseFilter).connect(noiseGain);
+    noiseGain.connect(dryBus);
+    noiseGain.connect(reverb);
     noiseSource.start();
-    ambientNodes.push(noiseSource, noiseFilter, noiseGain);
+    ambientNodes.push(noiseSource, ambientNoiseFilter, noiseGain, dryBus, wetBus, reverb, ambientLowpass, compressor);
   }
   setAmbientVolume(ambientVolume);
   renderSoundToggle();
@@ -403,6 +466,12 @@ function renderSchedule(data) {
         }),
   );
   text("observer-schedule-countdown", formatScheduleCountdown(schedule.scheduled_for));
+  const adjustment = byId("observer-schedule-adjustment");
+  const shiftMinutes = Number(schedule.time_shift_minutes || 0);
+  adjustment.hidden = !shiftMinutes;
+  adjustment.textContent = shiftMinutes
+    ? `Время перенесено на ${Math.abs(shiftMinutes)} мин. ${shiftMinutes > 0 ? "позже" : "раньше"} · отсчёт обновлён`
+    : "";
   const link = byId("observer-schedule-link");
   link.hidden = !schedule.event_url;
   if (schedule.event_url) link.href = schedule.event_url;
@@ -416,6 +485,67 @@ function exactCountdown(deadline) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const rest = seconds % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatAddedTime(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  if (!value) return "";
+  const minutes = Math.floor(value / 60);
+  const rest = Math.floor(value % 60);
+  return `+${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function countdownWindowFor(seconds) {
+  if (seconds > 86400) return "distant";
+  if (seconds > 21600) return "horizon";
+  if (seconds > 3600) return "approaching";
+  if (seconds > 900) return "soon";
+  if (seconds > 300) return "imminent";
+  if (seconds > 60) return "final-five";
+  if (seconds > 30) return "final-minute";
+  return "final-30";
+}
+
+function playCountdownCue(profile) {
+  if (!ambientEnabled || !ballotAudioContext || ballotAudioContext.state !== "running") return;
+  const frequencies = {
+    soon: [82.41],
+    imminent: [82.41, 110],
+    "final-five": [98, 130.81],
+    "final-minute": [110, 146.83],
+    "final-30": [130.81, 174.61],
+  }[profile];
+  if (!frequencies) return;
+  const context = ballotAudioContext;
+  const start = context.currentTime + .02;
+  frequencies.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = frequency;
+    gain.gain.setValueAtTime(.0001, start + index * .16);
+    gain.gain.exponentialRampToValueAtTime(.018, start + .12 + index * .16);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + 1.5 + index * .16);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(start + index * .16);
+    oscillator.stop(start + 1.7 + index * .16);
+  });
+}
+
+function applyCountdownProfile(profile) {
+  const clean = profile || "normal";
+  document.body.dataset.countdownWindow = clean;
+  const frequencies = {
+    distant: [650, 125], horizon: [690, 132], approaching: [760, 145],
+    soon: [840, 160], imminent: [920, 178], "final-five": [990, 194],
+    "final-minute": [1060, 210], "final-30": [1140, 228], normal: [820, 155],
+  }[clean] || [820, 155];
+  if (ballotAudioContext && ambientLowpass && ambientNoiseFilter) {
+    ambientLowpass.frequency.setTargetAtTime(frequencies[0], ballotAudioContext.currentTime, 2.4);
+    ambientNoiseFilter.frequency.setTargetAtTime(frequencies[1], ballotAudioContext.currentTime, 2.8);
+  }
+  if (countdownSoundProfile && countdownSoundProfile !== clean) playCountdownCue(clean);
+  countdownSoundProfile = clean;
 }
 
 function weatherCopy(code) {
@@ -485,7 +615,22 @@ function renderBroadcast(data) {
   const completed = data.last_session;
   const bill = session?.current_bill || null;
   document.body.dataset.broadcastPhase = phase;
-  text("broadcast-state-kicker", phase === "live" ? "ПРЯМОЙ ЭФИР · СВЕТЛЫЙ КРУГ" : "СВЕТЛЫЙ КРУГ");
+  const stateKicker = {
+    idle: "КОНСЕНСУС · ТОВАРИЩЕСТВО",
+    scheduled: "ЗАСЕДАНИЕ · ЗАПЛАНИРОВАНО",
+    preparing: "ЗАСЕДАНИЕ · ПОДГОТОВКА",
+    live: "ПРЯМОЙ ЭФИР · ЗАСЕДАНИЕ",
+    completed: "ПРОТОКОЛ · ЗАВЕРШЕНО",
+  }[phase] || "КОНСЕНСУС · ТОВАРИЩЕСТВО";
+  const stateMeta = {
+    idle: "единая трансляция",
+    scheduled: "до открытия светлого круга",
+    preparing: "проверка кворума",
+    live: "решения в реальном времени",
+    completed: "решения зафиксированы",
+  }[phase] || "единая трансляция";
+  text("broadcast-state-kicker", stateKicker);
+  text("broadcast-state-meta", stateMeta);
   text("broadcast-wordmark", "Т О В А Р И Щ Е С Т В О");
 
   const countdownWrap = byId("broadcast-countdown-wrap");
@@ -519,6 +664,12 @@ function renderBroadcast(data) {
     const date = new Date(deadline);
     text("broadcast-scheduled-at", date.toLocaleString("ru-RU", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }));
   }
+  const scheduleAdjustment = byId("broadcast-schedule-adjustment");
+  const scheduleShift = Number(schedule?.time_shift_minutes || 0);
+  scheduleAdjustment.hidden = !scheduleShift;
+  scheduleAdjustment.textContent = scheduleShift
+    ? `Время перенесено на ${Math.abs(scheduleShift)} мин. ${scheduleShift > 0 ? "позже" : "раньше"} · новый отсчёт уже действует`
+    : "";
 
   const host = session?.leader?.name || schedule?.host?.name || "Председатель Товарищества";
   const totalBills = Math.max(
@@ -535,7 +686,14 @@ function renderBroadcast(data) {
     text("broadcast-bill-title", bill.title || "Без названия");
     text("broadcast-bill-summary", bill.summary || "Полный текст доступен в карточке проекта.");
     text("broadcast-bill-timer", formatTimer(session?.timer_deadline));
+    const adjustment = byId("broadcast-time-adjustment");
+    adjustment.hidden = !Number(session?.timer_added_seconds || 0);
+    adjustment.textContent = session?.timer_added_seconds
+      ? `${formatAddedTime(session.timer_added_seconds)} · добавлено ведущим`
+      : "";
     byId("broadcast-open-bill").onclick = () => showBillDialog(bill, currentResult(session, bill));
+  } else {
+    byId("broadcast-time-adjustment").hidden = true;
   }
 
   if (phase === "completed" && completed) {
@@ -579,11 +737,12 @@ function renderParticipants(participants = []) {
   text("participants-count", participants.length);
   const nextSignature = stableSignature(
     participants.map((participant) => [
-      participant.user_id,
+      participant.id,
       participant.name,
       participant.kind,
       Boolean(participant.confirmed),
       Boolean(participant.voted),
+      participant.vote || "",
     ]),
   );
   if (nextSignature === participantSignature) return;
@@ -610,7 +769,10 @@ function renderParticipants(participants = []) {
     identity.append(name, role);
     const vote = document.createElement("span");
     vote.className = `vote-state${participant.voted ? " done" : ""}`;
-    vote.textContent = participant.voted ? "голос принят" : "ожидание";
+    vote.textContent = participant.vote
+      ? VOTE_LABELS[participant.vote] || participant.vote
+      : participant.voted ? "голос принят" : "ожидание";
+    if (participant.vote) vote.classList.add(participant.vote);
     row.append(dot, identity, vote);
     container.append(row);
   });
@@ -907,6 +1069,12 @@ function renderObserver(data) {
     session ? `${session.voting.received}/${session.voting.expected}` : "—",
   );
   text("observer-timer", formatTimer(session?.timer_deadline));
+  text(
+    "observer-timer-detail",
+    session?.timer_added_seconds
+      ? `добавлено ${formatAddedTime(session.timer_added_seconds)}`
+      : "до фиксации",
+  );
   text("observer-queue-count", (data.queue || []).length);
   renderObserverBlocks(session?.blocks || {});
   renderObserverFeed(data);
@@ -1373,6 +1541,11 @@ function renderBallot(data) {
       : session?.stage === "presentation" ? "ДО ОТКРЫТИЯ ВОУТА" : "СРОК РЕШЕНИЯ",
   );
   deadline.className = `ballot-deadline ${canVote ? "open" : "waiting"}`;
+  const ballotAdjustment = byId("ballot-time-adjustment");
+  ballotAdjustment.hidden = !Number(session?.timer_added_seconds || 0);
+  ballotAdjustment.textContent = session?.timer_added_seconds
+    ? `${formatAddedTime(session.timer_added_seconds)} добавлено ведущим · новый срок уже действует`
+    : "";
   const totalSeconds = Number(session?.timer_seconds || 0);
   const remainingSeconds = session?.timer_deadline
     ? Math.max(0, (new Date(session.timer_deadline).getTime() - Date.now()) / 1000)
@@ -1495,6 +1668,7 @@ function renderControls(data) {
   const viewer = data.viewer || {};
   const session = data.session;
   panel.hidden = capabilities.size === 0;
+  document.body.classList.toggle("operator-visible", !panel.hidden);
   const nextSignature = stableSignature({
     mode: selectedMode,
     capabilities: [...capabilities].sort(),
@@ -1569,14 +1743,20 @@ function renderControls(data) {
   }
 
   if (capabilities.has("set_timer")) {
-    const { group, actions } = controlGroup("Таймер", "Автоматическая фиксация по истечении времени");
+    const extending = Boolean(session?.timer_deadline && new Date(session.timer_deadline).getTime() > Date.now());
+    const { group, actions } = controlGroup(
+      extending ? "Добавить время" : "Запустить таймер",
+      extending
+        ? "Продлевает действующий срок без сброса уже прошедшего времени"
+        : "Автоматическая фиксация по истечении времени",
+    );
     [
       ["30 сек", 30],
       ["1 мин", 60],
       ["3 мин", 180],
       ["5 мин", 300],
     ].forEach(([label, seconds]) => {
-      actions.append(actionButton(label, "set_timer", { seconds }));
+      actions.append(actionButton(`${extending ? "+" : ""}${label}`, "set_timer", { seconds }));
     });
     container.append(group);
   }
@@ -1753,9 +1933,19 @@ function render(data) {
       : `кворум ещё не собран · ${session.quorum.percent}%`,
   );
   text("votes-value", `${session.voting.received}/${session.voting.expected}`);
-  text("votes-detail", "направления скрыты до результата");
+  text(
+    "votes-detail",
+    data.viewer?.leader
+      ? "направления доступны только ведущему"
+      : "направления скрыты до результата",
+  );
   text("timer-value", formatTimer(session.timer_deadline));
-  text("timer-detail", session.timer_deadline ? "до автоматической фиксации" : "таймер не запущен");
+  text(
+    "timer-detail",
+    session.timer_deadline
+      ? `до автоматической фиксации${session.timer_added_seconds ? ` · добавлено ${formatAddedTime(session.timer_added_seconds)}` : ""}`
+      : "таймер не запущен",
+  );
 
   const bill = session.current_bill;
   const result = currentResult(session, bill);
@@ -2122,21 +2312,11 @@ clockTimer = setInterval(() => {
     text("observer-schedule-countdown", formatScheduleCountdown(state.schedule.scheduled_for));
     text("broadcast-countdown", exactCountdown(state.schedule.scheduled_for));
     const scheduleSeconds = Math.max(0, Math.floor((new Date(state.schedule.scheduled_for).getTime() - Date.now()) / 1000));
-    document.body.dataset.countdownWindow = scheduleSeconds <= 30
-      ? "final-30"
-      : scheduleSeconds <= 60
-        ? "final-minute"
-        : scheduleSeconds <= 90
-          ? "ballot-open"
-          : "normal";
-    if (previousScheduleSeconds !== null) {
-      if (previousScheduleSeconds > 60 && scheduleSeconds <= 60) playConsensusCue("new-bill");
-      if (previousScheduleSeconds > 30 && scheduleSeconds <= 30) playConsensusCue("vote-open");
-    }
+    applyCountdownProfile(countdownWindowFor(scheduleSeconds));
     previousScheduleSeconds = scheduleSeconds;
   } else {
     previousScheduleSeconds = null;
-    document.body.dataset.countdownWindow = "normal";
+    applyCountdownProfile("normal");
   }
   if (state?.broadcast_phase === "completed" && state.last_session) {
     const completed = state.last_session;
