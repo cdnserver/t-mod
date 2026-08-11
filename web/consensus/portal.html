@@ -93,7 +93,7 @@
             data-portal-widget="identity"
           >
             <header>
-              <span>ВАШ КОНТУР</span><b id="portal-profile-status">активен</b>
+              <span>МОЙ МАНДАТ</span><b id="portal-profile-status">активен</b>
             </header>
             <div class="identity-main">
               <span class="identity-avatar" id="identity-avatar">T</span>
@@ -102,9 +102,20 @@
                 </h2><p id="identity-legal">Прихожанин</p></span>
             </div>
             <div id="identity-positions" class="identity-positions"></div>
-            <p id="identity-note" class="identity-note">
-              Настройки аккаунта доступны через /account в Discord.
-            </p>
+            <div class="mandate-facts">
+              <span><small>ОСНОВНОЙ ПЕРСОНАЖ</small><strong id="mandate-character">—</strong></span>
+              <span><small>В ТОВАРИЩЕСТВЕ</small><strong id="mandate-since">—</strong></span>
+            </div>
+            <div class="mandate-copy">
+              <span><small>ДЕЯТЕЛЬНОСТЬ</small><p id="mandate-contribution">—</p></span>
+              <span><small>ЗОНА ОТВЕТСТВЕННОСТИ</small><p id="mandate-responsibilities">—</p></span>
+            </div>
+            <p id="mandate-biography" class="mandate-biography">—</p>
+            <p id="identity-note" class="identity-note">Настройки аккаунта доступны через /account в Discord.</p>
+            <footer class="mandate-actions">
+              <span id="mandate-nickname-state">Проверяем Discord-ник…</span>
+              <div><button id="mandate-sync-nickname" type="button" hidden>Синхронизировать ник</button><button id="mandate-edit" type="button">Настроить мандат</button></div>
+            </footer>
           </article>
 
           <article
@@ -491,6 +502,36 @@
       <button id="portal-layout-save" class="portal-primary" type="button">
         Сохранить экран
       </button>
+    </dialog>
+
+    <dialog id="member-onboarding-dialog" class="member-onboarding-dialog">
+      <div class="onboarding-orbit" aria-hidden="true"><i></i><i></i><span>TVR</span></div>
+      <section class="onboarding-intro">
+        <small id="onboarding-mode">ВСТУПЛЕНИЕ В КОНТУР</small>
+        <h2>Ваше место<br>в Товариществе</h2>
+        <p>Один короткий проход создаст личность участника, первый профиль персонажа и ваш постоянный «Мой мандат».</p>
+        <ol>
+          <li><b>01</b><span>Обращение<small>Как к вам обращаться</small></span></li>
+          <li><b>02</b><span>Персонаж<small>Имя, фамилия и статик</small></span></li>
+          <li><b>03</b><span>Мандат<small>Деятельность и ответственность</small></span></li>
+        </ol>
+      </section>
+      <form id="member-onboarding-form" class="onboarding-form">
+        <header><span><small>PERSONAL REACTOR</small><strong>Настройка личности</strong></span><button id="onboarding-close" type="button" aria-label="Закрыть" onclick="this.closest('dialog').close()" hidden>×</button></header>
+        <label><span>Как вас называть</span><input id="onboarding-preferred-name" maxlength="24" autocomplete="name" placeholder="Иван" required><small>Это имя будет использовать Реактор.</small></label>
+        <div id="onboarding-character-fields" class="onboarding-character-fields">
+          <label><span>Имя и фамилия персонажа</span><input id="onboarding-character-name" maxlength="48" placeholder="Saul Goodman"><small>Латиницей, как на Majestic RP.</small></label>
+          <label><span>Статик</span><input id="onboarding-character-static" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" placeholder="263345"><small>От 1 до 12 цифр.</small></label>
+          <output><small>БУДУЩИЙ НИК DISCORD</small><strong id="onboarding-nickname-preview">S. Goodman | 263345 | Иван</strong></output>
+        </div>
+        <label><span>Коротко о себе</span><textarea id="onboarding-biography" maxlength="500" rows="3" placeholder="Кто вы и чем интересуетесь" required></textarea></label>
+        <div class="onboarding-grid">
+          <label><span>Чем занимаетесь</span><textarea id="onboarding-contribution" maxlength="500" rows="4" placeholder="Ваша деятельность в Товариществе" required></textarea></label>
+          <label><span>Зона ответственности</span><textarea id="onboarding-responsibilities" maxlength="700" rows="4" placeholder="За что отвечаете или хотите отвечать" required></textarea></label>
+        </div>
+        <label class="onboarding-date"><span>Дата вступления</span><input id="onboarding-membership-since" type="date" required></label>
+        <footer><span><i></i> Данные сохраняются в защищённом контуре T-Mod</span><button id="onboarding-submit" class="portal-primary" type="submit">Активировать личный Реактор</button></footer>
+      </form>
     </dialog>
 
     <dialog id="bill-dialog" class="portal-dialog bill-dialog">

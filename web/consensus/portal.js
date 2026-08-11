@@ -2,7 +2,7 @@
 
 (() => {
   const labels = {
-    identity: "Моя карточка",
+    identity: "Мой мандат",
     treasury: "Казна",
     legislation: "Реестр законопроектов",
     editor: "Законодательная мастерская",
@@ -33,6 +33,8 @@
     refreshTimer: null,
     legislationRefreshTimer: null,
     renderSignature: "",
+    onboardingRequired: false,
+    onboardingOpened: false,
   };
   const byId = (id) => document.getElementById(id);
   const el = (tag, className = "", text = "") => {
@@ -142,6 +144,22 @@
     }).format(date);
   }
 
+  function chosenName(data = state.data) {
+    const selected = String(data?.profile?.preferred_name || "").trim();
+    if (selected) return selected;
+    const discordName = String(data?.viewer?.name || "Участник");
+    const projected = discordName.split("|").at(-1)?.trim();
+    return projected || discordName;
+  }
+
+  function greeting(name) {
+    const hour = new Date().getHours();
+    if (hour < 5) return `Доброй ночи, ${name}`;
+    if (hour < 12) return `Доброе утро, ${name}`;
+    if (hour < 18) return `Добрый день, ${name}`;
+    return `Добрый вечер, ${name}`;
+  }
+
   function openDialog(dialog) {
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
@@ -216,6 +234,84 @@
     byId("treasury-expense-bar").style.width = `${
       Math.max(2, Number(treasury.withdrawals || 0) / maximum * 100)
     }%`;
+  }
+
+  function fillOnboarding(data, editing = false) {
+    const profile = data.profile || {};
+    const hasCharacter = Boolean(data.onboarding?.has_character);
+    byId("onboarding-character-fields").hidden = hasCharacter;
+    byId("onboarding-character-name").required = !hasCharacter;
+    byId("onboarding-character-static").required = !hasCharacter;
+    byId("onboarding-preferred-name").value = profile.preferred_name ||
+      chosenName(data);
+    byId("onboarding-character-name").value = "";
+    byId("onboarding-character-static").value = "";
+    byId("onboarding-biography").value = profile.biography || "";
+    byId("onboarding-contribution").value = profile.contribution || "";
+    byId("onboarding-responsibilities").value = profile.responsibilities || "";
+    byId("onboarding-membership-since").value = profile.membership_since ||
+      new Date().toISOString().slice(0, 10);
+    byId("onboarding-close").hidden = !editing;
+    byId("onboarding-submit").textContent = editing
+      ? "Сохранить мой мандат"
+      : "Активировать личный Реактор";
+    byId("onboarding-mode").textContent = editing
+      ? "НАСТРОЙКА МАНДАТА"
+      : "ВСТУПЛЕНИЕ В КОНТУР";
+    updateNicknamePreview();
+  }
+
+  function updateNicknamePreview() {
+    const character = byId("onboarding-character-name").value.trim();
+    const staticId = byId("onboarding-character-static").value.trim();
+    const preferred = byId("onboarding-preferred-name").value.trim();
+    const parts = character.split(/\s+/).filter(Boolean);
+    const compact = parts.length > 1
+      ? `${parts[0].charAt(0).toUpperCase()}. ${parts.slice(1).join(" ")}`
+      : "S. Goodman";
+    byId("onboarding-nickname-preview").textContent =
+      `${compact} | ${staticId || "263345"} | ${preferred || "Иван"}`;
+  }
+
+  function openOnboarding(editing = false) {
+    if (!state.data) return;
+    fillOnboarding(state.data, editing);
+    const dialog = byId("member-onboarding-dialog");
+    dialog.dataset.required = editing ? "false" : "true";
+    openDialog(dialog);
+  }
+
+  function renderMandate(data, name) {
+    const profile = data.profile || {};
+    const primaryId = Number(profile.primary_character_id || 0);
+    const characters = data.characters || [];
+    const character = characters.find((item) => Number(item.id) === primaryId) ||
+      characters[0];
+    byId("mandate-character").textContent = character
+      ? `${character.nickname} · #${character.static_id}`
+      : "Персонаж ещё не добавлен";
+    byId("mandate-since").textContent = profile.membership_since
+      ? formatDate(profile.membership_since)
+      : formatDate(data.mandate?.joined_at, "не зафиксировано");
+    byId("mandate-contribution").textContent = profile.contribution ||
+      "Направление деятельности пока не описано.";
+    byId("mandate-responsibilities").textContent = profile.responsibilities ||
+      "Зона ответственности пока не указана.";
+    byId("mandate-biography").textContent = profile.biography ||
+      `${name} ещё не заполнил краткую карточку участника.`;
+    const nickname = data.mandate?.nickname || {};
+    byId("mandate-nickname-state").textContent = nickname.exempt
+      ? "Ник администратора не изменяется"
+      : nickname.synced
+      ? "Discord-ник синхронизирован"
+      : "Discord-ник ожидает синхронизации";
+    byId("mandate-nickname-state").dataset.state = nickname.synced ||
+        nickname.exempt
+      ? "ok"
+      : "pending";
+    byId("mandate-sync-nickname").hidden = Boolean(
+      nickname.synced || nickname.exempt || !nickname.expected,
+    );
   }
 
   const billStatus = (bill) => {
@@ -640,12 +736,13 @@
     state.data = data;
     state.csrf = data.viewer.csrf_token;
     state.layout = Array.isArray(data.layout) ? data.layout : state.layout;
+    const currentName = chosenName(data);
+    byId("portal-welcome").textContent = greeting(currentName);
     const { cache_state: _cacheState, ...stableData } = data;
     const signature = JSON.stringify(stableData);
     if (signature === state.renderSignature && !forceWorkspace) return false;
     state.renderSignature = signature;
-    const name = data.viewer.name || "Участник";
-    byId("portal-welcome").textContent = `${name}, ваш Реактор готов`;
+    const name = currentName;
     byId("identity-name").textContent = name;
     byId("identity-legal").textContent = data.legal_status || "Прихожанин";
     byId("portal-avatar").textContent = name.charAt(0).toUpperCase();
@@ -665,6 +762,7 @@
         el("span", "", `${item.emoji} ${item.label}`)
       ),
     );
+    renderMandate(data, name);
 
     renderTreasury(data.treasury || {});
     if (!state.bills.length || forceWorkspace) {
@@ -717,6 +815,11 @@
       );
     }
     applyLayout(state.layout);
+    state.onboardingRequired = Boolean(data.onboarding?.required);
+    if (state.onboardingRequired && !state.onboardingOpened) {
+      state.onboardingOpened = true;
+      requestAnimationFrame(() => openOnboarding(false));
+    }
     return true;
   }
 
@@ -804,6 +907,63 @@
   }
 
   byId("portal-customize").addEventListener("click", openLayout);
+  byId("mandate-edit").addEventListener("click", () => openOnboarding(true));
+  byId("member-onboarding-dialog").addEventListener("cancel", (event) => {
+    if (byId("member-onboarding-dialog").dataset.required === "true") {
+      event.preventDefault();
+    }
+  });
+  ["onboarding-preferred-name", "onboarding-character-name", "onboarding-character-static"]
+    .forEach((id) => byId(id).addEventListener("input", updateNicknamePreview));
+  byId("member-onboarding-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (state.busy) return;
+    setBusy(true, "Формируем ваш мандат", "Сохраняем личность и подключаем контур…");
+    try {
+      const result = await request("/api/reactor/onboarding", {
+        method: "POST",
+        body: JSON.stringify({
+          action: state.onboardingRequired ? "complete" : "save",
+          preferred_name: byId("onboarding-preferred-name").value.trim(),
+          character_nickname: byId("onboarding-character-name").value.trim(),
+          character_static: byId("onboarding-character-static").value.trim(),
+          biography: byId("onboarding-biography").value.trim(),
+          contribution: byId("onboarding-contribution").value.trim(),
+          responsibilities: byId("onboarding-responsibilities").value.trim(),
+          membership_since: byId("onboarding-membership-since").value,
+        }),
+      });
+      state.onboardingRequired = false;
+      state.onboardingOpened = false;
+      closeDialog(byId("member-onboarding-dialog"));
+      await loadFreshHome();
+      toast(result.nickname?.synced || result.nickname?.exempt
+        ? "Мандат сформирован. Добро пожаловать в Реактор."
+        : "Мандат сохранён. Ник Discord можно синхронизировать повторно в карточке.");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  });
+  byId("mandate-sync-nickname").addEventListener("click", async () => {
+    setBusy(true, "Синхронизируем Discord", "Устанавливаем единый ник участника…");
+    try {
+      const result = await request("/api/reactor/onboarding", {
+        method: "POST",
+        body: JSON.stringify({ action: "sync_nickname" }),
+      });
+      await loadFreshHome();
+      toast(result.nickname?.synced
+        ? "Discord-ник синхронизирован."
+        : "Discord не разрешил сменить ник. Администратор получил запись в журнале.",
+        result.nickname?.synced ? "success" : "error");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  });
   byId("portal-layout-save").addEventListener("click", async () => {
     const layout = [
       ...byId("portal-layout-list").querySelectorAll("input:checked"),

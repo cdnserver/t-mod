@@ -417,7 +417,7 @@ class MemberDirectoryStorageTests(unittest.TestCase):
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
 
-    def test_new_admission_requirement_is_cleared_by_completed_card(self) -> None:
+    def test_new_admission_requires_identity_even_after_directory_card(self) -> None:
         profile, newly_required = storage.require_member_directory(
             77,
             5,
@@ -436,9 +436,23 @@ class MemberDirectoryStorageTests(unittest.TestCase):
             membership_since="2026-07-25",
         )
 
-        self.assertFalse(completed.directory_required)
+        self.assertTrue(completed.directory_required)
         self.assertIsNotNone(completed.directory_completed_at)
         self.assertEqual(completed.membership_since, "2026-07-25")
+
+        completed, characters = storage.complete_member_onboarding(
+            77,
+            5,
+            preferred_name="Иван",
+            character_nickname="Saul Goodman",
+            character_static="263345",
+            biography="Участник Товарищества",
+            contribution="Работаю с инфраструктурой",
+            responsibilities="Интересуюсь автоматизацией и документацией",
+            membership_since="2026-07-25",
+        )
+        self.assertFalse(completed.directory_required)
+        self.assertEqual(len(characters), 1)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ PROFILE_STATUS_NOTE_MAX_LENGTH = 120
 PROFILE_BIOGRAPHY_MAX_LENGTH = 500
 PROFILE_CONTRIBUTION_MAX_LENGTH = 500
 PROFILE_RESPONSIBILITIES_MAX_LENGTH = 700
+PROFILE_PREFERRED_NAME_MAX_LENGTH = 24
 
 
 def normalize_profile_nickname(value: str) -> str:
@@ -57,6 +58,17 @@ def normalize_profile_status_note(value: str | None) -> str | None:
     if len(note) > PROFILE_STATUS_NOTE_MAX_LENGTH:
         raise ValueError("profile_status_note_too_long")
     return note or None
+
+
+def normalize_profile_preferred_name(value: str) -> str:
+    preferred_name = " ".join(str(value or "").strip().split())
+    if (
+        not 2 <= len(preferred_name) <= PROFILE_PREFERRED_NAME_MAX_LENGTH
+        or "|" in preferred_name
+        or any(ord(character) < 32 for character in preferred_name)
+    ):
+        raise ValueError("profile_preferred_name_invalid")
+    return preferred_name
 
 
 def _normalize_directory_text(
@@ -117,9 +129,11 @@ def _profile_from_row(row: sqlite3.Row | None) -> MemberProfile | None:
         contribution=row["contribution"],
         responsibilities=row["responsibilities"],
         membership_since=row["membership_since"],
+        preferred_name=row["preferred_name"],
         directory_completed_at=row["directory_completed_at"],
         directory_required=bool(row["directory_required"]),
         onboarding_prompted_at=row["onboarding_prompted_at"],
+        onboarding_completed_at=row["onboarding_completed_at"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -223,6 +237,24 @@ def get_profile_snapshot(
     )
 
 
+def profile_preferred_names(guild_id: int, user_ids: list[int] | tuple[int, ...]) -> dict[int, str]:
+    clean_ids = sorted({int(user_id) for user_id in user_ids if int(user_id) > 0})
+    if not clean_ids:
+        return {}
+    placeholders = ",".join("?" for _ in clean_ids)
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"""
+            SELECT user_id, preferred_name
+            FROM member_profiles
+            WHERE guild_id = ? AND user_id IN ({placeholders})
+              AND preferred_name IS NOT NULL AND TRIM(preferred_name) != ''
+            """,
+            (int(guild_id), *clean_ids),
+        ).fetchall()
+    return {int(row["user_id"]): str(row["preferred_name"]) for row in rows}
+
+
 def set_member_profile_status(
     guild_id: int,
     user_id: int,
@@ -292,7 +324,16 @@ def update_member_directory(
             UPDATE member_profiles
             SET biography = ?, contribution = ?, responsibilities = ?,
                 membership_since = ?, directory_completed_at = ?,
-                directory_required = 0,
+                directory_required = CASE
+                    WHEN preferred_name IS NOT NULL
+                     AND TRIM(preferred_name) != ''
+                     AND EXISTS(
+                         SELECT 1 FROM profile_characters
+                         WHERE profile_characters.guild_id = member_profiles.guild_id
+                           AND profile_characters.user_id = member_profiles.user_id
+                     )
+                    THEN 0 ELSE directory_required
+                END,
                 updated_at = ?
             WHERE guild_id = ? AND user_id = ?
             """,
@@ -316,6 +357,135 @@ def update_member_directory(
     if profile is None:  # pragma: no cover
         raise RuntimeError("profile_write_failed")
     return profile
+
+
+def complete_member_onboarding(
+    guild_id: int,
+    user_id: int,
+    *,
+    preferred_name: str,
+    character_nickname: str | None,
+    character_static: str | None,
+    biography: str,
+    contribution: str,
+    responsibilities: str,
+    membership_since: str | None,
+) -> tuple[MemberProfile, list[ProfileCharacter]]:
+    """Atomically finish admission and create the required first character.
+
+    Existing characters are never overwritten: returning members only update
+    their personal mandate while the established game identity stays intact.
+    """
+
+    clean_preferred_name = normalize_profile_preferred_name(preferred_name)
+    clean_biography = _normalize_directory_text(
+        biography,
+        maximum=PROFILE_BIOGRAPHY_MAX_LENGTH,
+        error="profile_biography_invalid",
+        required=True,
+    )
+    clean_contribution = _normalize_directory_text(
+        contribution,
+        maximum=PROFILE_CONTRIBUTION_MAX_LENGTH,
+        error="profile_contribution_invalid",
+        required=True,
+    )
+    clean_responsibilities = _normalize_directory_text(
+        responsibilities,
+        maximum=PROFILE_RESPONSIBILITIES_MAX_LENGTH,
+        error="profile_responsibilities_invalid",
+        required=True,
+    )
+    clean_since = normalize_membership_since(membership_since)
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        _ensure_profile(con, guild_id, user_id, now=now)
+        character_rows = con.execute(
+            """
+            SELECT * FROM profile_characters
+            WHERE guild_id = ? AND user_id = ?
+            ORDER BY position, id
+            """,
+            (int(guild_id), int(user_id)),
+        ).fetchall()
+        if not character_rows:
+            clean_nickname = normalize_profile_nickname(character_nickname or "")
+            if len(clean_nickname.split()) < 2:
+                raise ValueError("profile_character_full_name_required")
+            clean_static = normalize_profile_static(character_static or "")
+            try:
+                cursor = con.execute(
+                    """
+                    INSERT INTO profile_characters(
+                        guild_id, user_id, nickname, static_id, position,
+                        is_public, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, 1, 1, ?, ?)
+                    """,
+                    (
+                        int(guild_id),
+                        int(user_id),
+                        clean_nickname,
+                        clean_static,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                _raise_character_integrity_error(con, guild_id, clean_static)
+            character_id = int(cursor.lastrowid)
+            con.execute(
+                """
+                UPDATE member_profiles
+                SET primary_character_id = COALESCE(primary_character_id, ?)
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (character_id, int(guild_id), int(user_id)),
+            )
+        con.execute(
+            """
+            UPDATE member_profiles
+            SET preferred_name = ?, biography = ?, contribution = ?,
+                responsibilities = ?, membership_since = ?,
+                directory_completed_at = COALESCE(directory_completed_at, ?),
+                directory_required = 0,
+                onboarding_completed_at = ?, updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (
+                clean_preferred_name,
+                clean_biography,
+                clean_contribution,
+                clean_responsibilities,
+                clean_since,
+                now,
+                now,
+                now,
+                int(guild_id),
+                int(user_id),
+            ),
+        )
+        profile_row = con.execute(
+            "SELECT * FROM member_profiles WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ).fetchone()
+        character_rows = con.execute(
+            """
+            SELECT * FROM profile_characters
+            WHERE guild_id = ? AND user_id = ?
+            ORDER BY position, id
+            """,
+            (int(guild_id), int(user_id)),
+        ).fetchall()
+        con.commit()
+    profile = _profile_from_row(profile_row)
+    if profile is None:  # pragma: no cover
+        raise RuntimeError("profile_write_failed")
+    return profile, [
+        character
+        for row in character_rows
+        if (character := _character_from_row(row)) is not None
+    ]
 
 
 def require_member_directory(
@@ -748,17 +918,21 @@ __all__ = [
     "PROFILE_BIOGRAPHY_MAX_LENGTH",
     "PROFILE_CONTRIBUTION_MAX_LENGTH",
     "PROFILE_RESPONSIBILITIES_MAX_LENGTH",
+    "PROFILE_PREFERRED_NAME_MAX_LENGTH",
     "normalize_profile_nickname",
     "normalize_profile_static",
     "normalize_profile_status",
     "normalize_profile_status_note",
+    "normalize_profile_preferred_name",
     "normalize_membership_since",
     "get_member_profile",
     "get_profile_character",
     "list_profile_characters",
     "get_profile_snapshot",
+    "profile_preferred_names",
     "set_member_profile_status",
     "update_member_directory",
+    "complete_member_onboarding",
     "require_member_directory",
     "update_member_profile_preferences",
     "add_profile_character",

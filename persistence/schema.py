@@ -201,9 +201,11 @@ def init_db() -> None:
                 contribution TEXT,
                 responsibilities TEXT,
                 membership_since TEXT,
+                preferred_name TEXT,
                 directory_completed_at TEXT,
                 directory_required INTEGER NOT NULL DEFAULT 0,
                 onboarding_prompted_at TEXT,
+                onboarding_completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
@@ -1682,9 +1684,11 @@ def init_db() -> None:
             "contribution": "TEXT",
             "responsibilities": "TEXT",
             "membership_since": "TEXT",
+            "preferred_name": "TEXT",
             "directory_completed_at": "TEXT",
             "directory_required": "INTEGER NOT NULL DEFAULT 0",
             "onboarding_prompted_at": "TEXT",
+            "onboarding_completed_at": "TEXT",
             "show_directory": "INTEGER NOT NULL DEFAULT 1",
         }.items():
             _add_column_if_missing(con, "member_profiles", column, definition)

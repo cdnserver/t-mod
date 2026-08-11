@@ -31,6 +31,7 @@ from modules.profile import (
     setup_profile,
 )
 from modules.profile_notifications import evaluate_profile_notification
+from modules.member_identity import fellowship_discord_nickname, nickname_change_exempt
 
 
 class ProfileStorageTests(unittest.TestCase):
@@ -143,6 +144,68 @@ class ProfileStorageTests(unittest.TestCase):
             )
         storage.delete_profile_character(10, 100, second.id)
         self.assertEqual(storage.get_member_profile(10, 100).primary_character_id, first.id)
+
+    def test_member_onboarding_is_atomic_and_creates_the_first_character(self) -> None:
+        required, _ = storage.require_member_directory(10, 100, prompted=True)
+        self.assertTrue(required.directory_required)
+
+        profile, characters = storage.complete_member_onboarding(
+            10,
+            100,
+            preferred_name="  Иван  ",
+            character_nickname="Saul Goodman",
+            character_static="00263345",
+            biography="Участник Товарищества",
+            contribution="Работаю с правовыми проектами",
+            responsibilities="Законодательство и подготовка заседаний",
+            membership_since="2026-08-11",
+        )
+
+        self.assertEqual(profile.preferred_name, "Иван")
+        self.assertFalse(profile.directory_required)
+        self.assertIsNotNone(profile.onboarding_completed_at)
+        self.assertEqual(len(characters), 1)
+        self.assertEqual((characters[0].nickname, characters[0].static_id), ("Saul Goodman", "263345"))
+        self.assertEqual(profile.primary_character_id, characters[0].id)
+
+    def test_member_onboarding_conflict_keeps_requirement_and_no_partial_character(self) -> None:
+        storage.add_profile_character(10, 999, "Static Owner", "777")
+        storage.require_member_directory(10, 100, prompted=True)
+
+        with self.assertRaisesRegex(ValueError, "profile_static_taken"):
+            storage.complete_member_onboarding(
+                10,
+                100,
+                preferred_name="Иван",
+                character_nickname="Saul Goodman",
+                character_static="777",
+                biography="Участник Товарищества",
+                contribution="Работаю с правовыми проектами",
+                responsibilities="Законодательство и подготовка заседаний",
+                membership_since="2026-08-11",
+            )
+
+        self.assertTrue(storage.get_member_profile(10, 100).directory_required)
+        self.assertEqual(storage.list_profile_characters(10, 100), [])
+
+    def test_fellowship_discord_nickname_and_administrator_exemption(self) -> None:
+        self.assertEqual(
+            fellowship_discord_nickname("Saul Goodman", "263345", "Иван"),
+            "S. Goodman | 263345 | Иван",
+        )
+        with self.assertRaisesRegex(ValueError, "profile_character_full_name_required"):
+            fellowship_discord_nickname("Saul", "263345", "Иван")
+        with self.assertRaisesRegex(ValueError, "profile_discord_nickname_too_long"):
+            fellowship_discord_nickname(
+                "Alexander Verylongsurname",
+                "123456789012",
+                "Александр",
+            )
+        admin = SimpleNamespace(
+            guild_permissions=SimpleNamespace(administrator=True),
+            roles=[],
+        )
+        self.assertTrue(nickname_change_exempt(admin))
 
     def test_concurrent_additions_never_exceed_three_characters(self) -> None:
         def add(index: int) -> str:

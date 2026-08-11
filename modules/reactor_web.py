@@ -48,6 +48,8 @@ from modules.minecraft_files import (
     minecraft_write_text,
 )
 from modules.profile import PROFILE_ROLE_HIERARCHY
+from modules.member_identity import fellowship_discord_nickname, nickname_change_exempt
+from modules.technical_log import log_technical_event
 from modules.reactor_legislation import (
     ReactorLegislationError,
     cancel_workspace,
@@ -94,6 +96,39 @@ def _member_positions(member: Any) -> list[dict[str, Any]]:
         for role_id, emoji, label, description in PROFILE_ROLE_HIERARCHY
         if int(role_id) in role_ids
     ]
+
+
+def _primary_character(profile: Any, characters: list[Any]) -> Any | None:
+    primary_id = int(getattr(profile, "primary_character_id", 0) or 0)
+    return next(
+        (item for item in characters if int(getattr(item, "id", 0)) == primary_id),
+        characters[0] if characters else None,
+    )
+
+
+def _nickname_state(member: Any, profile: Any, characters: list[Any]) -> dict[str, Any]:
+    exempt = nickname_change_exempt(member)
+    character = _primary_character(profile, characters)
+    preferred_name = str(getattr(profile, "preferred_name", "") or "").strip()
+    expected = None
+    error = None
+    if character is not None and preferred_name:
+        try:
+            expected = fellowship_discord_nickname(
+                str(character.nickname),
+                str(character.static_id),
+                preferred_name,
+            )
+        except ValueError as exc:
+            error = str(exc)
+    current = str(getattr(member, "nick", "") or "").strip() or None
+    return {
+        "exempt": exempt,
+        "expected": expected,
+        "current": current,
+        "synced": bool(exempt or (expected and current == expected)),
+        "error": error,
+    }
 
 
 def _consensus_summary(guild_id: int) -> dict[str, Any]:
@@ -633,7 +668,7 @@ def register_reactor_web_routes(
 
     async def build_member_home(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         (
-            (profile, _characters),
+            (profile, characters),
             notifications,
             layout,
             consensus,
@@ -672,8 +707,23 @@ def register_reactor_web_routes(
             ),
         )
         positions = _member_positions(principal.member)
+        profile_payload = asdict(profile) if profile is not None else None
+        preferred_name = str(getattr(profile, "preferred_name", "") or "").strip()
+        onboarding_required = bool(profile is not None and profile.directory_required)
+        joined_at = getattr(principal.member, "joined_at", None)
         return {
-            "profile": asdict(profile) if profile is not None else None,
+            "profile": profile_payload,
+            "characters": [asdict(character) for character in characters],
+            "onboarding": {
+                "required": onboarding_required,
+                "completed": bool(getattr(profile, "onboarding_completed_at", None)),
+                "has_character": bool(characters),
+            },
+            "mandate": {
+                "preferred_name": preferred_name or None,
+                "joined_at": joined_at.isoformat() if joined_at is not None else None,
+                "nickname": _nickname_state(principal.member, profile, characters),
+            },
             "legal_positions": positions,
             "legal_status": positions[0]["label"] if positions else "Прихожанин",
             "notifications": notifications,
@@ -706,6 +756,111 @@ def register_reactor_web_routes(
         response.headers["X-T-Mod-Cache"] = cache_state
         return response
 
+    async def _onboarding_command(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "complete").strip().lower()
+        if action not in {"complete", "save", "sync_nickname"}:
+            return web.json_response(
+                {"error": "onboarding_action_invalid", "message": "Неизвестное действие."},
+                status=400,
+            )
+        profile, characters = await asyncio.to_thread(
+            profile_storage.get_profile_snapshot,
+            int(guild_id),
+            int(principal.user_id),
+        )
+        if action != "sync_nickname":
+            candidate_character = _primary_character(profile, characters)
+            candidate_name = (
+                str(candidate_character.nickname)
+                if candidate_character is not None
+                else str(body.get("character_nickname") or "")
+            )
+            candidate_static = (
+                str(candidate_character.static_id)
+                if candidate_character is not None
+                else str(body.get("character_static") or "")
+            )
+            # Validate the exact Discord projection before committing the
+            # profile, so an overlong identity cannot become a hidden failure.
+            fellowship_discord_nickname(
+                candidate_name,
+                candidate_static,
+                str(body.get("preferred_name") or ""),
+            )
+            profile, characters = await asyncio.to_thread(
+                profile_storage.complete_member_onboarding,
+                int(guild_id),
+                int(principal.user_id),
+                preferred_name=str(body.get("preferred_name") or ""),
+                character_nickname=str(body.get("character_nickname") or ""),
+                character_static=str(body.get("character_static") or ""),
+                biography=str(body.get("biography") or ""),
+                contribution=str(body.get("contribution") or ""),
+                responsibilities=str(body.get("responsibilities") or ""),
+                membership_since=str(body.get("membership_since") or "") or None,
+            )
+
+        nickname = _nickname_state(principal.member, profile, characters)
+        if not nickname["exempt"] and nickname["expected"] and not nickname["synced"]:
+            try:
+                await principal.member.edit(
+                    nick=str(nickname["expected"]),
+                    reason="T-Mod: завершение онбординга участника Товарищества",
+                )
+                nickname = _nickname_state(principal.member, profile, characters)
+                # discord.py updates the object in normal operation, while
+                # lightweight test doubles may not.
+                nickname["current"] = str(nickname["expected"])
+                nickname["synced"] = True
+            except discord.DiscordException as exc:
+                nickname["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+                await log_technical_event(
+                    bot,
+                    principal.member.guild,
+                    title="Не синхронизирован ник участника",
+                    details=(
+                        f"Участник: <@{principal.user_id}> (`{principal.user_id}`)\n"
+                        f"Ожидалось: `{nickname['expected']}`\n"
+                        f"Ошибка: `{nickname['error']}`"
+                    ),
+                    dedupe_key=f"member-nickname-sync:{principal.user_id}",
+                    cooldown_seconds=1800,
+                )
+        member_home_cache.invalidate()
+        return web.json_response(
+            {
+                "ok": True,
+                "profile": asdict(profile) if profile is not None else None,
+                "characters": [asdict(character) for character in characters],
+                "nickname": nickname,
+            }
+        )
+
+    async def onboarding_command(request: web.Request) -> web.Response:
+        try:
+            return await _onboarding_command(request)
+        except ValueError as exc:
+            code = str(exc)
+            messages = {
+                "profile_preferred_name_invalid": "Укажите имя для обращения: от 2 до 24 символов без знака |.",
+                "profile_nickname_invalid": "Имя персонажа должно содержать от 2 до 48 символов.",
+                "profile_character_full_name_required": "Укажите имя и фамилию персонажа через пробел.",
+                "profile_static_invalid": "Статик должен состоять из 1–12 цифр.",
+                "profile_static_taken": "Этот статик уже закреплён за другим персонажем.",
+                "profile_character_conflict": "Не удалось закрепить персонажа из-за конфликта данных.",
+                "profile_discord_nickname_too_long": "Итоговый ник Discord длиннее 32 символов. Сократите фамилию или имя для обращения.",
+                "profile_biography_invalid": "Расскажите о себе в 3–500 символах.",
+                "profile_contribution_invalid": "Опишите деятельность в 3–500 символах.",
+                "profile_responsibilities_invalid": "Укажите зону ответственности в 3–700 символах.",
+                "profile_membership_since_invalid": "Проверьте дату вступления.",
+            }
+            return web.json_response(
+                {"error": code, "message": messages.get(code, "Проверьте данные мандата.")},
+                status=409 if code in {"profile_static_taken", "profile_character_conflict"} else 400,
+            )
+
     async def legislation_get(request: web.Request) -> web.Response:
         principal = await personal_request(request)
         snapshot, cache_state = await legislation_cache.get(
@@ -732,13 +887,22 @@ def register_reactor_web_routes(
         principal = await personal_request(request)
         body = await json_body(request, principal)
         action = str(body.get("action") or "").strip().lower()
+        actor_profile = await asyncio.to_thread(
+            profile_storage.get_member_profile,
+            int(guild_id),
+            int(principal.user_id),
+        )
+        actor_display = str(
+            getattr(actor_profile, "preferred_name", "")
+            or principal.display_name
+        )
         try:
             if action == "create":
                 workspace, created = await asyncio.to_thread(
                     create_workspace,
                     int(guild_id),
                     int(principal.user_id),
-                    str(principal.display_name),
+                    actor_display,
                 )
                 member_home_cache.invalidate()
                 legislation_cache.invalidate(int(principal.user_id))
@@ -820,7 +984,7 @@ def register_reactor_web_routes(
                     bot,
                     int(guild_id),
                     int(principal.user_id),
-                    str(principal.display_name),
+                    actor_display,
                     body,
                 )
                 member_home_cache.invalidate()
@@ -1433,6 +1597,7 @@ def register_reactor_web_routes(
     app.router.add_get("/reactor", reactor_index)
     app.router.add_get("/reactor/", reactor_index)
     app.router.add_get("/api/reactor/home", member_home)
+    app.router.add_post("/api/reactor/onboarding", onboarding_command)
     app.router.add_get("/api/reactor/legislation", legislation_get)
     app.router.add_post("/api/reactor/legislation", legislation_command)
     app.router.add_post("/api/reactor/preferences", preferences)

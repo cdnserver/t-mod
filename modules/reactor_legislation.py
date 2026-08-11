@@ -21,6 +21,7 @@ from modules.tvrs_bill_editor import refresh_bill_workspace_panel
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_delivery import TVRS_BILL_PUBLICATION_TOPIC
 from persistence import bill_workspace_repository as workspace_storage
+from persistence import profile_repository as profile_storage
 from persistence import tvrs_repository as bill_storage
 
 
@@ -139,9 +140,14 @@ def project_workspace(workspace: dict[str, Any] | None) -> dict[str, Any] | None
     }
 
 
-def project_bill(guild_id: int, bill: dict[str, Any]) -> dict[str, Any]:
+def project_bill(
+    guild_id: int,
+    bill: dict[str, Any],
+    preferred_names: dict[int, str] | None = None,
+) -> dict[str, Any]:
     channel_id = int(bill.get("channel_id") or 0)
     message_id = int(bill.get("message_id") or 0)
+    author_id = int(bill.get("author_id") or 0)
     return {
         "id": int(bill["id"]),
         "number": int(bill.get("bill_number") or 0),
@@ -150,8 +156,12 @@ def project_bill(guild_id: int, bill: dict[str, Any]) -> dict[str, Any]:
         "materials": str(bill.get("materials") or ""),
         "implementation_plan": str(bill.get("implementation_plan") or ""),
         "leadership_actions": str(bill.get("leadership_actions") or ""),
-        "author": str(bill.get("author_display") or "Участник Товарищества"),
-        "author_id": int(bill.get("author_id") or 0),
+        "author": str(
+            (preferred_names or {}).get(author_id)
+            or bill.get("author_display")
+            or "Участник Товарищества"
+        ),
+        "author_id": author_id,
         "status": str(bill.get("status") or "draft"),
         "result_status": bill.get("result_status"),
         "overall_percent": bill.get("result_overall_percent"),
@@ -173,6 +183,10 @@ def legislation_snapshot(
 ) -> dict[str, Any]:
     workspace = workspace_storage.get_open_bill_workspace(guild_id, author_id)
     bills = bill_storage.tvrs_public_bill_catalog(guild_id, limit=limit)
+    preferred_names = profile_storage.profile_preferred_names(
+        guild_id,
+        [int(bill.get("author_id") or 0) for bill in bills],
+    )
     queued = sum(
         1
         for bill in bills
@@ -181,7 +195,7 @@ def legislation_snapshot(
     )
     return {
         "workspace": project_workspace(workspace),
-        "bills": [project_bill(guild_id, bill) for bill in bills],
+        "bills": [project_bill(guild_id, bill, preferred_names) for bill in bills],
         "next_number": bill_storage.tvrs_next_bill_number(guild_id),
         "queued": queued,
     }

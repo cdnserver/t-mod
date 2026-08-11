@@ -77,6 +77,9 @@ PROFILE_ERROR_MESSAGES = {
     "profile_contribution_invalid": "Опишите свою деятельность в 3–500 символах.",
     "profile_responsibilities_invalid": "Укажите зону ответственности или интересов в 3–700 символах.",
     "profile_membership_since_invalid": "Укажите дату вступления в формате ГГГГ-ММ-ДД.",
+    "profile_preferred_name_invalid": "Укажите, как к вам обращаться: от 2 до 24 символов без знака |.",
+    "profile_character_full_name_required": "Укажите имя и фамилию персонажа через пробел.",
+    "profile_discord_nickname_too_long": "Итоговый ник Discord длиннее 32 символов. Сократите фамилию или имя для обращения.",
     "profile_quiet_hours_invalid": (
         "Проверьте время тихих часов: используйте ЧЧ:ММ, начало и конец должны отличаться."
     ),
@@ -1095,15 +1098,23 @@ async def _edit_tmod_account(
     guild_id: int,
     requester_id: int,
 ) -> None:
-    characters, credential = await asyncio.gather(
+    characters, credential, profile = await asyncio.gather(
         asyncio.to_thread(storage.list_profile_characters, guild_id, requester_id),
         asyncio.to_thread(web_auth_storage.get_web_credential, guild_id, requester_id),
+        asyncio.to_thread(storage.get_member_profile, guild_id, requester_id),
     )
     guild = interaction.client.get_guild(int(guild_id))
     account_user = guild.get_member(int(requester_id)) if guild is not None else None
     await interaction.edit_original_response(
         embed=_tmod_account_embed(account_user or interaction.user, characters, credential),
-        view=TModAccountView(guild_id, requester_id, characters, credential),
+        view=TModAccountView(
+            guild_id,
+            requester_id,
+            characters,
+            credential,
+            fellowship_member=isinstance(account_user, discord.Member),
+            onboarding_required=bool(getattr(profile, "directory_required", False)),
+        ),
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -1327,6 +1338,9 @@ class TModAccountView(ProfileBaseView):
         requester_id: int,
         characters: list[Any],
         credential: Any | None,
+        *,
+        fellowship_member: bool = False,
+        onboarding_required: bool = False,
     ) -> None:
         super().__init__(requester_id)
         self.guild_id = int(guild_id)
@@ -1335,6 +1349,26 @@ class TModAccountView(ProfileBaseView):
         self.add_character.disabled = len(characters) >= storage.PROFILE_MAX_CHARACTERS
         self.manage_characters.disabled = not bool(characters)
         self.web_access.disabled = not bool(characters)
+        if fellowship_member:
+            from modules.consensus_web import consensus_web_entry_url
+
+            self.add_item(
+                discord.ui.Button(
+                    label=(
+                        "Пройти веб-онбординг"
+                        if onboarding_required
+                        else "Открыть Реактор"
+                    ),
+                    emoji="⚛️",
+                    style=discord.ButtonStyle.link,
+                    url=consensus_web_entry_url(
+                        guild_id=self.guild_id,
+                        user_id=self.requester_id,
+                        destination="/reactor",
+                    ),
+                    row=1,
+                )
+            )
 
     @discord.ui.button(label="Добавить персонажа", emoji="＋", style=discord.ButtonStyle.primary)
     async def add_character(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -2265,22 +2299,42 @@ def setup_profile(
         onboarding = discord.Embed(
             title="Добро пожаловать в Товарищество",
             description=(
-                "Ваш профиль стал частью общего справочника участников. "
-                "Откройте `/account`, нажмите **«О себе»** и заполните единую карточку: "
-                "кто вы, чем занимаетесь, как давно состоите и ваша зона ответственности."
+                "Для вас открыт персональный веб-онбординг. Он создаст первый "
+                "профиль персонажа, зафиксирует ваше имя для общения и соберёт "
+                "карточку **«Мой мандат»** в Реакторе."
             ),
             color=PROFILE_COLOR,
         )
         onboarding.add_field(
             name="Обязательно для новых участников",
             value=(
-                "После сохранения требование будет выполнено автоматически. "
-                "Видимость карточки можно отдельно настроить в разделе приватности."
+                "Первый персонаж обязателен. После завершения T-Mod установит ник "
+                "в формате `S. Goodman | 263345 | Иван`. Для администраторов "
+                "автоматическая смена ника отключена."
             ),
             inline=False,
         )
+        onboarding.set_footer(
+            text="Если ссылка устареет, откройте /account и нажмите «Пройти веб-онбординг»."
+        )
         try:
-            await after.send(embed=onboarding)
+            from modules.consensus_web import consensus_web_entry_url
+
+            onboarding_url = consensus_web_entry_url(
+                guild_id=after.guild.id,
+                user_id=after.id,
+                destination="/reactor",
+            )
+            view = discord.ui.View(timeout=None)
+            view.add_item(
+                discord.ui.Button(
+                    label="Пройти онбординг",
+                    style=discord.ButtonStyle.link,
+                    url=onboarding_url,
+                    emoji="⚛️",
+                )
+            )
+            await after.send(embed=onboarding, view=view)
         except discord.DiscordException as exc:
             await log_technical_event(
                 bot,

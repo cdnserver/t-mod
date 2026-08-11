@@ -1003,6 +1003,46 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_member_reactor_completes_required_web_onboarding(self) -> None:
+        principal = self._principal(user_id=42)
+        storage.require_member_directory(77, 42, prompted=True)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                before = await client.get("/api/reactor/home")
+                completed = await client.post(
+                    "/api/reactor/onboarding",
+                    json={
+                        "action": "complete",
+                        "preferred_name": "Иван",
+                        "character_nickname": "Saul Goodman",
+                        "character_static": "263345",
+                        "biography": "Участник Товарищества",
+                        "contribution": "Работаю с правовыми проектами",
+                        "responsibilities": "Законодательство и заседания",
+                        "membership_since": "2026-08-11",
+                    },
+                    headers={"X-CSRF-Token": principal.csrf_token},
+                )
+                after = await client.get("/api/reactor/home?fresh=1")
+
+            self.assertTrue((await before.json())["onboarding"]["required"])
+            self.assertEqual(completed.status, 200)
+            payload = await completed.json()
+            self.assertEqual(payload["profile"]["preferred_name"], "Иван")
+            self.assertEqual(payload["characters"][0]["static_id"], "263345")
+            self.assertTrue(payload["nickname"]["exempt"])
+            refreshed = await after.json()
+            self.assertFalse(refreshed["onboarding"]["required"])
+            self.assertEqual(refreshed["mandate"]["preferred_name"], "Иван")
+        finally:
+            await client.close()
+
     async def test_persistent_login_uses_profile_credential_and_admin_role(
         self,
     ) -> None:

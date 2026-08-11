@@ -84,9 +84,11 @@ class MemberProfile:
     contribution: str | None
     responsibilities: str | None
     membership_since: str | None
+    preferred_name: str | None
     directory_completed_at: str | None
     directory_required: bool
     onboarding_prompted_at: str | None
+    onboarding_completed_at: str | None
     created_at: str
     updated_at: str
 
