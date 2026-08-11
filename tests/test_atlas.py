@@ -16,11 +16,13 @@ from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
     _atlas_corpus_abbreviations,
+    _atlas_pinpoint_labels,
     _atlas_query_variants,
     _atlas_task_profile,
     _bounded_dialog_messages,
     _cross_chat_context,
     _chunks,
+    _recent_user_dialog_context,
     atlas_ai_config,
     atlas_answer,
     atlas_answer_stream,
@@ -581,6 +583,53 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "legal_analysis")
         self.assertEqual(profile.depth, "quick")
+
+    def test_contextual_drafting_reuses_the_described_situation(self) -> None:
+        profile = _atlas_task_profile(
+            "На основе уже описанной ситуации составь жалобу",
+            mode="balanced",
+            dialog_messages=[
+                {"role": "user", "content": "Меня задержали без представления сотрудника"},
+                {"role": "assistant", "content": "Проверяю процедуру"},
+            ],
+        )
+
+        self.assertTrue(profile.is_followup)
+        self.assertEqual(profile.intent, "drafting")
+        self.assertIn("задержали без представления", profile.retrieval_query)
+
+    def test_research_context_keeps_two_latest_user_corrections(self) -> None:
+        context = _recent_user_dialog_context(
+            [
+                {"role": "user", "content": "Старая не относящаяся тема"},
+                {"role": "assistant", "content": "Старый ответ"},
+                {"role": "user", "content": "Сотрудник не представился"},
+                {"role": "assistant", "content": "Первичный анализ"},
+                {"role": "user", "content": "Но ордер выдала прокуратура"},
+            ]
+        )
+
+        self.assertNotIn("Старая", context)
+        self.assertIn("не представился", context)
+        self.assertIn("ордер выдала прокуратура", context)
+
+    def test_pinpoint_labels_are_conservative_and_support_exact_references(self) -> None:
+        self.assertEqual(
+            _atlas_pinpoint_labels({"reference": "chapter:16", "text": "16.1 Текст"}),
+            ["глава 16"],
+        )
+        self.assertEqual(
+            _atlas_pinpoint_labels(
+                {
+                    "text": (
+                        "2.6 Порядок начала задержания.\n"
+                        "Описание нормы.\n"
+                        "2.11 Право задержанного на защиту."
+                    )
+                }
+            ),
+            ["статья 2.6", "статья 2.11"],
+        )
 
     def test_cross_chat_memory_does_not_reuse_unrated_model_claims(self) -> None:
         context = _cross_chat_context(

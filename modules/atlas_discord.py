@@ -66,7 +66,16 @@ async def _send_answer(channel: discord.abc.Messageable, result: dict) -> None:
             for item in citations[:8]:
                 title = discord.utils.escape_markdown(str(item.get("title") or "Источник"))[:100]
                 url = str(item.get("url") or "").strip()
-                source_lines.append(f"[{item.get('index', '•')}] [{title}]({url})" if url else f"[{item.get('index', '•')}] {title}")
+                pinpoints = ", ".join(
+                    discord.utils.escape_markdown(str(value))
+                    for value in list(item.get("pinpoints") or [])[:4]
+                )
+                label = f"{title} · {pinpoints}" if pinpoints else title
+                source_lines.append(
+                    f"[{item.get('index', '•')}] [{label}]({url})"
+                    if url
+                    else f"[{item.get('index', '•')}] {label}"
+                )
             embed.add_field(name="Источники", value="\n".join(source_lines)[:1024], inline=False)
         embed.set_footer(text=f"atlas-tvr-a · {int(result.get('latency_ms') or 0)} мс")
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())

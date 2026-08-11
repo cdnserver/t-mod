@@ -773,6 +773,56 @@ def _atlas_structured_legal_candidates(
     return candidates
 
 
+def _atlas_pinpoint_labels(item: dict[str, Any]) -> list[str]:
+    """Extract conservative, user-visible anchors from a retrieved legal fragment."""
+
+    reference = str(item.get("reference") or "").strip()
+    if reference:
+        kind, _, value = reference.partition(":")
+        label = {
+            "article": "статья",
+            "chapter": "глава",
+            "section": "раздел",
+        }.get(kind, kind)
+        return [f"{label} {value}".strip()]
+    text = str(item.get("text") or "")
+    labels: list[str] = []
+    patterns = (
+        (
+            "статья",
+            re.compile(
+                r"(?im)^[^\S\r\n]*(?:стать(?:я|и)[^\S\r\n]+)?"
+                r"(\d+(?:\.\d+){1,3})(?!\.\d)(?=[.\s:()—-]|$)"
+            ),
+        ),
+        (
+            "глава",
+            re.compile(
+                r"(?im)^[^\S\r\n]*глава[^\S\r\n]+"
+                r"(?:№[^\S\r\n]*)?(\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+            ),
+        ),
+        (
+            "раздел",
+            re.compile(
+                r"(?im)^[^\S\r\n]*раздел[^\S\r\n]+"
+                r"(?:№[^\S\r\n]*)?(\d{1,3}|[ivxlcdm]{1,8})(?=[.\s:—-]|$)"
+            ),
+        ),
+    )
+    seen: set[str] = set()
+    for label, pattern in patterns:
+        for match in pattern.finditer(text):
+            value = f"{label} {match.group(1)}"
+            if value.casefold() in seen:
+                continue
+            labels.append(value)
+            seen.add(value.casefold())
+            if len(labels) >= 8:
+                return labels
+    return labels
+
+
 def _atlas_merge_source_fragments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Expose one citation per document while retaining its useful fragments."""
 
@@ -811,6 +861,7 @@ def _atlas_merge_source_fragments(items: list[dict[str, Any]]) -> list[dict[str,
         selected["score"] = max(float(item.get("score") or 0) for item in fragments)
         selected["structured"] = bool(structured)
         selected["fragment_count"] = len(texts)
+        selected["pinpoints"] = _atlas_pinpoint_labels(selected)
         merged.append(selected)
     if any(item.get("structured") for item in merged):
         exact = [item for item in merged if item.get("structured")]
@@ -1099,6 +1150,8 @@ _ATLAS_EXACT_LOOKUP_RE = re.compile(
 _ATLAS_FOLLOWUP_RE = re.compile(
     r"^(?:(?:а|и)\s+(?:если|тогда|теперь|ещ[её]|что|как|почему)\s+|"
     r"но\s+|тогда\s+|теперь\s+|ещ[её]\s+|"
+    r"на\s+основе\s+(?:этого|сказанного|описанного|уже\s+описанн\w+)|"
+    r"с\s+уч[её]том\s+(?:этого|сказанного|описанного|уточнени\w+)|"
     r"продолж(?:и|айте)|уточн(?:и|ите)|передел(?:ай|айте)|"
     r"сделай\s+(?:так|его|е[её])|как\s+насч[её]т)\b|"
     r"\b(?:это|этого|этому|этим|там|выше|предыдущ(?:ий|его|ем)|"
@@ -1142,6 +1195,20 @@ def _last_dialog_message(
         ),
         "",
     )
+
+
+def _recent_user_dialog_context(
+    messages: list[dict[str, str]],
+    *,
+    limit: int = 2,
+    max_chars: int = 5200,
+) -> str:
+    selected = [
+        str(item.get("content") or "").strip()
+        for item in messages
+        if item.get("role") == "user" and str(item.get("content") or "").strip()
+    ][-max(1, int(limit)) :]
+    return "\n\n".join(selected)[-max_chars:]
 
 
 def _atlas_task_profile(
@@ -1796,7 +1863,7 @@ async def _prepare_atlas_answer(
         mode=mode,
         dialog_messages=dialog_messages,
     )
-    recent_user_context = _last_dialog_message(dialog_messages, "user")
+    recent_user_context = _recent_user_dialog_context(dialog_messages)
     intelligence_brief: _AtlasIntelligenceBrief | None = None
     if _should_build_intelligence_brief(
         task_profile,
@@ -1853,13 +1920,18 @@ async def _prepare_atlas_answer(
         query_variants=research_queries,
     )
     sources = _atlas_merge_source_fragments(sources)
-    context = "\n\n".join(
-        (
+    context_parts: list[str] = []
+    for index, item in enumerate(sources, 1):
+        pinpoint_text = ", ".join(str(value) for value in item.get("pinpoints") or [])
+        pinpoint_suffix = f" | Опорные места: {pinpoint_text}" if pinpoint_text else ""
+        context_parts.append(
             f"[Источник {index} | {str(item.get('knowledge_domain') or 'mixed').upper()} | "
-            f"{str(item.get('corpus_kind') or 'other')} | {item['title']}]\n{item['text']}"
+            f"{str(item.get('corpus_kind') or 'other')} | {item['title']}{pinpoint_suffix}]\n"
+            f"{item['text']}"
         )
-        for index, item in enumerate(sources, 1)
-    ) or "Подходящих подтверждённых источников для этого запроса не найдено."
+    context = "\n\n".join(context_parts) or (
+        "Подходящих подтверждённых источников для этого запроса не найдено."
+    )
     agent_reports: list[dict[str, str]] = []
     if research_plan:
         taxonomy_counts: dict[str, int] = {}
@@ -1924,6 +1996,10 @@ async def _prepare_atlas_answer(
                 "Отвечай по-русски и сохраняй контекст диалога. Разделяй подтверждённые факты, "
                 "выводы и творческую работу. Правила, даты, полномочия, наказания и иные проверяемые "
                 "факты можно утверждать только по источникам и нужно отмечать ссылками [1], [2]. "
+                "Делай ссылки точечными: если в заголовке источника указано опорное место, ссылайся "
+                "в формате [1, статья 2.6] или [2, глава 16]; не придумывай номер пункта, которого нет "
+                "в предоставленном фрагменте. Каждое важное правовое заключение должно иметь собственную "
+                "ссылку рядом с ним, а не одну общую ссылку в конце ответа. "
                 "Не переноси названия, сокращения и структуру кодексов из российского или иного "
                 "реального права в Majestic RP. Используй только фактические названия документов "
                 "из библиотеки Atlas; если введённого пользователем кодекса там нет, прямо уточни "
@@ -1938,6 +2014,10 @@ async def _prepare_atlas_answer(
                 "Отвечай сразу по существу: не повторяй обращение, имя, должность или приветствие в "
                 "каждом сообщении, если пользователь не попросил составить официальный текст. "
                 "Учитывай уточнения из текущего диалога и не проси заново контекст, который уже дан. "
+                "Если новые обстоятельства меняют прежний вывод, прямо отзови или сузь устаревшую часть, "
+                "сохрани остальное и ответь только в запрошенном объёме. При разборе ситуации сначала проверь "
+                "основание, затем процедуру, исключения и доступные действия; неизвестные обстоятельства не "
+                "додумывай, а перечисли только те, которые действительно могут изменить итог. "
                 "Не копируй одну и ту же композицию ответа из сообщения в сообщение. Заголовки, списки, "
                 "таблицы и блоки «вывод/основания/шаги» используй только когда они действительно делают "
                 "этот конкретный ответ понятнее. Не добавляй дежурное предложение помощи в конце. "
@@ -2053,7 +2133,14 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         if step.get("id") == "synthesis":
             step["status"] = "complete"
     citations = [
-        {"index": index, "source_id": item["source_id"], "title": item["title"], "url": item["url"], "score": item["score"]}
+        {
+            "index": index,
+            "source_id": item["source_id"],
+            "title": item["title"],
+            "url": item["url"],
+            "score": item["score"],
+            "pinpoints": list(item.get("pinpoints") or []),
+        }
         for index, item in enumerate(prepared.sources, 1)
     ]
     return {

@@ -703,7 +703,11 @@ function appendCitations(copy, citations = []) {
   if (citations.length) {
     const list = element("div", "citation-list");
     citations.forEach((citation) => {
-      const node = citation.url ? element("a", "", `[${citation.index}] ${citation.title}`) : element("span", "", `[${citation.index}] ${citation.title}`);
+      const pinpoints = Array.isArray(citation.pinpoints) && citation.pinpoints.length
+        ? ` · ${citation.pinpoints.slice(0, 4).join(", ")}`
+        : "";
+      const label = `[${citation.index}] ${citation.title}${pinpoints}`;
+      const node = citation.url ? element("a", "", label) : element("span", "", label);
       if (citation.url) {
         node.href = citation.url;
         node.target = "_blank";
