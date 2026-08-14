@@ -15,9 +15,9 @@
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/style.css?v=12">
     <link rel="stylesheet" href="/assets/chamber.css">
-    <link rel="stylesheet" href="/assets/consensus-v4.css?v=11">
+    <link rel="stylesheet" href="/assets/consensus-v4.css?v=12">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/app.js?v=12" defer></script>
+    <script src="/assets/app.js?v=13" defer></script>
   </head>
   <body>
     <div id="atmosphere" class="atmosphere" aria-hidden="true">
@@ -389,6 +389,32 @@
             </aside>
           </div>
 
+          <section id="ballot-discussion" class="ballot-discussion" aria-label="Дискуссия по законопроекту" hidden>
+            <header>
+              <div>
+                <span>ДИСКУССИЯ</span>
+                <h2 id="ballot-discussion-title">Обсуждение проекта</h2>
+                <p id="ballot-discussion-detail">Если проект требует обсуждения, направьте запрос ведущему.</p>
+              </div>
+              <a id="ballot-discussion-channel" href="#" target="_blank" rel="noreferrer" hidden>Открыть канал ↗</a>
+            </header>
+            <div class="ballot-discussion-actions">
+              <button id="ballot-request-discussion" type="button" class="ballot-discussion-request" hidden>
+                <span aria-hidden="true">✦</span>
+                <strong>Запросить дискуссию</strong>
+                <small>Воут остановится, ведущий выберет формат обсуждения</small>
+              </button>
+              <div id="ballot-discussion-composer" class="ballot-discussion-composer" hidden>
+                <label for="ballot-discussion-message">Ваше выступление</label>
+                <textarea id="ballot-discussion-message" maxlength="1800" placeholder="Сформулируйте позицию, довод или вопрос по существу законопроекта…"></textarea>
+                <footer>
+                  <span><b id="ballot-discussion-count">0</b> / 1800 · сообщение будет подписано вашим именем</span>
+                  <button id="ballot-discussion-send" type="button">Опубликовать в Discord</button>
+                </footer>
+              </div>
+            </div>
+          </section>
+
           <section id="post-session-monitor" class="post-session-monitor" hidden>
             <header>
               <div><span>ПОСЛЕ ЗАСЕДАНИЯ</span><h2 id="post-session-title">Итоговый монитор</h2></div>
@@ -707,6 +733,22 @@
         <div class="vote-confirm-actions">
           <button id="vote-confirm-cancel" type="button" class="subtle-button">Вернуться</button>
           <button id="vote-confirm-submit" type="button" class="vote-confirm-submit">Подтвердить голос</button>
+        </div>
+      </article>
+    </dialog>
+
+    <dialog id="discussion-request-dialog" class="vote-confirm-dialog discussion-request-dialog" aria-labelledby="discussion-request-title">
+      <article>
+        <div class="vote-confirm-mark" aria-hidden="true">✦</div>
+        <div class="eyebrow">ПРОЦЕДУРНОЕ ДЕЙСТВИЕ</div>
+        <h2 id="discussion-request-title">Запросить дискуссию?</h2>
+        <p>
+          Текущий воут будет приостановлен. Ведущий выберет формат, после чего
+          здесь появится поле для выступлений и ссылка на канал обсуждения.
+        </p>
+        <div class="vote-confirm-actions">
+          <button id="discussion-request-cancel" type="button" class="subtle-button">Вернуться</button>
+          <button id="discussion-request-submit" type="button" class="vote-confirm-submit">Направить запрос</button>
         </div>
       </article>
     </dialog>

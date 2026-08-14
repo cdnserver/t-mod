@@ -75,6 +75,57 @@ class ConsensusArtifactTests(unittest.TestCase):
             with Image.open(artifacts["cards"][0]) as card:
                 self.assertEqual(card.size, (1600, 900))
 
+    def test_large_named_vote_table_splits_across_pdf_pages(self) -> None:
+        participants = {
+            user_id: LiveParticipant(
+                user_id=user_id,
+                display_name=f"Сенатор с длинным именем {user_id:02d}",
+                mention=f"<@{user_id}>",
+                kind="senator",
+                confirmed=True,
+            )
+            for user_id in range(100, 170)
+        }
+        result = LiveResult(
+            bill_id=91,
+            bill_number=91,
+            title="О проверке устойчивости итогового протокола",
+            status="accepted",
+            internal_percent=75.0,
+            overall_percent=75.0,
+            internal_active=True,
+            votes={user_id: "yes" for user_id in participants},
+            required_percent=50.0,
+            opposed_percent=0.0,
+        )
+        session = LiveConsensusSession(
+            session_key="artifact-large-vote-table",
+            guild_id=77,
+            channel_id=88,
+            leader_id=1,
+            leader_display="Ведущий Тестовый",
+            plenary_number=14,
+            participants=participants,
+            results=[result],
+            stage="finished",
+            finished=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"CONSENSUS_ARTIFACTS_DIR": temp_dir},
+        ), patch(
+            "modules.consensus_artifacts.storage.tvrs_get_bill_dict_by_id",
+            return_value={
+                "author_display": "Автор Тестовый",
+                "summary": "Проверка многостраничного именного протокола.",
+                "materials": "",
+            },
+        ):
+            artifacts = ensure_session_artifacts(session, force=True)
+            self.assertTrue(Path(artifacts["pdf"]).is_file())
+            self.assertGreater(Path(artifacts["pdf"]).stat().st_size, 10_000)
+
 
 if __name__ == "__main__":
     unittest.main()

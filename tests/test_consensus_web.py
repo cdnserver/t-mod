@@ -46,6 +46,7 @@ from modules.consensus_web_control import (
     consensus_web_capabilities,
     execute_consensus_web_command,
 )
+from modules.tvrs_discussion import publish_discussion_message
 
 
 def _participant(user_id: int, block: str | None = None) -> LiveParticipant:
@@ -277,7 +278,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state["viewer"]["ballot_available"])
         self.assertTrue(state["viewer"]["can_vote"])
         self.assertEqual(state["viewer"]["vote"], "no")
-        self.assertEqual(state["capabilities"], ["participant_vote"])
+        self.assertEqual(
+            state["capabilities"],
+            ["participant_vote", "request_discussion"],
+        )
         self.assertNotIn("'vote':", str(state["session"]["participants"]))
 
     async def test_scheduled_ballot_stays_locked_until_final_window(self) -> None:
@@ -339,7 +343,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(state["viewer"]["ballot_available"])
         self.assertTrue(state["viewer"]["can_vote"])
-        self.assertEqual(state["capabilities"], ["participant_vote"])
+        self.assertEqual(
+            state["capabilities"],
+            ["participant_vote", "request_discussion"],
+        )
 
     async def test_nonmember_remains_broadcast_only(self) -> None:
         state = await build_consensus_web_state(  # type: ignore[arg-type]
@@ -399,7 +406,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 session=self.session,
                 principal=observer,
             ),
-            ["participant_vote"],
+            ["participant_vote", "request_discussion"],
         )
 
     async def test_participant_vote_uses_shared_coordinator_without_revision_conflict(self) -> None:
@@ -437,6 +444,88 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message, "Ваш голос принят и синхронизирован с Discord.")
         self.assertEqual(self.session.votes[4], "yes")
         mutation.assert_called_once()
+
+    async def test_senator_can_request_discussion_from_web_ballot(self) -> None:
+        principal = self._principal(user_id=4)
+        with patch(
+            "modules.consensus_web_control.request_discussion",
+            new=AsyncMock(),
+        ) as request:
+            message = await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                self.bot.get_guild(77),
+                principal,
+                mode="live",
+                action="request_discussion",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={},
+            )
+
+        self.assertIn("Запрос дискуссии принят", message)
+        request.assert_awaited_once()
+
+    async def test_web_discussion_message_is_attributed_in_discord(self) -> None:
+        self.session.stage = "discussion"
+        self.session.discussion_channel_id = 555
+        self.session.discussion_allowed_user_ids = {4}
+        sent = SimpleNamespace(id=987)
+        channel = SimpleNamespace(send=AsyncMock(return_value=sent))
+        bot = SimpleNamespace(
+            get_channel=lambda channel_id: channel if channel_id == 555 else None,
+        )
+
+        message_id = await publish_discussion_message(  # type: ignore[arg-type]
+            bot,
+            self.session,
+            self.session.participants[4],
+            "Моя позиция по существу законопроекта.",
+            expected_bill_id=self.bill.id,
+        )
+
+        self.assertEqual(message_id, 987)
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(
+            kwargs["embed"].description,
+            "Моя позиция по существу законопроекта.",
+        )
+        self.assertIn("Участник 4", kwargs["embed"].author.name)
+        self.assertIn("через веб-панель", kwargs["embed"].footer.text)
+        self.assertFalse(kwargs["allowed_mentions"].everyone)
+
+    async def test_web_discussion_composer_uses_current_allowed_roster(self) -> None:
+        self.session.stage = "discussion"
+        self.session.discussion_channel_id = 555
+        self.session.discussion_allowed_user_ids = {4}
+        principal = self._principal(user_id=4)
+        self.assertEqual(
+            consensus_web_capabilities(
+                mode="live",
+                session=self.session,
+                principal=principal,
+            ),
+            ["post_discussion_message"],
+        )
+        publish = AsyncMock(return_value=987)
+        with patch(
+            "modules.consensus_web_control.publish_discussion_message",
+            new=publish,
+        ):
+            response = await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                self.bot.get_guild(77),
+                principal,
+                mode="live",
+                action="post_discussion_message",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={"content": "Аргумент из веб-панели"},
+            )
+
+        self.assertIn("опубликовано", response)
+        publish.assert_awaited_once()
 
     async def test_last_web_vote_runs_normal_vote_finalization(self) -> None:
         principal = self._principal(user_id=4)
@@ -712,6 +801,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="ballot-choices"', index_text)
             self.assertIn('id="ballot-sound-toggle"', index_text)
             self.assertIn('id="ballot-deadline"', index_text)
+            self.assertIn('id="ballot-discussion"', index_text)
+            self.assertIn('id="ballot-request-discussion"', index_text)
+            self.assertIn('id="ballot-discussion-message"', index_text)
             self.assertIn('id="observer-schedule"', index_text)
             self.assertIn('/assets/chamber.css', index_text)
             self.assertIn('id="vote-confirm-dialog"', index_text)
@@ -753,6 +845,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("requestedBillId", script_text)
             self.assertIn('"participant_vote"', script_text)
             self.assertIn("renderBallot", script_text)
+            self.assertIn("renderBallotDiscussion", script_text)
+            self.assertIn('"post_discussion_message"', script_text)
             self.assertIn("maybePlayConsensusCue", script_text)
             self.assertNotIn("innerHTML", script_text)
             self.assertIn('id="copy-bill-link"', index_text)
@@ -769,6 +863,12 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("ambientDriftPrimary", stylesheet_text)
             self.assertIn("@media (hover: hover)", stylesheet_text)
+            discussion_stylesheet = await client.get("/assets/consensus-v4.css")
+            self.assertEqual(discussion_stylesheet.status, 200)
+            self.assertIn(
+                ".ballot-discussion-composer",
+                await discussion_stylesheet.text(),
+            )
             self.assertIn("color-scheme: dark", stylesheet_text)
             self.assertIn("background-color: #080b0c", stylesheet_text)
             self.assertIn("min-height: 100dvh", stylesheet_text)
@@ -2388,7 +2488,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 session=simulation.session,
                 principal=principal,
             ),
-            ["participant_vote"],
+            ["participant_vote", "request_discussion"],
         )
         state = await build_consensus_web_state(  # type: ignore[arg-type]
             self.bot,

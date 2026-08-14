@@ -1537,6 +1537,49 @@ function renderPostSessionMonitor(session) {
   });
 }
 
+function renderBallotDiscussion(data, session) {
+  const capabilities = new Set(data.capabilities || []);
+  const stage = String(session?.stage || "");
+  const canRequest = capabilities.has("request_discussion");
+  const canPost = capabilities.has("post_discussion_message");
+  const discussionActive = ["discussion_type", "discussion"].includes(stage);
+  const panel = byId("ballot-discussion");
+  panel.hidden = !(canRequest || canPost || discussionActive);
+  if (panel.hidden) return;
+
+  const request = byId("ballot-request-discussion");
+  const composer = byId("ballot-discussion-composer");
+  const channel = byId("ballot-discussion-channel");
+  request.hidden = !canRequest;
+  request.disabled = commanding;
+  composer.hidden = !canPost;
+  const channelUrl = stage === "discussion" ? session?.discussion?.channel_url : "";
+  channel.hidden = !channelUrl;
+  if (channelUrl) channel.href = channelUrl;
+
+  if (stage === "discussion_type") {
+    text("ballot-discussion-title", "Запрос принят");
+    text("ballot-discussion-detail", "Воут приостановлен. Ведущий выбирает формат и открывает пространство обсуждения.");
+  } else if (stage === "discussion") {
+    text("ballot-discussion-title", `${session.discussion?.type || "Открытая"} дискуссия`);
+    text(
+      "ballot-discussion-detail",
+      canPost
+        ? "Пишите здесь: T-Mod опубликует выступление в Discord с вашим именем и ролью."
+        : "Дискуссия проходит в отдельном канале Discord.",
+    );
+  } else {
+    text("ballot-discussion-title", "Нужно обсудить проект?");
+    text("ballot-discussion-detail", "Запрос приостановит воут, после чего ведущий выберет правовой, фактический или процедурный формат.");
+  }
+
+  const message = byId("ballot-discussion-message");
+  const cleanLength = message.value.trim().length;
+  text("ballot-discussion-count", cleanLength);
+  message.disabled = !canPost || commanding;
+  byId("ballot-discussion-send").disabled = !canPost || commanding || cleanLength === 0;
+}
+
 function renderBallot(data) {
   const viewer = data.viewer || {};
   const postSession = Boolean(viewer.post_session && data.last_session);
@@ -1683,6 +1726,7 @@ function renderBallot(data) {
     receipt.classList.toggle("recorded", Boolean(vote));
   }
   renderedBallotVote = vote;
+  renderBallotDiscussion(data, session);
 }
 
 function openVoteConfirmation(vote) {
@@ -1756,7 +1800,9 @@ function renderControls(data) {
   const panel = byId("operator-panel");
   const container = byId("operator-controls");
   const capabilities = new Set(
-    (data.capabilities || []).filter((action) => action !== "participant_vote"),
+    (data.capabilities || []).filter(
+      (action) => !["participant_vote", "request_discussion", "post_discussion_message"].includes(action),
+    ),
   );
   const viewer = data.viewer || {};
   const session = data.session;
@@ -1962,7 +2008,7 @@ function render(data) {
   renderSchedule(data);
   const experience = renderExperience(data);
   const privilegedControls = (data.capabilities || []).some(
-    (action) => action !== "participant_vote",
+    (action) => !["participant_vote", "request_discussion", "post_discussion_message"].includes(action),
   );
   const legacyOperatorMode = selectedMode === "simulation" && privilegedControls;
   const broadcastMode = !experience.ballotMode && !legacyOperatorMode;
@@ -2219,7 +2265,7 @@ async function fetchFreshState() {
 }
 
 async function sendCommand(action, payload = {}) {
-  if (!state?.viewer?.authenticated || commanding) return;
+  if (!state?.viewer?.authenticated || commanding) return false;
   commanding = true;
   renderControls(state);
   setConnection("", "выполняется");
@@ -2249,26 +2295,28 @@ async function sendCommand(action, payload = {}) {
     const result = await response.json();
     if (!response.ok) {
       showCommandMessage(result.message || "Команда не выполнена.", "error");
-      if (["participant_vote", "leader_vote"].includes(action)) {
+      if (["participant_vote", "leader_vote", "request_discussion", "post_discussion_message"].includes(action)) {
         showBallotNotice(result.message || "Голос не принят. Бюллетень обновляется.", "error");
       }
       if (response.status === 401 || response.status === 403) await fetchState();
       else setTimeout(fetchState, 150);
-      return;
+      return false;
     }
     render(result.state);
     showCommandMessage(result.message || "Команда выполнена.");
-    if (["participant_vote", "leader_vote"].includes(action)) {
+    if (["participant_vote", "leader_vote", "request_discussion", "post_discussion_message"].includes(action)) {
       showBallotNotice(result.message || "Голос принят.");
     }
     setConnection("online", "обновляется");
+    return true;
   } catch (error) {
     showCommandMessage("Связь прервалась. Состояние будет проверено автоматически.", "error");
     setConnection("offline", "проверка состояния");
-    if (["participant_vote", "leader_vote"].includes(action)) {
+    if (["participant_vote", "leader_vote", "request_discussion", "post_discussion_message"].includes(action)) {
       showBallotNotice("Связь прервалась. Не повторяйте выбор — T-Mod проверит запись автоматически.", "error");
     }
     setTimeout(fetchState, 500);
+    return false;
   } finally {
     commanding = false;
     if (state) {
@@ -2314,6 +2362,39 @@ byId("vote-confirm-submit").addEventListener("click", async () => {
 });
 byId("vote-confirm-dialog").addEventListener("click", (event) => {
   if (event.target === byId("vote-confirm-dialog")) closeVoteConfirmation();
+});
+
+function closeDiscussionRequest() {
+  const dialog = byId("discussion-request-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+byId("ballot-request-discussion").addEventListener("click", () => {
+  const dialog = byId("discussion-request-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+});
+byId("discussion-request-cancel").addEventListener("click", closeDiscussionRequest);
+byId("discussion-request-submit").addEventListener("click", async () => {
+  closeDiscussionRequest();
+  await sendCommand("request_discussion");
+});
+byId("discussion-request-dialog").addEventListener("click", (event) => {
+  if (event.target === byId("discussion-request-dialog")) closeDiscussionRequest();
+});
+byId("ballot-discussion-message").addEventListener("input", () => {
+  if (state) renderBallotDiscussion(state, state.session);
+});
+byId("ballot-discussion-send").addEventListener("click", async () => {
+  const field = byId("ballot-discussion-message");
+  const content = field.value.trim();
+  if (!content) return;
+  const sent = await sendCommand("post_discussion_message", { content });
+  if (sent) {
+    field.value = "";
+    if (state) renderBallotDiscussion(state, state.session);
+  }
 });
 
 byId("ballot-sound-toggle").addEventListener("click", () => {

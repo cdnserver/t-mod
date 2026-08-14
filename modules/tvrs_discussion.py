@@ -437,6 +437,77 @@ async def forward_discussion_message(bot: commands.Bot, message: discord.Message
     return False
 
 
+async def publish_discussion_message(
+    bot: commands.Bot | discord.Client,
+    session: LiveConsensusSession,
+    participant: LiveParticipant,
+    content: str,
+    *,
+    avatar_url: str | None = None,
+    expected_bill_id: int | None = None,
+) -> int:
+    """Publish an attributed senator statement submitted from the web ballot."""
+
+    # Preserve paragraphs and Discord markdown from the senator's statement.
+    # Mentions remain disabled below, so formatting cannot turn into mass pings.
+    clean_content = str(content or "").strip()
+    if not clean_content:
+        raise ConsensusStateError("Напишите текст выступления.")
+    if len(clean_content) > 1800:
+        raise ConsensusStateError("Сообщение дискуссии не должно превышать 1800 символов.")
+    if (
+        session.finished
+        or not consensus_generation_matches(
+            session,
+            stage="discussion",
+            bill_id=expected_bill_id,
+        )
+        or not session.discussion_channel_id
+    ):
+        raise ConsensusStateError("Дискуссия уже завершена или относится к другому проекту.")
+    if int(participant.user_id) not in session.discussion_allowed_user_ids:
+        raise ConsensusStateError("Вы не включены в состав этой дискуссии.")
+
+    channel = bot.get_channel(int(session.discussion_channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(session.discussion_channel_id))  # type: ignore[attr-defined]
+        except discord.DiscordException as exc:
+            raise ConsensusStateError("Канал дискуссии временно недоступен.") from exc
+    if not hasattr(channel, "send"):
+        raise ConsensusStateError("Канал дискуссии временно недоступен.")
+
+    embed = discord.Embed(
+        description=clean_content,
+        color=0x78C98D,
+        timestamp=now_local(),
+    )
+    author_name = f"{participant.display_name} · {role_label(participant)}"
+    if avatar_url:
+        embed.set_author(name=author_name, icon_url=str(avatar_url))
+    else:
+        embed.set_author(name=author_name)
+    if session.current_bill:
+        embed.add_field(
+            name="Законопроект",
+            value=format_bill_number(
+                int(session.current_bill.get("bill_number") or 0)
+            ),
+            inline=True,
+        )
+    embed.set_footer(text="Отправлено сенатором через веб-панель T-Mod Consensus")
+    try:
+        sent = await channel.send(  # type: ignore[attr-defined]
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.DiscordException as exc:
+        raise ConsensusStateError(
+            "Discord временно не принял сообщение. Текст остался в поле ввода."
+        ) from exc
+    return int(sent.id)
+
+
 async def end_discussion(
     bot: commands.Bot | discord.Client,
     guild: discord.Guild,
@@ -663,4 +734,4 @@ async def resume_session(
     await update_all_vote_dms(guild, session, content=content)
     await update_host_vote_message(bot, guild, session)
 
-__all__ = ['cancel_vote_timer', 'set_vote_timer', 'schedule_vote_timer_task', 'update_all_vote_dms', 'request_discussion', 'start_discussion_channel', 'forward_discussion_message', 'end_discussion', 'pause_session', 'session_voice_quorum_ready', 'check_realtime_quorum', 'resume_session']
+__all__ = ['cancel_vote_timer', 'set_vote_timer', 'schedule_vote_timer_task', 'update_all_vote_dms', 'request_discussion', 'start_discussion_channel', 'forward_discussion_message', 'publish_discussion_message', 'end_discussion', 'pause_session', 'session_voice_quorum_ready', 'check_realtime_quorum', 'resume_session']

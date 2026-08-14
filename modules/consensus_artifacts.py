@@ -18,7 +18,6 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -32,7 +31,7 @@ from persistence import core as persistence_core
 from persistence import tvrs_repository as storage
 
 
-_ARTIFACT_DESIGN_VERSION = 3
+_ARTIFACT_DESIGN_VERSION = 4
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
@@ -44,18 +43,6 @@ _BOLD_FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-)
-_SERIF_FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSerif-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-    "/System/Library/Fonts/Supplemental/Georgia.ttf",
-)
-_SERIF_BOLD_FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSerif-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
 )
 
 _DARK = colors.HexColor("#070A09")
@@ -73,12 +60,6 @@ def _first_existing(candidates: tuple[str, ...]) -> str:
 
 def _font_path(*, bold: bool = False) -> str:
     return _first_existing(_BOLD_FONT_CANDIDATES if bold else _FONT_CANDIDATES)
-
-
-def _serif_font_path(*, bold: bool = False) -> str:
-    return _first_existing(
-        _SERIF_BOLD_FONT_CANDIDATES if bold else _SERIF_FONT_CANDIDATES
-    )
 
 
 def _artifact_root() -> Path:
@@ -220,11 +201,10 @@ def generate_result_card(
     draw = ImageDraw.Draw(image)
     regular = _font_path()
     bold = _font_path(bold=True)
-    serif_bold = _serif_font_path(bold=True)
     label_font = ImageFont.truetype(bold, 18)
     micro_font = ImageFont.truetype(bold, 14)
     body_font = ImageFont.truetype(regular, 21)
-    title_font = ImageFont.truetype(serif_bold, 61)
+    title_font = ImageFont.truetype(bold, 57)
     metric_font = ImageFont.truetype(bold, 132)
     metric_small_font = ImageFont.truetype(bold, 42)
 
@@ -311,10 +291,9 @@ def generate_session_cover(
     draw = ImageDraw.Draw(image)
     bold = _font_path(bold=True)
     regular = _font_path()
-    serif_bold = _serif_font_path(bold=True)
     label_font = ImageFont.truetype(bold, 17)
     session_font = ImageFont.truetype(bold, 190)
-    title_font = ImageFont.truetype(serif_bold, 66)
+    title_font = ImageFont.truetype(bold, 62)
     body_font = ImageFont.truetype(regular, 23)
 
     draw.arc((815, -420, 1760, 525), 35, 205, fill=(70, 106, 80), width=2)
@@ -347,12 +326,10 @@ def generate_session_cover(
     return destination
 
 
-def _register_pdf_fonts() -> tuple[str, str, str, str]:
+def _register_pdf_fonts() -> tuple[str, str]:
     definitions = (
         ("TModSans", _font_path()),
         ("TModSansBold", _font_path(bold=True)),
-        ("TModSerif", _serif_font_path()),
-        ("TModSerifBold", _serif_font_path(bold=True)),
     )
     registered = set(pdfmetrics.getRegisteredFontNames())
     for name, path in definitions:
@@ -378,7 +355,7 @@ def generate_session_report(
     if destination.is_file() and not force:
         return destination
 
-    regular, bold, serif, serif_bold = _register_pdf_fonts()
+    regular, bold = _register_pdf_fonts()
     generated_at = datetime.now(timezone.utc)
     started_at = session.created_at.astimezone(timezone.utc)
     duration_minutes = max(
@@ -409,18 +386,18 @@ def generate_session_report(
     cover_title = ParagraphStyle(
         "CoverTitle",
         parent=styles["Title"],
-        fontName=serif_bold,
-        fontSize=29,
-        leading=34,
+        fontName=bold,
+        fontSize=28,
+        leading=32,
         textColor=colors.HexColor("#F1F3EE"),
         spaceAfter=3 * mm,
     )
     cover_subtitle = ParagraphStyle(
         "CoverSubtitle",
         parent=styles["BodyText"],
-        fontName=serif,
-        fontSize=12,
-        leading=16,
+        fontName=regular,
+        fontSize=11,
+        leading=15,
         textColor=colors.HexColor("#9EACA1"),
         spaceAfter=17 * mm,
     )
@@ -471,9 +448,9 @@ def generate_session_report(
     bill_title = ParagraphStyle(
         "BillTitle",
         parent=styles["Title"],
-        fontName=serif_bold,
-        fontSize=24,
-        leading=28,
+        fontName=bold,
+        fontSize=21,
+        leading=25,
         textColor=_INK,
         alignment=TA_LEFT,
         spaceAfter=5 * mm,
@@ -772,7 +749,7 @@ def generate_session_report(
         story.extend(
             [
                 Paragraph("ИМЕННОЙ ПРОТОКОЛ ГОЛОСОВ", section),
-                KeepTogether([votes]),
+                votes,
             ]
         )
         if index < len(session.results) - 1:
@@ -811,20 +788,6 @@ def generate_session_report(
         canvas.setStrokeColor(_HAIRLINE)
         canvas.setLineWidth(0.35)
         canvas.line(20 * mm, height - 14 * mm, width - 20 * mm, height - 14 * mm)
-        result_index = int(doc.page) - 2
-        if 0 <= result_index < len(session.results):
-            result = session.results[result_index]
-            if hasattr(canvas, "setFillAlpha"):
-                canvas.setFillAlpha(0.045)
-            canvas.setFillColor(colors.HexColor("#CFE8D4"))
-            canvas.setFont(bold, 72)
-            canvas.drawRightString(
-                width - 16 * mm,
-                height - 48 * mm,
-                f"{int(result.bill_number):03d}",
-            )
-            if hasattr(canvas, "setFillAlpha"):
-                canvas.setFillAlpha(1)
         canvas.setFont(bold, 6.5)
         canvas.setFillColor(_GREEN)
         canvas.drawString(20 * mm, height - 10.5 * mm, "T-MOD  /  CONSENSUS")

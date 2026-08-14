@@ -41,6 +41,8 @@ from modules.tvrs_delivery import build_control_dm_deliveries
 from modules.tvrs_discussion import (
     end_discussion,
     pause_session,
+    publish_discussion_message,
+    request_discussion,
     resume_session,
     session_voice_quorum_ready,
     set_vote_timer,
@@ -122,6 +124,34 @@ def _is_live_leader(
     )
 
 
+def _participant_capabilities(
+    session: LiveConsensusSession,
+    principal: ConsensusWebPrincipal,
+    *,
+    allow_discussion_post: bool = True,
+) -> list[str]:
+    participant = session.participants.get(int(principal.user_id))
+    if participant is None or not participant.confirmed:
+        return []
+    stage = str(session.stage)
+    if (
+        stage == "voting"
+        and session.current_bill is not None
+        and _web_ballot_access_open(session)
+    ):
+        capabilities = ["participant_vote"]
+        if participant.kind == "senator" and not session.discussion_initiator_id:
+            capabilities.append("request_discussion")
+        return capabilities
+    if (
+        allow_discussion_post
+        and stage == "discussion"
+        and int(principal.user_id) in session.discussion_allowed_user_ids
+    ):
+        return ["post_discussion_message"]
+    return []
+
+
 def consensus_web_capabilities(
     *,
     mode: str,
@@ -155,29 +185,15 @@ def consensus_web_capabilities(
             if simulation.has_real_roster and stage == "registration":
                 capabilities.append("resend_invitations")
             return capabilities
-        participant = session.participants.get(int(principal.user_id))
-        return (
-            ["participant_vote"]
-            if stage == "voting"
-            and participant is not None
-            and participant.confirmed
-            and session.current_bill is not None
-            and _web_ballot_access_open(session)
-            else []
+        return _participant_capabilities(
+            session,
+            principal,
+            allow_discussion_post=False,
         )
     if session is None:
         return ["open_registration"] if is_chair(principal.member) else []
     if not _is_live_leader(session, principal):
-        participant = session.participants.get(int(principal.user_id))
-        return (
-            ["participant_vote"]
-            if stage == "voting"
-            and participant is not None
-            and participant.confirmed
-            and session.current_bill is not None
-            and _web_ballot_access_open(session)
-            else []
-        )
+        return _participant_capabilities(session, principal)
     return _stage_capabilities(
         stage,
         permanent=principal.user_id == TVRS_PERMANENT_CHAIR_ID,
@@ -448,6 +464,64 @@ async def _execute_live(
                 # not turn a successful browser ballot into an HTTP failure.
                 pass
         return "Ваш голос принят и синхронизирован с Discord."
+    if action == "request_discussion":
+        _validate_ballot_generation(
+            session,
+            session_key=session_key,
+            bill_id=bill_id,
+        )
+        if action not in consensus_web_capabilities(
+            mode="live",
+            session=session,
+            principal=principal,
+        ):
+            raise ConsensusWebCommandError(
+                "discussion_forbidden",
+                "Запрос дискуссии сейчас недоступен.",
+                status=403,
+            )
+        participant = session.participants[int(principal.user_id)]
+        await request_discussion(
+            bot,
+            guild,
+            session,
+            participant,
+            expected_bill_id=consensus_bill_id(session),
+        )
+        return "Запрос дискуссии принят. Ведущий выбирает её формат."
+    if action == "post_discussion_message":
+        _validate_ballot_generation(
+            session,
+            session_key=session_key,
+            bill_id=bill_id,
+        )
+        if action not in consensus_web_capabilities(
+            mode="live",
+            session=session,
+            principal=principal,
+        ):
+            raise ConsensusWebCommandError(
+                "discussion_forbidden",
+                "Вы не включены в текущую дискуссию.",
+                status=403,
+            )
+        content = str(payload.get("content") or "").strip()
+        if not content or len(content) > 1800:
+            raise ConsensusWebCommandError(
+                "discussion_message_invalid",
+                "Напишите сообщение длиной от 1 до 1800 символов.",
+            )
+        participant = session.participants[int(principal.user_id)]
+        avatar = getattr(getattr(principal.member, "display_avatar", None), "url", None)
+        await publish_discussion_message(
+            bot,
+            session,
+            participant,
+            content,
+            avatar_url=str(avatar or "") or None,
+            expected_bill_id=consensus_bill_id(session),
+        )
+        return "Ваше выступление опубликовано в канале дискуссии."
     if not _is_live_leader(session, principal):
         raise ConsensusWebCommandError(
             "forbidden",
