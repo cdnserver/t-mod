@@ -184,6 +184,14 @@ if errorlevel 1 if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
 call :stage "13" "Status"
 docker compose ps
 
+for %%D in ("%~dp0..") do set "DESKTOP_LAUNCHER=%%~fD\Start T-Mod.bat"
+copy /y "%~dp0start_tmod_windows.bat" "%DESKTOP_LAUNCHER%" >nul 2>nul
+if errorlevel 1 (
+  call :warn "Desktop launcher could not be refreshed"
+) else (
+  call :ok "Desktop launcher refreshed: %DESKTOP_LAUNCHER%"
+)
+
 if exist "%~dp0configure_auto_update_windows.ps1" (
   powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0configure_auto_update_windows.ps1" -ProjectDir "%~dp0" -IntervalMinutes 2
   if errorlevel 1 (

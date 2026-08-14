@@ -165,6 +165,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("PRAGMA integrity_check", updater)
         self.assertIn("caddy validate", updater)
         self.assertIn("merge --ff-only", updater)
+        self.assertIn("credential.interactive=never", updater)
+        self.assertIn("http.lowSpeedTime=20", updater)
         self.assertIn("rollback-", updater)
         self.assertIn("Restore-CodeRevision", updater)
         self.assertIn('State "rolled_back"', updater)
@@ -173,6 +175,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("git reset --hard", updater)
 
     def test_git_watcher_only_runs_safe_update_for_a_new_clean_release(self) -> None:
+        desktop = (ROOT / "start_tmod_windows.bat").read_text(encoding="utf-8")
         runtime = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         desktop_installer = (ROOT / "install_desktop_launcher_windows.bat").read_text(
             encoding="utf-8"
@@ -186,6 +189,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
 
         self.assertIn("configure_auto_update_windows.ps1", runtime)
         self.assertIn("configure_auto_update_windows.ps1", desktop_installer)
+        self.assertIn("Desktop launcher refreshed", runtime)
+        self.assertIn("credential.interactive=never", desktop)
         self.assertIn("-IntervalMinutes 2", runtime)
         self.assertIn("schtasks.exe", installer)
         self.assertIn("/SC MINUTE", installer)

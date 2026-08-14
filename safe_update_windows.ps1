@@ -178,9 +178,19 @@ try {
     $OldCommit = (& git -C $ProjectDir rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Project is not a Git repository" }
 
-    Write-Host "[SAFE UPDATE] Fetching $Remote/$Branch ..."
-    & git -C $ProjectDir fetch --prune $Remote "+refs/heads/${Branch}:refs/remotes/${Remote}/${Branch}"
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host "[SAFE UPDATE] Fetching $Remote/$Branch (non-interactive, 20s stall limit) ..."
+    $previousPrompt = $env:GIT_TERMINAL_PROMPT
+    $env:GIT_TERMINAL_PROMPT = "0"
+    try {
+        & git -C $ProjectDir `
+            -c credential.interactive=never `
+            -c http.lowSpeedLimit=1 `
+            -c http.lowSpeedTime=20 `
+            fetch --prune $Remote "+refs/heads/${Branch}:refs/remotes/${Remote}/${Branch}"
+        $fetchExitCode = $LASTEXITCODE
+    }
+    finally { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
+    if ($fetchExitCode -ne 0) {
         Write-UpdateStatus -State "offline" -Message "GitHub недоступен; запущена установленная версия."
         $runtimeCode = Invoke-CurrentRuntime -Directory $ProjectDir -SkipBuild $false
         exit $runtimeCode

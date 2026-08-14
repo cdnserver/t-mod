@@ -61,6 +61,7 @@ exit /b 0
 
 :legacy_update
 echo [GIT] Checking GitHub for updates...
+set "GIT_TERMINAL_PROMPT=0"
 git -C "%PROJECT_DIR%" remote get-url origin >nul 2>nul
 if errorlevel 1 git -C "%PROJECT_DIR%" remote add origin "%REPO_URL%"
 git -C "%PROJECT_DIR%" remote set-url origin "%REPO_URL%"
@@ -69,7 +70,7 @@ if errorlevel 1 goto update_failed
 set "OLD_COMMIT=unknown"
 for /f "delims=" %%H in ('git -C "%PROJECT_DIR%" rev-parse HEAD 2^>nul') do set "OLD_COMMIT=%%H"
 
-git -C "%PROJECT_DIR%" fetch --prune origin "+refs/heads/%BRANCH%:refs/remotes/origin/%BRANCH%"
+git -C "%PROJECT_DIR%" -c credential.interactive=never -c http.lowSpeedLimit=1 -c http.lowSpeedTime=20 fetch --prune origin "+refs/heads/%BRANCH%:refs/remotes/origin/%BRANCH%"
 if errorlevel 1 goto github_unavailable
 
 git -C "%PROJECT_DIR%" status --porcelain --untracked-files=normal | findstr /r "." >nul 2>nul
