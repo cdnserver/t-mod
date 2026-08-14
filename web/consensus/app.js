@@ -1787,6 +1787,19 @@ function renderControls(data) {
   );
   text("operator-lock", `доступ: ${viewer.name || "ведущий"}`);
 
+  const scriptGroup = controlGroup(
+    "Живой сценарий",
+    "Реплики, следующий шаг и вся повестка обновляются автоматически.",
+  );
+  const scriptLink = document.createElement("a");
+  scriptLink.className = "control-button primary host-script-link";
+  scriptLink.href = `/host?mode=${encodeURIComponent(selectedMode || "live")}`;
+  scriptLink.target = "_blank";
+  scriptLink.rel = "noreferrer";
+  scriptLink.textContent = "Открыть суфлёр ↗";
+  scriptGroup.actions.append(scriptLink);
+  container.append(scriptGroup.group);
+
   if (capabilities.has("open_registration")) {
     const { group, actions } = controlGroup(
       "Новое заседание",

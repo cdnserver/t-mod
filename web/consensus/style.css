@@ -803,6 +803,9 @@ button:active:not(:disabled) {
 }
 
 .control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 38px;
   padding: 0 13px;
   border-radius: 10px;
@@ -810,6 +813,7 @@ button:active:not(:disabled) {
   background: var(--surface-2);
   font-size: 0.7rem;
   font-weight: 750;
+  text-decoration: none;
 }
 
 .control-button:hover:not(:disabled) {

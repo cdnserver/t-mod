@@ -950,6 +950,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
 
     if path == "/":
         target_url = consensus_url
+    elif belongs_to("/host"):
+        target_url = consensus_url
     elif belongs_to("/admin"):
         target_url = REACTOR_WEB_PUBLIC_URL
     elif belongs_to("/reactor") or belongs_to("/games"):
@@ -1082,6 +1084,24 @@ def create_consensus_web_app(
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
 
+    async def host_page(request: web.Request) -> web.StreamResponse:
+        principal = await resolve_principal(
+            request,
+            bot,
+            guild_id=int(guild_id),
+        )
+        if principal is None:
+            raise web.HTTPSeeOther(location="/login?next=/host")
+        live_session = active_sessions.get(int(guild_id))
+        simulation = get_consensus_simulation(int(guild_id))
+        is_active_leader = bool(
+            (live_session is not None and int(live_session.leader_id) == int(principal.user_id))
+            or (simulation is not None and int(simulation.leader_id) == int(principal.user_id))
+        )
+        if not (principal.administrator or is_chair(principal.member) or is_active_leader):
+            raise web.HTTPForbidden(text="Суфлёр доступен только ведущему и председателям.")
+        return web.FileResponse(_ASSET_DIR / "host.html")
+
     async def egg(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "egg.html")
 
@@ -1089,6 +1109,8 @@ def create_consensus_web_app(
         name = str(request.match_info["name"])
         if name not in {
             "app.js",
+            "host.css",
+            "host.js",
             "style.css",
             "chamber.css",
             "consensus-v4.css",
@@ -1124,7 +1146,7 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
@@ -1248,9 +1270,11 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
             else f"/?mode={mode}"
         )
+        if destination == "/host" and mode == "simulation":
+            destination = "/host?mode=simulation"
         response = web.Response(
             status=302,
             headers={"Location": destination},
@@ -1271,7 +1295,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1765,6 +1789,8 @@ def create_consensus_web_app(
         return web.json_response(response_payload)
 
     app.router.add_get("/", index)
+    app.router.add_get("/host", host_page)
+    app.router.add_get("/host/", host_page)
     app.router.add_get("/login", login_page)
     app.router.add_get("/egg", egg)
     app.router.add_get("/egg/", egg)
@@ -1876,6 +1902,11 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         user_id=interaction.user.id,
         destination="/admin",
     )
+    host_url = consensus_web_entry_url(
+        guild_id=interaction.guild.id,
+        user_id=interaction.user.id,
+        destination="/host",
+    )
     embed = discord.Embed(
         title=(
             "🖥️ Административная веб-система"
@@ -1920,6 +1951,14 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
             emoji="🏛️",
             style=discord.ButtonStyle.link,
             url=personal_url,
+        )
+    )
+    view.add_item(
+        discord.ui.Button(
+            label="Суфлёр ведущего",
+            emoji="◉",
+            style=discord.ButtonStyle.link,
+            url=host_url,
         )
     )
     embed.add_field(

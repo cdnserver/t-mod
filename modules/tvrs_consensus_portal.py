@@ -520,8 +520,16 @@ class TVRSConsensusEntryView(TVRSBaseView):
                 guild_id=session.guild_id,
                 user_id=user_id,
             )
+            host_url = consensus_web_entry_url(
+                guild_id=session.guild_id,
+                user_id=user_id,
+                destination="/host",
+            )
             await interaction.response.send_message(
-                content=f"🖥️ [Открыть персональный веб-пульт]({web_url})",
+                content=(
+                    f"🖥️ [Открыть персональный веб-пульт]({web_url})\n"
+                    f"◉ [Открыть живой суфлёр ведущего]({host_url})"
+                ),
                 embed=embed,
                 view=view,
                 ephemeral=True,
@@ -626,6 +634,19 @@ class TVRSPreparationView(_RequesterPortalView):
                 url=consensus_web_entry_url(
                     guild_id=self.guild_id,
                     user_id=self.requester_id,
+                ),
+                row=1,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Суфлёр ведущего",
+                emoji="◉",
+                style=discord.ButtonStyle.link,
+                url=consensus_web_entry_url(
+                    guild_id=self.guild_id,
+                    user_id=self.requester_id,
+                    destination="/host",
                 ),
                 row=1,
             )

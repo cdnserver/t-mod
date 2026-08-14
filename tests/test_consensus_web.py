@@ -782,6 +782,36 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("T·ID", login_text)
             self.assertIn('name="pin"', login_text)
 
+            host_redirect = await client.get("/host", allow_redirects=False)
+            self.assertEqual(host_redirect.status, 303)
+            self.assertEqual(host_redirect.headers["Location"], "/login?next=/host")
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal()),
+            ):
+                host_page = await client.get("/host")
+            self.assertEqual(host_page.status, 200)
+            host_text = await host_page.text()
+            self.assertIn("живой сценарий ведущего", host_text)
+            self.assertIn('id="host-live-text"', host_text)
+            self.assertIn('id="host-agenda-list"', host_text)
+
+            host_script = await client.get("/assets/host.js")
+            self.assertEqual(host_script.status, 200)
+            host_script_text = await host_script.text()
+            self.assertIn("derivePrompt", host_script_text)
+            self.assertIn("hydrateAgenda", host_script_text)
+            self.assertIn("schedulePoll", host_script_text)
+            self.assertIn("1500", host_script_text)
+            self.assertNotIn("innerHTML", host_script_text)
+
+            host_stylesheet = await client.get("/assets/host.css")
+            self.assertEqual(host_stylesheet.status, 200)
+            host_stylesheet_text = await host_stylesheet.text()
+            self.assertIn(".host-live-text", host_stylesheet_text)
+            self.assertIn("prefers-reduced-motion", host_stylesheet_text)
+            self.assertIn("min-height: 100dvh", host_stylesheet_text)
+
             admin = await client.get("/admin")
             self.assertEqual(admin.status, 200)
             admin_text = await admin.text()
@@ -791,6 +821,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 admin_text,
             )
             self.assertIn('id="reactor-link"', index_text)
+            self.assertIn("host-script-link", script_text)
             self.assertIn('href="/assets/favicon.svg"', index_text)
             self.assertIn('src="/assets/tab-signal.js"', index_text)
             self.assertIn(

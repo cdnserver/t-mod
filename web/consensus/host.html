@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#060908">
+    <style>html,body{background:#060908;color:#f1f4ee}</style>
+    <title>T·Consensus — суфлёр ведущего</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+    <link rel="stylesheet" href="/assets/fonts.css">
+    <link rel="stylesheet" href="/assets/host.css?v=1">
+    <script src="/assets/tab-signal.js" defer></script>
+    <script src="/assets/host.js?v=1" defer></script>
+  </head>
+  <body>
+    <div class="host-atmosphere" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+
+    <header class="host-bar">
+      <a class="host-brand" href="/">
+        <i>T</i>
+        <span><b>CONSENSUS</b><small>живой сценарий ведущего</small></span>
+      </a>
+      <div class="host-status">
+        <span id="host-connection"><i></i><b>подключение</b></span>
+        <time id="host-moscow-clock">--:--:--</time>
+        <small>ВРЕМЯ ТОВАРИЩЕСТВА</small>
+      </div>
+      <nav class="host-tools" aria-label="Настройки суфлёра">
+        <button id="host-font-down" type="button" title="Уменьшить текст">А−</button>
+        <button id="host-font-up" type="button" title="Увеличить текст">А+</button>
+        <button id="host-auto-scroll" type="button" aria-pressed="true">Следовать за этапом</button>
+        <button id="host-fullscreen" type="button">На весь экран</button>
+        <a href="/">Пульт ↗</a>
+      </nav>
+    </header>
+
+    <main id="host-shell" class="host-shell" hidden>
+      <section class="host-identity">
+        <div>
+          <span id="host-mode">РАБОЧИЙ КОНТУР</span>
+          <h1 id="host-session-title">Пленарный консенсус</h1>
+          <p id="host-session-meta">Подготовка сценария</p>
+        </div>
+        <div class="host-stage-orbit">
+          <span id="host-stage-index">00</span>
+          <small>ТЕКУЩИЙ ЭТАП</small>
+          <strong id="host-stage-label">Ожидание</strong>
+        </div>
+      </section>
+
+      <section id="host-live" class="host-live" aria-live="polite" aria-atomic="true">
+        <header>
+          <div>
+            <span id="host-live-kicker">СКАЗАТЬ СЕЙЧАС</span>
+            <small id="host-live-context">Текст изменится вместе со стадией</small>
+          </div>
+          <button id="host-copy-live" type="button">Копировать</button>
+        </header>
+        <div id="host-live-text" class="host-live-text" tabindex="0">
+          Суфлёр сверяет план заседания с T-Mod.
+        </div>
+        <footer>
+          <span id="host-live-note">Дождитесь подтверждения действия в пульте перед оглашением.</span>
+          <time id="host-updated-at">—</time>
+        </footer>
+      </section>
+
+      <section class="host-cues">
+        <article class="host-cue host-action-cue">
+          <span>СЛЕДУЮЩЕЕ ДЕЙСТВИЕ</span>
+          <h2 id="host-next-action">Открыть пульт ведущего</h2>
+          <p id="host-next-action-note">Система подскажет доступную кнопку.</p>
+        </article>
+        <article class="host-cue host-next-cue">
+          <span>СЛЕДУЮЩАЯ РЕПЛИКА</span>
+          <p id="host-next-speech">Будет подготовлена после получения состояния.</p>
+        </article>
+        <article class="host-cue host-metric-cue">
+          <span>ЖИВОЕ СОСТОЯНИЕ</span>
+          <dl>
+            <div><dt>Кворум</dt><dd id="host-quorum">—</dd></div>
+            <div><dt>Голоса</dt><dd id="host-votes">—</dd></div>
+            <div><dt>Таймер</dt><dd id="host-timer">—</dd></div>
+            <div><dt>Повестка</dt><dd id="host-agenda-count">—</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="host-agenda">
+        <header>
+          <div>
+            <span>ЗАРАНЕЕ ПОДГОТОВЛЕНО</span>
+            <h2>Реплики по повестке</h2>
+            <p>Тексты собираются из фактических названий, авторов и содержания проектов.</p>
+          </div>
+          <strong id="host-agenda-progress">0 / 0</strong>
+        </header>
+        <div id="host-agenda-list" class="host-agenda-list"></div>
+      </section>
+
+      <section class="host-reserve">
+        <span>ПРОЦЕДУРНЫЙ РЕЗЕРВ</span>
+        <details>
+          <summary>Техническая пауза</summary>
+          <p>Объявляется техническая пауза. Ни один не подтверждённый системой результат не будет оглашён. Просьба сохранять присутствие и не повторять действия до отдельной команды.</p>
+        </details>
+        <details>
+          <summary>Потеря кворума</summary>
+          <p>Фиксируется отсутствие необходимого кворума. Рассмотрение приостанавливается. Голоса и текущая стадия сохранены; решение до восстановления кворума не объявляется.</p>
+        </details>
+        <details>
+          <summary>Передача ведения</summary>
+          <p>Ведение заседания передано в установленном порядке. Сохранённые состав, проект, таймер и голоса подтверждены системой. Заседание продолжается с отображаемого этапа.</p>
+        </details>
+      </section>
+    </main>
+
+    <section id="host-gate" class="host-gate" role="status">
+      <span class="host-loader" aria-hidden="true"></span>
+      <h1 id="host-gate-title">Готовим эфирный сценарий</h1>
+      <p id="host-gate-copy">Проверяем личность ведущего, план заседания и повестку.</p>
+      <a id="host-login-link" href="/login?next=/host" hidden>Войти в T-Mod Account</a>
+    </section>
+
+    <div id="host-toast" class="host-toast" role="status" hidden>Реплика скопирована</div>
+  </body>
+</html>

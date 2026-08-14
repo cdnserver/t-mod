@@ -268,6 +268,7 @@ class ConsensusV3UiTests(unittest.TestCase):
                 leader_kwargs = leader_registration.response.send_message.await_args.kwargs
                 self.assertTrue(leader_kwargs["ephemeral"])
                 self.assertIsInstance(leader_kwargs["view"], TVRSRegistrationView)
+                self.assertIn("живой суфлёр ведущего", leader_kwargs["content"])
 
                 registration_participant = interaction_for(2)
                 await entry.open_personal_panel(registration_participant)
@@ -291,6 +292,7 @@ class ConsensusV3UiTests(unittest.TestCase):
                 await entry.open_personal_panel(leader_voting)
                 voting_kwargs = leader_voting.response.send_message.await_args.kwargs
                 self.assertIsInstance(voting_kwargs["view"], TVRSHostVoteView)
+                self.assertIn("next=%2Fhost", voting_kwargs["content"])
 
                 confirmed_participant = interaction_for(3)
                 await entry.open_personal_panel(confirmed_participant)
