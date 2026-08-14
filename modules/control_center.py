@@ -26,7 +26,7 @@ from modules.technical_log import log_technical_event as _log_technical_event
 _setup_lock = asyncio.Lock()
 _persistent_views_registered = False
 _startup_logged_guilds: set[int] = set()
-_TRANSIENT_DISCORD_STATUSES = frozenset({500, 502, 503, 504})
+_TRANSIENT_DISCORD_STATUSES = frozenset({500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 
 def _channel_meta_key(guild_id: int, key: str) -> str:

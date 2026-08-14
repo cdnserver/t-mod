@@ -330,6 +330,11 @@ def register_atlas_web_routes(
             return web.json_response(cached)
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
+        if not question:
+            return web.json_response(
+                {"error": "question_required", "message": "Введите вопрос для Atlas."},
+                status=400,
+            )
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,
@@ -488,6 +493,11 @@ def register_atlas_web_routes(
             return response
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
+        if not question:
+            return web.json_response(
+                {"error": "question_required", "message": "Введите вопрос для Atlas."},
+                status=400,
+            )
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,

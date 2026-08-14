@@ -48,6 +48,7 @@ from modules.music_runtime import (
     SpeechSegmenter,
     TModVoiceSink,
 )
+from modules.music_setup import _install_voice_recv_disconnect_guard
 from modules.music_speech import SpeechWorkQueue
 from modules.music_stt_audio import prepare_discord_pcm_for_stt
 from modules.music_views import MusicPanelView, build_music_embed
@@ -731,6 +732,36 @@ class MusicPublicPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tmod_music_public_play", custom_ids)
         self.assertIn("tmod_music_public_voice_command", custom_ids)
         self.assertIn("Голос для меня", {item.label for item in view.children})
+
+    async def test_transient_discord_outage_is_warning_not_runtime_error(self) -> None:
+        response = SimpleNamespace(status=522, reason="Connection timed out", headers={})
+        failure = discord.HTTPException(response, {"message": "temporary outage"})
+        self.service._initialized.add(self.guild.id)
+        self.service.refresh_guild = AsyncMock(side_effect=failure)  # type: ignore[method-assign]
+
+        with self.assertLogs("modules.music_public_panel", level="WARNING") as captured:
+            await self.service.reconcile_all()
+
+        self.assertTrue(any("temporarily unavailable" in line for line in captured.output))
+        self.assertFalse(any(" ERROR:" in line for line in captured.output))
+
+    def test_voice_receiver_ignores_ssrc_after_reader_was_stopped(self) -> None:
+        class FakeClient:
+            def _remove_ssrc(self, *, user_id: int) -> None:
+                raise AssertionError("unpatched receiver method")
+
+        fake_extension = SimpleNamespace(VoiceRecvClient=FakeClient)
+        with patch("modules.music_setup.voice_recv", fake_extension):
+            self.assertTrue(_install_voice_recv_disconnect_guard())
+            client = FakeClient()
+            client._id_to_ssrc = {42: 7001}
+            client._ssrc_to_id = {7001: 42}
+            client._reader = object()
+
+            client._remove_ssrc(user_id=42)
+
+        self.assertEqual(client._id_to_ssrc, {})
+        self.assertEqual(client._ssrc_to_id, {})
 
     async def test_one_second_tick_reuses_single_message_without_noop_patch(
         self,

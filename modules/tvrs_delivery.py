@@ -18,6 +18,10 @@ from modules.async_safety import consensus_projection_lock
 from modules.consensus_core import ConsensusRules, LiveConsensusSession, LiveParticipant, LiveResult
 from modules.consensus_runtime import registry as _consensus_registry
 from modules.delivery_outbox import DeliveryDeferred, DeliveryReceipt, OutboxMessage
+from modules.discord_delivery import (
+    DeliveryDestinationUnavailable,
+    resolve_delivery_member,
+)
 from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_embeds import build_bill_embed, build_final_summary_embed, build_result_embed
@@ -655,9 +659,12 @@ def make_result_delivery_handler(bot: Any):
             raise ValueError(f"tvrs_delivery_destination_invalid:{destination}")
         user_id = int(payload.get("destination_user_id") or 0)
         async with consensus_projection_lock(session.session_key, user_id):
-            member = guild.get_member(user_id)
-            if member is None:
-                member = await guild.fetch_member(user_id)
+            try:
+                member = await resolve_delivery_member(guild, user_id)
+            except DeliveryDestinationUnavailable:
+                # A participant may leave the guild after voting.  Their final
+                # DM is no longer deliverable and must not poison the outbox.
+                return DeliveryReceipt()
             dm_channel = member.dm_channel or await member.create_dm()
             existing_message_id = int(payload.get("destination_message_id") or 0)
             if existing_message_id and await result_control_message_was_reused(payload):
@@ -908,9 +915,10 @@ def make_session_summary_delivery_handler(bot: Any):
             if decision.resume_at is not None:
                 raise DeliveryDeferred(decision.resume_at, "profile_quiet_hours")
             return DeliveryReceipt()
-        member = guild.get_member(user_id)
-        if member is None:
-            member = await guild.fetch_member(user_id)
+        try:
+            member = await resolve_delivery_member(guild, user_id)
+        except DeliveryDestinationUnavailable:
+            return DeliveryReceipt()
         dm_channel = member.dm_channel or await member.create_dm()
         previous = await find_delivery_marker(dm_channel, marker)
         if previous is not None:

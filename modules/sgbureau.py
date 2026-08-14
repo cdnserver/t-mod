@@ -2453,6 +2453,15 @@ class SGCasePanelView(discord.ui.View):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message(t("sgbureau.errors.guild_only"), ephemeral=True)
             return False
+        custom_id = str((interaction.data or {}).get("custom_id") or "")
+        if custom_id in {"sgbureau_case_manual_edit", "sgbureau_case_manual_delete"}:
+            if not is_bureau_staff(interaction.user):
+                await interaction.response.send_message(t("sgbureau.errors.no_permission"), ephemeral=True)
+                return False
+            # A modal must be the first response within three seconds.  Staff
+            # authorization is enough here; the mutation validates the target
+            # again when the modal is submitted.
+            return True
         case = self._case(interaction)
         if case is None:
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
@@ -2528,23 +2537,23 @@ class SGCasePanelView(discord.ui.View):
             return
         await interaction.response.send_modal(SGLContractModal(self.bot, case, interaction.guild))
 
-    @discord.ui.button(label=t("sgbureau.admin.case_edit_button"), style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label=t("sgbureau.admin.case_edit_button"),
+        style=discord.ButtonStyle.secondary,
+        custom_id="sgbureau_case_manual_edit",
+    )
     async def manual_case_edit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        case = self._case(interaction)
-        if case is None:
-            await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
-            return
         if not isinstance(interaction.user, discord.Member) or not is_bureau_staff(interaction.user):
             await interaction.response.send_message(t("sgbureau.errors.no_permission"), ephemeral=True)
             return
         await interaction.response.send_modal(AdminEditModal(self.requester_id, "edit"))
 
-    @discord.ui.button(label=t("sgbureau.admin.case_delete_button"), style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label=t("sgbureau.admin.case_delete_button"),
+        style=discord.ButtonStyle.danger,
+        custom_id="sgbureau_case_manual_delete",
+    )
     async def manual_case_delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        case = self._case(interaction)
-        if case is None:
-            await interaction.response.send_message(t("sgbureau.case.errors.not_case_channel"), ephemeral=True)
-            return
         if not isinstance(interaction.user, discord.Member) or not is_bureau_staff(interaction.user):
             await interaction.response.send_message(t("sgbureau.errors.no_permission"), ephemeral=True)
             return
@@ -2636,6 +2645,7 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             return
 
         # Without arguments, /sg is a case management command and must be used inside a case channel.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         case = await asyncio.to_thread(
             storage.get_sgl_case_by_channel,
             interaction.guild.id,
@@ -2644,24 +2654,22 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         if case is None:
             if interaction.channel_id == SGBUREAU_COMMAND_CHANNEL_ID:
                 if not is_bureau_staff(interaction.user):
-                    await interaction.response.send_message(t("sgbureau.errors.no_permission"), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+                    await interaction.edit_original_response(content=t("sgbureau.errors.no_permission"), allowed_mentions=discord.AllowedMentions.none())
                     return
-                await interaction.response.send_message(
+                await interaction.edit_original_response(
                     embed=build_bureau_dashboard_embed(interaction.guild),
                     view=SGBureauDashboardView(interaction.user.id),
-                    ephemeral=True,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             else:
-                await interaction.response.send_message(t("sgbureau.sg.errors.no_case_here"), ephemeral=True)
+                await interaction.edit_original_response(content=t("sgbureau.sg.errors.no_case_here"))
             return
         if not can_work_with_case(interaction.user, case):
-            await interaction.response.send_message(t("sgbureau.case.errors.not_case_participant"), ephemeral=True)
+            await interaction.edit_original_response(content=t("sgbureau.case.errors.not_case_participant"))
             return
-        await interaction.response.send_message(
+        await interaction.edit_original_response(
             embed=build_case_panel_embed(case, interaction.guild),
             view=SGCasePanelView(bot, interaction.user.id, case),
-            ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 

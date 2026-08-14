@@ -35,6 +35,7 @@ from modules.tvrs_delivery import (
     delivery_marker,
     make_result_delivery_handler,
     make_retry_bill_delivery_handler,
+    make_session_summary_delivery_handler,
 )
 from modules.tvrs_embeds import build_final_summary_embed, build_result_embed
 from modules.tvrs_formatting import (
@@ -702,6 +703,46 @@ class TVRSDurableDeliveryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt.message_id, 7001)
         marker_lookup.assert_awaited_once()
         channel.send.assert_not_awaited()
+
+    async def test_finished_session_skips_dm_when_participant_left_guild(self) -> None:
+        current = make_session()
+        result = LiveResult(
+            bill_id=10,
+            bill_number=9,
+            title="Завершённый проект",
+            status="accepted",
+            internal_percent=100.0,
+            overall_percent=100.0,
+            internal_active=True,
+            votes={1: "yes", 2: "yes", 3: "yes"},
+        )
+        current.results.append(result)
+        job = next(
+            item
+            for item in build_session_summary_deliveries(current)
+            if item["payload"].get("destination_user_id") == 2
+        )
+        not_found = discord.NotFound(
+            SimpleNamespace(status=404, reason="Not Found", headers={}),
+            {"message": "Unknown Member", "code": 10007},
+        )
+        guild = SimpleNamespace(
+            get_member=lambda _user_id: None,
+            fetch_member=AsyncMock(side_effect=not_found),
+        )
+        bot = SimpleNamespace(get_guild=lambda _guild_id: guild)
+
+        with patch(
+            "modules.tvrs_delivery.storage.tvrs_live_result_for_bill",
+            return_value={"id": 10},
+        ), patch(
+            "modules.tvrs_delivery.evaluate_profile_notification",
+            return_value=SimpleNamespace(allowed=True, resume_at=None),
+        ):
+            receipt = await make_session_summary_delivery_handler(bot)(self.message(job))
+
+        self.assertIsNone(receipt.message_id)
+        guild.fetch_member.assert_awaited_once_with(2)
 
     async def test_delayed_result_never_overwrites_control_message_for_next_bill(self) -> None:
         current = make_session()

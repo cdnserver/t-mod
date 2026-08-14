@@ -15,6 +15,7 @@ from docx import Document
 from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
+    _answer_text,
     _atlas_corpus_abbreviations,
     _atlas_pinpoint_labels,
     _atlas_query_variants,
@@ -436,6 +437,29 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    def test_answer_text_accepts_provider_content_variants(self) -> None:
+        self.assertEqual(
+            _answer_text(
+                {
+                    "choices": [{
+                        "message": {
+                            "content": [
+                                {"type": "output_text", "text": {"value": "Готовый "}},
+                                {"type": "text", "text": "ответ"},
+                            ]
+                        }
+                    }]
+                }
+            ),
+            "Готовый ответ",
+        )
+        self.assertEqual(
+            _answer_text(
+                {"choices": [{"message": {"content": None}, "text": "Резервный ответ"}]}
+            ),
+            "Резервный ответ",
+        )
+
     def test_agent_registry_preserves_general_and_adds_specialists(self) -> None:
         catalog = atlas_agent_catalog()
         self.assertEqual(catalog[0]["id"], "atlas-tvr-a")
@@ -1064,6 +1088,99 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["answer"], "Первый фрагмент")
         self.assertEqual(result["model"], "atlas-tvr-a")
 
+    async def test_empty_stream_is_retried_once_as_visible_completion(self) -> None:
+        requests: list[dict] = []
+
+        async def completion(request: web.Request) -> web.StreamResponse:
+            body = await request.json()
+            requests.append(body)
+            if body.get("stream"):
+                response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+                await response.prepare(request)
+                await response.write(
+                    'data: {"choices":[{"delta":{"content":null,"reasoning":"скрыто"},"finish_reason":"length"}]}\n\n'.encode()
+                )
+                await response.write(b"data: [DONE]\n\n")
+                await response.write_eof()
+                return response
+            return web.json_response(
+                {"choices": [{"message": {"content": "Ответ после безопасного повтора"}}]}
+            )
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        chunks: list[str] = []
+
+        async def receive(text: str) -> None:
+            chunks.append(text)
+
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+            ):
+                result = await atlas_answer_stream(77, "Дай ответ", on_delta=receive)
+        finally:
+            await server.close()
+
+        self.assertEqual(chunks, ["Ответ после безопасного повтора"])
+        self.assertEqual(result["answer"], "Ответ после безопасного повтора")
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(requests[0]["stream"])
+        self.assertNotIn("stream", requests[1])
+        self.assertEqual(requests[1]["reasoning"]["effort"], "minimal")
+        self.assertGreaterEqual(requests[1]["max_tokens"], 3200)
+
+    async def test_mid_stream_provider_error_is_not_reported_as_empty_answer(self) -> None:
+        async def completion(request: web.Request) -> web.StreamResponse:
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(
+                'data: {"error":{"code":400,"message":"invalid request"},"choices":[{"delta":{"content":""},"finish_reason":"error"}]}\n\n'.encode()
+            )
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+            ):
+                with self.assertRaises(AtlasAIError) as raised:
+                    await atlas_answer_stream(77, "Дай ответ", on_delta=AsyncMock())
+        finally:
+            await server.close()
+
+        self.assertEqual(raised.exception.code, "upstream_error")
+        self.assertIn("invalid request", str(raised.exception))
+
     async def test_aristotle_stream_reports_visible_research_progress(self) -> None:
         calls: list[str] = []
 
@@ -1376,6 +1493,55 @@ class AtlasKnowledgeFileTests(unittest.TestCase):
 
 
 class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_chat_question_is_rejected_before_ai_or_stream_start(self) -> None:
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        headers = {"X-CSRF-Token": "admin-csrf"}
+        with patch("modules.atlas_web.atlas_answer", AsyncMock()) as answer, patch(
+            "modules.atlas_web.atlas_answer_stream", AsyncMock()
+        ) as stream:
+            async with TestClient(TestServer(app)) as client:
+                regular = await client.post(
+                    "/api/atlas/chat",
+                    json={"question": "   "},
+                    headers={**headers, "X-Idempotency-Key": "empty-regular"},
+                )
+                streamed = await client.post(
+                    "/api/atlas/chat/stream",
+                    json={"question": ""},
+                    headers={**headers, "X-Idempotency-Key": "empty-stream"},
+                )
+                regular_payload = await regular.json()
+                streamed_payload = await streamed.json()
+
+        self.assertEqual(regular.status, 400)
+        self.assertEqual(streamed.status, 400)
+        self.assertEqual(regular_payload["error"], "question_required")
+        self.assertEqual(streamed_payload["error"], "question_required")
+        answer.assert_not_awaited()
+        stream.assert_not_awaited()
+
     async def test_atlas_surface_is_registered_and_api_requires_login(self) -> None:
         bot = SimpleNamespace(get_guild=lambda guild_id: None)
         app = create_consensus_web_app(bot, guild_id=77)

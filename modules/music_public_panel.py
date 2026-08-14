@@ -16,6 +16,7 @@ from modules.control_center import (
     edit_message_with_retry,
     ensure_control_center,
     ensure_panel_message,
+    is_transient_discord_error,
     resolve_control_channel,
 )
 from modules.music_config import MUSIC_PANEL_REFRESH_SECONDS
@@ -92,7 +93,14 @@ class MusicPublicPanelService:
                 await self.refresh_guild(guild)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if is_transient_discord_error(exc):
+                    logger.warning(
+                        "Discord API temporarily unavailable while reconciling music panel for guild %s (HTTP %s)",
+                        guild.id,
+                        getattr(exc, "status", "unknown"),
+                    )
+                    continue
                 logger.exception(
                     "Music panel reconciliation failed for guild %s", guild.id
                 )

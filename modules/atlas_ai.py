@@ -2101,28 +2101,106 @@ async def _prepare_atlas_answer(
     )
 
 
+def _content_text(value: Any) -> str:
+    """Normalize text across OpenRouter/OpenAI-compatible content variants."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_content_text(item) for item in value)
+    if not isinstance(value, dict):
+        return ""
+    # Providers use either a plain string, an output_text part, or a nested
+    # ``text: {value: ...}`` object.  Deliberately do not fall back to
+    # ``reasoning``: hidden reasoning is not a safe user-facing answer.
+    for key in ("text", "content", "value", "output_text"):
+        text = _content_text(value.get(key))
+        if text:
+            return text
+    return ""
+
+
 def _answer_text(body: dict[str, Any], *, streamed: bool = False) -> str:
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return ""
+        return _content_text(body.get("output_text"))
     selected = choices[0]
-    container = selected.get("delta") if streamed else selected.get("message")
-    if not isinstance(container, dict):
-        return ""
-    content = container.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        pieces: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                pieces.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") or item.get("content")
-                if isinstance(text, str):
-                    pieces.append(text)
-        return "".join(pieces)
-    return ""
+    preferred = ("delta", "message") if streamed else ("message", "delta")
+    for key in preferred:
+        container = selected.get(key)
+        if isinstance(container, dict):
+            text = _content_text(container.get("content"))
+            if text:
+                return text
+    return _content_text(selected.get("text"))
+
+
+def _completion_error(body: dict[str, Any]) -> AtlasAIError | None:
+    choices = body.get("choices")
+    selected = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    raw = body.get("error") or selected.get("error")
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        message = str(raw.get("message") or raw.get("error") or "Ошибка провайдера").strip()
+        raw_code = raw.get("code")
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        error_type = str(metadata.get("error_type") or "").strip().lower()
+    else:
+        message = str(raw).strip()
+        raw_code = None
+        error_type = ""
+    try:
+        status = int(raw_code or 0)
+    except (TypeError, ValueError):
+        status = 0
+    rate_limited = status == 429 or "rate_limit" in error_type
+    retryable = rate_limited or status in {0, 408, 425, 500, 502, 503, 504} or error_type in {
+        "provider_unavailable",
+        "server_error",
+        "timeout",
+    }
+    return AtlasAIError(
+        "upstream_rate_limited" if rate_limited else "upstream_error",
+        f"ИИ-провайдер прервал ответ: {message[:400]}",
+        retryable=retryable,
+    )
+
+
+def _empty_output_retry_payload(prepared: _AtlasAnswerRequest) -> dict[str, Any]:
+    payload = dict(prepared.payload)
+    try:
+        current_limit = int(payload.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        current_limit = 0
+    payload["max_tokens"] = max(current_limit, 3200)
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
+    return payload
+
+
+async def _retry_empty_completion(prepared: _AtlasAnswerRequest) -> str:
+    """Retry once with space reserved for the visible final answer."""
+
+    body = await _json_request(
+        "POST",
+        prepared.config.openrouter_url,
+        headers=_openrouter_headers(prepared.config),
+        payload=_empty_output_retry_payload(prepared),
+        timeout=90,
+    )
+    provider_error = _completion_error(body)
+    if provider_error is not None:
+        raise provider_error
+    answer = _answer_text(body).strip()
+    if answer:
+        return answer
+    raise AtlasAIError(
+        "answer_invalid",
+        "ИИ-провайдер дважды завершил генерацию без видимого ответа. Запрос можно повторить.",
+        retryable=True,
+    )
 
 
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
@@ -2192,7 +2270,13 @@ async def atlas_answer(
         payload=prepared.payload,
         timeout=90,
     )
-    return _atlas_answer_result(prepared, _answer_text(body))
+    provider_error = _completion_error(body)
+    if provider_error is not None:
+        raise provider_error
+    answer = _answer_text(body).strip()
+    if not answer:
+        answer = await _retry_empty_completion(prepared)
+    return _atlas_answer_result(prepared, answer)
 
 
 async def atlas_answer_stream(
@@ -2227,6 +2311,7 @@ async def atlas_answer_stream(
     answer_parts: list[str] = []
     answer_length = 0
     fallback_lines: list[str] = []
+    stream_failure: AtlasAIError | None = None
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -2269,7 +2354,13 @@ async def atlas_answer_stream(
                         event = json.loads(data)
                     except (TypeError, ValueError):
                         continue
-                    delta = _answer_text(event, streamed=True) if isinstance(event, dict) else ""
+                    if not isinstance(event, dict):
+                        continue
+                    provider_error = _completion_error(event)
+                    if provider_error is not None:
+                        stream_failure = provider_error
+                        break
+                    delta = _answer_text(event, streamed=True)
                     if not delta:
                         continue
                     remaining = 30000 - answer_length
@@ -2288,6 +2379,8 @@ async def atlas_answer_stream(
             retryable=True,
         ) from exc
 
+    if stream_failure is not None and answer_parts:
+        raise stream_failure
     if not answer_parts and fallback_lines:
         try:
             fallback = json.loads("\n".join(fallback_lines))
@@ -2297,6 +2390,16 @@ async def atlas_answer_stream(
         if full_text:
             answer_parts.append(full_text[:30000])
             await on_delta(answer_parts[0])
+    if not answer_parts:
+        if stream_failure is not None and not stream_failure.retryable:
+            raise stream_failure
+        await _atlas_progress(
+            on_progress,
+            {"phase": "retry", "status": "running", "reason": "empty_provider_output"},
+        )
+        fallback = await _retry_empty_completion(prepared)
+        answer_parts.append(fallback[:30000])
+        await on_delta(answer_parts[0])
     result = _atlas_answer_result(prepared, "".join(answer_parts))
     if prepared.research_plan:
         await _atlas_progress(

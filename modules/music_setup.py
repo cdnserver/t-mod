@@ -9,6 +9,7 @@ from functools import partial
 import discord
 from discord.ext import commands
 
+from modules.music_audio import voice_recv
 from modules.music_public_panel import MusicPublicPanelService
 from modules.music_public_views import PublicMusicPanelView
 from modules.music_runtime import MusicManager
@@ -16,10 +17,38 @@ from modules.music_views import MusicPanelView, build_music_embed
 from modules.music_voice_diagnostics import run_microphone_diagnostic
 
 
+def _install_voice_recv_disconnect_guard() -> bool:
+    """Close a race in voice-recv when an SSRC leaves after the reader stops."""
+
+    if voice_recv is None:
+        return False
+    client_type = getattr(voice_recv, "VoiceRecvClient", None)
+    original = getattr(client_type, "_remove_ssrc", None)
+    if client_type is None or not callable(original):
+        return False
+    if bool(getattr(original, "__tmod_disconnect_guard__", False)):
+        return True
+
+    def remove_ssrc_safely(client, *, user_id: int) -> None:
+        ssrc = client._id_to_ssrc.pop(user_id, None)
+        if not ssrc:
+            return
+        reader = getattr(client, "_reader", None)
+        timer = getattr(reader, "speaking_timer", None)
+        if timer is not None:
+            timer.drop_ssrc(ssrc)
+        client._ssrc_to_id.pop(ssrc, None)
+
+    remove_ssrc_safely.__tmod_disconnect_guard__ = True  # type: ignore[attr-defined]
+    client_type._remove_ssrc = remove_ssrc_safely
+    return True
+
+
 def setup_music(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None],
 ) -> MusicManager:
+    _install_voice_recv_disconnect_guard()
     # SenderReport RTCP packets are routine Discord control traffic. The
     # experimental receiver currently logs them at INFO as "unexpected".
     logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)

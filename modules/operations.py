@@ -402,7 +402,11 @@ async def operations_worker(bot: commands.Bot) -> None:
                     bot,
                     guild,
                     title="Сбой рабочего цикла активных задач",
-                    details="Автоматическое обновление будет повторено. Проверьте лог контейнера для трассировки.",
+                    details=(
+                        "Автоматическое обновление будет повторено.\n"
+                        f"Ошибка: `{type(exc).__name__}: {str(exc)[:900]}`"
+                    ),
+                    exception=exc,
                     dedupe_key="operations-worker",
                 )
         try:
