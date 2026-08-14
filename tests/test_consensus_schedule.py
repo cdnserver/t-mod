@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import discord
 import storage
 from modules.consensus_schedule import (
     parse_schedule_time,
@@ -144,6 +145,72 @@ class ConsensusScheduleTests(unittest.IsolatedAsyncioTestCase):
         guild.create_scheduled_event.assert_awaited_once()
         payload = public_schedule_payload(synced)
         self.assertEqual(payload["event_url"], "https://discord.com/events/77/1234")
+
+    async def test_discord_event_fetches_uncached_stage_channel(self) -> None:
+        created = self._create()
+        channel = SimpleNamespace(type=discord.ChannelType.stage_voice)
+        event = SimpleNamespace(id=2234)
+        guild = SimpleNamespace(
+            me=None,
+            get_channel=Mock(return_value=None),
+            fetch_channel=AsyncMock(return_value=channel),
+            get_scheduled_event=Mock(return_value=None),
+            create_scheduled_event=AsyncMock(return_value=event),
+        )
+
+        await sync_schedule_discord_event(guild, created)
+
+        guild.fetch_channel.assert_awaited_once_with(88)
+        kwargs = guild.create_scheduled_event.await_args.kwargs
+        self.assertEqual(kwargs["entity_type"], discord.EntityType.stage_instance)
+        self.assertIs(kwargs["channel"], channel)
+
+    async def test_discord_event_rejects_missing_event_permission(self) -> None:
+        created = self._create()
+        permissions = SimpleNamespace(
+            administrator=False,
+            create_events=False,
+            manage_events=False,
+        )
+        channel = SimpleNamespace(
+            type=discord.ChannelType.voice,
+            permissions_for=Mock(return_value=permissions),
+        )
+        guild = SimpleNamespace(
+            me=object(),
+            get_channel=Mock(return_value=channel),
+            get_scheduled_event=Mock(return_value=None),
+            create_scheduled_event=AsyncMock(),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "consensus_schedule_event_permission_missing",
+        ):
+            await sync_schedule_discord_event(guild, created)
+
+        guild.create_scheduled_event.assert_not_awaited()
+
+    async def test_closed_discord_event_is_recreated(self) -> None:
+        created = self._create()
+        closed_event = SimpleNamespace(
+            id=1234,
+            status=discord.EventStatus.completed,
+            edit=AsyncMock(),
+        )
+        replacement = SimpleNamespace(id=3234)
+        guild = SimpleNamespace(
+            me=None,
+            get_channel=Mock(return_value=object()),
+            get_scheduled_event=Mock(return_value=closed_event),
+            create_scheduled_event=AsyncMock(return_value=replacement),
+        )
+
+        synced = await sync_schedule_discord_event(guild, created | {"discord_event_id": 1234})
+
+        self.assertEqual(synced["discord_event_id"], 3234)
+        closed_event.edit.assert_not_awaited()
+        guild.create_scheduled_event.assert_awaited_once()
 
 
 if __name__ == "__main__":

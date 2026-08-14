@@ -15,9 +15,9 @@
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/style.css">
     <link rel="stylesheet" href="/assets/chamber.css">
-    <link rel="stylesheet" href="/assets/consensus-v4.css?v=9">
+    <link rel="stylesheet" href="/assets/consensus-v4.css?v=11">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/app.js?v=9" defer></script>
+    <script src="/assets/app.js?v=11" defer></script>
   </head>
   <body>
     <div id="atmosphere" class="atmosphere" aria-hidden="true">
@@ -148,6 +148,8 @@
             <span class="broadcast-veil veil-one"></span>
             <span class="broadcast-veil veil-two"></span>
             <span class="broadcast-orbit"><i></i><i></i><i></i></span>
+            <span class="broadcast-constellation"><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="broadcast-pulse-field"></span>
             <span class="broadcast-grain"></span>
           </div>
           <header class="broadcast-topline">
@@ -188,20 +190,31 @@
           <section id="broadcast-session-card" class="broadcast-session-card" hidden>
             <div class="broadcast-session-meta">
               <span><small>Ведущий</small><strong id="broadcast-host">—</strong></span>
-              <span><small>Законопроектов</small><strong id="broadcast-bills">0</strong></span>
               <span><small>Стадия</small><strong id="broadcast-stage">Ожидание</strong></span>
+              <span><small>Повестка</small><strong id="broadcast-agenda">0 / 0</strong></span>
+              <span><small>Кворум</small><strong id="broadcast-quorum">—</strong></span>
               <span><small>Голосов</small><strong id="broadcast-votes">0 / 0</strong></span>
+              <span><small>Время этапа</small><strong id="broadcast-stage-time">—</strong></span>
             </div>
             <article id="broadcast-bill" class="broadcast-bill" hidden>
-              <div>
+              <div class="broadcast-bill-copy">
                 <span id="broadcast-bill-number">ЗАКОНОПРОЕКТ</span>
                 <h2 id="broadcast-bill-title">—</h2>
+                <div class="broadcast-bill-meta">
+                  <span>Автор <b id="broadcast-bill-author">—</b></span>
+                  <span>Решение <b id="broadcast-bill-category">—</b></span>
+                  <span>Порог <b id="broadcast-bill-threshold">—</b></span>
+                </div>
                 <p id="broadcast-bill-summary">—</p>
               </div>
               <div class="broadcast-bill-aside">
                 <strong id="broadcast-bill-timer">—</strong>
-                <small>ВРЕМЯ ЭТАПА</small>
+                <small id="broadcast-bill-timer-label">ДО ЗАКРЫТИЯ</small>
                 <em id="broadcast-time-adjustment" class="broadcast-time-adjustment" hidden>+00:00 · добавлено</em>
+                <div class="broadcast-vote-progress" aria-label="Ход голосования">
+                  <span><i id="broadcast-vote-progress-bar"></i></span>
+                  <small id="broadcast-vote-progress-label">0 из 0 голосов · направления скрыты</small>
+                </div>
                 <button id="broadcast-open-bill" type="button">Читать проект</button>
               </div>
             </article>
@@ -271,6 +284,29 @@
             <span><small>Время законопроекта</small><strong id="ballot-bill-elapsed">00:00</strong></span>
           </div>
 
+          <section class="ballot-briefing" aria-label="Сводка перед решением">
+            <article>
+              <span>ВАШ ДОПУСК</span>
+              <strong id="ballot-seat-state">Проверяется</strong>
+              <p id="ballot-seat-detail">Сверяем участие и кворум.</p>
+            </article>
+            <article>
+              <span>ХОД ПОВЕСТКИ</span>
+              <strong id="ballot-agenda-progress">0 / 0</strong>
+              <p id="ballot-agenda-detail">Ожидаем первый проект.</p>
+            </article>
+            <article>
+              <span>СОСТАВ</span>
+              <strong id="ballot-quorum-status">—</strong>
+              <p>Направления голосов скрыты от остальных сенаторов.</p>
+            </article>
+            <article class="ballot-briefing-focus">
+              <span>СЕЙЧАС ВАЖНО</span>
+              <strong id="ballot-decision-hint">Следите за представлением</strong>
+              <p id="ballot-decision-detail">Перед выбором прочитайте проект и материалы.</p>
+            </article>
+          </section>
+
           <div class="ballot-grid">
             <article id="ballot-bill-card" class="ballot-bill-card" data-number="000">
               <div class="ballot-bill-topline">
@@ -286,6 +322,10 @@
               <div class="ballot-bill-text">
                 <span>Суть предложения</span>
                 <p id="ballot-bill-summary">Текст появится после представления законопроекта.</p>
+              </div>
+              <div id="ballot-bill-materials-wrap" class="ballot-bill-materials" hidden>
+                <span>Материалы и пояснения</span>
+                <p id="ballot-bill-materials">—</p>
               </div>
               <div class="ballot-bill-actions">
                 <button id="ballot-open-bill" class="subtle-button" type="button" disabled>
@@ -344,7 +384,7 @@
               </div>
               <div id="ballot-notice" class="ballot-notice" role="status" hidden></div>
               <p class="ballot-privacy">
-                Ваш выбор виден только вам до завершения голосования. Discord и веб используют одну запись T-Mod.
+                Ваш выбор виден вам и ведущему. Другие сенаторы не видят направление голоса. Discord и веб используют одну запись T-Mod.
               </p>
             </aside>
           </div>

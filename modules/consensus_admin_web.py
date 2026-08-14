@@ -25,6 +25,7 @@ from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.consensus_schedule import (
     cancel_schedule_discord_event,
     parse_schedule_time,
+    schedule_event_sync_message,
     send_schedule_invitations,
     sync_schedule_discord_event,
 )
@@ -1270,10 +1271,7 @@ def register_admin_web_routes(
                 try:
                     schedule = await sync_schedule_discord_event(guild, schedule)
                 except (discord.DiscordException, ValueError) as exc:
-                    warning = (
-                        "План сохранён, но событие Discord пока не синхронизировано: "
-                        f"{type(exc).__name__}. Нажмите «Синхронизировать»."
-                    )
+                    warning = f"{schedule_event_sync_message(exc)} Нажмите «Синхронизировать»."
                 message = "План заседания сохранён."
             elif action == "sync":
                 if current is None:
@@ -1319,6 +1317,8 @@ def register_admin_web_routes(
                 "consensus_schedule_missing": "Сначала создайте план заседания.",
                 "consensus_schedule_recipients_empty": "Не найдено участников для приглашения.",
                 "consensus_schedule_voice_channel_missing": "Выбранный голосовой канал недоступен.",
+                "consensus_schedule_voice_channel_invalid": "Выберите голосовой или сценический канал.",
+                "consensus_schedule_event_permission_missing": "T-Mod не хватает права создавать события Discord.",
                 "consensus_schedule_confirmation_required": "Подтвердите отмену заседания.",
             }
             return web.json_response(

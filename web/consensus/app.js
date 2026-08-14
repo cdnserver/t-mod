@@ -183,8 +183,8 @@ function startConsensusAmbience() {
     ambientGain.gain.setValueAtTime(0.0001, context.currentTime);
     ambientLowpass = context.createBiquadFilter();
     ambientLowpass.type = "lowpass";
-    ambientLowpass.frequency.value = 820;
-    ambientLowpass.Q.value = 0.28;
+    ambientLowpass.frequency.value = 720;
+    ambientLowpass.Q.value = 0.2;
     const compressor = context.createDynamicsCompressor();
     compressor.threshold.value = -30;
     compressor.knee.value = 24;
@@ -196,67 +196,83 @@ function startConsensusAmbience() {
     const dryBus = context.createGain();
     const wetBus = context.createGain();
     const reverb = context.createConvolver();
-    dryBus.gain.value = 0.82;
-    wetBus.gain.value = 0.18;
+    dryBus.gain.value = 0.7;
+    wetBus.gain.value = 0.3;
     dryBus.connect(ambientGain);
     reverb.connect(wetBus).connect(ambientGain);
-    const impulse = context.createBuffer(2, Math.floor(context.sampleRate * 4.6), context.sampleRate);
+    const impulse = context.createBuffer(2, Math.floor(context.sampleRate * 6.8), context.sampleRate);
     for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
       const samples = impulse.getChannelData(channel);
       let smoothed = 0;
       for (let index = 0; index < samples.length; index += 1) {
-        const decay = Math.pow(1 - index / samples.length, 3.2);
-        smoothed = smoothed * 0.72 + (Math.random() * 2 - 1) * 0.28;
-        samples[index] = smoothed * decay * 0.34;
+        const decay = Math.pow(1 - index / samples.length, 2.7);
+        smoothed = smoothed * 0.84 + (Math.random() * 2 - 1) * 0.16;
+        samples[index] = smoothed * decay * 0.3;
       }
     }
     reverb.buffer = impulse;
 
-    [43.65, 65.41, 87.31, 130.81].forEach((frequency, index) => {
+    const padFilter = context.createBiquadFilter();
+    padFilter.type = "lowpass";
+    padFilter.frequency.value = 510;
+    padFilter.Q.value = 0.16;
+    padFilter.connect(dryBus);
+    padFilter.connect(reverb);
+    [
+      [36.71, "sine", 0.2, -5],
+      [73.42, "triangle", 0.11, 4],
+      [110, "sine", 0.062, -3],
+      [146.83, "triangle", 0.035, 7],
+      [174.61, "sine", 0.018, -6],
+    ].forEach(([frequency, waveform, level, detune], index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const lfo = context.createOscillator();
       const lfoGain = context.createGain();
-      oscillator.type = "sine";
+      const amplitudeLfo = context.createOscillator();
+      const amplitudeDepth = context.createGain();
+      oscillator.type = waveform;
       oscillator.frequency.value = frequency;
-      oscillator.detune.value = [-7, 3, -2, 6][index];
-      gain.gain.value = [0.34, 0.18, 0.085, 0.025][index];
+      oscillator.detune.value = detune;
+      gain.gain.value = level;
       lfo.type = "sine";
-      lfo.frequency.value = [0.018, 0.013, 0.021, 0.009][index];
-      lfoGain.gain.value = [4.5, 3.2, 5.1, 2.4][index];
+      lfo.frequency.value = [0.012, 0.017, 0.009, 0.014, 0.011][index];
+      lfoGain.gain.value = [3.2, 4.1, 2.8, 5.2, 3.7][index];
+      amplitudeLfo.type = "sine";
+      amplitudeLfo.frequency.value = [0.026, 0.019, 0.031, 0.023, 0.017][index];
+      amplitudeDepth.gain.value = level * 0.22;
       lfo.connect(lfoGain).connect(oscillator.detune);
+      amplitudeLfo.connect(amplitudeDepth).connect(gain.gain);
       oscillator.connect(gain);
-      gain.connect(dryBus);
-      gain.connect(reverb);
+      gain.connect(padFilter);
       oscillator.start();
       lfo.start();
-      ambientNodes.push(oscillator, gain, lfo, lfoGain);
+      amplitudeLfo.start();
+      ambientNodes.push(oscillator, gain, lfo, lfoGain, amplitudeLfo, amplitudeDepth);
     });
 
     const noiseBuffer = context.createBuffer(1, context.sampleRate * 12, context.sampleRate);
     const noise = noiseBuffer.getChannelData(0);
-    let brown = 0;
     let pink = 0;
     for (let index = 0; index < noise.length; index += 1) {
       const white = Math.random() * 2 - 1;
-      brown = (brown + 0.018 * white) / 1.018;
-      pink = pink * 0.985 + white * 0.015;
-      noise[index] = brown * 0.72 + pink * 0.16;
+      pink = pink * 0.992 + white * 0.008;
+      noise[index] = pink * 0.62 + white * 0.025;
     }
     const noiseSource = context.createBufferSource();
     ambientNoiseFilter = context.createBiquadFilter();
     const noiseGain = context.createGain();
     noiseSource.buffer = noiseBuffer;
     noiseSource.loop = true;
-    ambientNoiseFilter.type = "bandpass";
-    ambientNoiseFilter.frequency.value = 155;
-    ambientNoiseFilter.Q.value = 0.42;
-    noiseGain.gain.value = 0.11;
+    ambientNoiseFilter.type = "lowpass";
+    ambientNoiseFilter.frequency.value = 760;
+    ambientNoiseFilter.Q.value = 0.18;
+    noiseGain.gain.value = 0.035;
     noiseSource.connect(ambientNoiseFilter).connect(noiseGain);
     noiseGain.connect(dryBus);
     noiseGain.connect(reverb);
     noiseSource.start();
-    ambientNodes.push(noiseSource, ambientNoiseFilter, noiseGain, dryBus, wetBus, reverb, ambientLowpass, compressor);
+    ambientNodes.push(noiseSource, ambientNoiseFilter, noiseGain, padFilter, dryBus, wetBus, reverb, ambientLowpass, compressor);
   }
   setAmbientVolume(ambientVolume);
   renderSoundToggle();
@@ -536,10 +552,10 @@ function applyCountdownProfile(profile) {
   const clean = profile || "normal";
   document.body.dataset.countdownWindow = clean;
   const frequencies = {
-    distant: [650, 125], horizon: [690, 132], approaching: [760, 145],
-    soon: [840, 160], imminent: [920, 178], "final-five": [990, 194],
-    "final-minute": [1060, 210], "final-30": [1140, 228], normal: [820, 155],
-  }[clean] || [820, 155];
+    distant: [560, 620], horizon: [610, 670], approaching: [680, 730],
+    soon: [760, 810], imminent: [840, 900], "final-five": [920, 980],
+    "final-minute": [1010, 1060], "final-30": [1100, 1160], normal: [720, 760],
+  }[clean] || [720, 760];
   if (ballotAudioContext && ambientLowpass && ambientNoiseFilter) {
     ambientLowpass.frequency.setTargetAtTime(frequencies[0], ballotAudioContext.currentTime, 2.4);
     ambientNoiseFilter.frequency.setTargetAtTime(frequencies[1], ballotAudioContext.currentTime, 2.8);
@@ -608,6 +624,26 @@ function renderBroadcastResults(results = []) {
   return { page: page + 1, pageCount };
 }
 
+function agendaMetrics(data, session, currentBill) {
+  const seen = new Set();
+  const keyFor = (item) => {
+    const id = Number(item?.bill_id || item?.id || 0);
+    if (id > 0) return `id:${id}`;
+    const number = Number(item?.bill_number || 0);
+    if (number > 0) return `number:${number}`;
+    return `title:${String(item?.title || "").trim().toLowerCase()}`;
+  };
+  (session?.results || []).forEach((item) => seen.add(keyFor(item)));
+  let position = seen.size;
+  if (currentBill) {
+    const currentKey = keyFor(currentBill);
+    if (!seen.has(currentKey)) position += 1;
+    seen.add(currentKey);
+  }
+  (data.queue || []).forEach((item) => seen.add(keyFor(item)));
+  return { position, total: seen.size };
+}
+
 function renderBroadcast(data) {
   const phase = String(data.broadcast_phase || (data.active ? "live" : data.schedule ? "scheduled" : "idle"));
   const session = data.session;
@@ -672,20 +708,41 @@ function renderBroadcast(data) {
     : "";
 
   const host = session?.leader?.name || schedule?.host?.name || "Председатель Товарищества";
-  const totalBills = Math.max(
-    Number(data.queue?.length || 0) + Number(session?.results?.length || 0) + (bill ? 1 : 0),
-    Number(session?.results?.length || 0),
-  );
+  const agenda = agendaMetrics(data, session, bill);
+  const confirmed = Number(session?.quorum?.confirmed || 0);
+  const invited = Number(session?.quorum?.invited || 0);
+  const expected = Number(session?.voting?.expected || 0);
+  const received = Number(session?.voting?.received || 0);
+  const voteProgress = expected > 0
+    ? Math.max(0, Math.min(100, received / expected * 100))
+    : 0;
   text("broadcast-host", host);
-  text("broadcast-bills", totalBills);
   text("broadcast-stage", session?.stage_label || (phase === "scheduled" ? "Запланировано" : "Подготовка"));
-  text("broadcast-votes", session ? `${session.voting.received} / ${session.voting.expected}` : "—");
+  text("broadcast-agenda", agenda.total ? `${agenda.position} / ${agenda.total}` : "0 / 0");
+  text("broadcast-quorum", session ? `${confirmed} / ${invited}` : "—");
+  text("broadcast-votes", session ? `${received} / ${expected}` : "—");
+  text("broadcast-stage-time", session ? formatTimer(session.timer_deadline) : "—");
   byId("broadcast-bill").hidden = !bill;
   if (bill) {
     text("broadcast-bill-number", `ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
     text("broadcast-bill-title", bill.title || "Без названия");
     text("broadcast-bill-summary", bill.summary || "Полный текст доступен в карточке проекта.");
+    text("broadcast-bill-author", bill.author?.name || "Автор не указан");
+    text("broadcast-bill-category", categoryLabel(bill.decision_category));
+    text(
+      "broadcast-bill-threshold",
+      formatPercent(currentResult(session, bill)?.required_percent || session?.rules?.acceptance_percent),
+    );
     text("broadcast-bill-timer", formatTimer(session?.timer_deadline));
+    text(
+      "broadcast-bill-timer-label",
+      session?.stage === "voting" ? "ДО ЗАКРЫТИЯ ВОУТА" : "ВРЕМЯ ЭТАПА",
+    );
+    text(
+      "broadcast-vote-progress-label",
+      `${received} из ${expected} голосов · направления скрыты`,
+    );
+    byId("broadcast-vote-progress-bar").style.width = `${voteProgress}%`;
     const adjustment = byId("broadcast-time-adjustment");
     adjustment.hidden = !Number(session?.timer_added_seconds || 0);
     adjustment.textContent = session?.timer_added_seconds
@@ -1530,6 +1587,42 @@ function renderBallot(data) {
   text("ballot-console-detail", detail);
   text("ballot-lock-indicator", canVote ? "открыт" : "закрыт");
   byId("ballot-lock-indicator").className = `ballot-lock-indicator ${canVote ? "open" : "locked"}`;
+
+  const agenda = agendaMetrics(data, session, bill);
+  const quorumConfirmed = Number(session?.quorum?.confirmed || 0);
+  const quorumInvited = Number(session?.quorum?.invited || 0);
+  text("ballot-seat-state", viewer.confirmed ? "Подтверждён" : "Ожидает подтверждения");
+  text(
+    "ballot-seat-detail",
+    viewer.confirmed
+      ? "Вы включены в состав и можете голосовать после открытия воута."
+      : "Подтвердите участие через Discord, чтобы получить бюллетень.",
+  );
+  text("ballot-agenda-progress", agenda.total ? `${agenda.position} / ${agenda.total}` : "0 / 0");
+  text(
+    "ballot-agenda-detail",
+    bill
+      ? `Сейчас рассматривается проект №${formatNumber(bill.bill_number)}.`
+      : session ? "Ведущий готовит следующий проект." : "Заседание ещё не началось.",
+  );
+  text(
+    "ballot-quorum-status",
+    session ? `${quorumConfirmed} из ${quorumInvited} · ${session.quorum?.ready ? "готов" : "собирается"}` : "—",
+  );
+  const decisionHint = vote
+    ? ["Голос сохранён", "До закрытия воута вы можете изменить свой выбор."]
+    : canVote
+      ? ["Примите решение", "Сверьте текст, порог и последствия, затем подтвердите вариант."]
+      : session?.stage === "presentation"
+        ? ["Изучите проект", "Голосование откроет ведущий после представления."]
+        : ["Следите за заседанием", "Панель обновится автоматически при смене этапа."];
+  text("ballot-decision-hint", decisionHint[0]);
+  text("ballot-decision-detail", decisionHint[1]);
+
+  const materialsWrap = byId("ballot-bill-materials-wrap");
+  const materials = String(bill?.materials || "").trim();
+  materialsWrap.hidden = !materials;
+  text("ballot-bill-materials", materials || "—");
 
   const deadline = byId("ballot-deadline");
   const timerValue = formatTimer(session?.timer_deadline);

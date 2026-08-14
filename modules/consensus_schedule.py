@@ -59,6 +59,26 @@ def schedule_event_url(schedule: dict[str, Any]) -> str | None:
     return f"https://discord.com/events/{guild_id}/{event_id}"
 
 
+def schedule_event_sync_message(exc: BaseException) -> str:
+    """Return an actionable, public-safe explanation for event sync failures."""
+
+    code = str(exc).split(":", 1)[0]
+    return {
+        "consensus_schedule_voice_channel_missing": (
+            "Discord не видит выбранный голосовой канал. Проверьте место заседания."
+        ),
+        "consensus_schedule_voice_channel_invalid": (
+            "Для события нужен голосовой или сценический канал Discord."
+        ),
+        "consensus_schedule_event_permission_missing": (
+            "T-Mod не хватает права «Создавать события» в канале заседания."
+        ),
+    }.get(
+        code,
+        "Discord временно не принял событие. План сохранён — синхронизацию можно повторить.",
+    )
+
+
 def build_schedule_embed(schedule: dict[str, Any]) -> discord.Embed:
     timestamp = schedule_timestamp(schedule)
     duration = int(schedule.get("duration_minutes") or 90)
@@ -130,9 +150,36 @@ async def sync_schedule_discord_event(
     end_time = start_time + timedelta(
         minutes=int(schedule.get("duration_minutes") or 90)
     )
-    channel = guild.get_channel(int(schedule.get("voice_channel_id") or 0))
+    channel_id = int(schedule.get("voice_channel_id") or 0)
+    channel = guild.get_channel(channel_id)
+    if channel is None and channel_id and hasattr(guild, "fetch_channel"):
+        try:
+            channel = await guild.fetch_channel(channel_id)
+        except discord.NotFound:
+            channel = None
+        except discord.Forbidden as exc:
+            raise ValueError("consensus_schedule_event_permission_missing") from exc
     if channel is None:
         raise ValueError("consensus_schedule_voice_channel_missing")
+    channel_type = getattr(channel, "type", None)
+    if isinstance(channel, discord.StageChannel) or channel_type == discord.ChannelType.stage_voice:
+        entity_type = discord.EntityType.stage_instance
+    elif (
+        isinstance(channel, discord.VoiceChannel)
+        or channel_type in {None, discord.ChannelType.voice}
+    ):
+        entity_type = discord.EntityType.voice
+    else:
+        raise ValueError("consensus_schedule_voice_channel_invalid")
+    guild_member = getattr(guild, "me", None)
+    if guild_member is not None and hasattr(channel, "permissions_for"):
+        permissions = channel.permissions_for(guild_member)
+        if not (
+            getattr(permissions, "administrator", False)
+            or getattr(permissions, "create_events", False)
+            or getattr(permissions, "manage_events", False)
+        ):
+            raise ValueError("consensus_schedule_event_permission_missing")
     event_id = int(schedule.get("discord_event_id") or 0)
     event = guild.get_scheduled_event(event_id) if event_id else None
     if event is None and event_id:
@@ -140,31 +187,51 @@ async def sync_schedule_discord_event(
             event = await guild.fetch_scheduled_event(event_id)
         except discord.NotFound:
             event = None
+    if event is not None and getattr(event, "status", discord.EventStatus.scheduled) != discord.EventStatus.scheduled:
+        event = None
     description = clip_text(
         schedule.get("description"),
         950,
         "Пленарное заседание Товарищества.",
     )
-    if event is None:
-        event = await guild.create_scheduled_event(
+    async def apply_event() -> discord.ScheduledEvent:
+        if event is None:
+            return await guild.create_scheduled_event(
+                name=str(schedule.get("title") or "Пленарный консенсус")[:100],
+                description=description,
+                start_time=start_time,
+                end_time=end_time,
+                channel=channel,
+                entity_type=entity_type,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                reason=f"T-Mod Consensus plan #{int(schedule.get('id') or 0)}",
+            )
+        return await event.edit(
             name=str(schedule.get("title") or "Пленарный консенсус")[:100],
             description=description,
             start_time=start_time,
             end_time=end_time,
             channel=channel,
-            entity_type=discord.EntityType.voice,
-            privacy_level=discord.PrivacyLevel.guild_only,
-            reason=f"T-Mod Consensus plan #{int(schedule.get('id') or 0)}",
-        )
-    else:
-        event = await event.edit(
-            name=str(schedule.get("title") or "Пленарный консенсус")[:100],
-            description=description,
-            start_time=start_time,
-            end_time=end_time,
-            channel=channel,
+            entity_type=entity_type,
             reason=f"T-Mod Consensus plan #{int(schedule.get('id') or 0)} updated",
         )
+
+    last_error: discord.HTTPException | None = None
+    for attempt in range(3):
+        try:
+            event = await apply_event()
+            break
+        except discord.Forbidden as exc:
+            raise ValueError("consensus_schedule_event_permission_missing") from exc
+        except discord.HTTPException as exc:
+            last_error = exc
+            if int(getattr(exc, "status", 0) or 0) not in {429, 500, 502, 503, 504}:
+                raise
+            if attempt < 2:
+                await asyncio.sleep(0.45 * (attempt + 1))
+    else:  # pragma: no cover - guarded by the loop above
+        assert last_error is not None
+        raise last_error
     return await asyncio.to_thread(
         schedule_storage.bind_consensus_schedule_event,
         int(schedule["id"]),
@@ -366,7 +433,7 @@ class ConsensusScheduleModal(discord.ui.Modal):
         try:
             schedule = await sync_schedule_discord_event(interaction.guild, schedule)
         except (discord.DiscordException, ValueError) as exc:
-            sync_warning = f"\n\n⚠️ План сохранён, но событие Discord пока не синхронизировано: `{type(exc).__name__}`. Нажмите «Синхронизировать»."
+            sync_warning = f"\n\n⚠️ {schedule_event_sync_message(exc)} Нажмите «Синхронизировать»."
         await interaction.edit_original_response(
             content=sync_warning or None,
             embed=build_schedule_embed(schedule),
@@ -459,7 +526,7 @@ class ConsensusScheduleView(discord.ui.View):
             latest = await sync_schedule_discord_event(interaction.guild, latest)
         except (discord.DiscordException, ValueError) as exc:
             await interaction.edit_original_response(
-                content=f"Событие Discord пока недоступно: `{type(exc).__name__}`. План в T-Mod сохранён.",
+                content=schedule_event_sync_message(exc),
                 embed=build_schedule_embed(latest),
                 view=ConsensusScheduleView(self.requester_id, self.guild_id, latest),
             )

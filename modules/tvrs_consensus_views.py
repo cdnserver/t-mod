@@ -3,10 +3,7 @@ from __future__ import annotations
 import discord
 
 from modules.async_safety import run_blocking_cancellation_safe
-from modules.consensus_core import (
-    ConsensusStateError,
-    LiveConsensusSession,
-)
+from modules.consensus_core import ConsensusStateError, LiveConsensusSession
 from modules.consensus_runtime import (
     active_sessions as _active_sessions,
     coordinator as _consensus,
@@ -16,20 +13,10 @@ from modules.consensus_runtime import (
 from modules.consensus_service import ConsensusActor
 from modules.delivery_runtime import wake_delivery_worker
 from modules.operations_runtime import wake_operations_worker
-from modules.tvrs_config import (
-    TVRS_PERMANENT_CHAIR_ID,
-    TVRS_TIMER_OPTIONS,
-)
-from modules.tvrs_embeds import (
-    build_result_embed,
-)
-from modules.tvrs_formatting import (
-    format_timer,
-)
-from modules.tvrs_delivery import (
-    build_control_dm_deliveries,
-)
-
+from modules.tvrs_config import TVRS_PERMANENT_CHAIR_ID, TVRS_TIMER_OPTIONS
+from modules.tvrs_embeds import build_result_embed
+from modules.tvrs_formatting import format_timer
+from modules.tvrs_delivery import build_control_dm_deliveries
 from modules.tvrs_presentation import (
     build_dm_vote_embed,
     build_live_vote_embed,
@@ -47,23 +34,18 @@ from modules.tvrs_registration_gate import (
 async def ensure_sticky_message(*args, **kwargs):
     from modules.tvrs_recovery import ensure_sticky_message as _implementation
     return await _implementation(*args, **kwargs)
-
 async def end_discussion(*args, **kwargs):
     from modules.tvrs_discussion import end_discussion as _implementation
     return await _implementation(*args, **kwargs)
-
 async def pause_session(*args, **kwargs):
     from modules.tvrs_discussion import pause_session as _implementation
     return await _implementation(*args, **kwargs)
-
 async def request_discussion(*args, **kwargs):
     from modules.tvrs_discussion import request_discussion as _implementation
     return await _implementation(*args, **kwargs)
-
 async def resume_session(*args, **kwargs):
     from modules.tvrs_discussion import resume_session as _implementation
     return await _implementation(*args, **kwargs)
-
 def session_voice_quorum_ready(*args, **kwargs):
     from modules.tvrs_discussion import session_voice_quorum_ready as _implementation
     return _implementation(*args, **kwargs)

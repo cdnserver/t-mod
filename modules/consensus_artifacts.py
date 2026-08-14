@@ -32,7 +32,7 @@ from persistence import core as persistence_core
 from persistence import tvrs_repository as storage
 
 
-_ARTIFACT_DESIGN_VERSION = 2
+_ARTIFACT_DESIGN_VERSION = 3
 _FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
@@ -59,12 +59,12 @@ _SERIF_BOLD_FONT_CANDIDATES = (
 )
 
 _DARK = colors.HexColor("#070A09")
-_PAPER = colors.HexColor("#F1EFE9")
-_INK = colors.HexColor("#111613")
-_MUTED = colors.HexColor("#667068")
-_GREEN = colors.HexColor("#557A60")
-_PALE_GREEN = colors.HexColor("#DCE6DD")
-_HAIRLINE = colors.HexColor("#C8CEC8")
+_PAPER = colors.HexColor("#070A09")
+_INK = colors.HexColor("#EEF2EC")
+_MUTED = colors.HexColor("#87968B")
+_GREEN = colors.HexColor("#73B483")
+_PALE_GREEN = colors.HexColor("#17261C")
+_HAIRLINE = colors.HexColor("#29372E")
 
 
 def _first_existing(candidates: tuple[str, ...]) -> str:
@@ -484,7 +484,7 @@ def generate_session_report(
         fontName=regular,
         fontSize=9.2,
         leading=14.2,
-        textColor=colors.HexColor("#2F3932"),
+        textColor=colors.HexColor("#C3CEC5"),
         spaceAfter=3 * mm,
     )
     body_small = ParagraphStyle(
@@ -696,13 +696,13 @@ def generate_session_report(
         metrics.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#E7E9E3")),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#101713")),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 2 * mm),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 2 * mm),
                     ("TOPPADDING", (0, 0), (-1, 0), 3.2 * mm),
                     ("BOTTOMPADDING", (0, -1), (-1, -1), 3.5 * mm),
-                    ("LINEAFTER", (0, 0), (-2, -1), 0.35, colors.HexColor("#CED3CC")),
+                    ("LINEAFTER", (0, 0), (-2, -1), 0.35, colors.HexColor("#27352C")),
                 ]
             )
         )
@@ -762,11 +762,11 @@ def generate_session_report(
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ("TOPPADDING", (0, 0), (-1, -1), 2.3 * mm),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2.3 * mm),
-            ("LINEBELOW", (0, 1), (-1, -1), 0.2, colors.HexColor("#D7DBD5")),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.2, colors.HexColor("#26332B")),
         ]
         for row_index in range(2, len(vote_rows), 2):
             vote_style.append(
-                ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#EAEAE5"))
+                ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#0E1511"))
             )
         votes.setStyle(TableStyle(vote_style))
         story.extend(
@@ -801,12 +801,30 @@ def generate_session_report(
         canvas.saveState()
         canvas.setFillColor(_PAPER)
         canvas.rect(0, 0, width, height, fill=1, stroke=0)
-        canvas.setStrokeColor(_PALE_GREEN)
-        canvas.setLineWidth(1.2)
+        canvas.setStrokeColor(colors.HexColor("#22362A"))
+        canvas.setLineWidth(0.55)
+        for radius in (31 * mm, 46 * mm, 63 * mm):
+            canvas.circle(width + 4 * mm, height + 2 * mm, radius, fill=0, stroke=1)
+        canvas.setStrokeColor(_GREEN)
+        canvas.setLineWidth(1.15)
         canvas.line(12 * mm, 18 * mm, 12 * mm, height - 18 * mm)
         canvas.setStrokeColor(_HAIRLINE)
         canvas.setLineWidth(0.35)
         canvas.line(20 * mm, height - 14 * mm, width - 20 * mm, height - 14 * mm)
+        result_index = int(doc.page) - 2
+        if 0 <= result_index < len(session.results):
+            result = session.results[result_index]
+            if hasattr(canvas, "setFillAlpha"):
+                canvas.setFillAlpha(0.045)
+            canvas.setFillColor(colors.HexColor("#CFE8D4"))
+            canvas.setFont(bold, 72)
+            canvas.drawRightString(
+                width - 16 * mm,
+                height - 48 * mm,
+                f"{int(result.bill_number):03d}",
+            )
+            if hasattr(canvas, "setFillAlpha"):
+                canvas.setFillAlpha(1)
         canvas.setFont(bold, 6.5)
         canvas.setFillColor(_GREEN)
         canvas.drawString(20 * mm, height - 10.5 * mm, "T-MOD  /  CONSENSUS")
