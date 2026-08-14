@@ -273,6 +273,41 @@
       `${compact} | ${staticId || "263345"} | ${preferred || "Иван"}`;
   }
 
+  function onboardingFeedback(message = "", kind = "") {
+    const node = byId("onboarding-feedback");
+    node.textContent = message;
+    node.dataset.kind = kind;
+    node.hidden = !message;
+  }
+
+  function validateOnboarding() {
+    const characterRequired = !byId("onboarding-character-fields").hidden;
+    const checks = [
+      ["onboarding-preferred-name", (value) => value.length >= 2 && value.length <= 24 && !value.includes("|"), "Укажите, как к вам обращаться: от 2 до 24 символов."],
+      ...(characterRequired ? [
+        ["onboarding-character-name", (value) => value.length >= 2 && value.split(/\s+/).filter(Boolean).length >= 2, "Укажите имя и фамилию персонажа через пробел."],
+        ["onboarding-character-static", (value) => /^[0-9]{1,12}$/.test(value), "Статик должен состоять из 1–12 цифр."],
+      ] : []),
+      ["onboarding-biography", (value) => value.length >= 3, "Коротко расскажите о себе — минимум 3 символа."],
+      ["onboarding-contribution", (value) => value.length >= 3, "Укажите, чем вы занимаетесь — минимум 3 символа."],
+      ["onboarding-responsibilities", (value) => value.length >= 3, "Укажите зону ответственности — минимум 3 символа."],
+      ["onboarding-membership-since", (value) => Boolean(value), "Укажите дату вступления."],
+    ];
+    document.querySelectorAll("#member-onboarding-form [aria-invalid='true']")
+      .forEach((node) => node.removeAttribute("aria-invalid"));
+    for (const [id, valid, message] of checks) {
+      const input = byId(id);
+      if (!valid(input.value.trim())) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+        onboardingFeedback(message, "error");
+        return false;
+      }
+    }
+    onboardingFeedback();
+    return true;
+  }
+
   function openOnboarding(editing = false) {
     if (!state.data) return;
     fillOnboarding(state.data, editing);
@@ -918,7 +953,13 @@
   byId("member-onboarding-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (state.busy) return;
-    setBusy(true, "Формируем ваш мандат", "Сохраняем личность и подключаем контур…");
+    if (!validateOnboarding()) return;
+    const submit = byId("onboarding-submit");
+    const originalLabel = submit.textContent;
+    state.busy = true;
+    submit.disabled = true;
+    submit.textContent = "Активируем…";
+    onboardingFeedback("Сохраняем личность и подключаем личный Реактор…");
     try {
       const result = await request("/api/reactor/onboarding", {
         method: "POST",
@@ -941,9 +982,13 @@
         ? "Мандат сформирован. Добро пожаловать в Реактор."
         : "Мандат сохранён. Ник Discord можно синхронизировать повторно в карточке.");
     } catch (error) {
-      toast(error.message, "error");
+      onboardingFeedback(error.message || "Не удалось активировать Реактор. Повторите попытку.", "error");
     } finally {
-      setBusy(false);
+      state.busy = false;
+      submit.disabled = false;
+      submit.textContent = state.onboardingRequired
+        ? originalLabel
+        : "Сохранить мой мандат";
     }
   });
   byId("mandate-sync-nickname").addEventListener("click", async () => {

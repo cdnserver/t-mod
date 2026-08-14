@@ -295,6 +295,7 @@ body[data-reactor-state="alert"] {
 .onboarding-form textarea:focus { border-color: rgba(143,240,190,.38); box-shadow: 0 0 0 3px rgba(143,240,190,.055); }
 .onboarding-character-fields,
 .onboarding-grid { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+.onboarding-character-fields[hidden] { display: none; }
 .onboarding-character-fields output {
   background: linear-gradient(100deg,rgba(143,240,190,.07),rgba(125,184,255,.035));
   border: 1px solid rgba(143,240,190,.13);
@@ -308,6 +309,27 @@ body[data-reactor-state="alert"] {
 .onboarding-character-fields output small { color: var(--mint); font-size: 10px; font-weight: 800; letter-spacing: .11em; }
 .onboarding-character-fields output strong { font-size: 13px; }
 .onboarding-date { max-width: 220px; }
+.onboarding-feedback {
+  background: rgba(143,240,190,.055);
+  border: 1px solid rgba(143,240,190,.18);
+  border-radius: 11px;
+  color: var(--mint);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  padding: 11px 13px;
+}
+.onboarding-feedback[data-kind="error"] {
+  background: rgba(255,112,112,.055);
+  border-color: rgba(255,112,112,.2);
+  color: #ffaaaa;
+}
+.onboarding-form input[aria-invalid="true"],
+.onboarding-form textarea[aria-invalid="true"] {
+  border-color: rgba(255,112,112,.62);
+  box-shadow: 0 0 0 3px rgba(255,112,112,.07);
+}
+.onboarding-form #onboarding-submit:disabled { cursor: wait; opacity: .72; }
 .onboarding-form > footer { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 15px; justify-content: space-between; margin-top: 26px; padding-top: 18px; }
 .onboarding-form > footer > span { color: var(--muted); font-size: 10px; }
 .onboarding-form > footer i { background: var(--mint); border-radius: 50%; box-shadow: 0 0 10px var(--mint); display: inline-block; height: 5px; margin-right: 5px; width: 5px; }

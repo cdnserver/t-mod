@@ -641,7 +641,7 @@ class TVRSPreparationView(_RequesterPortalView):
         self.add_item(
             discord.ui.Button(
                 label="Суфлёр ведущего",
-                emoji="◉",
+                emoji="🎙️",
                 style=discord.ButtonStyle.link,
                 url=consensus_web_entry_url(
                     guild_id=self.guild_id,

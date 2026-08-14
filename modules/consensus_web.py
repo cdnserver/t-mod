@@ -1956,7 +1956,7 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
     view.add_item(
         discord.ui.Button(
             label="Суфлёр ведущего",
-            emoji="◉",
+            emoji="🎙️",
             style=discord.ButtonStyle.link,
             url=host_url,
         )

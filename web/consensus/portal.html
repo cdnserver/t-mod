@@ -12,9 +12,9 @@
       content="Казна и законодательное пространство участника Товарищества."
     >
     <link rel="stylesheet" href="/assets/portal.css">
-    <link rel="stylesheet" href="/assets/portal-theme.css">
+    <link rel="stylesheet" href="/assets/portal-theme.css?v=2">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js" defer></script>
+    <script src="/assets/portal.js?v=2" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -516,7 +516,7 @@
           <li><b>03</b><span>Мандат<small>Деятельность и ответственность</small></span></li>
         </ol>
       </section>
-      <form id="member-onboarding-form" class="onboarding-form">
+      <form id="member-onboarding-form" class="onboarding-form" novalidate>
         <header><span><small>PERSONAL REACTOR</small><strong>Настройка личности</strong></span><button id="onboarding-close" type="button" aria-label="Закрыть" onclick="this.closest('dialog').close()" hidden>×</button></header>
         <label><span>Как вас называть</span><input id="onboarding-preferred-name" maxlength="24" autocomplete="name" placeholder="Иван" required><small>Это имя будет использовать Реактор.</small></label>
         <div id="onboarding-character-fields" class="onboarding-character-fields">
@@ -530,6 +530,7 @@
           <label><span>Зона ответственности</span><textarea id="onboarding-responsibilities" maxlength="700" rows="4" placeholder="За что отвечаете или хотите отвечать" required></textarea></label>
         </div>
         <label class="onboarding-date"><span>Дата вступления</span><input id="onboarding-membership-since" type="date" required></label>
+        <p id="onboarding-feedback" class="onboarding-feedback" role="status" aria-live="polite" hidden></p>
         <footer><span><i></i> Данные сохраняются в защищённом контуре T-Mod</span><button id="onboarding-submit" class="portal-primary" type="submit">Активировать личный Реактор</button></footer>
       </form>
     </dialog>

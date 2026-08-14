@@ -805,16 +805,19 @@ def register_reactor_web_routes(
         nickname = _nickname_state(principal.member, profile, characters)
         if not nickname["exempt"] and nickname["expected"] and not nickname["synced"]:
             try:
-                await principal.member.edit(
-                    nick=str(nickname["expected"]),
-                    reason="T-Mod: завершение онбординга участника Товарищества",
+                await asyncio.wait_for(
+                    principal.member.edit(
+                        nick=str(nickname["expected"]),
+                        reason="T-Mod: завершение онбординга участника Товарищества",
+                    ),
+                    timeout=8.0,
                 )
                 nickname = _nickname_state(principal.member, profile, characters)
                 # discord.py updates the object in normal operation, while
                 # lightweight test doubles may not.
                 nickname["current"] = str(nickname["expected"])
                 nickname["synced"] = True
-            except discord.DiscordException as exc:
+            except (discord.DiscordException, TimeoutError) as exc:
                 nickname["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
                 await log_technical_event(
                     bot,
