@@ -32,6 +32,7 @@
 * [Как устроено заседание](consensus/v3.md)
 * [Участнику: приглашение и голос](consensus/participant.md)
 * [Ведущему: от плана до протокола](consensus/chair.md)
+* [Сценарий ведущего: кнопки и реплики](consensus/host-script.md)
 * [Как считается решение](consensus/decision-rules.md)
 * [Трансляция и веб-бюллетень](consensus/web-panel.md)
 * [Учебный консенсус](consensus/simulator.md)
