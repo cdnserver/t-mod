@@ -32,6 +32,12 @@ def main() -> int:
         choices=("hourly", "daily", "manual", "pre-update", "startup"),
     )
     backup.add_argument("--note", default="")
+    backup.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="Abort a backup that exceeds this wall-clock budget.",
+    )
 
     check = subparsers.add_parser("check")
     check.add_argument("--full", action="store_true")
@@ -47,7 +53,11 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         if arguments.command == "backup":
-            payload = create_database_backup(arguments.kind, note=arguments.note)
+            payload = create_database_backup(
+                arguments.kind,
+                note=arguments.note,
+                timeout_seconds=arguments.timeout_seconds,
+            )
         elif arguments.command == "check":
             payload = check_live_database(full=arguments.full)
         elif arguments.command == "list":

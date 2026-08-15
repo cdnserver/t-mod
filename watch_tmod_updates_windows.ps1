@@ -2,7 +2,8 @@ param(
     [string]$ProjectDir = $PSScriptRoot,
     [string]$PersistentDir = "$env:USERPROFILE\Documents\SGLDiscordBot",
     [string]$Branch = "main",
-    [string]$Remote = "origin"
+    [string]$Remote = "origin",
+    [ValidateRange(15, 600)][int]$GitTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,14 +51,65 @@ function Write-WatcherLog([string]$Message) {
     )
 }
 
+function Get-RemoteCommitBounded {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][string]$RemoteName,
+        [Parameter(Mandatory = $true)][string]$BranchName,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $process.StartInfo.FileName = "git.exe"
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $safeDirectory = $Directory.Replace('"', '\"')
+    $safeRemote = $RemoteName.Replace('"', '\"')
+    $safeBranch = $BranchName.Replace('"', '\"')
+    $process.StartInfo.Arguments = (
+        '-C "{0}" -c credential.interactive=never -c http.lowSpeedLimit=1 ' +
+        '-c http.lowSpeedTime=20 ls-remote --exit-code "{1}" "refs/heads/{2}"'
+    ) -f $safeDirectory, $safeRemote, $safeBranch
+    try {
+        if (-not $process.Start()) { return $null }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            & taskkill.exe /PID $process.Id /T /F *> $null
+            $process.WaitForExit(5000) | Out-Null
+            Write-WatcherLog "Git remote check timed out after ${TimeoutSeconds}s"
+            return $null
+        }
+        if ($process.ExitCode -ne 0) {
+            $errorText = $stderr.Result.Trim()
+            if ($errorText) { Write-WatcherLog "Git remote check failed: $errorText" }
+            return $null
+        }
+        $line = ($stdout.Result -split "`r?`n" | Select-Object -First 1)
+        if (-not $line) { return $null }
+        return (($line -split "\s+")[0]).Trim()
+    }
+    catch {
+        Write-WatcherLog "Git remote check exception: $($_.Exception.Message)"
+        return $null
+    }
+    finally { $process.Dispose() }
+}
+
 try {
     $ProjectDir = (Resolve-Path -LiteralPath $ProjectDir).Path
     $UpdaterPath = Join-Path $ProjectDir "safe_update_windows.ps1"
+    $GuardedLauncherPath = Join-Path $ProjectDir "launch_tmod_guarded_windows.ps1"
     if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir ".git"))) {
         throw "Project directory is not a Git repository: $ProjectDir"
     }
     if (-not (Test-Path -LiteralPath $UpdaterPath)) {
         throw "Safe updater is missing: $UpdaterPath"
+    }
+    if (-not (Test-Path -LiteralPath $GuardedLauncherPath)) {
+        throw "Guarded launcher is missing: $GuardedLauncherPath"
     }
 
     $CurrentCommit = (& git -C $ProjectDir rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
@@ -68,20 +120,18 @@ try {
     $previousPrompt = $env:GIT_TERMINAL_PROMPT
     $env:GIT_TERMINAL_PROMPT = "0"
     try {
-        $remoteLine = & git -C $ProjectDir `
-            -c credential.interactive=never `
-            -c http.lowSpeedLimit=1 `
-            -c http.lowSpeedTime=20 `
-            ls-remote --exit-code $Remote "refs/heads/$Branch" 2>$null |
-            Select-Object -First 1
+        $RemoteCommit = Get-RemoteCommitBounded `
+            -Directory $ProjectDir `
+            -RemoteName $Remote `
+            -BranchName $Branch `
+            -TimeoutSeconds $GitTimeoutSeconds
     }
     finally { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
 
-    if ($LASTEXITCODE -ne 0 -or -not $remoteLine) {
+    if (-not $RemoteCommit) {
         Write-WatcherState -State "offline" -Message "GitHub временно недоступен; работающая версия не изменена." -CurrentCommit $CurrentCommit
         exit 0
     }
-    $RemoteCommit = (($remoteLine -split "\s+")[0]).Trim()
     if ($CurrentCommit -eq $RemoteCommit) {
         Write-WatcherState -State "current" -Message "Установлена актуальная версия." -CurrentCommit $CurrentCommit -RemoteCommit $RemoteCommit
         exit 0
@@ -110,7 +160,7 @@ try {
     Write-WatcherLog "Update detected: $shortCurrent -> $shortRemote"
 
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-        -File $UpdaterPath `
+        -File $GuardedLauncherPath `
         -ProjectDir $ProjectDir `
         -PersistentDir $PersistentDir `
         -Branch $Branch `

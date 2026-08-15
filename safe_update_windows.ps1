@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)][string]$ProjectDir,
     [string]$PersistentDir = "C:\Users\Admin\Documents\SGLDiscordBot",
     [string]$Branch = "main",
-    [string]$Remote = "origin"
+    [string]$Remote = "origin",
+    [ValidateRange(15, 600)][int]$GitTimeoutSeconds = 90,
+    [ValidateRange(60, 3600)][int]$BackupTimeoutSeconds = 600
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,43 @@ function Invoke-Native {
     }
 }
 
+function Invoke-GitFetchBounded {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][string]$RemoteName,
+        [Parameter(Mandatory = $true)][string]$BranchName,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $process.StartInfo.FileName = "git.exe"
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    $safeDirectory = $Directory.Replace('"', '\"')
+    $safeRemote = $RemoteName.Replace('"', '\"')
+    $safeBranch = $BranchName.Replace('"', '\"')
+    $process.StartInfo.Arguments = (
+        '-C "{0}" -c credential.interactive=never -c http.lowSpeedLimit=1 ' +
+        '-c http.lowSpeedTime=20 fetch --prune "{1}" ' +
+        '"+refs/heads/{2}:refs/remotes/{1}/{2}"'
+    ) -f $safeDirectory, $safeRemote, $safeBranch
+    try {
+        if (-not $process.Start()) { return 125 }
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Write-Host "[SAFE UPDATE] Git fetch exceeded ${TimeoutSeconds}s; terminating it." -ForegroundColor Yellow
+            & taskkill.exe /PID $process.Id /T /F *> $null
+            $process.WaitForExit(5000) | Out-Null
+            return 124
+        }
+        return $process.ExitCode
+    }
+    catch {
+        Write-Host "[SAFE UPDATE] Git fetch could not start: $($_.Exception.Message)" -ForegroundColor Yellow
+        return 125
+    }
+    finally { $process.Dispose() }
+}
+
 function Test-ImageExists([string]$Image) {
     & docker image inspect $Image *> $null
     return $LASTEXITCODE -eq 0
@@ -88,9 +127,15 @@ function Invoke-CurrentRuntime {
 function New-PreUpdateBackup {
     param([string]$Note)
     $output = $null
+    Write-Host "[SAFE UPDATE] Creating a consistent database backup (limit ${BackupTimeoutSeconds}s) ..."
     & docker inspect tmod-discord-bot *> $null
     if ($LASTEXITCODE -eq 0) {
-        $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note 2>&1
+        $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note --timeout-seconds $BackupTimeoutSeconds 2>&1
+        if ($LASTEXITCODE -ne 0 -and ($output | Out-String) -match "unrecognized arguments:.*timeout-seconds") {
+            # One-release compatibility path: the running image may predate the
+            # bounded CLI flag. The outer launch guard still supplies a hard cap.
+            $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note 2>&1
+        }
         if ($LASTEXITCODE -eq 0) {
             try { return (($output | Out-String | ConvertFrom-Json).result.path) } catch {}
         }
@@ -102,7 +147,16 @@ function New-PreUpdateBackup {
             --env "TMOD_DB_BACKUP_DIR=/app/persistent/backups/database" `
             --mount "type=bind,source=$PersistentDir,target=/app/persistent" `
             tmod-discord-bot:latest `
-            python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note 2>&1
+            python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note --timeout-seconds $BackupTimeoutSeconds 2>&1
+        if ($LASTEXITCODE -ne 0 -and ($output | Out-String) -match "unrecognized arguments:.*timeout-seconds") {
+            $output = & docker run --rm --user 0:0 `
+                --env "DATA_DIR=/app/persistent/data" `
+                --env "DATABASE_FILE=/app/persistent/data/tmod.db" `
+                --env "TMOD_DB_BACKUP_DIR=/app/persistent/backups/database" `
+                --mount "type=bind,source=$PersistentDir,target=/app/persistent" `
+                tmod-discord-bot:latest `
+                python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note 2>&1
+        }
         if ($LASTEXITCODE -eq 0) {
             try { return (($output | Out-String | ConvertFrom-Json).result.path) } catch {}
         }
@@ -116,7 +170,7 @@ function New-PreUpdateBackup {
         $env:DATA_DIR = Join-Path $PersistentDir "data"
         $env:DATABASE_FILE = $database
         $env:TMOD_DB_BACKUP_DIR = Join-Path $PersistentDir "backups\database"
-        $output = & py -3 (Join-Path $ProjectDir "scripts\tmod_db_guard.py") backup --kind pre-update --note $Note 2>&1
+        $output = & py -3 (Join-Path $ProjectDir "scripts\tmod_db_guard.py") backup --kind pre-update --note $Note --timeout-seconds $BackupTimeoutSeconds 2>&1
         if ($LASTEXITCODE -eq 0) {
             try { return (($output | Out-String | ConvertFrom-Json).result.path) } catch {}
         }
@@ -178,16 +232,15 @@ try {
     $OldCommit = (& git -C $ProjectDir rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Project is not a Git repository" }
 
-    Write-Host "[SAFE UPDATE] Fetching $Remote/$Branch (non-interactive, 20s stall limit) ..."
+    Write-Host "[SAFE UPDATE] Fetching $Remote/$Branch (non-interactive, ${GitTimeoutSeconds}s hard limit) ..."
     $previousPrompt = $env:GIT_TERMINAL_PROMPT
     $env:GIT_TERMINAL_PROMPT = "0"
     try {
-        & git -C $ProjectDir `
-            -c credential.interactive=never `
-            -c http.lowSpeedLimit=1 `
-            -c http.lowSpeedTime=20 `
-            fetch --prune $Remote "+refs/heads/${Branch}:refs/remotes/${Remote}/${Branch}"
-        $fetchExitCode = $LASTEXITCODE
+        $fetchExitCode = Invoke-GitFetchBounded `
+            -Directory $ProjectDir `
+            -RemoteName $Remote `
+            -BranchName $Branch `
+            -TimeoutSeconds $GitTimeoutSeconds
     }
     finally { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
     if ($fetchExitCode -ne 0) {
@@ -287,7 +340,9 @@ catch {
         if ($RollbackSupervisorImage) { Invoke-Native docker tag $RollbackSupervisorImage tmod-minecraft-supervisor:latest }
         if ($OldCommit -ne "unknown") { Restore-CodeRevision $OldCommit }
         $databaseRestored = Restore-DatabaseIfCorrupt
-        $rollbackCode = Invoke-CurrentRuntime -Directory $ProjectDir -SkipBuild $true
+        # If there was no known-good image before the update, rebuild the restored
+        # old commit instead of ever starting an untested candidate image.
+        $rollbackCode = Invoke-CurrentRuntime -Directory $ProjectDir -SkipBuild ([bool]$RollbackImage)
         if ($rollbackCode -ne 0) { throw "Previous release could not be restarted" }
         Write-UpdateStatus -State "rolled_back" -Message "Новый релиз отклонён; предыдущая версия автоматически восстановлена." -Extra @{
             error = $failure

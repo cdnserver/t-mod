@@ -7,7 +7,6 @@ chcp 65001 >nul
 set "REPO_URL=https://github.com/cdnserver/t-mod.git"
 set "BRANCH=main"
 set "SELF_DIR=%~dp0"
-set "STASH_CREATED=0"
 
 rem The launcher can be run either from the repository or from the Desktop.
 if exist "%SELF_DIR%.git" if exist "%SELF_DIR%run_windows.bat" goto running_from_repo
@@ -51,62 +50,18 @@ goto repository_ready
 
 :repository_ready
 if not exist "%PROJECT_DIR%\safe_update_windows.ps1" goto legacy_update
+if not exist "%PROJECT_DIR%\launch_tmod_guarded_windows.ps1" goto legacy_update
 echo [SAFE UPDATE] Transactional updater enabled.
 call :log "Starting transactional update and guarded deployment"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\safe_update_windows.ps1" -ProjectDir "%PROJECT_DIR%" -PersistentDir "%USERPROFILE%\Documents\SGLDiscordBot" -Branch "%BRANCH%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\launch_tmod_guarded_windows.ps1" -ProjectDir "%PROJECT_DIR%" -PersistentDir "%USERPROFILE%\Documents\SGLDiscordBot" -Branch "%BRANCH%"
 set "BOT_EXIT_CODE=%ERRORLEVEL%"
 call :log "Transactional updater finished with exit code %BOT_EXIT_CODE%"
 if not "%BOT_EXIT_CODE%"=="0" goto fatal_error
 exit /b 0
 
 :legacy_update
-echo [GIT] Checking GitHub for updates...
-set "GIT_TERMINAL_PROMPT=0"
-git -C "%PROJECT_DIR%" remote get-url origin >nul 2>nul
-if errorlevel 1 git -C "%PROJECT_DIR%" remote add origin "%REPO_URL%"
-git -C "%PROJECT_DIR%" remote set-url origin "%REPO_URL%"
-if errorlevel 1 goto update_failed
-
-set "OLD_COMMIT=unknown"
-for /f "delims=" %%H in ('git -C "%PROJECT_DIR%" rev-parse HEAD 2^>nul') do set "OLD_COMMIT=%%H"
-
-git -C "%PROJECT_DIR%" -c credential.interactive=never -c http.lowSpeedLimit=1 -c http.lowSpeedTime=20 fetch --prune origin "+refs/heads/%BRANCH%:refs/remotes/origin/%BRANCH%"
-if errorlevel 1 goto github_unavailable
-
-git -C "%PROJECT_DIR%" status --porcelain --untracked-files=normal | findstr /r "." >nul 2>nul
-if errorlevel 1 goto working_tree_clean
-
-call :timestamp
-echo [GIT] Local changes found. Saving them in Git stash...
-git -C "%PROJECT_DIR%" stash push --include-untracked -m "T-Mod launcher backup %STAMP%"
-if errorlevel 1 goto update_failed
-set "STASH_CREATED=1"
-call :log "Local changes saved in Git stash: T-Mod launcher backup %STAMP%"
-
-:working_tree_clean
-git -C "%PROJECT_DIR%" checkout -B "%BRANCH%" "origin/%BRANCH%"
-if errorlevel 1 goto update_failed
-git -C "%PROJECT_DIR%" branch --set-upstream-to="origin/%BRANCH%" "%BRANCH%" >nul 2>nul
-
-set "NEW_COMMIT=unknown"
-for /f "delims=" %%H in ('git -C "%PROJECT_DIR%" rev-parse HEAD 2^>nul') do set "NEW_COMMIT=%%H"
-
-if /i "%OLD_COMMIT%"=="%NEW_COMMIT%" goto already_current
-echo [OK] T-Mod was updated to the latest %BRANCH% version.
-echo [GIT] Previous commit: %OLD_COMMIT%
-echo [GIT] Current commit:  %NEW_COMMIT%
-call :log "Updated from %OLD_COMMIT% to %NEW_COMMIT%"
-goto start_bot
-
-:already_current
-echo [OK] T-Mod is already up to date.
-call :log "No update required. Current commit: %NEW_COMMIT%"
-goto start_bot
-
-:github_unavailable
-echo [WARN] GitHub is unavailable or the update check failed.
-echo [WARN] Starting the currently installed version.
-call :log "GitHub update check failed; starting current version"
+echo [WARN] Safe updater is missing. Repository files will not be modified.
+call :log "Safe updater is missing; starting current version without update"
 goto start_bot
 
 :git_not_found
@@ -123,7 +78,6 @@ goto start_bot
 
 :update_failed
 echo [WARN] The project could not be updated safely.
-if "%STASH_CREATED%"=="1" call :restore_stash
 if exist "%PROJECT_DIR%\run_windows.bat" goto start_after_update_error
 call :log "Update failed and run_windows.bat is missing"
 goto fatal_error
@@ -163,12 +117,6 @@ echo [FAIL] run_windows.bat is missing from:
 echo        %PROJECT_DIR%
 call :log "run_windows.bat is missing"
 goto fatal_error
-
-:restore_stash
-echo [GIT] Restoring local changes because the update failed...
-git -C "%PROJECT_DIR%" stash pop >nul 2>nul
-if errorlevel 1 echo [WARN] Automatic stash restore failed. Run: git -C "%PROJECT_DIR%" stash list
-exit /b 0
 
 :fatal_error
 echo.
