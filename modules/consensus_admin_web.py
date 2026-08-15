@@ -492,12 +492,18 @@ def register_admin_web_routes(
                 target_url = (
                     "https://atlas.tvr.lat/"
                     if atlas_access
-                    else "https://tvr.lat/reactor#ovr"
+                    else "https://ovr.tvr.lat/"
                     if ovr_access
                     else f"https://reactor.tvr.lat/admin#/{section}"
                 )
                 embed = discord.Embed(
-                    title="Доступ к Atlas AI" if atlas_access else "Доступ к Ядерному Реактору",
+                    title=(
+                        "Доступ к Atlas AI"
+                        if atlas_access
+                        else "Доступ к порталу ОВР"
+                        if ovr_access
+                        else "Доступ к Ядерному Реактору"
+                    ),
                     description=(
                         f"Вам открыт раздел **{label}**.\n\n"
                         "Войдите с вашим логином и восьмизначным PIN."

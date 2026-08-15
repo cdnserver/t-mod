@@ -514,6 +514,18 @@ def register_reactor_web_routes(
     async def reactor_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "portal.html")
 
+    async def ovr_index(request: web.Request) -> web.StreamResponse:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPSeeOther(location="/login?next=/ovr")
+        if not principal.guild_member:
+            raise web.HTTPForbidden(text="Портал ОВР доступен только участникам сервера.")
+        if not await has_ovr_access(principal):
+            raise web.HTTPForbidden(
+                text="Доступ к порталу ОВР выдаётся администратором вручную."
+            )
+        return web.FileResponse(asset_dir / "ovr.html")
+
     async def personal_request(request: web.Request) -> ConsensusWebPrincipal:
         principal, legacy = await authenticate(request)
         if legacy or principal is None:
@@ -1148,25 +1160,31 @@ def register_reactor_web_routes(
 
     async def ovr_get(request: web.Request) -> web.Response:
         principal = await personal_request(request)
-        full_access = await has_ovr_access(principal)
+        if not await has_ovr_access(principal):
+            return web.json_response(
+                {
+                    "error": "ovr_access_required",
+                    "message": "Доступ к порталу ОВР выдаётся администратором вручную.",
+                },
+                status=403,
+            )
         cases = await asyncio.to_thread(
             ovr_storage.list_cases,
             int(guild_id),
             actor_id=int(principal.user_id),
-            full_access=full_access,
+            full_access=True,
         )
         events: dict[str, list[dict[str, Any]]] = {}
-        if full_access:
-            event_rows = await asyncio.gather(
-                *(asyncio.to_thread(ovr_storage.case_events, int(item["id"])) for item in cases)
-            )
-            events = {
-                str(case["id"]): rows for case, rows in zip(cases, event_rows, strict=True)
-            }
+        event_rows = await asyncio.gather(
+            *(asyncio.to_thread(ovr_storage.case_events, int(item["id"])) for item in cases)
+        )
+        events = {
+            str(case["id"]): rows for case, rows in zip(cases, event_rows, strict=True)
+        }
         return web.json_response(
             {
                 "viewer": viewer(principal),
-                "full_access": full_access,
+                "full_access": True,
                 "cases": cases,
                 "events": events,
             }
@@ -1174,6 +1192,14 @@ def register_reactor_web_routes(
 
     async def ovr_command(request: web.Request) -> web.Response:
         principal = await personal_request(request)
+        if not await has_ovr_access(principal):
+            return web.json_response(
+                {
+                    "error": "ovr_access_required",
+                    "message": "Доступ к порталу ОВР выдаётся администратором вручную.",
+                },
+                status=403,
+            )
         body = await json_body(request, principal)
         action = str(body.get("action") or "").strip().lower()
         actor_profile = await asyncio.to_thread(
@@ -1204,14 +1230,6 @@ def register_reactor_web_routes(
                     actor_display=actor_display,
                 )
                 return web.json_response({"ok": True, "case": case})
-            if not await has_ovr_access(principal):
-                return web.json_response(
-                    {
-                        "error": "ovr_access_required",
-                        "message": "Полное досье доступно только сотрудникам ОВР.",
-                    },
-                    status=403,
-                )
             case = await asyncio.to_thread(
                 ovr_storage.update_case,
                 int(body.get("case_id") or 0),
@@ -1812,12 +1830,16 @@ def register_reactor_web_routes(
 
     app.router.add_get("/reactor", reactor_index)
     app.router.add_get("/reactor/", reactor_index)
+    app.router.add_get("/ovr", ovr_index)
+    app.router.add_get("/ovr/", ovr_index)
     app.router.add_get("/api/reactor/home", member_home)
     app.router.add_post("/api/reactor/onboarding", onboarding_command)
     app.router.add_get("/api/reactor/legislation", legislation_get)
     app.router.add_post("/api/reactor/legislation", legislation_command)
     app.router.add_get("/api/reactor/ovr", ovr_get)
     app.router.add_post("/api/reactor/ovr", ovr_command)
+    app.router.add_get("/api/ovr", ovr_get)
+    app.router.add_post("/api/ovr", ovr_command)
     app.router.add_post("/api/reactor/preferences", preferences)
     app.router.add_get("/api/reactor/notifications", notifications)
     app.router.add_post("/api/reactor/notifications/read", read_notifications)

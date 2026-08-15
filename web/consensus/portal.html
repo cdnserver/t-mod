@@ -40,7 +40,6 @@
           <a href="#treasury">Казна</a>
           <a href="#legislation">Законопроекты</a>
           <a href="#tasks">Общие задачи</a>
-          <a href="#ovr">ОВР</a>
           <a class="nav-accent" href="#editor">Создать проект</a>
           <a href="https://tvr.lat/games">T-Mod Games</a>
           <a href="https://consensus.tvr.lat/">Консенсус</a>
@@ -467,14 +466,16 @@
 
           <article id="tasks" class="portal-widget tasks-widget" data-portal-widget="tasks">
             <header><span>ОБЩАЯ ДОСКА ЗАКОНОПРОЕКТОВ</span><b>СОВМЕСТНАЯ РАБОТА</b></header>
-            <div class="governance-heading"><div><small>ПРОЗРАЧНО ДЛЯ ВСЕХ</small><h2>Что нужно сделать</h2><p>Задачи из принятых решений и самостоятельные поручения Товарищества.</p></div><button id="task-new" type="button">Добавить задачу</button></div>
+            <div class="task-command">
+              <div class="governance-heading"><div><small>ЕДИНЫЙ РАБОЧИЙ РИТМ</small><h2>От решения к результату</h2><p>Задачи из принятых законопроектов и самостоятельные поручения Товарищества — с ответственностью, сроками и видимым прогрессом.</p></div><button id="task-new" type="button"><span>＋</span> Новая задача</button></div>
+              <div class="task-overview">
+                <span><small>ОТКРЫТО</small><strong id="task-open-count">0</strong></span>
+                <span><small>В РАБОТЕ</small><strong id="task-active-count">0</strong></span>
+                <span><small>ТРЕБУЮТ ВНИМАНИЯ</small><strong id="task-blocked-count">0</strong></span>
+                <div class="task-progress"><span><i id="task-progress-fill"></i></span><small id="task-progress-label">0% завершено</small></div>
+              </div>
+            </div>
             <div id="task-board" class="task-board"></div>
-          </article>
-
-          <article id="ovr" class="portal-widget ovr-widget" data-portal-widget="ovr">
-            <header><span>ОТДЕЛ ВНЕШНЕЙ РАЗВЕДКИ</span><b id="ovr-access-state">ПРИЁМ ОБРАЩЕНИЙ</b></header>
-            <div class="ovr-hero"><span class="ovr-mark">ОВР<i></i></span><div><small>BECKER SYSTEMS × TVR.LAT</small><h2>Проверка кандидатов</h2><p>Каждая инициатива о вступлении получает отдельное дело и решение ОВР не позднее 48 часов.</p></div><button id="ovr-new" type="button">Передать кандидата</button></div>
-            <div id="ovr-cases" class="ovr-cases"></div>
           </article>
 
           <article
@@ -625,10 +626,6 @@
 
     <dialog id="task-dialog" class="portal-dialog form-dialog">
       <form id="task-form"><header><small>ОБЩАЯ ДОСКА</small><h2>Новая задача</h2><p>Задача сразу станет видна всем участникам.</p></header><label><span>Название</span><input id="task-title" maxlength="180" required></label><label><span>Описание</span><textarea id="task-description" maxlength="2000" rows="5"></textarea></label><div class="form-grid"><label><span>Приоритет</span><select id="task-priority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="critical">Критический</option><option value="low">Низкий</option></select></label><label><span>Срок</span><input id="task-due" type="date"></label></div><footer><button type="button" onclick="this.closest('dialog').close()">Отмена</button><button class="portal-primary" type="submit">Создать задачу</button></footer></form>
-    </dialog>
-
-    <dialog id="ovr-dialog" class="portal-dialog form-dialog ovr-dialog">
-      <form id="ovr-form"><header><small>ДЕЛО О ВСТУПЛЕНИИ</small><h2>Передать кандидата в ОВР</h2><p>После регистрации у отдела будет 48 часов на проверку.</p></header><div class="form-grid"><label><span>Имя</span><input id="ovr-first-name" maxlength="80" required></label><label><span>Фамилия</span><input id="ovr-last-name" maxlength="80" required></label><label><span>Статик</span><input id="ovr-static" maxlength="12" inputmode="numeric" required></label><label><span>Discord</span><input id="ovr-discord" maxlength="200" required></label></div><label><span>Ссылка на форум</span><input id="ovr-forum" type="url" maxlength="500" placeholder="https://forum.majestic-rp.ru/..."></label><label><span>Дополнительная известная информация</span><textarea id="ovr-additional" maxlength="3000" rows="6"></textarea></label><footer><button type="button" onclick="this.closest('dialog').close()">Отмена</button><button class="portal-primary" type="submit">Зарегистрировать дело</button></footer></form>
     </dialog>
 
     <div id="portal-busy" class="portal-busy" hidden>

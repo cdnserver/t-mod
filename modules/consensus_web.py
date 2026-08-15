@@ -144,6 +144,10 @@ SGL_WEB_PUBLIC_URL = _configured_surface_url(
     "SGL_WEB_PUBLIC_URL",
     "https://sgl.tvr.lat",
 )
+OVR_WEB_PUBLIC_URL = _configured_surface_url(
+    "OVR_WEB_PUBLIC_URL",
+    "https://ovr.tvr.lat",
+)
 
 
 def _configured_guild_id() -> int:
@@ -960,6 +964,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = ATLAS_WEB_PUBLIC_URL
     elif belongs_to("/sgl"):
         target_url = SGL_WEB_PUBLIC_URL
+    elif belongs_to("/ovr") or path.startswith("/api/ovr"):
+        target_url = OVR_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
@@ -971,6 +977,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             target_url = ATLAS_WEB_PUBLIC_URL
         elif next_path == "/sgl":
             target_url = SGL_WEB_PUBLIC_URL
+        elif next_path == "/ovr":
+            target_url = OVR_WEB_PUBLIC_URL
         else:
             target_url = consensus_url
     if not target_url:
@@ -990,6 +998,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             PORTAL_WEB_PUBLIC_URL,
             ATLAS_WEB_PUBLIC_URL,
             ZIGMUND_WEB_PUBLIC_URL,
+            SGL_WEB_PUBLIC_URL,
+            OVR_WEB_PUBLIC_URL,
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1126,6 +1136,8 @@ def create_consensus_web_app(
             "portal.css",
             "portal-theme.css",
             "portal.js",
+            "ovr.css",
+            "ovr.js",
             "games.css",
             "games.js",
             "manrope-cyrillic.woff2",
@@ -1146,7 +1158,7 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
@@ -1270,7 +1282,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1295,7 +1307,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1452,6 +1464,8 @@ def create_consensus_web_app(
         destination = (
             "/login?next=/admin"
             if host.startswith("reactor.")
+            else "/login?next=/ovr"
+            if host.startswith("ovr.")
             else "/login?next=/reactor"
             if host == "tvr.lat"
             else "/"

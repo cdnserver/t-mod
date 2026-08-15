@@ -8,7 +8,6 @@
     my_bills: "Мои законопроекты",
     editor: "Законодательная мастерская",
     tasks: "Общая доска",
-    ovr: "Отдел внешней разведки",
     games: "T-Mod Games",
     consensus: "Консенсус",
     notifications: "Уведомления",
@@ -29,7 +28,6 @@
     data: null,
     workspace: null,
     executionBlocks: [],
-    ovr: { full_access: false, cases: [], events: {} },
     bills: [],
     billsVisible: 6,
     activeEditorTab: "idea",
@@ -942,23 +940,66 @@
     renderTasks(legislation.tasks || []);
   }
 
-  const taskColumns = [["planned", "ПОСЛЕ ПРИНЯТИЯ"], ["todo", "НУЖНО СДЕЛАТЬ"], ["in_progress", "В РАБОТЕ"], ["blocked", "ТРЕБУЕТ ВНИМАНИЯ"], ["done", "ГОТОВО"]];
+  const taskColumns = [
+    { id: "queue", statuses: ["planned", "todo"], title: "ОЧЕРЕДЬ", subtitle: "Запланировано и готово к старту" },
+    { id: "active", statuses: ["in_progress"], title: "В РАБОТЕ", subtitle: "Текущие обязательства" },
+    { id: "blocked", statuses: ["blocked"], title: "ВНИМАНИЕ", subtitle: "Нужна помощь или решение" },
+    { id: "done", statuses: ["done"], title: "ВЫПОЛНЕНО", subtitle: "Доведено до результата" },
+  ];
+  const taskPriorityLabels = { low: "Низкий", normal: "Обычный", high: "Высокий", critical: "Критический" };
+
+  function taskDeadline(task) {
+    if (!task.due_at) return { text: "Без срока", tone: "" };
+    const due = new Date(task.due_at);
+    if (Number.isNaN(due.getTime())) return { text: String(task.due_at), tone: "" };
+    const overdue = task.status !== "done" && due.getTime() < Date.now();
+    return { text: `${overdue ? "Просрочено · " : "До "}${formatMoment(task.due_at)}`, tone: overdue ? "overdue" : "" };
+  }
+
+  function taskAction(task, label, status, tone = "default") {
+    const button = el("button", "task-action", label);
+    button.type = "button";
+    button.dataset.tone = tone;
+    button.addEventListener("click", () => void updateTask(task, status));
+    return button;
+  }
+
   function renderTasks(tasks) {
-    byId("task-board").replaceChildren(...taskColumns.map(([status, title]) => {
+    const open = tasks.filter((task) => task.status !== "done").length;
+    const done = tasks.filter((task) => task.status === "done").length;
+    const progress = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
+    byId("task-open-count").textContent = String(open);
+    byId("task-active-count").textContent = String(tasks.filter((task) => task.status === "in_progress").length);
+    byId("task-blocked-count").textContent = String(tasks.filter((task) => task.status === "blocked").length);
+    byId("task-progress-fill").style.width = `${progress}%`;
+    byId("task-progress-label").textContent = `${progress}% завершено`;
+    byId("task-board").replaceChildren(...taskColumns.map((definition) => {
       const column = el("section", "task-column");
-      const items = tasks.filter((task) => task.status === status);
-      const header = el("header"); header.append(el("span", "", title), el("b", "", items.length)); column.append(header);
+      column.dataset.column = definition.id;
+      const items = tasks.filter((task) => definition.statuses.includes(task.status));
+      const header = el("header");
+      const copy = el("div"); copy.append(el("span", "", definition.title), el("small", "", definition.subtitle));
+      header.append(copy, el("b", "", items.length)); column.append(header);
       items.forEach((task) => {
-        const card = el("article", "task-card"); card.dataset.priority = task.priority || "normal";
-        card.append(el("h3", "", task.title), el("p", "", task.description || "Без дополнительного описания."));
-        const footer = el("footer"); footer.append(el("span", "task-source", task.bill_number ? `Законопроект №${task.bill_number}` : task.assignee_display || "Общая задача"));
-        if (task.status !== "planned") {
-          const next = task.status === "todo" ? "in_progress" : task.status === "in_progress" ? "done" : task.status === "blocked" ? "in_progress" : "todo";
-          const button = el("button", "", task.status === "done" ? "Вернуть" : task.status === "todo" ? "Взять в работу" : "Изменить");
-          button.type = "button"; button.addEventListener("click", () => void updateTask(task, next)); footer.append(button);
-        }
-        card.append(footer); column.append(card);
+        const card = el("article", "task-card");
+        card.dataset.priority = task.priority || "normal";
+        card.dataset.status = task.status;
+        const top = el("div", "task-card-top");
+        top.append(el("span", "task-priority", taskPriorityLabels[task.priority] || taskPriorityLabels.normal));
+        const deadline = taskDeadline(task); top.append(el("span", `task-deadline ${deadline.tone}`, deadline.text));
+        card.append(top, el("h3", "", task.title), el("p", "", task.description || "Без дополнительного описания."));
+        const origin = el("div", "task-origin");
+        origin.append(el("span", "task-origin-mark", task.bill_number ? "§" : "✓"), el("span", "task-source", task.bill_number ? `Законопроект №${task.bill_number}` : task.assignee_display || "Общая задача"));
+        card.append(origin);
+        const actions = el("footer", "task-actions");
+        if (task.status === "planned") actions.append(el("span", "task-status-note", "Ожидает принятия решения"));
+        if (task.status === "todo") actions.append(taskAction(task, "Начать работу", "in_progress", "primary"));
+        if (task.status === "in_progress") actions.append(taskAction(task, "Нужна помощь", "blocked", "warning"), taskAction(task, "Завершить", "done", "primary"));
+        if (task.status === "blocked") actions.append(taskAction(task, "Возобновить", "in_progress", "primary"));
+        if (task.status === "done") actions.append(taskAction(task, "Вернуть в очередь", "todo"));
+        card.append(actions); column.append(card);
       });
+      if (!items.length) column.append(el("div", "task-column-empty", "Здесь пока нет задач."));
       return column;
     }));
   }
@@ -968,46 +1009,6 @@
       await request("/api/reactor/legislation", { method: "POST", body: JSON.stringify({ action: "task_update", task_id: task.id, expected_revision: task.revision, status }) });
       await loadLegislation(true);
     } catch (error) { toast(error.message, "error"); }
-  }
-
-  function renderOvr(data = state.ovr) {
-    state.ovr = data;
-    byId("ovr-access-state").textContent = data.full_access ? "ЗАКРЫТЫЙ КОНТУР" : "ПРИЁМ ОБРАЩЕНИЙ";
-    byId("ovr-cases").replaceChildren(...(data.cases || []).map((item) => {
-      const card = el("button", "ovr-case"); card.type = "button"; card.dataset.risk = item.risk_level || "unrated";
-      card.append(el("small", "", `ДЕЛО ОВР-${String(item.case_number).padStart(3, "0")} · ДО ${formatMoment(item.due_at)}`), el("h3", "", `${item.first_name} ${item.last_name}`), el("p", "", `Статик ${item.static_id} · ${item.discord_text}`));
-      const footer = el("footer"); footer.append(el("span", "", item.assigned_to_display || "Ожидает сотрудника"), el("b", "", String(item.status || "new").toUpperCase())); card.append(footer);
-      card.addEventListener("click", () => openOvrCase(item)); return card;
-    }));
-    if (!(data.cases || []).length) byId("ovr-cases").append(el("div", "portal-empty", data.full_access ? "Новых дел нет." : "Вы ещё не передавали кандидатов в ОВР."));
-  }
-
-  function openOvrCase(item) {
-    byId("governance-dialog-kicker").textContent = `ОВР-${String(item.case_number).padStart(3, "0")}`;
-    byId("governance-dialog-title").textContent = `${item.first_name} ${item.last_name}`;
-    const body = byId("governance-dialog-body");
-    const dossier = el("article"); dossier.append(el("h3", "", "Базовая анкета"), el("p", "", `Статик: ${item.static_id}\nDiscord: ${item.discord_text}\nФорум: ${item.forum_url || "не указан"}\n\n${item.additional_info || "Дополнительных сведений нет."}`)); body.replaceChildren(dossier);
-    if (state.ovr.full_access) {
-      const findings = el("textarea"); findings.rows = 5; findings.placeholder = "Собранные сведения"; findings.value = item.findings || "";
-      const nowa = el("textarea"); nowa.rows = 3; nowa.placeholder = "Связи с семьёй Nowa"; nowa.value = item.nowa_links || "";
-      const risk = el("select"); [["unrated","Риск не определён"],["low","Низкий риск"],["medium","Средний риск"],["high","Высокий риск"],["critical","Критический риск"]].forEach(([value,label])=>{const option=el("option","",label);option.value=value;option.selected=value===item.risk_level;risk.append(option)});
-      const note = el("textarea"); note.rows = 3; note.placeholder = "Служебная запись или основание решения";
-      const actions = el("div", "moderation-actions"); [["claim","Взять дело"],["update","Сохранить досье"],["needs_info","Запросить сведения"],["approve","Допустить"],["deny","Отказать"]].forEach(([action,label])=>{const button=el("button","",label);button.type="button";button.addEventListener("click",()=>void updateOvrCase(item,action,{findings:findings.value,nowa_links:nowa.value,risk_level:risk.value,note:note.value}));actions.append(button)});
-      body.append(findings, nowa, risk, note, actions);
-    }
-    openDialog(byId("governance-dialog"));
-  }
-
-  async function updateOvrCase(item, action, values) {
-    try {
-      await request("/api/reactor/ovr", { method: "POST", body: JSON.stringify({ action, case_id:item.id, expected_revision:item.revision, ...values }) });
-      closeDialog(byId("governance-dialog")); await loadOvr(true); toast("Дело ОВР обновлено.");
-    } catch (error) { toast(error.message,"error"); }
-  }
-
-  async function loadOvr(silent = false) {
-    try { renderOvr(await request("/api/reactor/ovr")); }
-    catch (error) { if (!silent) toast(error.message,"error"); }
   }
 
   function render(data, forceWorkspace = false) {
@@ -1353,20 +1354,10 @@
       closeDialog(byId("task-dialog")); event.currentTarget.reset(); await loadLegislation(true); toast("Задача добавлена на общую доску.");
     } catch (error) { toast(error.message,"error"); }
   });
-  byId("ovr-new").addEventListener("click", () => openDialog(byId("ovr-dialog")));
-  byId("ovr-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try {
-      await request("/api/reactor/ovr", { method:"POST", body:JSON.stringify({ action:"create", first_name:byId("ovr-first-name").value.trim(), last_name:byId("ovr-last-name").value.trim(), static_id:byId("ovr-static").value.trim(), discord_text:byId("ovr-discord").value.trim(), forum_url:byId("ovr-forum").value.trim(), additional_info:byId("ovr-additional").value.trim() }) });
-      closeDialog(byId("ovr-dialog")); event.currentTarget.reset(); await loadOvr(true); toast("Дело зарегистрировано. ОВР получил 48 часов на проверку.");
-    } catch (error) { toast(error.message,"error"); }
-  });
-
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !state.busy) {
       void load(true);
       void loadLegislation(true);
-      void loadOvr(true);
     }
   });
   state.refreshTimer = setInterval(() => {
@@ -1393,6 +1384,5 @@
   void (async () => {
     await load();
     await loadLegislation(true);
-    await loadOvr(true);
   })();
 })();

@@ -48,6 +48,7 @@ function Test-EnvConfiguration {
         CONSENSUS_WEB_PUBLIC_URL = "https://consensus.${PublicDomain}"
         REACTOR_WEB_PUBLIC_URL = "https://reactor.${PublicDomain}"
         PORTAL_WEB_PUBLIC_URL = "https://${PublicDomain}"
+        OVR_WEB_PUBLIC_URL = "https://ovr.${PublicDomain}"
         ATLAS_WEB_PUBLIC_URL = "https://atlas.${PublicDomain}"
     }
     foreach ($key in $expected.Keys) {
@@ -112,6 +113,7 @@ function Set-EnvConfiguration {
         CONSENSUS_WEB_PUBLIC_URL = "https://consensus.${PublicDomain}"
         REACTOR_WEB_PUBLIC_URL = "https://reactor.${PublicDomain}"
         PORTAL_WEB_PUBLIC_URL = "https://${PublicDomain}"
+        OVR_WEB_PUBLIC_URL = "https://ovr.${PublicDomain}"
         ATLAS_WEB_PUBLIC_URL = "https://atlas.${PublicDomain}"
     }
     $lines = New-Object System.Collections.Generic.List[string]

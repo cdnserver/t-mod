@@ -90,6 +90,16 @@ sgl.tvr.lat {
 	}
 }
 
+ovr.tvr.lat {
+	handle / {
+		rewrite * /ovr
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 zigmund.tvr.lat {
 	handle / {
 		rewrite * /egg

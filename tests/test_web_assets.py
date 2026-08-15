@@ -13,6 +13,7 @@ class WebAssetContractTests(unittest.TestCase):
         "admin.html": ("admin.js", "reactor.js"),
         "index.html": ("app.js",),
         "portal.html": ("portal.js",),
+        "ovr.html": ("ovr.js",),
         "games.html": ("games.js",),
         "login.html": ("login.js",),
         "egg.html": ("egg.js",),
@@ -58,7 +59,14 @@ class WebAssetContractTests(unittest.TestCase):
 
     def test_production_surfaces_have_accessible_font_floor(self) -> None:
         offenders: list[str] = []
-        for name in ("admin.css", "style.css", "portal-theme.css", "login.css", "games.css"):
+        for name in (
+            "admin.css",
+            "style.css",
+            "portal-theme.css",
+            "login.css",
+            "games.css",
+            "ovr.css",
+        ):
             source = (WEB / name).read_text(encoding="utf-8")
             for size in re.findall(r"font-size:\s*([0-9.]+)px", source):
                 if float(size) < 10:

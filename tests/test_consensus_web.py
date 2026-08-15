@@ -663,6 +663,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Host": "reactor.tvr.lat"},
                 allow_redirects=False,
             )
+            ovr = await client.get(
+                "/ovr",
+                headers={"Host": "reactor.tvr.lat"},
+                allow_redirects=False,
+            )
         finally:
             await client.close()
 
@@ -675,6 +680,49 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(canonical.status, 200)
         self.assertEqual(sgl.status, 308)
         self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
+        self.assertEqual(ovr.status, 308)
+        self.assertEqual(ovr.headers["Location"], "https://ovr.tvr.lat/ovr")
+
+    async def test_ovr_portal_requires_manual_section_grant(self) -> None:
+        regular_member = self._principal(user_id=2)
+        regular_member.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=regular_member),
+            ):
+                denied_page = await client.get(
+                    "/ovr", headers={"Host": "ovr.tvr.lat"}
+                )
+                denied_api = await client.get(
+                    "/api/ovr", headers={"Host": "ovr.tvr.lat"}
+                )
+
+                storage.web_set_section_grant(
+                    77,
+                    2,
+                    "ovr",
+                    enabled=True,
+                    granted_by_id=1,
+                )
+                allowed_page = await client.get(
+                    "/ovr", headers={"Host": "ovr.tvr.lat"}
+                )
+                allowed_api = await client.get(
+                    "/api/ovr", headers={"Host": "ovr.tvr.lat"}
+                )
+                denied_payload = await denied_api.json()
+                allowed_page_text = await allowed_page.text()
+                allowed_payload = await allowed_api.json()
+
+        self.assertEqual(denied_page.status, 403)
+        self.assertEqual(denied_api.status, 403)
+        self.assertEqual(denied_payload["error"], "ovr_access_required")
+        self.assertEqual(allowed_page.status, 200)
+        self.assertIn("ВНЕШНЯЯ РАЗВЕДКА", allowed_page_text)
+        self.assertEqual(allowed_api.status, 200)
+        self.assertTrue(allowed_payload["full_access"])
 
     async def test_sgl_surface_has_public_bureau_landing(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
