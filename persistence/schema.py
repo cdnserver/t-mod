@@ -262,6 +262,44 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_section_grants_user
             ON web_section_grants(guild_id, user_id);
 
+            CREATE TABLE IF NOT EXISTS global_bans (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+                reason TEXT NOT NULL,
+                issued_by_id INTEGER NOT NULL,
+                issued_by_display TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                revoked_by_id INTEGER,
+                revoked_by_display TEXT,
+                revoked_at TEXT,
+                discord_state TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(discord_state IN ('pending', 'banned', 'unbanned', 'failed')),
+                discord_error TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_global_bans_active
+            ON global_bans(guild_id, active, issued_at DESC);
+
+            CREATE TABLE IF NOT EXISTS global_ban_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('issued', 'revoked', 'discord_sync')),
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT NOT NULL,
+                reason TEXT,
+                discord_state TEXT,
+                discord_error TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_global_ban_events_subject
+            ON global_ban_events(guild_id, user_id, id DESC);
+
             CREATE TABLE IF NOT EXISTS reactor_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,

@@ -17,6 +17,8 @@ class WebAssetContractTests(unittest.TestCase):
         "games.html": ("games.js",),
         "login.html": ("login.js",),
         "egg.html": ("egg.js",),
+        "tasks.html": ("tasks.js",),
+        "banned.html": ("banned.js",),
     }
 
     def test_javascript_dom_references_exist_and_html_ids_are_unique(self) -> None:
@@ -66,6 +68,8 @@ class WebAssetContractTests(unittest.TestCase):
             "login.css",
             "games.css",
             "ovr.css",
+            "tasks.css",
+            "banned.css",
         ):
             source = (WEB / name).read_text(encoding="utf-8")
             for size in re.findall(r"font-size:\s*([0-9.]+)px", source):

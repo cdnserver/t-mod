@@ -1398,6 +1398,7 @@ function renderMode(data) {
 function renderViewer(data) {
   const viewer = data.viewer || {};
   const chip = byId("viewer-chip");
+  byId("task-center-link").hidden = !viewer.authenticated;
   byId("reactor-link").hidden = !viewer.administrator;
   chip.hidden = !viewer.authenticated && !viewer.legacy_read_only;
   if (chip.hidden) return;

@@ -190,7 +190,7 @@ def consensus_web_entry_url(
     selected_destination = (
         str(destination)
         if str(destination)
-        in {"/", "/admin", "/reactor", "/atlas", "/games", "/host", "/ovr"}
+        in {"/", "/admin", "/reactor", "/atlas", "/games", "/host", "/ovr", "/tasks"}
         else "/"
     )
     query = urlencode(
@@ -247,6 +247,32 @@ def create_session_token(
         _sign(payload, purpose="session"),
         csrf_token,
     )
+
+
+def signed_session_identity(
+    request: web.Request,
+    *,
+    expected_guild_id: int,
+) -> tuple[int, int] | None:
+    """Read the signed identity even when its credential was invalidated.
+
+    Global-ban enforcement must still recognize an already issued cookie after
+    its session version has been revoked.  This helper validates the signature,
+    expiry and audience, but deliberately does not grant portal permissions.
+    """
+
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not token:
+        return None
+    try:
+        payload = _verify(token, purpose="session")
+    except ConsensusWebAuthError:
+        return None
+    guild_id = int(payload.get("gid") or 0)
+    user_id = int(payload.get("uid") or 0)
+    if guild_id != int(expected_guild_id) or user_id <= 0:
+        return None
+    return guild_id, user_id
 
 
 def account_cookie_domain(request_host: str | None) -> str | None:
@@ -406,4 +432,5 @@ __all__ = [
     "csrf_matches",
     "resolve_principal",
     "set_session_cookie",
+    "signed_session_identity",
 ]

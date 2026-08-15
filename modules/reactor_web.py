@@ -68,7 +68,6 @@ from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
-from persistence import legislation_repository as legislation_storage
 from persistence import ovr_repository as ovr_storage
 from persistence import outbox_repository as outbox_storage
 from persistence import profile_repository as profile_storage
@@ -1087,35 +1086,6 @@ def register_reactor_web_routes(
                 member_home_cache.invalidate()
                 legislation_cache.invalidate()
                 return web.json_response({"ok": True, "workspace": workspace})
-            if action == "task_create":
-                task = await asyncio.to_thread(
-                    legislation_storage.create_task,
-                    guild_id=int(guild_id),
-                    title=str(body.get("title") or ""),
-                    description=str(body.get("description") or ""),
-                    priority=str(body.get("priority") or "normal"),
-                    assignee_id=(int(body["assignee_id"]) if body.get("assignee_id") else None),
-                    assignee_display=str(body.get("assignee_display") or "") or None,
-                    due_at=str(body.get("due_at") or "") or None,
-                    actor_id=int(principal.user_id),
-                    actor_display=actor_display,
-                )
-                member_home_cache.invalidate()
-                legislation_cache.invalidate()
-                return web.json_response({"ok": True, "task": task})
-            if action == "task_update":
-                task = await asyncio.to_thread(
-                    legislation_storage.update_task,
-                    int(body.get("task_id") or 0),
-                    guild_id=int(guild_id),
-                    expected_revision=int(body.get("expected_revision") or 0),
-                    status=str(body.get("status") or ""),
-                    assignee_id=(int(body["assignee_id"]) if body.get("assignee_id") else None),
-                    assignee_display=str(body.get("assignee_display") or "") or None,
-                )
-                member_home_cache.invalidate()
-                legislation_cache.invalidate()
-                return web.json_response({"ok": True, "task": task})
             if action == "cancel":
                 await asyncio.to_thread(
                     cancel_workspace,

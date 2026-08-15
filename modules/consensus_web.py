@@ -38,6 +38,7 @@ from modules.consensus_web_auth import (
     csrf_matches,
     resolve_principal,
     set_session_cookie,
+    signed_session_identity,
 )
 from modules.consensus_web_control import (
     ConsensusWebCommandError,
@@ -56,6 +57,8 @@ from persistence import web_auth_repository as credential_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
+from persistence import global_ban_repository as global_ban_storage
+from persistence import legislation_repository as legislation_storage
 from modules.consensus_schedule import public_schedule_payload
 from modules.consensus_artifacts import generate_session_report
 
@@ -75,6 +78,7 @@ except (TypeError, ValueError):
 CONSENSUS_WEB_PUBLIC_NAME = (
     os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip() or "t.consensus"
 )
+_GLOBAL_BAN_REQUEST_KEY = web.RequestKey("global_ban", object)
 
 
 def _configured_public_url() -> str:
@@ -1080,8 +1084,43 @@ def create_consensus_web_app(
     except (TypeError, ValueError):
         upload_mib = 128
     client_max_size = (max(1, min(upload_mib, 512)) + 2) * 1024 * 1024
+
+    @web.middleware
+    async def global_ban_middleware(
+        request: web.Request,
+        handler: Any,
+    ) -> web.StreamResponse:
+        identity = signed_session_identity(
+            request,
+            expected_guild_id=int(guild_id),
+        )
+        ban = None
+        if identity is not None:
+            ban = await asyncio.to_thread(
+                global_ban_storage.get_global_ban,
+                int(guild_id),
+                int(identity[1]),
+            )
+        request[_GLOBAL_BAN_REQUEST_KEY] = ban
+        if ban is not None:
+            allowed = (
+                request.path in {"/banned", "/api/banned", "/auth/logout", "/api/health", "/favicon.ico"}
+                or request.path.startswith("/assets/")
+            )
+            if not allowed:
+                if request.path.startswith("/api/"):
+                    return web.json_response(
+                        {
+                            "error": "globally_banned",
+                            "message": "Доступ к экосистеме T-Mod заблокирован.",
+                        },
+                        status=423,
+                    )
+                raise web.HTTPSeeOther(location="/banned")
+        return await handler(request)
+
     app = web.Application(
-        middlewares=[_security_middleware],
+        middlewares=[_security_middleware, global_ban_middleware],
         client_max_size=client_max_size,
     )
     state_cache = AsyncSnapshotCache[
@@ -1093,6 +1132,98 @@ def create_consensus_web_app(
 
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
+
+    async def tasks_page(request: web.Request) -> web.StreamResponse:
+        principal = await resolve_principal(request, bot, guild_id=int(guild_id))
+        if principal is None or not principal.guild_member:
+            raise web.HTTPSeeOther(location="/login?next=/tasks")
+        return web.FileResponse(_ASSET_DIR / "tasks.html")
+
+    async def banned_page(request: web.Request) -> web.StreamResponse:
+        if request.get(_GLOBAL_BAN_REQUEST_KEY) is None:
+            raise web.HTTPSeeOther(location="/")
+        return web.FileResponse(_ASSET_DIR / "banned.html")
+
+    async def banned_state(request: web.Request) -> web.Response:
+        ban = request.get(_GLOBAL_BAN_REQUEST_KEY)
+        if ban is None:
+            return web.json_response({"active": False})
+        return web.json_response(
+            {
+                "active": True,
+                "user_id": str(ban.get("user_id") or ""),
+                "reason": str(ban.get("reason") or "Причина не указана."),
+                "issued_at": ban.get("issued_at"),
+                "reference": f"GB-{int(ban.get('revision') or 1):03d}",
+            }
+        )
+
+    async def tasks_api(request: web.Request) -> web.Response:
+        principal = await resolve_principal(request, bot, guild_id=int(guild_id))
+        if principal is None or not principal.guild_member:
+            return web.json_response({"error": "member_login_required"}, status=401)
+        if request.method == "GET":
+            tasks = await asyncio.to_thread(
+                legislation_storage.task_board,
+                int(guild_id),
+            )
+            return web.json_response(
+                {
+                    "viewer": {
+                        "id": str(principal.user_id),
+                        "name": principal.display_name,
+                        "csrf_token": principal.csrf_token,
+                    },
+                    "tasks": tasks,
+                }
+            )
+        if not csrf_matches(request, principal):
+            return web.json_response({"error": "csrf_failed"}, status=403)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+        try:
+            action = str(body.get("action") or "").strip().lower()
+            if action == "create":
+                task = await asyncio.to_thread(
+                    legislation_storage.create_task,
+                    guild_id=int(guild_id),
+                    title=str(body.get("title") or ""),
+                    description=str(body.get("description") or ""),
+                    priority=str(body.get("priority") or "normal"),
+                    assignee_id=None,
+                    assignee_display=None,
+                    due_at=str(body.get("due_at") or "") or None,
+                    actor_id=int(principal.user_id),
+                    actor_display=str(principal.display_name),
+                )
+            elif action == "update":
+                task = await asyncio.to_thread(
+                    legislation_storage.update_task,
+                    int(body.get("task_id") or 0),
+                    guild_id=int(guild_id),
+                    expected_revision=int(body.get("expected_revision") or 0),
+                    status=str(body.get("status") or ""),
+                )
+            else:
+                return web.json_response({"error": "task_action_invalid"}, status=400)
+        except (TypeError, ValueError) as exc:
+            code = str(exc) or "task_invalid"
+            return web.json_response(
+                {
+                    "error": code,
+                    "message": (
+                        "Доска изменилась. Обновите страницу и повторите."
+                        if "revision" in code
+                        else "Проверьте название, срок и состояние задачи."
+                    ),
+                },
+                status=409 if "revision" in code else 400,
+            )
+        return web.json_response({"ok": True, "task": task})
 
     async def host_page(request: web.Request) -> web.StreamResponse:
         principal = await resolve_principal(
@@ -1148,6 +1279,11 @@ def create_consensus_web_app(
             "source-serif-latin.woff2",
             "login.css",
             "login.js",
+            "tasks.css",
+            "tasks.js",
+            "banned.css",
+            "banned.js",
+            "ban-seal.svg",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(_ASSET_DIR / name)
@@ -1158,7 +1294,7 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
@@ -1264,6 +1400,12 @@ def create_consensus_web_app(
             raise web.HTTPUnauthorized(
                 text="Ссылка недействительна или уже использована. Откройте новую из Discord."
             )
+        if await asyncio.to_thread(
+            global_ban_storage.is_globally_banned,
+            int(guild_id),
+            int(user_id),
+        ):
+            raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
         guild = bot.get_guild(int(guild_id))
         if guild is None:
             raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
@@ -1282,7 +1424,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1307,7 +1449,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1406,6 +1548,12 @@ def create_consensus_web_app(
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': error})}"
             )
+        if await asyncio.to_thread(
+            global_ban_storage.is_globally_banned,
+            int(guild_id),
+            int(result.credential.user_id),
+        ):
+            raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
         characters = await asyncio.to_thread(
             profile_storage.list_profile_characters,
             int(guild_id),
@@ -1803,6 +1951,9 @@ def create_consensus_web_app(
         return web.json_response(response_payload)
 
     app.router.add_get("/", index)
+    app.router.add_get("/tasks", tasks_page)
+    app.router.add_get("/tasks/", tasks_page)
+    app.router.add_get("/banned", banned_page)
     app.router.add_get("/host", host_page)
     app.router.add_get("/host/", host_page)
     app.router.add_get("/login", login_page)
@@ -1814,6 +1965,9 @@ def create_consensus_web_app(
     app.router.add_post("/auth/login", credential_login)
     app.router.add_get("/auth/logout", logout)
     app.router.add_get("/api/health", health)
+    app.router.add_get("/api/banned", banned_state)
+    app.router.add_get("/api/tasks", tasks_api)
+    app.router.add_post("/api/tasks", tasks_api)
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/bills", bills)
     app.router.add_get("/api/bills/{bill_id}", bill_detail)

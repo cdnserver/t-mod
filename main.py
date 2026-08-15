@@ -432,6 +432,26 @@ async def apply_bot_status() -> None:
         print(t("console.status_failed", error=exc), file=sys.stderr)
 
 
+class TModCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        selected_guild_id = int(interaction.guild_id or (GUILD_ID if GUILD_ID.isdigit() else 0))
+        if selected_guild_id <= 0:
+            return True
+        banned = await asyncio.to_thread(
+            storage.is_globally_banned,
+            selected_guild_id,
+            int(interaction.user.id),
+        )
+        if not banned:
+            return True
+        message = "Доступ к экосистеме T-Mod глобально заблокирован."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+        return False
+
+
 class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
@@ -487,7 +507,7 @@ intents.guilds = True
 intents.typing = TRACK_TYPING
 intents.presences = TRACK_PRESENCE
 
-bot = TModBot(command_prefix="!", intents=intents)
+bot = TModBot(command_prefix="!", intents=intents, tree_cls=TModCommandTree)
 
 
 @bot.tree.command(name=SGL_COMMAND_NAME, description=SGL_COMMAND_DESCRIPTION)

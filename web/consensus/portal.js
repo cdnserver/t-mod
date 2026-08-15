@@ -7,7 +7,6 @@
     legislation: "Реестр законопроектов",
     my_bills: "Мои законопроекты",
     editor: "Законодательная мастерская",
-    tasks: "Общая доска",
     games: "T-Mod Games",
     consensus: "Консенсус",
     notifications: "Уведомления",
@@ -937,78 +936,6 @@
       byId("moderation-list").replaceChildren(...(moderation.queue || []).map((item) => workspaceCard(item, true)));
       if (!(moderation.queue || []).length) byId("moderation-list").append(el("div", "portal-empty", "Очередь модерации пуста."));
     }
-    renderTasks(legislation.tasks || []);
-  }
-
-  const taskColumns = [
-    { id: "queue", statuses: ["planned", "todo"], title: "ОЧЕРЕДЬ", subtitle: "Запланировано и готово к старту" },
-    { id: "active", statuses: ["in_progress"], title: "В РАБОТЕ", subtitle: "Текущие обязательства" },
-    { id: "blocked", statuses: ["blocked"], title: "ВНИМАНИЕ", subtitle: "Нужна помощь или решение" },
-    { id: "done", statuses: ["done"], title: "ВЫПОЛНЕНО", subtitle: "Доведено до результата" },
-  ];
-  const taskPriorityLabels = { low: "Низкий", normal: "Обычный", high: "Высокий", critical: "Критический" };
-
-  function taskDeadline(task) {
-    if (!task.due_at) return { text: "Без срока", tone: "" };
-    const due = new Date(task.due_at);
-    if (Number.isNaN(due.getTime())) return { text: String(task.due_at), tone: "" };
-    const overdue = task.status !== "done" && due.getTime() < Date.now();
-    return { text: `${overdue ? "Просрочено · " : "До "}${formatMoment(task.due_at)}`, tone: overdue ? "overdue" : "" };
-  }
-
-  function taskAction(task, label, status, tone = "default") {
-    const button = el("button", "task-action", label);
-    button.type = "button";
-    button.dataset.tone = tone;
-    button.addEventListener("click", () => void updateTask(task, status));
-    return button;
-  }
-
-  function renderTasks(tasks) {
-    const open = tasks.filter((task) => task.status !== "done").length;
-    const done = tasks.filter((task) => task.status === "done").length;
-    const progress = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
-    byId("task-open-count").textContent = String(open);
-    byId("task-active-count").textContent = String(tasks.filter((task) => task.status === "in_progress").length);
-    byId("task-blocked-count").textContent = String(tasks.filter((task) => task.status === "blocked").length);
-    byId("task-progress-fill").style.width = `${progress}%`;
-    byId("task-progress-label").textContent = `${progress}% завершено`;
-    byId("task-board").replaceChildren(...taskColumns.map((definition) => {
-      const column = el("section", "task-column");
-      column.dataset.column = definition.id;
-      const items = tasks.filter((task) => definition.statuses.includes(task.status));
-      const header = el("header");
-      const copy = el("div"); copy.append(el("span", "", definition.title), el("small", "", definition.subtitle));
-      header.append(copy, el("b", "", items.length)); column.append(header);
-      items.forEach((task) => {
-        const card = el("article", "task-card");
-        card.dataset.priority = task.priority || "normal";
-        card.dataset.status = task.status;
-        const top = el("div", "task-card-top");
-        top.append(el("span", "task-priority", taskPriorityLabels[task.priority] || taskPriorityLabels.normal));
-        const deadline = taskDeadline(task); top.append(el("span", `task-deadline ${deadline.tone}`, deadline.text));
-        card.append(top, el("h3", "", task.title), el("p", "", task.description || "Без дополнительного описания."));
-        const origin = el("div", "task-origin");
-        origin.append(el("span", "task-origin-mark", task.bill_number ? "§" : "✓"), el("span", "task-source", task.bill_number ? `Законопроект №${task.bill_number}` : task.assignee_display || "Общая задача"));
-        card.append(origin);
-        const actions = el("footer", "task-actions");
-        if (task.status === "planned") actions.append(el("span", "task-status-note", "Ожидает принятия решения"));
-        if (task.status === "todo") actions.append(taskAction(task, "Начать работу", "in_progress", "primary"));
-        if (task.status === "in_progress") actions.append(taskAction(task, "Нужна помощь", "blocked", "warning"), taskAction(task, "Завершить", "done", "primary"));
-        if (task.status === "blocked") actions.append(taskAction(task, "Возобновить", "in_progress", "primary"));
-        if (task.status === "done") actions.append(taskAction(task, "Вернуть в очередь", "todo"));
-        card.append(actions); column.append(card);
-      });
-      if (!items.length) column.append(el("div", "task-column-empty", "Здесь пока нет задач."));
-      return column;
-    }));
-  }
-
-  async function updateTask(task, status) {
-    try {
-      await request("/api/reactor/legislation", { method: "POST", body: JSON.stringify({ action: "task_update", task_id: task.id, expected_revision: task.revision, status }) });
-      await loadLegislation(true);
-    } catch (error) { toast(error.message, "error"); }
   }
 
   function render(data, forceWorkspace = false) {
@@ -1346,14 +1273,6 @@
   byId("editor-ai").addEventListener("click", () => void runAiEditor());
   byId("editor-publish").addEventListener("click", () => void publishDraft());
   byId("editor-cancel").addEventListener("click", () => void cancelDraft());
-  byId("task-new").addEventListener("click", () => openDialog(byId("task-dialog")));
-  byId("task-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try {
-      await request("/api/reactor/legislation", { method: "POST", body: JSON.stringify({ action:"task_create", title:byId("task-title").value.trim(), description:byId("task-description").value.trim(), priority:byId("task-priority").value, due_at:byId("task-due").value }) });
-      closeDialog(byId("task-dialog")); event.currentTarget.reset(); await loadLegislation(true); toast("Задача добавлена на общую доску.");
-    } catch (error) { toast(error.message,"error"); }
-  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !state.busy) {
       void load(true);

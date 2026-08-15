@@ -228,7 +228,6 @@ def legislation_snapshot(
     moderation_queue_events = legislation_storage.moderation_events(
         [int(item["id"]) for item in moderation_queue]
     )
-    tasks = legislation_storage.task_board(guild_id)
     return {
         "workspace": project_workspace(workspace),
         "my_workspaces": [
@@ -251,7 +250,6 @@ def legislation_snapshot(
                 for item in moderation_queue
             ],
         },
-        "tasks": tasks,
         "next_number": bill_storage.tvrs_next_bill_number(guild_id),
         "queued": queued,
     }

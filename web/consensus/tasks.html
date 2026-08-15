@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#070b0d">
+    <title>Consensus · Общие задачи</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+    <link rel="stylesheet" href="/assets/fonts.css">
+    <link rel="stylesheet" href="/assets/tasks.css">
+    <script src="/assets/tasks.js" defer></script>
+  </head>
+  <body>
+    <div class="task-atmosphere" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
+    <main class="task-shell">
+      <header class="task-topbar">
+        <a class="task-brand" href="/"><span>T</span><div><strong>CONSENSUS</strong><small>контур совместной работы</small></div></a>
+        <nav><a href="/">Трансляция</a><a href="https://reactor.tvr.lat/">Личный Реактор</a><a href="/auth/logout">Выйти</a></nav>
+      </header>
+      <section class="task-hero">
+        <div><span>ОБЩИЙ РИТМ ТОВАРИЩЕСТВА</span><h1>От решения<br>к результату.</h1><p>Единая доска исполнения законопроектов и общих поручений. Здесь видно, что требует внимания, кто работает и что уже доведено до конца.</p></div>
+        <button id="task-new" type="button"><i>＋</i><span><small>ДОБАВИТЬ</small><strong>Новая задача</strong></span></button>
+      </section>
+      <section class="task-metrics" aria-label="Сводка задач">
+        <article><small>ОТКРЫТО</small><strong id="task-open-count">—</strong><span>общий объём работы</span></article>
+        <article><small>В РАБОТЕ</small><strong id="task-active-count">—</strong><span>движутся прямо сейчас</span></article>
+        <article class="attention"><small>ТРЕБУЕТ ВНИМАНИЯ</small><strong id="task-blocked-count">—</strong><span>нужна помощь или решение</span></article>
+        <article class="progress"><small>ПРОГРЕСС</small><strong id="task-progress-label">—</strong><span class="progress-track"><i id="task-progress-fill"></i></span></article>
+      </section>
+      <section id="task-board" class="task-board" aria-live="polite"></section>
+      <footer class="task-footer"><span id="task-status">Синхронизация с T-Mod…</span><button id="task-refresh" type="button">Обновить</button></footer>
+    </main>
+    <dialog id="task-dialog">
+      <form id="task-form">
+        <header><span>НОВАЯ ЗАДАЧА</span><button type="button" id="task-close" aria-label="Закрыть">×</button><h2>Что нужно довести до результата?</h2><p>Формулировка сразу станет видна всем участникам.</p></header>
+        <label><span>Название</span><input id="task-title" maxlength="180" placeholder="Например: подготовить памятку по решению №74" required></label>
+        <label><span>Описание</span><textarea id="task-description" maxlength="2000" rows="5" placeholder="Контекст, ожидаемый результат и важные детали"></textarea></label>
+        <div class="task-form-grid"><label><span>Приоритет</span><select id="task-priority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="critical">Критический</option><option value="low">Низкий</option></select></label><label><span>Срок</span><input id="task-due" type="date"></label></div>
+        <footer><button id="task-cancel" type="button">Отмена</button><button class="task-submit" type="submit">Создать задачу</button></footer>
+      </form>
+    </dialog>
+    <div id="task-toast" class="task-toast" hidden></div>
+  </body>
+</html>

@@ -3311,7 +3311,11 @@ function renderSystem(data) {
   const workspaces = data.bill_workspaces || [];
   const sessions = data.consensus_sessions || [];
   byId("section-access-card").hidden = data.viewer?.administrator !== true;
-  if (data.viewer?.administrator === true) void loadSectionAccess();
+  byId("global-ban-card").hidden = data.viewer?.administrator !== true;
+  if (data.viewer?.administrator === true) {
+    void loadSectionAccess();
+    void loadGlobalBans();
+  }
   const openStatuses = new Set(["pending", "processing", "retry"]);
   const open = statusRows
     .filter((item) => openStatuses.has(item.status))
@@ -3429,7 +3433,7 @@ function renderSystem(data) {
   );
 }
 
-async function loadSectionAccess() {
+async function loadSectionAccess({ reportError = true } = {}) {
   try {
     const data = await fetchJSON("/api/admin/access");
     const select = byId("section-access-select");
@@ -3448,6 +3452,8 @@ async function loadSectionAccess() {
               text: "Отозвать",
             });
             revoke.addEventListener("click", async () => {
+              revoke.disabled = true;
+              revoke.textContent = "Отзываем…";
               try {
                 const result = await postJSON("/api/admin/access", {
                   user_id: grant.user_id_text || String(grant.user_id),
@@ -3457,7 +3463,25 @@ async function loadSectionAccess() {
                 showToast(result.message || "Доступ отозван.");
                 await loadSectionAccess();
               } catch (error) {
-                handleError(error);
+                let reconciled = false;
+                if (!(error instanceof ApiError)) {
+                  const snapshot = await loadSectionAccess({ reportError: false });
+                  reconciled = Boolean(snapshot) && !snapshot.grants.some((item) =>
+                    String(item.user_id) === String(grant.user_id)
+                    && String(item.section) === String(grant.section),
+                  );
+                }
+                if (reconciled) {
+                  showToast(
+                    "Ответ сервера прервался, но проверка подтвердила: доступ отозван.",
+                    false,
+                    { title: "Операция подтверждена", icon: "✓", sound: "success" },
+                  );
+                } else {
+                  handleError(error);
+                  revoke.disabled = false;
+                  revoke.textContent = "Отозвать";
+                }
               }
             });
             return node("article", { className: "access-grant" }, [
@@ -3482,6 +3506,54 @@ async function loadSectionAccess() {
               text: "Точечных доступов пока нет.",
             }),
           ],
+    );
+    return data;
+  } catch (error) {
+    if (reportError) handleError(error);
+    return null;
+  }
+}
+
+async function loadGlobalBans() {
+  try {
+    const data = await fetchJSON("/api/admin/security/bans");
+    const records = Array.isArray(data.records) ? data.records : [];
+    const active = records.filter((item) => item.active === true);
+    setText("global-ban-count", `${active.length} активных`);
+    replaceChildren(
+      "global-ban-list",
+      records.length
+        ? records.slice(0, 30).map((item) => {
+            const state = node("div", { className: "global-ban-state" }, [
+              node("span", {
+                className: item.discord_state === "banned" || item.discord_state === "unbanned" ? "ok" : "",
+                text: item.active
+                  ? item.discord_state === "banned" ? "Discord закрыт" : "Веб закрыт · Discord требует проверки"
+                  : "Снято",
+              }),
+            ]);
+            if (item.active) {
+              const revoke = node("button", { className: "global-unban", type: "button", text: "Снять блокировку" });
+              revoke.addEventListener("click", () => {
+                const form = byId("global-unban-form");
+                form.dataset.userId = item.user_id_text || String(item.user_id);
+                byId("global-unban-title").textContent = `Снять блокировку · ${item.member_name || item.user_id}`;
+                byId("global-unban-reason").value = "";
+                byId("global-unban-dialog").showModal();
+              });
+              state.append(revoke);
+            }
+            return node("article", { className: `global-ban-record${item.active ? "" : " revoked"}` }, [
+              node("span", { className: "global-ban-record-mark", text: item.active ? "⦸" : "◇" }),
+              node("div", { className: "global-ban-record-copy" }, [
+                node("strong", { text: item.member_name || `Discord ${item.user_id}` }),
+                node("small", { text: `${item.user_id} · ${item.active ? "выдан" : "снят"} ${formatDate(item.updated_at)}` }),
+                node("p", { text: item.reason || "Причина не указана" }),
+              ]),
+              state,
+            ]);
+          })
+        : [node("div", { className: "empty-state", text: "Глобальных блокировок не было." })],
     );
   } catch (error) {
     handleError(error);
@@ -3879,7 +3951,10 @@ function bindEvents() {
     event.preventDefault();
     const values = formValues("section-access-form");
     const button = event.currentTarget.querySelector("button[type=submit]");
+    const buttonLabel = button.querySelector("span");
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (buttonLabel) buttonLabel.textContent = "Проверяем и выдаём…";
     try {
       const result = await postJSON("/api/admin/access", {
         user_id: values.user_id,
@@ -3893,13 +3968,105 @@ function bindEvents() {
         icon: "⌁",
         sound: "success",
       });
+      if (result.warning) {
+        showToast(result.warning, false, {
+          title: "Право сохранено",
+          icon: "◇",
+          tone: "update",
+        });
+      }
       event.currentTarget.reset();
       await loadSectionAccess();
     } catch (error) {
-      handleError(error);
+      let reconciled = false;
+      if (!(error instanceof ApiError)) {
+        const snapshot = await loadSectionAccess({ reportError: false });
+        reconciled = Boolean(snapshot?.grants?.some((grant) =>
+          String(grant.user_id) === String(values.user_id)
+          && String(grant.section) === String(values.section),
+        ));
+      }
+      if (reconciled) {
+        showToast(
+          "Ответ сервера прервался, но проверка подтвердила: доступ уже выдан.",
+          false,
+          { title: "Операция подтверждена", icon: "✓", sound: "success" },
+        );
+        event.currentTarget.reset();
+      } else {
+        handleError(error);
+      }
     } finally {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
+      if (buttonLabel) buttonLabel.textContent = "Выдать доступ";
     }
+  });
+  byId("global-ban-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("global-ban-form");
+    const approved = window.TModReactor?.confirm
+      ? await window.TModReactor.confirm({
+          title: `Глобально заблокировать Discord ${values.user_id}?`,
+          message: "Будут закрыты Discord, действующие веб-сессии и повторный вход во все сервисы T-Mod.",
+          accept: "Заблокировать везде",
+          tone: "danger",
+        })
+      : globalThis.confirm("Глобально заблокировать пользователя?");
+    if (!approved) return;
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const result = await postJSON("/api/admin/security/bans", {
+        action: "issue",
+        user_id: values.user_id,
+        reason: values.reason,
+        confirmed: true,
+      });
+      showToast(result.message || "Глобальная блокировка включена.", result.record?.discord_state === "failed", {
+        title: "Контур заблокирован",
+        icon: "⦸",
+        sound: "warning",
+      });
+      if (result.warning) {
+        showToast(result.warning, false, {
+          title: "Основная блокировка сохранена",
+          icon: "◇",
+          tone: "update",
+        });
+      }
+      event.currentTarget.reset();
+      await loadGlobalBans();
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
+  });
+  byId("global-unban-close").addEventListener("click", () => byId("global-unban-dialog").close());
+  byId("global-unban-cancel").addEventListener("click", () => byId("global-unban-dialog").close());
+  byId("global-unban-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const reason = byId("global-unban-reason").value.trim();
+    const approved = await window.TModReactor.confirm({
+      title: "Восстановить доступ во всей экосистеме?",
+      message: "T-Mod снимет Discord-бан и откроет повторную авторизацию на всех сервисах.",
+      accept: "Восстановить доступ",
+      tone: "warning",
+    });
+    if (!approved) return;
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const result = await postJSON("/api/admin/security/bans", {
+        action: "revoke",
+        user_id: form.dataset.userId,
+        reason,
+        confirmed: true,
+      });
+      byId("global-unban-dialog").close();
+      showToast(result.message || "Блокировка снята.", false, { title: "Доступ восстановлен", icon: "◇", sound: "success" });
+      await loadGlobalBans();
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
   });
   byId("atlas-server-form").addEventListener("submit", async (event) => {
     event.preventDefault();

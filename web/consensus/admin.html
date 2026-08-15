@@ -1448,6 +1448,26 @@
               <div id="section-access-list" class="access-grant-grid"></div>
             </article>
 
+            <article id="global-ban-card" class="panel global-ban-card" hidden>
+              <div class="global-ban-scan" aria-hidden="true"></div>
+              <header class="global-ban-head">
+                <span class="global-ban-emblem" aria-hidden="true">⦸</span>
+                <div>
+                  <span class="panel-kicker">IDENTITY LOCKDOWN</span>
+                  <h2>Глобальная блокировка</h2>
+                  <p>Один приказ закрывает Discord, общую авторизацию и все сервисы T‑Mod. Каждое действие остаётся в аудите.</p>
+                </div>
+                <span id="global-ban-count" class="global-ban-count">0 активных</span>
+              </header>
+              <form id="global-ban-form" class="global-ban-form">
+                <label><span>Discord ID</span><div class="global-ban-field"><i>@</i><input name="user_id" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="721577061143019555" autocomplete="off" required></div></label>
+                <label class="global-ban-reason"><span>Причина блокировки</span><div class="global-ban-field"><i>!</i><input name="reason" minlength="5" maxlength="1000" placeholder="Основание, которое увидит пользователь" autocomplete="off" required></div></label>
+                <button class="global-ban-submit" type="submit"><span>Заблокировать везде</span><i>⦸</i></button>
+              </form>
+              <div class="global-ban-warning"><i></i><span>Блокировка действует по подтверждённой личности Discord. IP-адреса намеренно не используются: они ненадёжны и могут задеть невиновных.</span></div>
+              <div id="global-ban-list" class="global-ban-list"></div>
+            </article>
+
             <div class="kpi-grid compact-kpis">
               <article class="kpi-card accent-mint">
                 <div class="kpi-head"><span>Discord gateway</span><i>◉</i></div>
@@ -1763,6 +1783,15 @@
         </div>
       </main>
     </div>
+
+    <dialog id="global-unban-dialog" class="reactor-dialog global-unban-dialog">
+      <form id="global-unban-form">
+        <header class="reactor-dialog-head"><span><small>RESTORE IDENTITY</small><strong id="global-unban-title">Снять блокировку</strong></span><button id="global-unban-close" type="button" aria-label="Закрыть">×</button></header>
+        <p>Укажите основание. После подтверждения T-Mod снимет Discord-бан и только затем откроет веб-доступ.</p>
+        <label><span>Основание</span><textarea id="global-unban-reason" minlength="3" maxlength="1000" rows="4" placeholder="Почему решение отменено" required></textarea></label>
+        <footer><button id="global-unban-cancel" class="secondary-button" type="button">Отмена</button><button class="primary-button" type="submit">Восстановить доступ</button></footer>
+      </form>
+    </dialog>
 
     <dialog id="detail-dialog" class="detail-dialog">
       <form method="dialog" class="dialog-head">

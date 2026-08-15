@@ -39,7 +39,7 @@
         <nav aria-label="Основная навигация">
           <a href="#treasury">Казна</a>
           <a href="#legislation">Законопроекты</a>
-          <a href="#tasks">Общие задачи</a>
+          <a href="https://consensus.tvr.lat/tasks">Общие задачи</a>
           <a class="nav-accent" href="#editor">Создать проект</a>
           <a href="https://tvr.lat/games">T-Mod Games</a>
           <a href="https://consensus.tvr.lat/">Консенсус</a>
@@ -464,20 +464,6 @@
             </div>
           </article>
 
-          <article id="tasks" class="portal-widget tasks-widget" data-portal-widget="tasks">
-            <header><span>ОБЩАЯ ДОСКА ЗАКОНОПРОЕКТОВ</span><b>СОВМЕСТНАЯ РАБОТА</b></header>
-            <div class="task-command">
-              <div class="governance-heading"><div><small>ЕДИНЫЙ РАБОЧИЙ РИТМ</small><h2>От решения к результату</h2><p>Задачи из принятых законопроектов и самостоятельные поручения Товарищества — с ответственностью, сроками и видимым прогрессом.</p></div><button id="task-new" type="button"><span>＋</span> Новая задача</button></div>
-              <div class="task-overview">
-                <span><small>ОТКРЫТО</small><strong id="task-open-count">0</strong></span>
-                <span><small>В РАБОТЕ</small><strong id="task-active-count">0</strong></span>
-                <span><small>ТРЕБУЮТ ВНИМАНИЯ</small><strong id="task-blocked-count">0</strong></span>
-                <div class="task-progress"><span><i id="task-progress-fill"></i></span><small id="task-progress-label">0% завершено</small></div>
-              </div>
-            </div>
-            <div id="task-board" class="task-board"></div>
-          </article>
-
           <article
             id="games"
             class="portal-widget games-widget"
@@ -622,10 +608,6 @@
     <dialog id="governance-dialog" class="portal-dialog governance-dialog">
       <form method="dialog"><span><small id="governance-dialog-kicker">РАБОЧИЙ КОНТУР</small><strong id="governance-dialog-title">Карточка</strong></span><button value="cancel" aria-label="Закрыть">×</button></form>
       <div id="governance-dialog-body" class="governance-dialog-body"></div>
-    </dialog>
-
-    <dialog id="task-dialog" class="portal-dialog form-dialog">
-      <form id="task-form"><header><small>ОБЩАЯ ДОСКА</small><h2>Новая задача</h2><p>Задача сразу станет видна всем участникам.</p></header><label><span>Название</span><input id="task-title" maxlength="180" required></label><label><span>Описание</span><textarea id="task-description" maxlength="2000" rows="5"></textarea></label><div class="form-grid"><label><span>Приоритет</span><select id="task-priority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="critical">Критический</option><option value="low">Низкий</option></select></label><label><span>Срок</span><input id="task-due" type="date"></label></div><footer><button type="button" onclick="this.closest('dialog').close()">Отмена</button><button class="portal-primary" type="submit">Создать задачу</button></footer></form>
     </dialog>
 
     <div id="portal-busy" class="portal-busy" hidden>

@@ -1678,6 +1678,87 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_section_access_stays_successful_when_secondary_delivery_fails(self) -> None:
+        recipient = SimpleNamespace(
+            id=2,
+            display_name="Получатель",
+            send=AsyncMock(side_effect=RuntimeError("discord transport lost")),
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda user_id: recipient if int(user_id) == 2 else None,
+        )
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch(
+                    "modules.consensus_web.resolve_principal",
+                    AsyncMock(return_value=self._principal()),
+                ),
+                patch(
+                    "modules.consensus_admin_web.activity_storage.bot_record_action",
+                    side_effect=RuntimeError("audit temporarily busy"),
+                ),
+            ):
+                response = await client.post(
+                    "/api/admin/access",
+                    headers={"X-CSRF-Token": "csrf-test-token"},
+                    json={"user_id": 2, "section": "minecraft", "enabled": True},
+                )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(payload["changed"])
+            self.assertFalse(payload["dm_sent"])
+            self.assertIn("аудит", payload["warning"])
+            self.assertEqual(
+                [item["section"] for item in storage.web_section_grants(77, 2)],
+                ["minecraft"],
+            )
+        finally:
+            await client.close()
+
+    async def test_section_access_rejects_non_admin_csrf_and_unknown_section(self) -> None:
+        guild = SimpleNamespace(id=77, name="Товарищество", get_member=lambda _id: None)
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            non_admin = self._principal(user_id=9)
+            non_admin.member.guild_permissions.administrator = False
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=non_admin),
+            ):
+                forbidden = await client.post(
+                    "/api/admin/access",
+                    headers={"X-CSRF-Token": "csrf-test-token"},
+                    json={"user_id": 2, "section": "minecraft", "enabled": True},
+                )
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal()),
+            ):
+                csrf = await client.post(
+                    "/api/admin/access",
+                    json={"user_id": 2, "section": "minecraft", "enabled": True},
+                )
+                invalid = await client.post(
+                    "/api/admin/access",
+                    headers={"X-CSRF-Token": "csrf-test-token"},
+                    json={"user_id": 2, "section": "../../system", "enabled": True},
+                )
+            self.assertEqual(forbidden.status, 403)
+            self.assertEqual(csrf.status, 403)
+            self.assertEqual(invalid.status, 400)
+            self.assertEqual(storage.web_section_grants(77, 2), [])
+        finally:
+            await client.close()
+
     async def test_minecraft_file_manager_is_admin_only_and_sandboxed(self) -> None:
         minecraft_root = Path(self.temp_dir.name) / "minecraft"
         (minecraft_root / "plugins").mkdir(parents=True)

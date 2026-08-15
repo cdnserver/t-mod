@@ -1,0 +1,28 @@
+const byId = (id) => document.getElementById(id);
+const columns = [
+  { id:"queue", statuses:["planned","todo"], title:"ОЧЕРЕДЬ", subtitle:"готово к началу" },
+  { id:"active", statuses:["in_progress"], title:"В РАБОТЕ", subtitle:"текущие обязательства" },
+  { id:"blocked", statuses:["blocked"], title:"ВНИМАНИЕ", subtitle:"нужна помощь" },
+  { id:"done", statuses:["done"], title:"ВЫПОЛНЕНО", subtitle:"доведено до результата" },
+];
+const priorities = { low:"Низкий",normal:"Обычный",high:"Высокий",critical:"Критический" };
+let csrf = "";
+const el = (tag,className="",text="") => { const node=document.createElement(tag);if(className)node.className=className;if(text)node.textContent=text;return node; };
+const toast = (message) => { const node=byId("task-toast");node.textContent=message;node.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>node.hidden=true,4200); };
+const moment = (value) => { const date=new Date(value||"");return Number.isNaN(date.getTime())?String(value||""):new Intl.DateTimeFormat("ru-RU",{day:"2-digit",month:"short"}).format(date); };
+function deadline(task){if(!task.due_at)return{text:"Без срока",tone:""};const due=new Date(task.due_at);const overdue=task.status!=="done"&&due.getTime()<Date.now();return{text:`${overdue?"Просрочено · ":"До "}${moment(task.due_at)}`,tone:overdue?"overdue":""};}
+async function api(options={}){const response=await fetch("/api/tasks",{credentials:"same-origin",cache:"no-store",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},...options});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.message||"Не удалось обновить общую доску.");return data;}
+function action(task,label,status,tone=""){const button=el("button",`task-action ${tone}`,label);button.type="button";button.addEventListener("click",()=>void update(task,status));return button;}
+function render(tasks){const done=tasks.filter(t=>t.status==="done").length;const progress=tasks.length?Math.round(done/tasks.length*100):0;byId("task-open-count").textContent=String(tasks.length-done);byId("task-active-count").textContent=String(tasks.filter(t=>t.status==="in_progress").length);byId("task-blocked-count").textContent=String(tasks.filter(t=>t.status==="blocked").length);byId("task-progress-label").textContent=`${progress}%`;byId("task-progress-fill").style.width=`${progress}%`;
+  byId("task-board").replaceChildren(...columns.map(def=>{const column=el("section","task-column");column.dataset.column=def.id;const items=tasks.filter(t=>def.statuses.includes(t.status));const head=el("header");const copy=el("div");copy.append(el("span","",def.title),el("small","",def.subtitle));head.append(copy,el("b","",String(items.length)));column.append(head);items.forEach(task=>{const card=el("article","task-card");card.dataset.priority=task.priority||"normal";const top=el("div","task-card-top");top.append(el("span","task-priority",priorities[task.priority]||priorities.normal));const due=deadline(task);top.append(el("span",`task-deadline ${due.tone}`,due.text));card.append(top,el("h3","",task.title),el("p","",task.description||"Без дополнительного описания."));const origin=el("div","task-origin");origin.append(el("span","task-origin-mark",task.bill_number?"§":"✓"),el("span","",task.bill_number?`Законопроект №${task.bill_number}`:task.assignee_display||"Общая задача"));card.append(origin);const actions=el("footer","task-actions");if(task.status==="planned")actions.append(el("span","task-status-note","Ожидает принятия"));if(task.status==="todo")actions.append(action(task,"Начать работу","in_progress","primary"));if(task.status==="in_progress")actions.append(action(task,"Нужна помощь","blocked","warning"),action(task,"Завершить","done","primary"));if(task.status==="blocked")actions.append(action(task,"Возобновить","in_progress","primary"));if(task.status==="done")actions.append(action(task,"Вернуть в очередь","todo"));card.append(actions);column.append(card);});if(!items.length)column.append(el("div","task-column-empty","Здесь пока нет задач."));return column;}));
+}
+async function load(silent=false){try{if(!silent)byId("task-status").textContent="Синхронизация с T-Mod…";const data=await api();csrf=data.viewer.csrf_token||csrf;render(data.tasks||[]);byId("task-status").textContent=`Актуально · ${new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}`;}catch(error){toast(error.message);byId("task-status").textContent="Не удалось обновить данные";}}
+async function update(task,status){try{await api({method:"POST",body:JSON.stringify({action:"update",task_id:task.id,expected_revision:task.revision,status})});await load(true);}catch(error){toast(error.message);await load(true);}}
+byId("task-new").addEventListener("click",()=>byId("task-dialog").showModal());
+byId("task-close").addEventListener("click",()=>byId("task-dialog").close());
+byId("task-cancel").addEventListener("click",()=>byId("task-dialog").close());
+byId("task-refresh").addEventListener("click",()=>void load());
+byId("task-form").addEventListener("submit",async(event)=>{event.preventDefault();try{await api({method:"POST",body:JSON.stringify({action:"create",title:byId("task-title").value.trim(),description:byId("task-description").value.trim(),priority:byId("task-priority").value,due_at:byId("task-due").value})});event.currentTarget.reset();byId("task-dialog").close();toast("Задача добавлена на общую доску.");await load(true);}catch(error){toast(error.message);}});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)void load(true);});
+setInterval(()=>{if(!document.hidden)void load(true);},60000);
+void load();

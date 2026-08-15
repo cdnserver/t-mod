@@ -24,6 +24,7 @@ from persistence import consensus_schedule_repository as _consensus_schedule_rep
 from persistence import web_auth_repository as _web_auth_repository
 from persistence import reactor_repository as _reactor_repository
 from persistence import error_repository as _error_repository
+from persistence import global_ban_repository as _global_ban_repository
 from persistence import schema as _schema
 
 _PERSISTENCE_MODULES = (
@@ -46,6 +47,7 @@ _PERSISTENCE_MODULES = (
     _web_auth_repository,
     _reactor_repository,
     _error_repository,
+    _global_ban_repository,
     _schema,
 )
 

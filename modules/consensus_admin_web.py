@@ -47,6 +47,7 @@ from persistence import broadcast_repository as broadcast_storage
 from persistence import craft_repository as craft_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from persistence import finance_repository as finance_storage
+from persistence import global_ban_repository as global_ban_storage
 from persistence import market_repository as market_storage
 from persistence import profile_repository as profile_storage
 from persistence import sgl_archive_repository as sgl_archive_storage
@@ -232,6 +233,53 @@ def _query_int(
     return max(int(minimum), min(int(maximum), value))
 
 
+async def _reconcile_global_bans_once(
+    bot: discord.Client,
+    guild_id: int,
+) -> int:
+    """Converge durable web blocks with Discord after transient failures."""
+
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return 0
+    records = await asyncio.to_thread(
+        global_ban_storage.list_global_bans,
+        int(guild_id),
+        include_revoked=False,
+        limit=200,
+    )
+    synchronized = 0
+    for record in records:
+        if str(record.get("discord_state") or "") == "banned":
+            continue
+        user_id = int(record.get("user_id") or 0)
+        if user_id <= 0:
+            continue
+        try:
+            await asyncio.wait_for(
+                guild.ban(
+                    discord.Object(id=user_id),
+                    reason="T-Mod global ban · automatic reconciliation",
+                    delete_message_seconds=0,
+                ),
+                timeout=12.0,
+            )
+            await asyncio.to_thread(
+                global_ban_storage.set_global_ban_discord_state,
+                int(guild_id),
+                user_id,
+                state="banned",
+                error=None,
+                actor_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                actor_display="T-Mod",
+            )
+            synchronized += 1
+        except Exception:
+            # Keep the durable web lock active and retry on the next pass.
+            continue
+    return synchronized
+
+
 def _optional_query_id(request: web.Request, name: str) -> int | None:
     raw = str(request.query.get(name, "")).strip()
     if not raw:
@@ -398,6 +446,7 @@ def register_admin_web_routes(
             "media": "media",
             "profile": "profile",
             "system": "system",
+            "security": "system",
             "atlas": "atlas",
         }
         endpoint = request.path.removeprefix("/api/admin/").split("/", 1)[0]
@@ -428,10 +477,220 @@ def register_admin_web_routes(
             )
         return principal
 
+    async def global_bans(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None or not principal.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"administrator_required"}',
+                content_type="application/json",
+            )
+        warning: str | None = None
+        if request.method == "POST":
+            if not csrf_matches(request, principal):
+                raise web.HTTPForbidden(
+                    text='{"error":"csrf_failed"}',
+                    content_type="application/json",
+                )
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, TypeError):
+                body = None
+            if not isinstance(body, dict):
+                return web.json_response({"error": "invalid_payload"}, status=400)
+            try:
+                user_id = int(body.get("user_id") or 0)
+            except (TypeError, ValueError):
+                user_id = 0
+            action = str(body.get("action") or "issue").strip().lower()
+            reason = str(body.get("reason") or "").strip()
+            guild = bot.get_guild(int(guild_id))
+            protected_ids = {
+                int(principal.user_id),
+                int(getattr(bot.user, "id", 0) or 0),
+                int(getattr(guild, "owner_id", 0) or 0),
+            }
+            if user_id <= 0 or user_id in protected_ids:
+                return web.json_response(
+                    {
+                        "error": "global_ban_protected_identity",
+                        "message": "Нельзя заблокировать себя, владельца сервера или T-Mod.",
+                    },
+                    status=400,
+                )
+            if guild is None:
+                return web.json_response(
+                    {"error": "discord_unavailable", "message": "Discord-сервер временно недоступен."},
+                    status=503,
+                )
+            discord_state = "pending"
+            discord_error = None
+            dm_sent = False
+            if action == "issue":
+                if body.get("confirmed") is not True or not 5 <= len(reason) <= 1000:
+                    return web.json_response(
+                        {
+                            "error": "global_ban_confirmation_required",
+                            "message": "Укажите причину и подтвердите глобальную блокировку.",
+                        },
+                        status=400,
+                    )
+                member = guild.get_member(user_id)
+                if member is not None:
+                    try:
+                        await asyncio.wait_for(
+                            member.send(
+                                embed=discord.Embed(
+                                    title="Доступ к T-Mod заблокирован",
+                                    description=(
+                                        f"Администратор ограничил доступ к экосистеме T-Mod.\n\n"
+                                        f"**Причина:** {reason}"
+                                    ),
+                                    color=0x8A1028,
+                                ),
+                                allowed_mentions=discord.AllowedMentions.none(),
+                            ),
+                            timeout=5.0,
+                        )
+                        dm_sent = True
+                    except Exception:
+                        pass
+                record = await asyncio.to_thread(
+                    global_ban_storage.issue_global_ban,
+                    int(guild_id),
+                    user_id,
+                    reason=reason,
+                    actor_id=int(principal.user_id),
+                    actor_display=str(principal.display_name),
+                )
+                try:
+                    await asyncio.wait_for(
+                        guild.ban(
+                            discord.Object(id=user_id),
+                            reason=f"T-Mod global ban · {principal.display_name}: {reason}"[:512],
+                            delete_message_seconds=0,
+                        ),
+                        timeout=12.0,
+                    )
+                    discord_state = "banned"
+                except Exception as exc:
+                    discord_state = "failed"
+                    discord_error = f"{type(exc).__name__}: {exc}"[:1000]
+                try:
+                    record = await asyncio.to_thread(
+                        global_ban_storage.set_global_ban_discord_state,
+                        int(guild_id),
+                        user_id,
+                        state=discord_state,
+                        error=discord_error,
+                        actor_id=int(principal.user_id),
+                        actor_display=str(principal.display_name),
+                    )
+                except Exception:
+                    warning = "Веб-блокировка включена; статус Discord будет перепроверен."
+                message = (
+                    "Пользователь заблокирован во всей экосистеме и в Discord."
+                    if discord_state == "banned"
+                    else "Веб-доступ закрыт, но Discord не подтвердил бан. Проверьте права T-Mod."
+                )
+                action_kind = "global_ban_issue"
+            elif action == "revoke":
+                if body.get("confirmed") is not True or not 3 <= len(reason) <= 1000:
+                    return web.json_response(
+                        {
+                            "error": "global_unban_confirmation_required",
+                            "message": "Укажите основание и подтвердите снятие блокировки.",
+                        },
+                        status=400,
+                )
+                try:
+                    await asyncio.wait_for(
+                        guild.unban(
+                            discord.Object(id=user_id),
+                            reason=f"T-Mod global unban · {principal.display_name}: {reason}"[:512],
+                        ),
+                        timeout=12.0,
+                    )
+                except discord.NotFound:
+                    pass
+                except Exception as exc:
+                    return web.json_response(
+                        {
+                            "error": "discord_unban_failed",
+                            "message": "Discord не подтвердил снятие бана. Доступ оставлен закрытым.",
+                            "detail": f"{type(exc).__name__}: {exc}"[:500],
+                        },
+                        status=502,
+                    )
+                try:
+                    record = await asyncio.to_thread(
+                        global_ban_storage.revoke_global_ban,
+                        int(guild_id),
+                        user_id,
+                        reason=reason,
+                        actor_id=int(principal.user_id),
+                        actor_display=str(principal.display_name),
+                    )
+                except ValueError:
+                    return web.json_response(
+                        {"error": "global_ban_not_active", "message": "Активная блокировка не найдена."},
+                        status=409,
+                    )
+                message = "Глобальная блокировка снята. Пользователь может войти снова."
+                action_kind = "global_ban_revoke"
+            else:
+                return web.json_response({"error": "global_ban_action_invalid"}, status=400)
+            try:
+                await asyncio.to_thread(
+                    activity_storage.bot_record_action,
+                    guild_id=int(guild_id),
+                    actor_id=int(principal.user_id),
+                    actor_display=str(principal.display_name),
+                    module="security",
+                    action_kind=action_kind,
+                    target_type="member",
+                    target_id=user_id,
+                    summary=message,
+                    payload={
+                        "reason": reason,
+                        "discord_state": record.get("discord_state"),
+                        "discord_error": record.get("discord_error"),
+                        "dm_sent": dm_sent,
+                    },
+                    reversible=False,
+                )
+            except Exception:
+                warning = warning or "Блокировка применена; вторичная запись аудита задержана."
+        else:
+            message = None
+            record = None
+        records = await asyncio.to_thread(
+            global_ban_storage.list_global_bans,
+            int(guild_id),
+            include_revoked=True,
+            limit=200,
+        )
+        for item in records:
+            user = bot.get_user(int(item.get("user_id") or 0))
+            item["member_name"] = str(
+                getattr(user, "display_name", "")
+                or getattr(user, "name", "")
+                or f"Discord {item['user_id']}"
+            )
+        return web.json_response(
+            {
+                **context(principal),
+                "records": records,
+                "record": record,
+                "message": message,
+                "warning": warning,
+            }
+        )
+
     async def access_control(request: web.Request) -> web.Response:
         principal, legacy = await authenticate(request)
         if legacy or principal is None or not principal.administrator:
             raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
+        warning: str | None = None
         if request.method == "POST":
             if not csrf_matches(request, principal):
                 raise web.HTTPForbidden(text='{"error":"csrf_failed"}', content_type="application/json")
@@ -446,19 +705,31 @@ def register_admin_web_routes(
                 user_id = int(body.get("user_id"))
                 section = str(body.get("section") or "").strip().lower()
                 enabled = body.get("enabled", True) is True
+                if (
+                    user_id <= 0
+                    or section not in web_auth_storage.WEB_GRANTABLE_SECTIONS
+                ):
+                    raise ValueError("web_section_grant_invalid")
                 if enabled:
                     guild = bot.get_guild(int(guild_id))
                     member = guild.get_member(user_id) if guild is not None else None
                     if member is None and guild is not None:
                         try:
-                            member = await guild.fetch_member(user_id)
-                        except discord.DiscordException:
+                            member = await asyncio.wait_for(
+                                guild.fetch_member(user_id),
+                                timeout=5.0,
+                            )
+                        except (discord.DiscordException, TimeoutError):
                             member = None
                     if member is None and section == "atlas_ai":
                         fetch_user = getattr(bot, "fetch_user", None)
                         try:
-                            member = await fetch_user(user_id) if callable(fetch_user) else None
-                        except discord.DiscordException:
+                            member = (
+                                await asyncio.wait_for(fetch_user(user_id), timeout=5.0)
+                                if callable(fetch_user)
+                                else None
+                            )
+                        except (discord.DiscordException, TimeoutError):
                             member = None
                     if member is None:
                         return web.json_response(
@@ -520,30 +791,41 @@ def register_admin_web_routes(
                 )
                 embed.set_footer(text=f"Доступ выдал {principal.display_name} · T-Mod")
                 try:
-                    await member.send(
-                        embed=embed,
-                        allowed_mentions=discord.AllowedMentions.none(),
+                    await asyncio.wait_for(
+                        member.send(
+                            embed=embed,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        ),
+                        timeout=5.0,
                     )
                     dm_sent = True
-                except discord.DiscordException:
+                except Exception:
+                    # Discord delivery is best-effort and happens after the
+                    # durable grant. Never report the committed grant as failed.
                     dm_sent = False
-            await asyncio.to_thread(
-                activity_storage.bot_record_action,
-                guild_id=int(guild_id),
-                actor_id=int(principal.user_id),
-                actor_display=str(principal.display_name),
-                module="admin",
-                action_kind="web_section_grant" if enabled else "web_section_revoke",
-                target_type="member",
-                target_id=user_id,
-                summary=(
-                    f"Выдан доступ к разделу {section}"
-                    if enabled
-                    else f"Отозван доступ к разделу {section}"
-                ),
-                payload={"section": section, "dm_sent": dm_sent},
-                reversible=False,
-            )
+            try:
+                await asyncio.to_thread(
+                    activity_storage.bot_record_action,
+                    guild_id=int(guild_id),
+                    actor_id=int(principal.user_id),
+                    actor_display=str(principal.display_name),
+                    module="admin",
+                    action_kind="web_section_grant" if enabled else "web_section_revoke",
+                    target_type="member",
+                    target_id=user_id,
+                    summary=(
+                        f"Выдан доступ к разделу {section}"
+                        if enabled
+                        else f"Отозван доступ к разделу {section}"
+                    ),
+                    payload={"section": section, "dm_sent": dm_sent},
+                    reversible=False,
+                )
+            except Exception:
+                # The grant transaction is the source of truth. A secondary
+                # audit failure must not turn a committed access change into a
+                # misleading HTTP error for the administrator.
+                warning = "Право изменено, но запись аудита будет восстановлена позже."
             if enabled and not changed:
                 result_message = "Этот доступ уже был выдан ранее."
             elif enabled and dm_sent:
@@ -561,10 +843,18 @@ def register_admin_web_routes(
             changed = False
             dm_sent = False
         guild = bot.get_guild(int(guild_id))
-        grants = await asyncio.to_thread(
-            web_auth_storage.web_section_grants,
-            int(guild_id),
-        )
+        try:
+            grants = await asyncio.to_thread(
+                web_auth_storage.web_section_grants,
+                int(guild_id),
+            )
+        except Exception:
+            # A POST may already be committed. Return its authoritative result
+            # instead of 500; the client will refresh the registry separately.
+            if request.method != "POST":
+                raise
+            grants = []
+            warning = warning or "Право изменено; список доступов обновится автоматически."
         projected_grants = []
         for grant in grants:
             grant_member = guild.get_member(int(grant["user_id"])) if guild else None
@@ -592,6 +882,7 @@ def register_admin_web_routes(
             "changed": changed,
             "dm_sent": dm_sent,
             "message": result_message,
+            "warning": warning,
         })
 
     async def access_self(request: web.Request) -> web.Response:
@@ -2351,6 +2642,8 @@ def register_admin_web_routes(
     app.router.add_get("/api/admin/access", access_control)
     app.router.add_post("/api/admin/access", access_control)
     app.router.add_get("/api/admin/access/self", access_self)
+    app.router.add_get("/api/admin/security/bans", global_bans)
+    app.router.add_post("/api/admin/security/bans", global_bans)
     app.router.add_get("/api/admin/media", media_status)
     app.router.add_post("/api/admin/media/command", media_command)
 
@@ -2363,8 +2656,21 @@ def register_admin_web_routes(
             # A cache warmup must never prevent the web server from starting.
             pass
 
+    async def reconcile_global_bans() -> None:
+        while True:
+            try:
+                await _reconcile_global_bans_once(bot, int(guild_id))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The web-side block remains authoritative. Discord recovery
+                # is retried without affecting the rest of the Reactor.
+                pass
+            await asyncio.sleep(60.0)
+
     async def begin_warmup(_: web.Application) -> None:
         warm_tasks.append(asyncio.create_task(warm_overview()))
+        warm_tasks.append(asyncio.create_task(reconcile_global_bans()))
 
     async def stop_warmup(_: web.Application) -> None:
         for task in warm_tasks:

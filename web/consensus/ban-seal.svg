@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img" aria-labelledby="title desc">
+  <title id="title">Печать глобальной блокировки T-Mod</title>
+  <desc id="desc">Тёмная техническая печать с перечёркнутым ядром.</desc>
+  <defs>
+    <radialGradient id="core" cx="50%" cy="45%" r="60%"><stop offset="0" stop-color="#ff536d" stop-opacity=".72"/><stop offset=".34" stop-color="#8e102d" stop-opacity=".38"/><stop offset="1" stop-color="#050609" stop-opacity="0"/></radialGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff7a90"/><stop offset=".48" stop-color="#6b0a22"/><stop offset="1" stop-color="#ff405e"/></linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <circle cx="320" cy="320" r="286" fill="url(#core)" stroke="#ff6078" stroke-opacity=".14"/>
+  <g fill="none" stroke="url(#edge)" filter="url(#glow)">
+    <circle cx="320" cy="320" r="224" stroke-width="3" stroke-dasharray="5 17"/>
+    <circle cx="320" cy="320" r="178" stroke-width="1.5" stroke-opacity=".6"/>
+    <path d="M165 320a155 155 0 0 1 310 0 155 155 0 0 1-310 0Z" stroke-width="2" stroke-dasharray="70 12"/>
+  </g>
+  <g fill="#ff7087">
+    <circle cx="320" cy="96" r="5"/><circle cx="320" cy="544" r="5"/><circle cx="96" cy="320" r="5"/><circle cx="544" cy="320" r="5"/>
+  </g>
+  <path d="M236 231h168v178H236z" fill="#09080c" stroke="#ff6b82" stroke-width="5"/>
+  <path d="M274 231v-35c0-62 92-62 92 0v35" fill="none" stroke="#ff6b82" stroke-width="18" stroke-linecap="round"/>
+  <path d="m206 206 228 228" stroke="#ff3d5d" stroke-width="24" stroke-linecap="round" filter="url(#glow)"/>
+  <text x="320" y="505" fill="#ff94a5" font-family="Arial,sans-serif" font-size="20" font-weight="700" letter-spacing="8" text-anchor="middle">ACCESS DENIED</text>
+</svg>
