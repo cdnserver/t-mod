@@ -76,6 +76,7 @@ ADMIN_SECTION_LABELS = {
     "atlas": "T-Mod Atlas",
     "atlas_ai": "Доступ к Atlas AI",
     "minecraft": "Minecraft",
+    "ovr": "Отдел внешней разведки",
 }
 
 
@@ -487,6 +488,14 @@ def register_admin_web_routes(
             if enabled and changed and member is not None:
                 label = ADMIN_SECTION_LABELS.get(section, section)
                 atlas_access = section == "atlas_ai"
+                ovr_access = section == "ovr"
+                target_url = (
+                    "https://atlas.tvr.lat/"
+                    if atlas_access
+                    else "https://tvr.lat/reactor#ovr"
+                    if ovr_access
+                    else f"https://reactor.tvr.lat/admin#/{section}"
+                )
                 embed = discord.Embed(
                     title="Доступ к Atlas AI" if atlas_access else "Доступ к Ядерному Реактору",
                     description=(
@@ -494,18 +503,12 @@ def register_admin_web_routes(
                         "Войдите с вашим логином и восьмизначным PIN."
                     ),
                     color=0x68E0B7,
-                    url=(
-                        "https://atlas.tvr.lat/"
-                        if atlas_access
-                        else f"https://reactor.tvr.lat/admin#/{section}"
-                    ),
+                    url=target_url,
                 )
                 embed.add_field(
                     name="Открыть раздел",
                     value=(
-                        f"[atlas.tvr.lat → {label}](https://atlas.tvr.lat/)"
-                        if atlas_access
-                        else f"[reactor.tvr.lat → {label}](https://reactor.tvr.lat/admin#/{section})"
+                        f"[Открыть → {label}]({target_url})"
                     ),
                     inline=False,
                 )

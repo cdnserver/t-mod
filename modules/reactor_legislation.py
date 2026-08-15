@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import asdict
 from typing import Any
 
 import discord
@@ -21,6 +20,7 @@ from modules.tvrs_bill_editor import refresh_bill_workspace_panel
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_delivery import TVRS_BILL_PUBLICATION_TOPIC
 from persistence import bill_workspace_repository as workspace_storage
+from persistence import legislation_repository as legislation_storage
 from persistence import profile_repository as profile_storage
 from persistence import tvrs_repository as bill_storage
 
@@ -91,7 +91,11 @@ def _owned_workspace(
             "Этот черновик не найден или принадлежит другому автору.",
             status=404,
         )
-    if str(workspace.get("status") or "") not in {"draft", "review"}:
+    if str(workspace.get("status") or "") not in {
+        "draft",
+        "review",
+        "changes_requested",
+    }:
         raise ReactorLegislationError(
             "bill_workspace_closed",
             "Черновик уже закрыт. Создайте новый законопроект.",
@@ -132,6 +136,17 @@ def project_workspace(workspace: dict[str, Any] | None) -> dict[str, Any] | None
         "decision_category": "ordinary",
         "implementation_plan": str(workspace.get("implementation_plan") or ""),
         "leadership_actions": str(workspace.get("leadership_actions") or ""),
+        "execution_blocks": legislation_storage.parse_execution_blocks(
+            workspace.get("execution_blocks_json")
+        ),
+        "moderation": {
+            "status": str(workspace.get("moderation_status") or "draft"),
+            "round": int(workspace.get("moderation_round") or 0),
+            "note": str(workspace.get("moderation_note") or "") or None,
+            "moderator": str(workspace.get("moderator_display") or "") or None,
+            "submitted_at": workspace.get("submitted_at"),
+            "reviewed_at": workspace.get("reviewed_at"),
+        },
         "created_at": workspace.get("created_at"),
         "updated_at": workspace.get("updated_at"),
         "requirements": required,
@@ -156,6 +171,13 @@ def project_bill(
         "materials": str(bill.get("materials") or ""),
         "implementation_plan": str(bill.get("implementation_plan") or ""),
         "leadership_actions": str(bill.get("leadership_actions") or ""),
+        "execution_blocks": legislation_storage.parse_execution_blocks(
+            bill.get("execution_blocks_json")
+        ),
+        "moderation": {
+            "moderator": str(bill.get("moderated_by_display") or "") or None,
+            "moderated_at": bill.get("moderated_at"),
+        },
         "author": str(
             (preferred_names or {}).get(author_id)
             or bill.get("author_display")
@@ -180,6 +202,7 @@ def legislation_snapshot(
     author_id: int,
     *,
     limit: int = 80,
+    moderator: bool = False,
 ) -> dict[str, Any]:
     workspace = workspace_storage.get_open_bill_workspace(guild_id, author_id)
     bills = bill_storage.tvrs_public_bill_catalog(guild_id, limit=limit)
@@ -193,9 +216,42 @@ def legislation_snapshot(
         if str(bill.get("status") or "")
         in {"publishing", "draft", "queued", "requeued"}
     )
+    author_workspaces = legislation_storage.list_author_workspaces(
+        guild_id, author_id, limit=80
+    )
+    workspace_events = legislation_storage.moderation_events(
+        [int(item["id"]) for item in author_workspaces]
+    )
+    moderation_queue = (
+        legislation_storage.list_moderation_queue(guild_id) if moderator else []
+    )
+    moderation_queue_events = legislation_storage.moderation_events(
+        [int(item["id"]) for item in moderation_queue]
+    )
+    tasks = legislation_storage.task_board(guild_id)
     return {
         "workspace": project_workspace(workspace),
+        "my_workspaces": [
+            {
+                **(project_workspace(item) or {}),
+                "events": workspace_events.get(int(item["id"]), []),
+            }
+            for item in author_workspaces
+        ],
         "bills": [project_bill(guild_id, bill, preferred_names) for bill in bills],
+        "moderation": {
+            "allowed": bool(moderator),
+            "queue": [
+                {
+                    **(project_workspace(item) or {}),
+                    "author": str(item.get("author_display") or "Участник"),
+                    "author_id": int(item.get("author_id") or 0),
+                    "events": moderation_queue_events.get(int(item["id"]), []),
+                }
+                for item in moderation_queue
+            ],
+        },
+        "tasks": tasks,
         "next_number": bill_storage.tvrs_next_bill_number(guild_id),
         "queued": queued,
     }
@@ -232,11 +288,21 @@ def save_workspace(
     _owned_workspace(guild_id, author_id, workspace_id)
     fields = {key: _text(payload, key) for key in _LIMITS}
     try:
+        blocks_json = legislation_storage.execution_blocks_json(
+            payload.get("execution_blocks")
+        )
+    except ValueError as exc:
+        raise ReactorLegislationError(
+            str(exc),
+            "Проверьте цепочку исполнения: у каждого блока нужны тип и название.",
+        ) from exc
+    try:
         updated = workspace_storage.update_bill_workspace(
             workspace_id,
             expected_revision=expected_revision,
             decision_category="ordinary",
             status="review" if fields["title"] and fields["summary"] else "draft",
+            execution_blocks_json=blocks_json,
             **fields,
         )
     except ValueError as exc:
@@ -293,7 +359,7 @@ async def publish_workspace(
     if payload.get("confirmed") is not True:
         raise ReactorLegislationError(
             "confirmation_required",
-            "Подтвердите публикацию законопроекта.",
+            "Подтвердите отправку законопроекта на модерацию.",
         )
     workspace_id = _workspace_id(payload)
     workspace = workspace_storage.get_bill_workspace(workspace_id)
@@ -307,26 +373,16 @@ async def publish_workspace(
             "Этот черновик не найден или принадлежит другому автору.",
             status=404,
         )
-    if str(workspace.get("status") or "") == "submitted" and int(
-        workspace.get("submitted_bill_id") or 0
-    ) > 0:
-        existing = bill_storage.tvrs_get_bill_by_id(
-            int(workspace["submitted_bill_id"])
-        )
-        if existing is not None:
-            return project_bill(
-                int(guild_id),
-                {
-                    **asdict(existing),
-                    "result_status": None,
-                    "result_overall_percent": None,
-                    "result_required_percent": None,
-                },
-            ), False
-    if str(workspace.get("status") or "") not in {"draft", "review"}:
+    if str(workspace.get("status") or "") == "moderation":
+        return project_workspace(workspace) or {}, False
+    if str(workspace.get("status") or "") not in {
+        "draft",
+        "review",
+        "changes_requested",
+    }:
         raise ReactorLegislationError(
             "bill_workspace_closed",
-            "Черновик уже закрыт. Создайте новый законопроект.",
+            "Этот законопроект уже прошёл текущий этап.",
             status=409,
         )
     try:
@@ -334,88 +390,156 @@ async def publish_workspace(
     except (TypeError, ValueError) as exc:
         raise ReactorLegislationError(
             "bill_workspace_revision_required",
-            "Обновите данные черновика перед публикацией.",
+            "Обновите данные черновика перед отправкой.",
             status=409,
         ) from exc
     if int(workspace.get("revision") or 0) != expected_revision:
         raise ReactorLegislationError(
             "bill_workspace_revision_conflict",
-            "Черновик изменился. Проверьте актуальную версию перед публикацией.",
+            "Черновик изменился. Проверьте актуальную версию перед отправкой.",
             status=409,
         )
     projected = project_workspace(workspace) or {}
     if not projected.get("ready"):
         raise ReactorLegislationError(
             "bill_workspace_incomplete",
-            "Заполните идею, текст и план исполнения перед публикацией.",
+            "Заполните идею, текст и план исполнения перед отправкой.",
         )
+    try:
+        submitted = await asyncio.to_thread(
+            legislation_storage.submit_for_moderation,
+            int(workspace["id"]),
+            guild_id=int(guild_id),
+            author_id=int(author_id),
+            author_display=str(author_display),
+            expected_revision=expected_revision,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status = 409 if "revision" in code or "editable" in code else 400
+        raise ReactorLegislationError(
+            code,
+            "Не удалось отправить актуальную версию. Обновите страницу и повторите.",
+            status=status,
+        ) from exc
+    try:
+        await refresh_bill_workspace_panel(bot, submitted)
+    except Exception:  # noqa: BLE001 - web state is already durable
+        logger.exception("Could not refresh legacy Discord workspace projection")
+    return project_workspace(submitted) or {}, True
 
+
+async def moderate_workspace(
+    bot: discord.Client,
+    guild_id: int,
+    moderator_id: int,
+    moderator_display: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply one idempotent moderation decision and publish only approved bills."""
+
+    workspace_id = _workspace_id(payload)
+    try:
+        expected_revision = int(payload.get("expected_revision"))
+    except (TypeError, ValueError) as exc:
+        raise ReactorLegislationError(
+            "bill_workspace_revision_required",
+            "Карточка изменилась. Обновите очередь модерации.",
+            status=409,
+        ) from exc
+    decision = str(payload.get("decision") or "").strip().lower()
+    note = str(payload.get("note") or "").strip()
+    workspace = workspace_storage.get_bill_workspace(workspace_id)
+    if workspace is None or int(workspace.get("guild_id") or 0) != int(guild_id):
+        raise ReactorLegislationError(
+            "bill_workspace_not_found", "Законопроект не найден.", status=404
+        )
+    if decision in {"changes_requested", "rejected"}:
+        try:
+            updated = await asyncio.to_thread(
+                legislation_storage.record_moderation_decision,
+                workspace_id,
+                guild_id=int(guild_id),
+                moderator_id=int(moderator_id),
+                moderator_display=str(moderator_display),
+                expected_revision=expected_revision,
+                decision=decision,
+                note=note,
+            )
+        except ValueError as exc:
+            raise ReactorLegislationError(
+                str(exc), "Не удалось сохранить решение модерации.", status=409
+            ) from exc
+        return project_workspace(updated) or {}
+    if decision != "approved":
+        raise ReactorLegislationError(
+            "bill_moderation_decision_invalid", "Выберите решение модерации."
+        )
+    projected = project_workspace(workspace) or {}
+    if not projected.get("ready"):
+        raise ReactorLegislationError(
+            "bill_workspace_incomplete",
+            "Нельзя одобрить неполный законопроект. Отправьте его на дополнение.",
+        )
     async with session_lock(int(guild_id)):
         runtime = active_sessions.get(int(guild_id))
         if runtime is not None and not bool(getattr(runtime, "finished", False)):
             raise ReactorLegislationError(
                 "bill_submission_locked_by_active_consensus",
-                "Сейчас идёт пленарный консенсус. Публикация откроется после его завершения.",
+                "Идёт консенсус. Одобрите проект после завершения заседания.",
                 status=409,
             )
+        from persistence.core import utc_now_iso
+
+        moderated_at = utc_now_iso()
         try:
-            bill, _, created = await asyncio.to_thread(
+            bill, _, _ = await asyncio.to_thread(
                 bill_storage.tvrs_create_bill_with_publication,
                 guild_id=int(guild_id),
                 channel_id=TVRS_MATERIALS_CHANNEL_ID,
-                author_id=int(author_id),
-                author_display=str(author_display),
+                author_id=int(workspace.get("author_id") or 0),
+                author_display=str(workspace.get("author_display") or "Участник"),
                 title=projected["title"],
                 summary=projected["summary"],
                 materials=projected["materials"] or None,
                 decision_category="ordinary",
                 implementation_plan=projected["implementation_plan"],
                 leadership_actions=projected["leadership_actions"],
-                editor_workspace_id=int(workspace["id"]),
+                execution_blocks_json=legislation_storage.execution_blocks_json(
+                    projected.get("execution_blocks")
+                ),
+                moderated_by_id=int(moderator_id),
+                moderated_by_display=str(moderator_display),
+                moderated_at=moderated_at,
+                editor_workspace_id=workspace_id,
                 delivery_topic=TVRS_BILL_PUBLICATION_TOPIC,
             )
+            updated = await asyncio.to_thread(
+                legislation_storage.record_moderation_decision,
+                workspace_id,
+                guild_id=int(guild_id),
+                moderator_id=int(moderator_id),
+                moderator_display=str(moderator_display),
+                expected_revision=expected_revision,
+                decision="approved",
+                note=note,
+                submitted_bill_id=int(bill.id),
+            )
+            await asyncio.to_thread(
+                legislation_storage.ensure_execution_tasks,
+                guild_id=int(guild_id),
+                bill_id=int(bill.id),
+                workspace_id=workspace_id,
+                blocks=projected.get("execution_blocks"),
+                actor_id=int(moderator_id),
+                actor_display=str(moderator_display),
+            )
         except ValueError as exc:
-            if str(exc) == "bill_submission_locked_by_active_consensus":
-                raise ReactorLegislationError(
-                    str(exc),
-                    "Сейчас идёт пленарный консенсус. Публикация откроется после его завершения.",
-                    status=409,
-                ) from exc
-            raise
-        closed = await asyncio.to_thread(
-            workspace_storage.finish_bill_workspace,
-            int(workspace["id"]),
-            author_id=int(author_id),
-            status="submitted",
-            submitted_bill_id=int(bill.id),
-        )
-
+            raise ReactorLegislationError(
+                str(exc), "Не удалось завершить одобрение законопроекта.", status=409
+            ) from exc
     wake_delivery_worker()
-    guild = bot.get_guild(int(guild_id))
-    if guild is not None:
-        from modules.tvrs_recovery import ensure_sticky_message
-
-        try:
-            await ensure_sticky_message(bot, guild, force_repost=True)
-        except Exception:  # noqa: BLE001 - durable publication already committed
-            logger.exception("Could not refresh consensus sticky after web bill submit")
-            # Publication is already durable in the outbox; a transient sticky
-            # refresh must never turn a successful submit into a failed one.
-            pass
-    try:
-        await refresh_bill_workspace_panel(bot, closed)
-    except Exception:  # noqa: BLE001 - private Discord projection is secondary
-        logger.exception("Could not refresh Discord bill workspace panel")
-    projected_bill = project_bill(
-        int(guild_id),
-        {
-            **asdict(bill),
-            "result_status": None,
-            "result_overall_percent": None,
-            "result_required_percent": None,
-        },
-    )
-    return projected_bill, created
+    return project_workspace(updated) or {}
 
 
 def cancel_workspace(
@@ -451,6 +575,7 @@ __all__ = [
     "create_workspace",
     "generate_workspace_draft",
     "legislation_snapshot",
+    "moderate_workspace",
     "project_workspace",
     "publish_workspace",
     "save_workspace",

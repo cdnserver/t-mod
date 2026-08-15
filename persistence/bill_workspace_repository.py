@@ -7,7 +7,8 @@ from typing import Any
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
-OPEN_WORKSPACE_STATUSES = ("draft", "review")
+EDITABLE_WORKSPACE_STATUSES = ("draft", "review", "changes_requested")
+OPEN_WORKSPACE_STATUSES = (*EDITABLE_WORKSPACE_STATUSES, "moderation")
 WORKSPACE_CATEGORIES = frozenset({"ordinary", "heavy", "unanimous"})
 
 
@@ -29,8 +30,10 @@ def get_open_bill_workspace(guild_id: int, author_id: int) -> dict[str, Any] | N
         row = con.execute(
             """
             SELECT * FROM tvrs_bill_workspaces
-            WHERE guild_id = ? AND author_id = ? AND status IN ('draft', 'review')
-            ORDER BY updated_at DESC, id DESC
+            WHERE guild_id = ? AND author_id = ?
+              AND status IN ('draft', 'review', 'changes_requested')
+            ORDER BY CASE status WHEN 'changes_requested' THEN 0 ELSE 1 END,
+                     updated_at DESC, id DESC
             LIMIT 1
             """,
             (int(guild_id), int(author_id)),
@@ -39,7 +42,7 @@ def get_open_bill_workspace(guild_id: int, author_id: int) -> dict[str, Any] | N
 
 
 def list_open_bill_workspaces(guild_id: int | None = None) -> list[dict[str, Any]]:
-    where = "WHERE status IN ('draft', 'review')"
+    where = "WHERE status IN ('draft', 'review', 'changes_requested', 'moderation')"
     values: tuple[Any, ...] = ()
     if guild_id is not None:
         where += " AND guild_id = ?"
@@ -69,7 +72,8 @@ def create_or_get_bill_workspace(
         existing = con.execute(
             """
             SELECT * FROM tvrs_bill_workspaces
-            WHERE guild_id = ? AND author_id = ? AND status IN ('draft', 'review')
+            WHERE guild_id = ? AND author_id = ?
+              AND status IN ('draft', 'review', 'changes_requested')
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,
@@ -178,6 +182,7 @@ def update_bill_workspace(
     decision_category: str | None = None,
     implementation_plan: str | None = None,
     leadership_actions: str | None = None,
+    execution_blocks_json: str | None = None,
     ai_model: str | None = None,
     increment_ai_revision: bool = False,
     status: str | None = None,
@@ -194,6 +199,7 @@ def update_bill_workspace(
         "implementation_plan": implementation_plan,
         "leadership_actions": leadership_actions,
         "ai_model": ai_model,
+        "execution_blocks_json": execution_blocks_json,
     }
     for column, value in text_fields.items():
         if value is not None:
@@ -207,7 +213,7 @@ def update_bill_workspace(
         values.append(category)
     if status is not None:
         clean_status = str(status).strip().lower()
-        if clean_status not in OPEN_WORKSPACE_STATUSES:
+        if clean_status not in EDITABLE_WORKSPACE_STATUSES:
             raise ValueError("bill_workspace_status_invalid")
         assignments.append("status = ?")
         values.append(clean_status)
@@ -221,7 +227,8 @@ def update_bill_workspace(
             f"""
             UPDATE tvrs_bill_workspaces
             SET {", ".join(assignments)}
-            WHERE id = ? AND revision = ? AND status IN ('draft', 'review')
+            WHERE id = ? AND revision = ?
+              AND status IN ('draft', 'review', 'changes_requested')
             """,
             (*values, int(workspace_id), int(expected_revision)),
         )
@@ -254,7 +261,8 @@ def finish_bill_workspace(
             UPDATE tvrs_bill_workspaces
             SET status = ?, submitted_bill_id = COALESCE(?, submitted_bill_id),
                 revision = revision + 1, updated_at = ?
-            WHERE id = ? AND author_id = ? AND status IN ('draft', 'review')
+            WHERE id = ? AND author_id = ?
+              AND status IN ('draft', 'review', 'changes_requested')
             """,
             (
                 clean_status,

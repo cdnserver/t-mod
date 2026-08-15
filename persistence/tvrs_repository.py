@@ -72,6 +72,10 @@ def tvrs_create_bill(
     implementation_plan: str | None = None,
     leadership_actions: str | None = None,
     editor_workspace_id: int | None = None,
+    execution_blocks_json: str = "[]",
+    moderated_by_id: int | None = None,
+    moderated_by_display: str | None = None,
+    moderated_at: str | None = None,
 ) -> TVRSBill:
     now = utc_now_iso()
     meta_key = f"tvrs_next_bill_number:{guild_id}"
@@ -84,9 +88,11 @@ def tvrs_create_bill(
                 guild_id, bill_number, channel_id, message_id, author_id,
                 author_display, title, summary, materials, decision_category,
                 implementation_plan, leadership_actions, editor_workspace_id,
+                execution_blocks_json, moderated_by_id, moderated_by_display,
+                moderated_at,
                 status, created_at, updated_at
             )
-            VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+            VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
             """,
             (
                 guild_id,
@@ -101,6 +107,10 @@ def tvrs_create_bill(
                 implementation_plan,
                 leadership_actions,
                 editor_workspace_id,
+                str(execution_blocks_json or "[]"),
+                int(moderated_by_id) if moderated_by_id else None,
+                moderated_by_display,
+                moderated_at,
                 now,
                 now,
             ),
@@ -129,6 +139,10 @@ def tvrs_create_bill_with_publication(
     implementation_plan: str | None = None,
     leadership_actions: str | None = None,
     editor_workspace_id: int | None = None,
+    execution_blocks_json: str = "[]",
+    moderated_by_id: int | None = None,
+    moderated_by_display: str | None = None,
+    moderated_at: str | None = None,
 ) -> tuple[TVRSBill, dict[str, Any], bool]:
     """Atomically create a bill and its durable public-card intent.
 
@@ -197,8 +211,10 @@ def tvrs_create_bill_with_publication(
                     guild_id, bill_number, channel_id, message_id, author_id,
                     author_display, title, summary, materials, decision_category,
                     implementation_plan, leadership_actions, editor_workspace_id,
+                    execution_blocks_json, moderated_by_id,
+                    moderated_by_display, moderated_at,
                     status, created_at, updated_at
-                ) VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'publishing', ?, ?)
+                ) VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'publishing', ?, ?)
                 """,
                 (
                     int(guild_id),
@@ -213,6 +229,10 @@ def tvrs_create_bill_with_publication(
                     implementation_plan,
                     leadership_actions,
                     editor_workspace_id,
+                    str(execution_blocks_json or "[]"),
+                    int(moderated_by_id) if moderated_by_id else None,
+                    moderated_by_display,
+                    moderated_at,
                     now,
                     now,
                 ),
@@ -252,6 +272,10 @@ def tvrs_create_bill_with_publication(
                         "implementation_plan",
                         "leadership_actions",
                         "editor_workspace_id",
+                        "execution_blocks_json",
+                        "moderated_by_id",
+                        "moderated_by_display",
+                        "moderated_at",
                         "status",
                     )
                 },

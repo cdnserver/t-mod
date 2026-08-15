@@ -33,7 +33,7 @@ from modules.tvrs_delivery import (
     TVRS_BILL_PUBLICATION_TOPIC,
 )
 from modules.technical_log import log_technical_event
-from modules.tvrs_bill_editor import start_bill_workspace
+from modules.consensus_web_auth import consensus_web_entry_url as build_web_entry_url
 
 from modules.tvrs_presentation import (
     build_live_vote_embed,
@@ -321,7 +321,12 @@ class TVRSQueueHubView(TVRSRequesterView):
                 label="Перейти к подаче",
                 emoji="📝",
                 style=discord.ButtonStyle.link,
-                url=f"https://discord.com/channels/{guild_id}/{TVRS_MATERIALS_CHANNEL_ID}",
+                url=build_web_entry_url(
+                    "https://tvr.lat",
+                    guild_id=int(guild_id),
+                    user_id=int(requester_id),
+                    destination="/reactor",
+                ) + "#editor",
             )
         )
 
@@ -374,17 +379,22 @@ class TVRSStickyView(TVRSBaseView):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Команда работает только на сервере Discord.", ephemeral=True)
             return
-        if interaction.channel_id != TVRS_MATERIALS_CHANNEL_ID:
-            await interaction.response.send_message(f"Эта система работает только в канале <#{TVRS_MATERIALS_CHANNEL_ID}>.", ephemeral=True)
-            return
         if not is_senator(interaction.user):
             await interaction.response.send_message("Законопроект может предложить только сенатор или председатель Товарищества.", ephemeral=True)
             return
-        active = _active_sessions.get(interaction.guild.id)
-        if active and not active.finished:
-            await interaction.response.send_message("Сейчас идет пленарный консенсус. Подача новых законопроектов будет снова доступна после завершения.", ephemeral=True)
-            return
-        await start_bill_workspace(interaction)
+        url = build_web_entry_url(
+            "https://tvr.lat",
+            guild_id=interaction.guild.id,
+            user_id=interaction.user.id,
+            destination="/reactor",
+        ) + "#editor"
+        view = discord.ui.View(timeout=300)
+        view.add_item(discord.ui.Button(label="Открыть мастерскую", emoji="📝", style=discord.ButtonStyle.link, url=url))
+        await interaction.response.send_message(
+            "Законопроекты теперь создаются в личном Реакторе. Там доступны блоки исполнения, история и модерация.",
+            view=view,
+            ephemeral=True,
+        )
 
 
 class TVRSBillModal(discord.ui.Modal):

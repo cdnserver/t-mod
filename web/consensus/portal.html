@@ -12,9 +12,9 @@
       content="Казна и законодательное пространство участника Товарищества."
     >
     <link rel="stylesheet" href="/assets/portal.css">
-    <link rel="stylesheet" href="/assets/portal-theme.css?v=2">
+    <link rel="stylesheet" href="/assets/portal-theme.css?v=3">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js?v=2" defer></script>
+    <script src="/assets/portal.js?v=3" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -39,6 +39,8 @@
         <nav aria-label="Основная навигация">
           <a href="#treasury">Казна</a>
           <a href="#legislation">Законопроекты</a>
+          <a href="#tasks">Общие задачи</a>
+          <a href="#ovr">ОВР</a>
           <a class="nav-accent" href="#editor">Создать проект</a>
           <a href="https://tvr.lat/games">T-Mod Games</a>
           <a href="https://consensus.tvr.lat/">Консенсус</a>
@@ -116,6 +118,16 @@
               <span id="mandate-nickname-state">Проверяем Discord-ник…</span>
               <div><button id="mandate-sync-nickname" type="button" hidden>Синхронизировать ник</button><button id="mandate-edit" type="button">Настроить мандат</button></div>
             </footer>
+          </article>
+
+          <article id="my-bills" class="portal-widget governance-widget" data-portal-widget="my_bills">
+            <header><span>МОИ ЗАКОНОПРОЕКТЫ</span><b id="my-bills-count">0</b></header>
+            <div class="governance-heading"><div><small>ЛИЧНЫЙ ПОРТФЕЛЬ</small><h2>Путь каждой инициативы</h2><p>Черновик, модерация, дополнение и публикация собраны в одном месте.</p></div><a href="#editor">Новый проект <span>→</span></a></div>
+            <div id="my-bills-list" class="governance-list"></div>
+            <section id="moderation-desk" class="moderation-desk" hidden>
+              <div><small>РУКОВОДСТВО</small><h3>Очередь модерации</h3><p>Номер присваивается только после одобрения.</p></div>
+              <div id="moderation-list" class="moderation-list"></div>
+            </section>
           </article>
 
           <article
@@ -363,6 +375,19 @@
                         placeholder="Конкретный чек-лист после принятия решения…"
                       ></textarea><small data-counter-for="bill-leadership"
                       >0 / 1800</small></label>
+                    <section class="execution-builder">
+                      <div class="execution-builder-head"><div><small>ЦЕПОЧКА ИСПОЛНЕНИЯ</small><h3>Соберите решение из блоков</h3><p>Модерация увидит точный порядок действий. После принятия рабочие блоки появятся в общей доске.</p></div><b id="execution-count">0 БЛОКОВ</b></div>
+                      <div id="execution-palette" class="execution-palette">
+                        <button type="button" data-block-type="rule_change">§ Изменить правило</button>
+                        <button type="button" data-block-type="task">✓ Выполнить задачу</button>
+                        <button type="button" data-block-type="communication">◉ Сообщить участникам</button>
+                        <button type="button" data-block-type="appointment">◇ Назначить ответственного</button>
+                        <button type="button" data-block-type="integration">⌁ Настроить систему</button>
+                        <button type="button" data-block-type="review">↻ Проверить результат</button>
+                      </div>
+                      <div class="execution-example"><span>ПРИМЕР</span><p>Изменить порядок вступления → назначить ОВР ответственным → опубликовать памятку → проверить результат через 30 дней.</p><button id="execution-example" type="button">Вставить пример</button></div>
+                      <ol id="execution-chain" class="execution-chain"></ol>
+                    </section>
                     <div class="editor-actions">
                       <button type="button" data-editor-back="draft">
                         ← К тексту
@@ -381,8 +406,8 @@
                     <div class="field-heading">
                       <span>ШАГ 04</span><h3>Финальная проверка</h3>
                       <p>
-                        После публикации проект попадёт в устойчивую очередь
-                        Discord и станет доступен в реестре.
+                        После отправки проект проверит модерация. Она сможет
+                        одобрить его, отклонить или вернуть вам на дополнение.
                       </p>
                     </div>
                     <div id="editor-checklist" class="editor-checklist"></div>
@@ -405,7 +430,7 @@
                         class="publish-action"
                         type="button"
                       >
-                        Опубликовать законопроект <span>→</span>
+                        Отправить на модерацию <span>→</span>
                       </button>
                     </div>
                   </div>
@@ -438,6 +463,18 @@
                 </aside>
               </div>
             </div>
+          </article>
+
+          <article id="tasks" class="portal-widget tasks-widget" data-portal-widget="tasks">
+            <header><span>ОБЩАЯ ДОСКА ЗАКОНОПРОЕКТОВ</span><b>СОВМЕСТНАЯ РАБОТА</b></header>
+            <div class="governance-heading"><div><small>ПРОЗРАЧНО ДЛЯ ВСЕХ</small><h2>Что нужно сделать</h2><p>Задачи из принятых решений и самостоятельные поручения Товарищества.</p></div><button id="task-new" type="button">Добавить задачу</button></div>
+            <div id="task-board" class="task-board"></div>
+          </article>
+
+          <article id="ovr" class="portal-widget ovr-widget" data-portal-widget="ovr">
+            <header><span>ОТДЕЛ ВНЕШНЕЙ РАЗВЕДКИ</span><b id="ovr-access-state">ПРИЁМ ОБРАЩЕНИЙ</b></header>
+            <div class="ovr-hero"><span class="ovr-mark">ОВР<i></i></span><div><small>BECKER SYSTEMS × TVR.LAT</small><h2>Проверка кандидатов</h2><p>Каждая инициатива о вступлении получает отдельное дело и решение ОВР не позднее 48 часов.</p></div><button id="ovr-new" type="button">Передать кандидата</button></div>
+            <div id="ovr-cases" class="ovr-cases"></div>
           </article>
 
           <article
@@ -579,6 +616,19 @@
           Подтвердить
         </button>
       </div>
+    </dialog>
+
+    <dialog id="governance-dialog" class="portal-dialog governance-dialog">
+      <form method="dialog"><span><small id="governance-dialog-kicker">РАБОЧИЙ КОНТУР</small><strong id="governance-dialog-title">Карточка</strong></span><button value="cancel" aria-label="Закрыть">×</button></form>
+      <div id="governance-dialog-body" class="governance-dialog-body"></div>
+    </dialog>
+
+    <dialog id="task-dialog" class="portal-dialog form-dialog">
+      <form id="task-form"><header><small>ОБЩАЯ ДОСКА</small><h2>Новая задача</h2><p>Задача сразу станет видна всем участникам.</p></header><label><span>Название</span><input id="task-title" maxlength="180" required></label><label><span>Описание</span><textarea id="task-description" maxlength="2000" rows="5"></textarea></label><div class="form-grid"><label><span>Приоритет</span><select id="task-priority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="critical">Критический</option><option value="low">Низкий</option></select></label><label><span>Срок</span><input id="task-due" type="date"></label></div><footer><button type="button" onclick="this.closest('dialog').close()">Отмена</button><button class="portal-primary" type="submit">Создать задачу</button></footer></form>
+    </dialog>
+
+    <dialog id="ovr-dialog" class="portal-dialog form-dialog ovr-dialog">
+      <form id="ovr-form"><header><small>ДЕЛО О ВСТУПЛЕНИИ</small><h2>Передать кандидата в ОВР</h2><p>После регистрации у отдела будет 48 часов на проверку.</p></header><div class="form-grid"><label><span>Имя</span><input id="ovr-first-name" maxlength="80" required></label><label><span>Фамилия</span><input id="ovr-last-name" maxlength="80" required></label><label><span>Статик</span><input id="ovr-static" maxlength="12" inputmode="numeric" required></label><label><span>Discord</span><input id="ovr-discord" maxlength="200" required></label></div><label><span>Ссылка на форум</span><input id="ovr-forum" type="url" maxlength="500" placeholder="https://forum.majestic-rp.ru/..."></label><label><span>Дополнительная известная информация</span><textarea id="ovr-additional" maxlength="3000" rows="6"></textarea></label><footer><button type="button" onclick="this.closest('dialog').close()">Отмена</button><button class="portal-primary" type="submit">Зарегистрировать дело</button></footer></form>
     </dialog>
 
     <div id="portal-busy" class="portal-busy" hidden>

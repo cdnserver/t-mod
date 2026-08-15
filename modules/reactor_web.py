@@ -56,16 +56,20 @@ from modules.reactor_legislation import (
     create_workspace,
     generate_workspace_draft,
     legislation_snapshot,
+    moderate_workspace,
     publish_workspace,
     save_workspace,
 )
 from modules.tvrs_bill_editor import refresh_bill_workspace_panel
+from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from persistence import activity_repository as activity_storage
 from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
+from persistence import legislation_repository as legislation_storage
+from persistence import ovr_repository as ovr_storage
 from persistence import outbox_repository as outbox_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
@@ -530,6 +534,19 @@ def register_reactor_web_routes(
             )
         return principal
 
+    def can_moderate_bills(principal: ConsensusWebPrincipal) -> bool:
+        return bool(principal.administrator or is_chair(principal.member))
+
+    async def has_ovr_access(principal: ConsensusWebPrincipal) -> bool:
+        if principal.administrator:
+            return True
+        grants = await asyncio.to_thread(
+            web_auth_storage.web_section_grants,
+            int(guild_id),
+            int(principal.user_id),
+        )
+        return any(str(row.get("section") or "") == "ovr" for row in grants)
+
     async def admin_request(request: web.Request) -> ConsensusWebPrincipal:
         principal = await personal_request(request)
         minecraft_granted = False
@@ -704,6 +721,7 @@ def register_reactor_web_routes(
                 # Keep the first paint compact; the complete registry is
                 # fetched independently after the shell becomes interactive.
                 limit=12,
+                moderator=can_moderate_bills(principal),
             ),
         )
         positions = _member_positions(principal.member)
@@ -873,6 +891,7 @@ def register_reactor_web_routes(
                 int(guild_id),
                 int(principal.user_id),
                 limit=120,
+                moderator=can_moderate_bills(principal),
             ),
             force=request.query.get("fresh") == "1",
         )
@@ -947,6 +966,7 @@ def register_reactor_web_routes(
                         int(guild_id),
                         int(principal.user_id),
                         limit=1,
+                        moderator=can_moderate_bills(principal),
                     )
                     code = str(exc)
                     message = (
@@ -983,7 +1003,7 @@ def register_reactor_web_routes(
                     }
                 )
             if action == "publish":
-                bill, created = await publish_workspace(
+                workspace, created = await publish_workspace(
                     bot,
                     int(guild_id),
                     int(principal.user_id),
@@ -991,10 +1011,99 @@ def register_reactor_web_routes(
                     body,
                 )
                 member_home_cache.invalidate()
-                legislation_cache.invalidate(int(principal.user_id))
+                legislation_cache.invalidate()
                 return web.json_response(
-                    {"ok": True, "created": created, "bill": bill}
+                    {
+                        "ok": True,
+                        "created": created,
+                        "workspace": workspace,
+                        "message": "Законопроект передан на модерацию.",
+                    }
                 )
+            if action == "moderate":
+                if not can_moderate_bills(principal):
+                    return web.json_response(
+                        {
+                            "error": "bill_moderator_required",
+                            "message": "Решение может принять только руководство Товарищества.",
+                        },
+                        status=403,
+                    )
+                original = await asyncio.to_thread(
+                    workspace_storage.get_bill_workspace,
+                    int(body.get("workspace_id") or 0),
+                )
+                workspace = await moderate_workspace(
+                    bot,
+                    int(guild_id),
+                    int(principal.user_id),
+                    actor_display,
+                    body,
+                )
+                if original is not None:
+                    moderation_state = str(
+                        (workspace.get("moderation") or {}).get("status") or ""
+                    )
+                    title = {
+                        "approved": "Законопроект одобрен",
+                        "changes_requested": "Законопроект нужно дополнить",
+                        "rejected": "Законопроект отклонён",
+                    }.get(moderation_state, "Решение по законопроекту")
+                    await asyncio.to_thread(
+                        reactor_storage.reactor_put_notification,
+                        guild_id=int(guild_id),
+                        user_id=int(original.get("author_id") or 0),
+                        severity=(
+                            "success"
+                            if moderation_state == "approved"
+                            else "warning"
+                        ),
+                        kind="bill_moderation",
+                        title=title,
+                        body=str(
+                            (workspace.get("moderation") or {}).get("note")
+                            or workspace.get("title")
+                            or "Откройте личный портфель, чтобы увидеть решение."
+                        ),
+                        dedupe_key=(
+                            f"bill-moderation:{int(workspace['id'])}:"
+                            f"{int((workspace.get('moderation') or {}).get('round') or 0)}:"
+                            f"{moderation_state}"
+                        ),
+                        route="#my-bills",
+                    )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate()
+                return web.json_response({"ok": True, "workspace": workspace})
+            if action == "task_create":
+                task = await asyncio.to_thread(
+                    legislation_storage.create_task,
+                    guild_id=int(guild_id),
+                    title=str(body.get("title") or ""),
+                    description=str(body.get("description") or ""),
+                    priority=str(body.get("priority") or "normal"),
+                    assignee_id=(int(body["assignee_id"]) if body.get("assignee_id") else None),
+                    assignee_display=str(body.get("assignee_display") or "") or None,
+                    due_at=str(body.get("due_at") or "") or None,
+                    actor_id=int(principal.user_id),
+                    actor_display=actor_display,
+                )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate()
+                return web.json_response({"ok": True, "task": task})
+            if action == "task_update":
+                task = await asyncio.to_thread(
+                    legislation_storage.update_task,
+                    int(body.get("task_id") or 0),
+                    guild_id=int(guild_id),
+                    expected_revision=int(body.get("expected_revision") or 0),
+                    status=str(body.get("status") or ""),
+                    assignee_id=(int(body["assignee_id"]) if body.get("assignee_id") else None),
+                    assignee_display=str(body.get("assignee_display") or "") or None,
+                )
+                member_home_cache.invalidate()
+                legislation_cache.invalidate()
+                return web.json_response({"ok": True, "task": task})
             if action == "cancel":
                 await asyncio.to_thread(
                     cancel_workspace,
@@ -1018,6 +1127,7 @@ def register_reactor_web_routes(
                 int(guild_id),
                 int(principal.user_id),
                 limit=1,
+                moderator=can_moderate_bills(principal),
             )
             return web.json_response(
                 {
@@ -1026,6 +1136,109 @@ def register_reactor_web_routes(
                     "workspace": snapshot.get("workspace"),
                 },
                 status=exc.status,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": "Проверьте данные и актуальность карточки.",
+                },
+                status=409 if "revision" in str(exc) else 400,
+            )
+
+    async def ovr_get(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        full_access = await has_ovr_access(principal)
+        cases = await asyncio.to_thread(
+            ovr_storage.list_cases,
+            int(guild_id),
+            actor_id=int(principal.user_id),
+            full_access=full_access,
+        )
+        events: dict[str, list[dict[str, Any]]] = {}
+        if full_access:
+            event_rows = await asyncio.gather(
+                *(asyncio.to_thread(ovr_storage.case_events, int(item["id"])) for item in cases)
+            )
+            events = {
+                str(case["id"]): rows for case, rows in zip(cases, event_rows, strict=True)
+            }
+        return web.json_response(
+            {
+                "viewer": viewer(principal),
+                "full_access": full_access,
+                "cases": cases,
+                "events": events,
+            }
+        )
+
+    async def ovr_command(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "").strip().lower()
+        actor_profile = await asyncio.to_thread(
+            profile_storage.get_member_profile,
+            int(guild_id),
+            int(principal.user_id),
+        )
+        actor_display = str(
+            getattr(actor_profile, "preferred_name", "") or principal.display_name
+        )
+        try:
+            if action == "create":
+                case = await asyncio.to_thread(
+                    ovr_storage.create_case,
+                    guild_id=int(guild_id),
+                    first_name=str(body.get("first_name") or ""),
+                    last_name=str(body.get("last_name") or ""),
+                    static_id=str(body.get("static_id") or ""),
+                    discord_text=str(body.get("discord_text") or ""),
+                    discord_user_id=(
+                        int(body["discord_user_id"])
+                        if str(body.get("discord_user_id") or "").isdigit()
+                        else None
+                    ),
+                    forum_url=str(body.get("forum_url") or "") or None,
+                    additional_info=str(body.get("additional_info") or ""),
+                    actor_id=int(principal.user_id),
+                    actor_display=actor_display,
+                )
+                return web.json_response({"ok": True, "case": case})
+            if not await has_ovr_access(principal):
+                return web.json_response(
+                    {
+                        "error": "ovr_access_required",
+                        "message": "Полное досье доступно только сотрудникам ОВР.",
+                    },
+                    status=403,
+                )
+            case = await asyncio.to_thread(
+                ovr_storage.update_case,
+                int(body.get("case_id") or 0),
+                guild_id=int(guild_id),
+                expected_revision=int(body.get("expected_revision") or 0),
+                action=action,
+                actor_id=int(principal.user_id),
+                actor_display=actor_display,
+                note=str(body.get("note") or ""),
+                findings=(
+                    str(body.get("findings")) if "findings" in body else None
+                ),
+                nowa_links=(
+                    str(body.get("nowa_links")) if "nowa_links" in body else None
+                ),
+                risk_level=(
+                    str(body.get("risk_level")) if "risk_level" in body else None
+                ),
+            )
+            return web.json_response({"ok": True, "case": case})
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": "Проверьте анкету или обновите карточку дела.",
+                },
+                status=409 if "revision" in str(exc) else 400,
             )
 
     async def preferences(request: web.Request) -> web.Response:
@@ -1603,6 +1816,8 @@ def register_reactor_web_routes(
     app.router.add_post("/api/reactor/onboarding", onboarding_command)
     app.router.add_get("/api/reactor/legislation", legislation_get)
     app.router.add_post("/api/reactor/legislation", legislation_command)
+    app.router.add_get("/api/reactor/ovr", ovr_get)
+    app.router.add_post("/api/reactor/ovr", ovr_command)
     app.router.add_post("/api/reactor/preferences", preferences)
     app.router.add_get("/api/reactor/notifications", notifications)
     app.router.add_post("/api/reactor/notifications/read", read_notifications)

@@ -14,6 +14,7 @@ from modules.reactor_legislation import (
     create_workspace,
     generate_workspace_draft,
     legislation_snapshot,
+    moderate_workspace,
     publish_workspace,
     save_workspace,
 )
@@ -50,6 +51,9 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
             "materials": "",
             "implementation_plan": "Подготовить форму и открыть справочник.",
             "leadership_actions": "Назначить ответственного за актуальность данных.",
+            "execution_blocks": [
+                {"id": "publish", "type": "task", "title": "Открыть справочник"}
+            ],
         }
 
     def test_workspace_projection_is_owned_durable_and_public_safe(self) -> None:
@@ -117,7 +121,7 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(invalid.exception.code, "bill_workspace_id_invalid")
 
-    async def test_incomplete_and_active_consensus_publication_are_blocked(self) -> None:
+    async def test_incomplete_is_blocked_and_complete_draft_enters_moderation(self) -> None:
         workspace, _ = create_workspace(77, 101, "Автор")
         bot = SimpleNamespace(get_guild=lambda _guild_id: None)
         with patch.dict(active_sessions, {}, clear=True):
@@ -136,29 +140,15 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(incomplete.exception.code, "bill_workspace_incomplete")
 
         saved = save_workspace(77, 101, self.complete_payload(workspace))
-        with patch.dict(
-            active_sessions,
-            {77: SimpleNamespace(finished=False)},
-            clear=True,
-        ):
-            with self.assertRaises(ReactorLegislationError) as active:
-                await publish_workspace(
-                    bot,
-                    77,
-                    101,
-                    "Автор",
-                    {
-                        "workspace_id": saved["id"],
-                        "expected_revision": saved["revision"],
-                        "confirmed": True,
-                    },
-                )
-        self.assertEqual(
-            active.exception.code,
-            "bill_submission_locked_by_active_consensus",
+        submitted, created = await publish_workspace(
+            bot, 77, 101, "Автор",
+            {"workspace_id": saved["id"], "expected_revision": saved["revision"], "confirmed": True},
         )
+        self.assertTrue(created)
+        self.assertEqual(submitted["status"], "moderation")
+        self.assertEqual(submitted["moderation"]["status"], "pending")
 
-    async def test_publication_is_outbox_backed_and_network_retry_is_idempotent(self) -> None:
+    async def test_moderation_approval_is_outbox_backed_and_idempotent(self) -> None:
         workspace, _ = create_workspace(77, 101, "Автор")
         saved = save_workspace(77, 101, self.complete_payload(workspace))
         payload = {
@@ -176,15 +166,20 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("modules.reactor_legislation.wake_delivery_worker"),
         ):
-            bill, created = await publish_workspace(bot, 77, 101, "Автор", payload)
+            submitted, created = await publish_workspace(bot, 77, 101, "Автор", payload)
             retried, created_again = await publish_workspace(bot, 77, 101, "Автор", payload)
+            approved = await moderate_workspace(
+                bot, 77, 999, "Модератор",
+                {"workspace_id": submitted["id"], "expected_revision": submitted["revision"], "decision": "approved", "note": "Проверено"},
+            )
 
         self.assertTrue(created)
         self.assertFalse(created_again)
-        self.assertEqual(retried["id"], bill["id"])
+        self.assertEqual(retried["id"], submitted["id"])
         self.assertEqual(len(legislation_snapshot(77, 101)["bills"]), 1)
         closed = workspace_storage.get_bill_workspace(saved["id"])
         self.assertEqual(closed["status"], "submitted")
+        self.assertEqual(approved["moderation"]["status"], "approved")
 
 
 if __name__ == "__main__":

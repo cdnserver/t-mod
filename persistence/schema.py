@@ -891,6 +891,10 @@ def init_db() -> None:
                 implementation_plan TEXT,
                 leadership_actions TEXT,
                 editor_workspace_id INTEGER,
+                execution_blocks_json TEXT NOT NULL DEFAULT '[]',
+                moderated_by_id INTEGER,
+                moderated_by_display TEXT,
+                moderated_at TEXT,
                 status TEXT NOT NULL DEFAULT 'draft',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -956,10 +960,18 @@ def init_db() -> None:
                 decision_category TEXT NOT NULL DEFAULT 'ordinary',
                 implementation_plan TEXT,
                 leadership_actions TEXT,
+                execution_blocks_json TEXT NOT NULL DEFAULT '[]',
                 ai_model TEXT,
                 ai_revision INTEGER NOT NULL DEFAULT 0,
                 revision INTEGER NOT NULL DEFAULT 1,
                 submitted_bill_id INTEGER,
+                moderation_status TEXT NOT NULL DEFAULT 'draft',
+                moderation_round INTEGER NOT NULL DEFAULT 0,
+                moderation_note TEXT,
+                moderator_id INTEGER,
+                moderator_display TEXT,
+                submitted_at TEXT,
+                reviewed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -969,7 +981,97 @@ def init_db() -> None:
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_bill_workspaces_one_open
             ON tvrs_bill_workspaces(guild_id, author_id)
-            WHERE status IN ('draft', 'review');
+            WHERE status IN ('draft', 'review', 'changes_requested');
+
+            CREATE TABLE IF NOT EXISTS tvrs_bill_moderation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                workspace_id INTEGER NOT NULL,
+                round INTEGER NOT NULL DEFAULT 1,
+                action TEXT NOT NULL,
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT,
+                note TEXT,
+                workspace_revision INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_moderation_events_workspace
+            ON tvrs_bill_moderation_events(workspace_id, id ASC);
+
+            CREATE TABLE IF NOT EXISTS tvrs_legislation_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                bill_id INTEGER,
+                workspace_id INTEGER,
+                source_block_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'todo',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                assignee_id INTEGER,
+                assignee_display TEXT,
+                due_at TEXT,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_legislation_tasks_board
+            ON tvrs_legislation_tasks(guild_id, status, priority, due_at, id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_legislation_tasks_block
+            ON tvrs_legislation_tasks(bill_id, source_block_id)
+            WHERE bill_id IS NOT NULL AND source_block_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS ovr_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                static_id TEXT NOT NULL,
+                discord_text TEXT NOT NULL,
+                discord_user_id INTEGER,
+                forum_url TEXT,
+                additional_info TEXT,
+                nowa_links TEXT,
+                findings TEXT,
+                risk_level TEXT NOT NULL DEFAULT 'unrated',
+                status TEXT NOT NULL DEFAULT 'new',
+                decision TEXT,
+                decision_reason TEXT,
+                assigned_to_id INTEGER,
+                assigned_to_display TEXT,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                due_at TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT,
+                UNIQUE(guild_id, case_number)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ovr_cases_board
+            ON ovr_cases(guild_id, status, due_at, case_number DESC);
+
+            CREATE TABLE IF NOT EXISTS ovr_case_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT,
+                action TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ovr_case_events_case
+            ON ovr_case_events(case_id, id ASC);
 
             CREATE TABLE IF NOT EXISTS admin_broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1649,8 +1751,135 @@ def init_db() -> None:
             "implementation_plan": "TEXT",
             "leadership_actions": "TEXT",
             "editor_workspace_id": "INTEGER",
+            "execution_blocks_json": "TEXT NOT NULL DEFAULT '[]'",
+            "moderated_by_id": "INTEGER",
+            "moderated_by_display": "TEXT",
+            "moderated_at": "TEXT",
         }.items():
             _add_column_if_missing(con, "tvrs_bills", column, definition)
+
+        for column, definition in {
+            "execution_blocks_json": "TEXT NOT NULL DEFAULT '[]'",
+            "moderation_status": "TEXT NOT NULL DEFAULT 'draft'",
+            "moderation_round": "INTEGER NOT NULL DEFAULT 0",
+            "moderation_note": "TEXT",
+            "moderator_id": "INTEGER",
+            "moderator_display": "TEXT",
+            "submitted_at": "TEXT",
+            "reviewed_at": "TEXT",
+        }.items():
+            _add_column_if_missing(con, "tvrs_bill_workspaces", column, definition)
+        con.execute(
+            """
+            UPDATE tvrs_bill_workspaces
+            SET moderation_status = CASE
+                WHEN status = 'submitted' THEN 'approved'
+                WHEN status = 'cancelled' THEN 'cancelled'
+                WHEN moderation_status IS NULL OR moderation_status = '' THEN 'draft'
+                ELSE moderation_status
+            END
+            WHERE moderation_status IS NULL
+               OR moderation_status = ''
+               OR (status IN ('submitted', 'cancelled') AND moderation_status = 'draft')
+            """
+        )
+        con.execute("DROP INDEX IF EXISTS idx_tvrs_bill_workspaces_one_open")
+        con.execute(
+            """
+            CREATE UNIQUE INDEX idx_tvrs_bill_workspaces_one_open
+            ON tvrs_bill_workspaces(guild_id, author_id)
+            WHERE status IN ('draft', 'review', 'changes_requested')
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tvrs_bill_moderation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                workspace_id INTEGER NOT NULL,
+                round INTEGER NOT NULL DEFAULT 1,
+                action TEXT NOT NULL,
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT,
+                note TEXT,
+                workspace_revision INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_moderation_queue
+            ON tvrs_bill_workspaces(guild_id, moderation_status, submitted_at, id);
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_moderation_events_workspace
+            ON tvrs_bill_moderation_events(workspace_id, id ASC);
+
+            CREATE TABLE IF NOT EXISTS tvrs_legislation_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                bill_id INTEGER,
+                workspace_id INTEGER,
+                source_block_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'todo',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                assignee_id INTEGER,
+                assignee_display TEXT,
+                due_at TEXT,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tvrs_legislation_tasks_board
+            ON tvrs_legislation_tasks(guild_id, status, priority, due_at, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_legislation_tasks_block
+            ON tvrs_legislation_tasks(bill_id, source_block_id)
+            WHERE bill_id IS NOT NULL AND source_block_id IS NOT NULL;
+
+            CREATE TABLE IF NOT EXISTS ovr_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                static_id TEXT NOT NULL,
+                discord_text TEXT NOT NULL,
+                discord_user_id INTEGER,
+                forum_url TEXT,
+                additional_info TEXT,
+                nowa_links TEXT,
+                findings TEXT,
+                risk_level TEXT NOT NULL DEFAULT 'unrated',
+                status TEXT NOT NULL DEFAULT 'new',
+                decision TEXT,
+                decision_reason TEXT,
+                assigned_to_id INTEGER,
+                assigned_to_display TEXT,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                due_at TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT,
+                UNIQUE(guild_id, case_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_cases_board
+            ON ovr_cases(guild_id, status, due_at, case_number DESC);
+            CREATE TABLE IF NOT EXISTS ovr_case_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT,
+                action TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_case_events_case
+            ON ovr_case_events(case_id, id ASC);
+            """
+        )
 
         for column, definition in {
             "initial_scheduled_for": "TEXT",

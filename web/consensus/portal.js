@@ -5,7 +5,10 @@
     identity: "Мой мандат",
     treasury: "Казна",
     legislation: "Реестр законопроектов",
+    my_bills: "Мои законопроекты",
     editor: "Законодательная мастерская",
+    tasks: "Общая доска",
+    ovr: "Отдел внешней разведки",
     games: "T-Mod Games",
     consensus: "Консенсус",
     notifications: "Уведомления",
@@ -25,6 +28,8 @@
     layout: Object.keys(labels),
     data: null,
     workspace: null,
+    executionBlocks: [],
+    ovr: { full_access: false, cases: [], events: {} },
     bills: [],
     billsVisible: 6,
     activeEditorTab: "idea",
@@ -462,8 +467,85 @@
       workspace_id: state.workspace?.id,
       expected_revision: state.workspace?.revision,
       ...collectWorkspace(),
+      execution_blocks: state.executionBlocks,
       ...extra,
     };
+  }
+
+  const blockLabels = {
+    rule_change: "Изменить правило",
+    task: "Выполнить задачу",
+    communication: "Сообщить участникам",
+    appointment: "Назначить ответственного",
+    integration: "Настроить систему",
+    review: "Проверить результат",
+  };
+
+  function addExecutionBlock(type, preset = {}) {
+    state.executionBlocks.push({
+      id: preset.id || `block-${Date.now()}-${state.executionBlocks.length}`,
+      type: type || "task",
+      title: preset.title || blockLabels[type] || "Новый шаг",
+      description: preset.description || "",
+      owner: preset.owner || "",
+      deadline: preset.deadline || "",
+    });
+    state.dirty = true;
+    renderExecutionChain();
+  }
+
+  function renderExecutionChain() {
+    const root = byId("execution-chain");
+    if (!root) return;
+    byId("execution-count").textContent = `${state.executionBlocks.length} БЛОКОВ`;
+    if (!state.executionBlocks.length) {
+      root.replaceChildren(el("li", "execution-empty", "Добавьте первый шаг или вставьте готовый пример."));
+      return;
+    }
+    root.replaceChildren(...state.executionBlocks.map((block, index) => {
+      const row = el("li", "execution-block");
+      const fieldsNode = el("div", "execution-block-fields");
+      const type = el("select");
+      Object.entries(blockLabels).forEach(([value, label]) => {
+        const option = el("option", "", label);
+        option.value = value;
+        option.selected = value === block.type;
+        type.append(option);
+      });
+      const title = el("input");
+      title.value = block.title || "";
+      title.maxLength = 180;
+      title.placeholder = "Название шага";
+      const description = el("textarea");
+      description.value = block.description || "";
+      description.maxLength = 1500;
+      description.rows = 2;
+      description.placeholder = "Что именно должно произойти";
+      const owner = el("input");
+      owner.value = block.owner || "";
+      owner.maxLength = 120;
+      owner.placeholder = "Ответственный";
+      const deadline = el("input");
+      deadline.value = block.deadline || "";
+      deadline.maxLength = 80;
+      deadline.placeholder = "Срок: например, 7 дней";
+      [[type, "type"], [title, "title"], [description, "description"], [owner, "owner"], [deadline, "deadline"]]
+        .forEach(([input, key]) => input.addEventListener("input", () => {
+          state.executionBlocks[index][key] = input.value;
+          state.dirty = true;
+        }));
+      fieldsNode.append(type, title, description, owner, deadline);
+      const remove = el("button", "", "×");
+      remove.type = "button";
+      remove.title = "Удалить блок";
+      remove.addEventListener("click", () => {
+        state.executionBlocks.splice(index, 1);
+        state.dirty = true;
+        renderExecutionChain();
+      });
+      row.append(fieldsNode, remove);
+      return row;
+    }));
   }
 
   function updateCounters() {
@@ -569,9 +651,9 @@
       Object.values(fields).forEach((id) => {
         byId(id).value = "";
       });
-      byId("preview-number").textContent = `№ ${
-        String(state.data?.legislation?.next_number || "—").padStart(3, "0")
-      }`;
+      state.executionBlocks = [];
+      renderExecutionChain();
+      byId("preview-number").textContent = "№ ПОСЛЕ МОДЕРАЦИИ";
       updateEditorVisuals();
       return;
     }
@@ -579,11 +661,13 @@
       Object.entries(fields).forEach(([key, id]) => {
         byId(id).value = workspace[key] || "";
       });
+      state.executionBlocks = Array.isArray(workspace.execution_blocks)
+        ? workspace.execution_blocks.map((item) => ({ ...item }))
+        : [];
+      renderExecutionChain();
       state.dirty = false;
     }
-    byId("preview-number").textContent = `№ ${
-      String(state.data?.legislation?.next_number || "—").padStart(3, "0")
-    }`;
+    byId("preview-number").textContent = "№ ПОСЛЕ МОДЕРАЦИИ";
     updateEditorVisuals();
   }
 
@@ -700,16 +784,16 @@
     if (!state.workspace || state.busy) return;
     if (state.dirty && !(await saveDraft({ quiet: true }))) return;
     const confirmed = await confirmAction({
-      title: "Опубликовать законопроект?",
+      title: "Отправить законопроект на модерацию?",
       message:
-        "Проект получит постоянный номер и попадёт в надёжную очередь публикации Discord. Перед продолжением убедитесь, что текст выражает именно вашу волю.",
-      label: "Да, опубликовать",
+        "Модерация проверит текст и цепочку исполнения. Номер появится только после одобрения.",
+      label: "Отправить на модерацию",
     });
     if (!confirmed) return;
     setBusy(
       true,
-      "Публикуем законопроект",
-      "Присваиваем номер и передаём проект в устойчивую очередь…",
+      "Передаём на модерацию",
+      "Фиксируем редакцию и открываем карточку для руководства…",
     );
     try {
       const result = await request("/api/reactor/legislation", {
@@ -720,12 +804,8 @@
       state.dirty = false;
       await load(true, true);
       await loadLegislation(true);
-      toast(
-        `Законопроект № ${
-          String(result.bill.number).padStart(3, "0")
-        } принят системой.`,
-      );
-      document.querySelector("#legislation")?.scrollIntoView({
+      toast(result.message || "Законопроект передан на модерацию.");
+      document.querySelector("#my-bills")?.scrollIntoView({
         behavior: "smooth",
       });
     } catch (error) {
@@ -765,6 +845,169 @@
     } finally {
       setBusy(false);
     }
+  }
+
+  const workspaceStatus = (workspace) => ({
+    draft: ["ЧЕРНОВИК", "draft"],
+    review: ["ГОТОВИТСЯ", "draft"],
+    moderation: ["НА МОДЕРАЦИИ", "pending"],
+    changes_requested: ["НУЖНО ДОПОЛНИТЬ", "warning"],
+    rejected: ["ОТКЛОНЁН", "rejected"],
+    submitted: ["ОДОБРЕН", "accepted"],
+    cancelled: ["ОТМЕНЁН", "resolved"],
+  }[String(workspace.status || "draft")] || ["В РАБОТЕ", "draft"]);
+
+  function workspaceCard(workspace, moderator = false) {
+    const [label, kind] = workspaceStatus(workspace);
+    const node = el("button", `${moderator ? "moderation-card" : "governance-card"} ${kind}`);
+    node.type = "button";
+    node.append(
+      el("small", "", moderator ? `РАУНД ${workspace.moderation?.round || 1} · ${workspace.author || "Участник"}` : `РЕДАКЦИЯ ${workspace.revision || 1}`),
+      el("h3", "", workspace.title || "Проект без названия"),
+      el("p", "", workspace.summary || workspace.idea || "Текст ещё не заполнен."),
+    );
+    const footer = el("footer");
+    footer.append(el("span", "", formatMoment(workspace.updated_at)), el("b", "", label));
+    node.append(footer);
+    node.addEventListener("click", () => openWorkspaceCard(workspace, moderator));
+    return node;
+  }
+
+  function openWorkspaceCard(workspace, moderator = false) {
+    const dialog = byId("governance-dialog");
+    byId("governance-dialog-kicker").textContent = moderator ? "МОДЕРАЦИЯ" : "МОЙ ЗАКОНОПРОЕКТ";
+    byId("governance-dialog-title").textContent = workspace.title || "Проект без названия";
+    const body = byId("governance-dialog-body");
+    const intro = el("article");
+    intro.append(el("h3", "", "Текст проекта"), el("p", "", workspace.summary || "Текст ещё не заполнен."));
+    const chain = el("article");
+    chain.append(el("h3", "", "Цепочка исполнения"));
+    (workspace.execution_blocks || []).forEach((block, index) => {
+      chain.append(el("p", "", `${String(index + 1).padStart(2, "0")} · ${blockLabels[block.type] || "Шаг"}: ${block.title}${block.owner ? ` · ${block.owner}` : ""}`));
+    });
+    if (!(workspace.execution_blocks || []).length) chain.append(el("p", "", "Отдельные блоки не добавлены."));
+    body.replaceChildren(intro, chain);
+    if (workspace.moderation?.note) {
+      const note = el("article");
+      note.append(el("h3", "", "Комментарий модерации"), el("p", "", workspace.moderation.note));
+      body.append(note);
+    }
+    if (moderator) {
+      const note = el("textarea");
+      note.rows = 4;
+      note.maxLength = 2000;
+      note.placeholder = "Комментарий автору или примечание к одобрению";
+      const actions = el("div", "moderation-actions");
+      [["approved", "Одобрить"], ["changes_requested", "На дополнение"], ["rejected", "Отклонить"]].forEach(([decision, label]) => {
+        const button = el("button", "", label);
+        button.type = "button";
+        button.dataset.decision = decision;
+        button.addEventListener("click", () => void moderateBill(workspace, decision, note.value));
+        actions.append(button);
+      });
+      body.append(note, actions);
+    }
+    openDialog(dialog);
+  }
+
+  async function moderateBill(workspace, decision, note) {
+    if (decision !== "approved" && note.trim().length < 3) {
+      toast("Добавьте понятный комментарий автору.", "error");
+      return;
+    }
+    setBusy(true, "Фиксируем решение", "Обновляем историю и очередь законопроектов…");
+    try {
+      await request("/api/reactor/legislation", {
+        method: "POST",
+        body: JSON.stringify({ action: "moderate", workspace_id: workspace.id, expected_revision: workspace.revision, decision, note: note.trim() }),
+      });
+      closeDialog(byId("governance-dialog"));
+      await loadLegislation(true);
+      toast(decision === "approved" ? "Законопроект одобрен и поставлен в очередь." : decision === "changes_requested" ? "Проект возвращён автору на дополнение." : "Проект отклонён.");
+    } catch (error) { toast(error.message, "error"); }
+    finally { setBusy(false); }
+  }
+
+  function renderGovernance(legislation = {}) {
+    const mine = legislation.my_workspaces || [];
+    byId("my-bills-count").textContent = String(mine.length);
+    byId("my-bills-list").replaceChildren(...mine.slice(0, 12).map((item) => workspaceCard(item)));
+    if (!mine.length) byId("my-bills-list").append(el("div", "portal-empty", "У вас пока нет законопроектов."));
+    const moderation = legislation.moderation || {};
+    byId("moderation-desk").hidden = !moderation.allowed;
+    if (moderation.allowed) {
+      byId("moderation-list").replaceChildren(...(moderation.queue || []).map((item) => workspaceCard(item, true)));
+      if (!(moderation.queue || []).length) byId("moderation-list").append(el("div", "portal-empty", "Очередь модерации пуста."));
+    }
+    renderTasks(legislation.tasks || []);
+  }
+
+  const taskColumns = [["planned", "ПОСЛЕ ПРИНЯТИЯ"], ["todo", "НУЖНО СДЕЛАТЬ"], ["in_progress", "В РАБОТЕ"], ["blocked", "ТРЕБУЕТ ВНИМАНИЯ"], ["done", "ГОТОВО"]];
+  function renderTasks(tasks) {
+    byId("task-board").replaceChildren(...taskColumns.map(([status, title]) => {
+      const column = el("section", "task-column");
+      const items = tasks.filter((task) => task.status === status);
+      const header = el("header"); header.append(el("span", "", title), el("b", "", items.length)); column.append(header);
+      items.forEach((task) => {
+        const card = el("article", "task-card"); card.dataset.priority = task.priority || "normal";
+        card.append(el("h3", "", task.title), el("p", "", task.description || "Без дополнительного описания."));
+        const footer = el("footer"); footer.append(el("span", "task-source", task.bill_number ? `Законопроект №${task.bill_number}` : task.assignee_display || "Общая задача"));
+        if (task.status !== "planned") {
+          const next = task.status === "todo" ? "in_progress" : task.status === "in_progress" ? "done" : task.status === "blocked" ? "in_progress" : "todo";
+          const button = el("button", "", task.status === "done" ? "Вернуть" : task.status === "todo" ? "Взять в работу" : "Изменить");
+          button.type = "button"; button.addEventListener("click", () => void updateTask(task, next)); footer.append(button);
+        }
+        card.append(footer); column.append(card);
+      });
+      return column;
+    }));
+  }
+
+  async function updateTask(task, status) {
+    try {
+      await request("/api/reactor/legislation", { method: "POST", body: JSON.stringify({ action: "task_update", task_id: task.id, expected_revision: task.revision, status }) });
+      await loadLegislation(true);
+    } catch (error) { toast(error.message, "error"); }
+  }
+
+  function renderOvr(data = state.ovr) {
+    state.ovr = data;
+    byId("ovr-access-state").textContent = data.full_access ? "ЗАКРЫТЫЙ КОНТУР" : "ПРИЁМ ОБРАЩЕНИЙ";
+    byId("ovr-cases").replaceChildren(...(data.cases || []).map((item) => {
+      const card = el("button", "ovr-case"); card.type = "button"; card.dataset.risk = item.risk_level || "unrated";
+      card.append(el("small", "", `ДЕЛО ОВР-${String(item.case_number).padStart(3, "0")} · ДО ${formatMoment(item.due_at)}`), el("h3", "", `${item.first_name} ${item.last_name}`), el("p", "", `Статик ${item.static_id} · ${item.discord_text}`));
+      const footer = el("footer"); footer.append(el("span", "", item.assigned_to_display || "Ожидает сотрудника"), el("b", "", String(item.status || "new").toUpperCase())); card.append(footer);
+      card.addEventListener("click", () => openOvrCase(item)); return card;
+    }));
+    if (!(data.cases || []).length) byId("ovr-cases").append(el("div", "portal-empty", data.full_access ? "Новых дел нет." : "Вы ещё не передавали кандидатов в ОВР."));
+  }
+
+  function openOvrCase(item) {
+    byId("governance-dialog-kicker").textContent = `ОВР-${String(item.case_number).padStart(3, "0")}`;
+    byId("governance-dialog-title").textContent = `${item.first_name} ${item.last_name}`;
+    const body = byId("governance-dialog-body");
+    const dossier = el("article"); dossier.append(el("h3", "", "Базовая анкета"), el("p", "", `Статик: ${item.static_id}\nDiscord: ${item.discord_text}\nФорум: ${item.forum_url || "не указан"}\n\n${item.additional_info || "Дополнительных сведений нет."}`)); body.replaceChildren(dossier);
+    if (state.ovr.full_access) {
+      const findings = el("textarea"); findings.rows = 5; findings.placeholder = "Собранные сведения"; findings.value = item.findings || "";
+      const nowa = el("textarea"); nowa.rows = 3; nowa.placeholder = "Связи с семьёй Nowa"; nowa.value = item.nowa_links || "";
+      const risk = el("select"); [["unrated","Риск не определён"],["low","Низкий риск"],["medium","Средний риск"],["high","Высокий риск"],["critical","Критический риск"]].forEach(([value,label])=>{const option=el("option","",label);option.value=value;option.selected=value===item.risk_level;risk.append(option)});
+      const note = el("textarea"); note.rows = 3; note.placeholder = "Служебная запись или основание решения";
+      const actions = el("div", "moderation-actions"); [["claim","Взять дело"],["update","Сохранить досье"],["needs_info","Запросить сведения"],["approve","Допустить"],["deny","Отказать"]].forEach(([action,label])=>{const button=el("button","",label);button.type="button";button.addEventListener("click",()=>void updateOvrCase(item,action,{findings:findings.value,nowa_links:nowa.value,risk_level:risk.value,note:note.value}));actions.append(button)});
+      body.append(findings, nowa, risk, note, actions);
+    }
+    openDialog(byId("governance-dialog"));
+  }
+
+  async function updateOvrCase(item, action, values) {
+    try {
+      await request("/api/reactor/ovr", { method: "POST", body: JSON.stringify({ action, case_id:item.id, expected_revision:item.revision, ...values }) });
+      closeDialog(byId("governance-dialog")); await loadOvr(true); toast("Дело ОВР обновлено.");
+    } catch (error) { toast(error.message,"error"); }
+  }
+
+  async function loadOvr(silent = false) {
+    try { renderOvr(await request("/api/reactor/ovr")); }
+    catch (error) { if (!silent) toast(error.message,"error"); }
   }
 
   function render(data, forceWorkspace = false) {
@@ -807,6 +1050,7 @@
     }
     renderBills();
     hydrateWorkspace(data.legislation?.workspace || null, forceWorkspace);
+    renderGovernance(data.legislation || {});
 
     const consensus = data.consensus || {};
     byId("consensus-state").textContent = consensus.active
@@ -890,15 +1134,11 @@
     try {
       const data = await request("/api/reactor/legislation");
       if (!state.data) return;
-      state.data.legislation = {
-        workspace: data.workspace,
-        bills: data.bills,
-        next_number: data.next_number,
-        queued: data.queued,
-      };
+      state.data.legislation = data;
       state.bills = data.bills || [];
       renderBills();
       hydrateWorkspace(data.workspace || null);
+      renderGovernance(data);
       if (data.cache_state === "stale") {
         setTimeout(() => void loadFreshLegislation(), 0);
       }
@@ -911,15 +1151,11 @@
     try {
       const data = await request("/api/reactor/legislation?fresh=1");
       if (!state.data) return;
-      state.data.legislation = {
-        workspace: data.workspace,
-        bills: data.bills,
-        next_number: data.next_number,
-        queued: data.queued,
-      };
+      state.data.legislation = data;
       state.bills = data.bills || [];
       renderBills();
       hydrateWorkspace(data.workspace || null);
+      renderGovernance(data);
     } catch {
       // Keep the already rendered registry and retry on the next smart tick.
     }
@@ -1086,6 +1322,20 @@
   document.querySelectorAll("[data-editor-save]").forEach((button) =>
     button.addEventListener("click", () => void saveDraft())
   );
+  document.querySelectorAll("[data-block-type]").forEach((button) =>
+    button.addEventListener("click", () => addExecutionBlock(button.dataset.blockType))
+  );
+  byId("execution-example").addEventListener("click", async () => {
+    if (state.executionBlocks.length && !(await confirmAction({ title:"Вставить пример цепочки?", message:"Текущие блоки будут заменены готовым примером исполнения.", label:"Вставить пример" }))) return;
+    state.executionBlocks = [];
+    [
+      ["rule_change", "Закрепить новый порядок", "Внести утверждённое изменение в действующие правила."],
+      ["appointment", "Назначить ответственное направление", "Определить человека или отдел, отвечающий за исполнение."],
+      ["communication", "Сообщить участникам", "Опубликовать понятную памятку о принятом решении."],
+      ["review", "Проверить результат", "Через 30 дней оценить, достигнута ли цель законопроекта."],
+    ].forEach(([type, title, description]) => addExecutionBlock(type, { title, description }));
+    renderExecutionChain();
+  });
   Object.values(fields).forEach((id) =>
     byId(id).addEventListener("input", () => {
       state.dirty = true;
@@ -1095,11 +1345,28 @@
   byId("editor-ai").addEventListener("click", () => void runAiEditor());
   byId("editor-publish").addEventListener("click", () => void publishDraft());
   byId("editor-cancel").addEventListener("click", () => void cancelDraft());
+  byId("task-new").addEventListener("click", () => openDialog(byId("task-dialog")));
+  byId("task-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await request("/api/reactor/legislation", { method: "POST", body: JSON.stringify({ action:"task_create", title:byId("task-title").value.trim(), description:byId("task-description").value.trim(), priority:byId("task-priority").value, due_at:byId("task-due").value }) });
+      closeDialog(byId("task-dialog")); event.currentTarget.reset(); await loadLegislation(true); toast("Задача добавлена на общую доску.");
+    } catch (error) { toast(error.message,"error"); }
+  });
+  byId("ovr-new").addEventListener("click", () => openDialog(byId("ovr-dialog")));
+  byId("ovr-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await request("/api/reactor/ovr", { method:"POST", body:JSON.stringify({ action:"create", first_name:byId("ovr-first-name").value.trim(), last_name:byId("ovr-last-name").value.trim(), static_id:byId("ovr-static").value.trim(), discord_text:byId("ovr-discord").value.trim(), forum_url:byId("ovr-forum").value.trim(), additional_info:byId("ovr-additional").value.trim() }) });
+      closeDialog(byId("ovr-dialog")); event.currentTarget.reset(); await loadOvr(true); toast("Дело зарегистрировано. ОВР получил 48 часов на проверку.");
+    } catch (error) { toast(error.message,"error"); }
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !state.busy) {
       void load(true);
       void loadLegislation(true);
+      void loadOvr(true);
     }
   });
   state.refreshTimer = setInterval(() => {
@@ -1126,5 +1393,6 @@
   void (async () => {
     await load();
     await loadLegislation(true);
+    await loadOvr(true);
   })();
 })();

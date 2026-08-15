@@ -22,7 +22,10 @@ MEMBER_WIDGETS = (
     "identity",
     "treasury",
     "legislation",
+    "my_bills",
     "editor",
+    "tasks",
+    "ovr",
     "games",
     "consensus",
     "notifications",
@@ -76,8 +79,10 @@ def reactor_get_layout(guild_id: int, user_id: int, surface: str) -> list[str]:
         # widgets. Upgrade them atomically in projection so treasury and the
         # legislation editor cannot silently disappear after deployment.
         return list(MEMBER_WIDGETS)
-    if selected_surface == "member" and isinstance(parsed, list) and "games" not in parsed:
-        parsed.append("games")
+    if selected_surface == "member" and isinstance(parsed, list):
+        for widget in ("games", "my_bills", "tasks", "ovr"):
+            if widget not in parsed:
+                parsed.append(widget)
     return _clean_layout(
         selected_surface,
         parsed if isinstance(parsed, list) else [],

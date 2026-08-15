@@ -13,6 +13,7 @@ from modules.bill_editor_ai import (
     BILL_EDITOR_MODEL,
     generate_bill_editor_draft,
 )
+from modules.consensus_web_auth import consensus_web_entry_url as build_web_entry_url
 from modules.consensus_runtime import (
     active_sessions,
     session_lock as consensus_session_lock,
@@ -382,7 +383,7 @@ async def _load_owned_workspace(
             ephemeral=True,
         )
         return None
-    if str(workspace.get("status")) not in {"draft", "review"}:
+    if str(workspace.get("status")) not in {"draft", "review", "changes_requested"}:
         await interaction.response.send_message(
             "Эта редакционная комната уже закрыта.",
             ephemeral=True,
@@ -395,32 +396,14 @@ class BillWorkspaceView(discord.ui.View):
     def __init__(self, workspace_id: int) -> None:
         super().__init__(timeout=None)
         self.workspace_id = int(workspace_id)
-        controls = (
-            ("Описать идею", "💡", discord.ButtonStyle.primary, 0, self.idea),
-            ("Улучшить ИИ", "✨", discord.ButtonStyle.success, 0, self.ai),
-            ("Править текст", "✏️", discord.ButtonStyle.secondary, 0, self.text),
-            ("План исполнения", "📋", discord.ButtonStyle.secondary, 1, self.execution),
-            ("Опубликовать", "✅", discord.ButtonStyle.success, 1, self.submit),
-            ("Отменить", "🗑️", discord.ButtonStyle.danger, 1, self.cancel),
+        button = discord.ui.Button(
+            label="Продолжить в личном Реакторе",
+            emoji="📝",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"tvrs:bill-editor:{self.workspace_id}:reactor",
         )
-        for key, emoji, style, row, callback in controls:
-            slug = {
-                "Описать идею": "idea",
-                "Улучшить ИИ": "ai",
-                "Править текст": "text",
-                "План исполнения": "execution",
-                "Опубликовать": "submit",
-                "Отменить": "cancel",
-            }[key]
-            button = discord.ui.Button(
-                label=key,
-                emoji=emoji,
-                style=style,
-                row=row,
-                custom_id=f"tvrs:bill-editor:{self.workspace_id}:{slug}",
-            )
-            button.callback = callback
-            self.add_item(button)
+        button.callback = self.open_reactor
+        self.add_item(button)
 
     async def on_error(
         self,
@@ -429,6 +412,32 @@ class BillWorkspaceView(discord.ui.View):
         item: discord.ui.Item[Any],
     ) -> None:
         await _report_editor_error(interaction, error)
+
+    async def open_reactor(self, interaction: discord.Interaction) -> None:
+        workspace = await asyncio.to_thread(
+            workspace_storage.get_bill_workspace, self.workspace_id
+        )
+        if (
+            workspace is None
+            or interaction.guild is None
+            or int(workspace.get("guild_id") or 0) != interaction.guild.id
+            or int(workspace.get("author_id") or 0) != interaction.user.id
+        ):
+            await interaction.response.send_message(
+                "Этот законопроект принадлежит другому автору.", ephemeral=True
+            )
+            return
+        url = build_web_entry_url(
+            "https://tvr.lat",
+            guild_id=interaction.guild.id,
+            user_id=interaction.user.id,
+            destination="/reactor",
+        ) + "#editor"
+        view = discord.ui.View(timeout=300)
+        view.add_item(discord.ui.Button(label="Открыть мастерскую", emoji="📝", style=discord.ButtonStyle.link, url=url))
+        await interaction.response.send_message(
+            "Черновик открыт в личном Реакторе.", view=view, ephemeral=True
+        )
 
     async def idea(self, interaction: discord.Interaction) -> None:
         workspace = await _load_owned_workspace(interaction, self.workspace_id)
@@ -490,33 +499,19 @@ class BillWorkspaceView(discord.ui.View):
         workspace = await _load_owned_workspace(interaction, self.workspace_id)
         if workspace is None:
             return
-        missing = [
-            label
-            for key, label in (
-                ("title", "название"),
-                ("summary", "текст"),
-                ("implementation_plan", "план исполнения"),
-                ("leadership_actions", "действия руководства"),
-            )
-            if not str(workspace.get(key) or "").strip()
-        ]
-        if missing:
-            await interaction.response.send_message(
-                "Перед публикацией заполните: " + ", ".join(missing) + ".",
-                ephemeral=True,
-            )
+        if interaction.guild is None:
             return
+        url = build_web_entry_url(
+            "https://tvr.lat",
+            guild_id=interaction.guild.id,
+            user_id=interaction.user.id,
+            destination="/reactor",
+        ) + "#editor"
+        view = discord.ui.View(timeout=300)
+        view.add_item(discord.ui.Button(label="Продолжить в Реакторе", emoji="📝", style=discord.ButtonStyle.link, url=url))
         await interaction.response.send_message(
-            embed=discord.Embed(
-                title="Опубликовать законопроект?",
-                description=(
-                    f"**{_safe(workspace.get('title'))}**\n\n"
-                    "После подтверждения проект получит номер и попадёт в надёжную "
-                    "очередь публикации. Черновик станет доступен только для чтения."
-                ),
-                color=0xF1C40F,
-            ),
-            view=BillSubmitConfirmView(int(workspace["id"]), interaction.user.id),
+            "Подача перенесена в личный Реактор. Проверьте цепочку исполнения и отправьте проект на обязательную модерацию.",
+            view=view,
             ephemeral=True,
         )
 
@@ -640,13 +635,26 @@ async def start_bill_workspace(interaction: discord.Interaction) -> None:
     if (
         interaction.guild is None
         or not isinstance(interaction.user, discord.Member)
-        or not isinstance(interaction.channel, discord.TextChannel)
     ):
         await interaction.response.send_message(
-            "Редактор работает в канале подачи законопроектов.",
+            "Редактор доступен участникам Товарищества.",
             ephemeral=True,
         )
         return
+    url = build_web_entry_url(
+        "https://tvr.lat",
+        guild_id=interaction.guild.id,
+        user_id=interaction.user.id,
+        destination="/reactor",
+    ) + "#editor"
+    view = discord.ui.View(timeout=300)
+    view.add_item(discord.ui.Button(label="Открыть мастерскую", emoji="📝", style=discord.ButtonStyle.link, url=url))
+    await interaction.response.send_message(
+        "Мастерская законопроектов работает в личном Реакторе: черновики, блоки исполнения и модерация собраны там.",
+        view=view,
+        ephemeral=True,
+    )
+    return
     await interaction.response.defer(ephemeral=True, thinking=True)
     workspace, created = await asyncio.to_thread(
         workspace_storage.create_or_get_bill_workspace,

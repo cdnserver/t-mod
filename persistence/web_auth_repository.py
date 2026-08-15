@@ -40,6 +40,7 @@ WEB_GRANTABLE_SECTIONS = frozenset(
         "atlas",
         "atlas_ai",
         "minecraft",
+        "ovr",
     }
 )
 

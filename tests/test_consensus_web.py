@@ -966,7 +966,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="treasury"', reactor_text)
             self.assertIn('id="legislation"', reactor_text)
             self.assertIn('id="editor-workspace"', reactor_text)
-            self.assertIn('href="/assets/portal-theme.css?v=2"', reactor_text)
+            self.assertIn('href="/assets/portal-theme.css?v=3"', reactor_text)
             self.assertIn('class="editor-console-bar"', reactor_text)
             self.assertIn('class="preview-seal"', reactor_text)
             self.assertNotIn('data-portal-widget="market"', reactor_text)
