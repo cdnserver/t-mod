@@ -66,6 +66,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         script = (ROOT / "configure_direct_web_windows.ps1").read_text(encoding="utf-8")
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         caddyfile = (ROOT / "Caddyfile").read_text(encoding="utf-8")
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         example = (ROOT / ".env.persistent.example").read_text(encoding="utf-8")
 
         self.assertIn("CONSENSUS_WEB_PUBLIC_URL", script)
@@ -83,6 +84,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("tmod-caddy", compose)
         self.assertIn("reverse_proxy tmod-discord-bot:8787", caddyfile)
         self.assertIn("response_header_timeout 15s", caddyfile)
+        self.assertIn("docker compose restart tmod-caddy", launcher)
         self.assertIn("Permissions-Policy", caddyfile)
         self.assertIn("condition: service_started", compose)
         self.assertIn("start_period: 90s", compose)

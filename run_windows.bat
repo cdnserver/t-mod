@@ -167,6 +167,22 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
+rem A bind-mounted Caddyfile can change without Compose recreating Caddy.
+rem Validate it first, then restart so new subdomains receive certificates.
+docker exec tmod-caddy caddy validate --config /etc/caddy/Caddyfile
+if errorlevel 1 (
+  call :fail "Caddy configuration validation failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+docker compose restart tmod-caddy
+if errorlevel 1 (
+  call :fail "Caddy restart failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :ok "HTTPS routes refreshed"
+
 call :stage "11" "Minecraft RCON verification"
 call :check_minecraft_rcon
 if errorlevel 1 (
