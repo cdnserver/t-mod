@@ -230,6 +230,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_profile_characters_owner
             ON profile_characters(guild_id, user_id, position);
 
+            CREATE TABLE IF NOT EXISTS member_onboarding_reminders (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                last_attempt_at TEXT NOT NULL,
+                last_sent_at TEXT,
+                sent_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id),
+                FOREIGN KEY (guild_id, user_id)
+                    REFERENCES member_profiles(guild_id, user_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_member_onboarding_reminders_attempt
+            ON member_onboarding_reminders(guild_id, last_attempt_at);
+
             CREATE TABLE IF NOT EXISTS web_credentials (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

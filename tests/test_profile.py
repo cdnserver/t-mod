@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -28,6 +28,7 @@ from modules.profile import (
     profile_embed,
     profile_settings_embed,
     parse_profile_clock,
+    send_member_onboarding_reminder,
     setup_profile,
 )
 from modules.profile_notifications import evaluate_profile_notification
@@ -187,6 +188,90 @@ class ProfileStorageTests(unittest.TestCase):
 
         self.assertTrue(storage.get_member_profile(10, 100).directory_required)
         self.assertEqual(storage.list_profile_characters(10, 100), [])
+
+    def test_onboarding_reminders_are_daily_and_stop_after_activation(self) -> None:
+        storage.require_member_directory(10, 100, prompted=True)
+        first = datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            [item["user_id"] for item in storage.list_due_member_onboarding_reminders(
+                10,
+                due_before=first.isoformat(),
+            )],
+            [100],
+        )
+        storage.record_member_onboarding_reminder(
+            10,
+            100,
+            attempted_at=first.isoformat(),
+            delivered=True,
+        )
+        self.assertEqual(
+            storage.list_due_member_onboarding_reminders(
+                10,
+                due_before=(first - timedelta(seconds=1)).isoformat(),
+            ),
+            [],
+        )
+        self.assertEqual(
+            [item["user_id"] for item in storage.list_due_member_onboarding_reminders(
+                10,
+                due_before=first.isoformat(),
+            )],
+            [100],
+        )
+
+        storage.complete_member_onboarding(
+            10,
+            100,
+            preferred_name="Иван",
+            character_nickname="Saul Goodman",
+            character_static="263345",
+            biography="Участник Товарищества",
+            contribution="Работаю с правовыми проектами",
+            responsibilities="Законодательство и подготовка заседаний",
+            membership_since="2026-08-15",
+        )
+        self.assertEqual(
+            storage.list_due_member_onboarding_reminders(
+                10,
+                due_before=(first + timedelta(days=7)).isoformat(),
+            ),
+            [],
+        )
+
+    def test_onboarding_dm_records_delivery_and_contains_fresh_activation_button(self) -> None:
+        async def verify() -> None:
+            storage.require_member_directory(10, 100, prompted=True)
+            member = SimpleNamespace(
+                id=100,
+                guild=SimpleNamespace(id=10),
+                send=AsyncMock(),
+            )
+            with patch(
+                "modules.consensus_web.consensus_web_entry_url",
+                return_value="https://tvr.lat/entry/test-token",
+            ):
+                delivered, error = await send_member_onboarding_reminder(
+                    member,
+                    reminder=True,
+                    attempted_at="2026-08-15T09:00:00+00:00",
+                )
+
+            self.assertTrue(delivered)
+            self.assertIsNone(error)
+            member.send.assert_awaited_once()
+            payload = member.send.await_args.kwargs
+            self.assertIn("раз в сутки", payload["embed"].footer.text)
+            button = payload["view"].children[0]
+            self.assertEqual(button.url, "https://tvr.lat/entry/test-token")
+            due = storage.list_due_member_onboarding_reminders(
+                10,
+                due_before="2026-08-15T08:59:59+00:00",
+            )
+            self.assertEqual(due, [])
+
+        asyncio.run(verify())
 
     def test_fellowship_discord_nickname_and_administrator_exemption(self) -> None:
         self.assertEqual(

@@ -13,8 +13,9 @@
     >
     <link rel="stylesheet" href="/assets/portal.css">
     <link rel="stylesheet" href="/assets/portal-theme.css?v=3">
+    <link rel="stylesheet" href="/assets/portal-focus.css?v=1">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js?v=3" defer></script>
+    <script src="/assets/portal.js?v=4" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -37,12 +38,7 @@
         <a class="portal-brand" href="https://tvr.lat/"><span>⚛</span><strong
           >РЕАКТОР</strong><small>Личный Реактор участника</small></a>
         <nav aria-label="Основная навигация">
-          <a href="#treasury">Казна</a>
-          <a href="#legislation">Законопроекты</a>
-          <a href="https://consensus.tvr.lat/tasks">Общие задачи</a>
-          <a class="nav-accent" href="#editor">Создать проект</a>
-          <a href="https://tvr.lat/games">T-Mod Games</a>
-          <a href="https://consensus.tvr.lat/">Консенсус</a>
+          <a href="https://consensus.tvr.lat/">Эфир консенсуса</a>
           <a href="https://atlas.tvr.lat/">Atlas</a>
           <a id="portal-admin-link" href="https://reactor.tvr.lat/admin" hidden
           >Ядерный Реактор</a>
@@ -57,8 +53,36 @@
         </nav>
       </header>
 
+      <div class="portal-app-frame">
+        <aside class="portal-sidebar" aria-label="Разделы личного Реактора">
+          <div class="portal-person">
+            <span id="portal-side-avatar">T</span>
+            <div><small>ЛИЧНЫЙ КОНТУР</small><strong id="portal-side-name">Участник</strong></div>
+            <i title="Контур синхронизирован"></i>
+          </div>
+          <nav class="portal-section-nav">
+            <button class="active" type="button" data-portal-target="overview"><span>⌂</span><b>Обзор</b><small>Главное на сегодня</small></button>
+            <button type="button" data-portal-target="mandate"><span>◉</span><b>Мой мандат</b><small>Статус и личность</small></button>
+            <button type="button" data-portal-target="projects"><span>§</span><b>Законопроекты</b><small>Мои проекты и реестр</small></button>
+            <button class="portal-nav-primary" type="button" data-portal-target="editor"><span>＋</span><b>Создать проект</b><small>Законодательная мастерская</small></button>
+            <button type="button" data-portal-target="treasury"><span>◇</span><b>Казна</b><small>Состояние и движение</small></button>
+            <button type="button" data-portal-target="consensus"><span>◫</span><b>Консенсус</b><small>Очередь и трансляция</small></button>
+            <button type="button" data-portal-target="games"><span>♞</span><b>T-Mod Games</b><small>Шахматы и нарды</small></button>
+            <button type="button" data-portal-target="notifications"><span>•</span><b>Уведомления</b><small id="portal-side-unread">Нет новых</small></button>
+          </nav>
+          <footer>
+            <a href="https://consensus.tvr.lat/tasks">Общие задачи <span>↗</span></a>
+            <button id="portal-sidebar-customize" type="button">Настроить разделы</button>
+          </footer>
+        </aside>
+
       <main>
-        <section class="portal-hero">
+        <header class="portal-view-header">
+          <div><small>PERSONAL REACTOR</small><h1 id="portal-view-title">Обзор</h1></div>
+          <span id="portal-view-freshness"><i></i> Данные актуальны</span>
+        </header>
+
+        <section class="portal-hero" data-portal-view="overview">
           <div class="portal-hero-copy">
             <span class="portal-kicker"><i></i> КОНТУР ТОВАРИЩЕСТВА
               ПОДКЛЮЧЁН</span>
@@ -68,8 +92,8 @@
               готовые законопроекты вместе с редактором T-Mod.
             </p>
             <div class="portal-hero-actions">
-              <a href="#editor">Подать законопроект <span>→</span></a>
-              <a href="#legislation">Открыть реестр</a>
+              <button type="button" data-portal-target="editor">Подать законопроект <span>→</span></button>
+              <button type="button" data-portal-target="projects">Открыть реестр</button>
             </div>
           </div>
           <div class="portal-hero-state">
@@ -88,10 +112,22 @@
           </div>
         </section>
 
+        <section class="portal-overview" data-portal-view="overview">
+          <div class="overview-heading"><div><small>ВАШЕ ПРОСТРАНСТВО</small><h2>Всё важное — без лишнего шума</h2><p>Реактор собрал состояние Товарищества и ваши личные действия в одном спокойном обзоре.</p></div><span><i></i> LIVE</span></div>
+          <div class="overview-grid">
+            <button type="button" data-portal-target="mandate"><small>МОЙ МАНДАТ</small><strong id="overview-legal">Прихожанин</strong><span id="overview-character">Персонаж не выбран</span><i>→</i></button>
+            <button type="button" data-portal-target="projects"><small>МОИ ПРОЕКТЫ</small><strong id="overview-bills">0</strong><span>Черновики и модерация</span><i>→</i></button>
+            <button type="button" data-portal-target="treasury"><small>КАЗНА</small><strong id="overview-treasury">—</strong><span>Расчётный баланс</span><i>→</i></button>
+            <button type="button" data-portal-target="consensus"><small>КОНСЕНСУС</small><strong id="overview-consensus">Ожидание</strong><span id="overview-consensus-detail">Заседания нет</span><i>→</i></button>
+            <button type="button" data-portal-target="notifications"><small>ЦЕНТР ВНИМАНИЯ</small><strong id="overview-notifications">0 новых</strong><span>Личные события T-Mod</span><i>→</i></button>
+          </div>
+        </section>
+
         <div id="portal-canvas" class="portal-canvas">
           <article
             class="portal-widget identity-widget"
             data-portal-widget="identity"
+            data-portal-view="mandate"
           >
             <header>
               <span>МОЙ МАНДАТ</span><b id="portal-profile-status">активен</b>
@@ -119,9 +155,9 @@
             </footer>
           </article>
 
-          <article id="my-bills" class="portal-widget governance-widget" data-portal-widget="my_bills">
+          <article id="my-bills" class="portal-widget governance-widget" data-portal-widget="my_bills" data-portal-view="projects">
             <header><span>МОИ ЗАКОНОПРОЕКТЫ</span><b id="my-bills-count">0</b></header>
-            <div class="governance-heading"><div><small>ЛИЧНЫЙ ПОРТФЕЛЬ</small><h2>Путь каждой инициативы</h2><p>Черновик, модерация, дополнение и публикация собраны в одном месте.</p></div><a href="#editor">Новый проект <span>→</span></a></div>
+            <div class="governance-heading"><div><small>ЛИЧНЫЙ ПОРТФЕЛЬ</small><h2>Путь каждой инициативы</h2><p>Черновик, модерация, дополнение и публикация собраны в одном месте.</p></div><button type="button" data-portal-target="editor">Новый проект <span>→</span></button></div>
             <div id="my-bills-list" class="governance-list"></div>
             <section id="moderation-desk" class="moderation-desk" hidden>
               <div><small>РУКОВОДСТВО</small><h3>Очередь модерации</h3><p>Номер присваивается только после одобрения.</p></div>
@@ -133,6 +169,7 @@
             id="treasury"
             class="portal-widget treasury-widget"
             data-portal-widget="treasury"
+            data-portal-view="treasury"
           >
             <header><span>КАЗНА ТОВАРИЩЕСТВА</span><b>30 ДНЕЙ</b></header>
             <div class="treasury-balance">
@@ -168,6 +205,7 @@
             id="legislation"
             class="portal-widget legislation-widget"
             data-portal-widget="legislation"
+            data-portal-view="projects"
           >
             <header>
               <span>РЕЕСТР РЕШЕНИЙ</span>
@@ -197,6 +235,7 @@
             id="editor"
             class="portal-widget editor-widget"
             data-portal-widget="editor"
+            data-portal-view="editor"
           >
             <header>
               <span>ЗАКОНОДАТЕЛЬНАЯ МАСТЕРСКАЯ</span>
@@ -468,6 +507,7 @@
             id="games"
             class="portal-widget games-widget"
             data-portal-widget="games"
+            data-portal-view="games"
           >
             <header><span>ИГРОВОЙ ЗАЛ · ИНИЦИАТИВА №74</span><b>ONLINE</b></header>
             <div class="games-copy">
@@ -485,6 +525,7 @@
           <article
             class="portal-widget consensus-widget"
             data-portal-widget="consensus"
+            data-portal-view="consensus"
           >
             <header>
               <span>КОНСЕНСУС</span><b id="consensus-state">ОЖИДАНИЕ</b>
@@ -500,6 +541,7 @@
           <article
             class="portal-widget notifications-widget"
             data-portal-widget="notifications"
+            data-portal-view="notifications"
           >
             <header>
               <span>ЦЕНТР УВЕДОМЛЕНИЙ</span><b id="portal-unread">0 НОВЫХ</b>
@@ -512,6 +554,7 @@
           </article>
         </div>
       </main>
+      </div>
     </div>
 
     <dialog id="portal-layout-dialog" class="portal-dialog">

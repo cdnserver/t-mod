@@ -546,6 +546,83 @@ def require_member_directory(
     return profile, newly_required
 
 
+def list_due_member_onboarding_reminders(
+    guild_id: int,
+    *,
+    due_before: str,
+    limit: int = 100,
+) -> list[dict[str, object]]:
+    """Return incomplete admissions that have not been attempted for a day."""
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT profile.user_id, profile.preferred_name,
+                   profile.onboarding_prompted_at,
+                   reminder.last_attempt_at, reminder.last_sent_at,
+                   COALESCE(reminder.sent_count, 0) AS sent_count
+            FROM member_profiles AS profile
+            LEFT JOIN member_onboarding_reminders AS reminder
+              ON reminder.guild_id = profile.guild_id
+             AND reminder.user_id = profile.user_id
+            WHERE profile.guild_id = ?
+              AND profile.directory_required = 1
+              AND profile.onboarding_completed_at IS NULL
+              AND (
+                  reminder.last_attempt_at IS NULL
+                  OR reminder.last_attempt_at <= ?
+              )
+            ORDER BY COALESCE(reminder.last_attempt_at, profile.onboarding_prompted_at, profile.created_at),
+                     profile.user_id
+            LIMIT ?
+            """,
+            (int(guild_id), str(due_before), max(1, min(int(limit), 500))),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_member_onboarding_reminder(
+    guild_id: int,
+    user_id: int,
+    *,
+    attempted_at: str | None = None,
+    delivered: bool,
+    error: str | None = None,
+) -> None:
+    """Persist every attempt so closed DMs are not retried every worker tick."""
+
+    now = attempted_at or utc_now_iso()
+    clean_error = " ".join(str(error or "").strip().split())[:500] or None
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            INSERT INTO member_onboarding_reminders(
+                guild_id, user_id, last_attempt_at, last_sent_at,
+                sent_count, last_error, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                last_attempt_at = excluded.last_attempt_at,
+                last_sent_at = CASE
+                    WHEN excluded.last_sent_at IS NOT NULL THEN excluded.last_sent_at
+                    ELSE member_onboarding_reminders.last_sent_at
+                END,
+                sent_count = member_onboarding_reminders.sent_count + excluded.sent_count,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(guild_id),
+                int(user_id),
+                now,
+                now if delivered else None,
+                1 if delivered else 0,
+                None if delivered else clean_error,
+                now,
+            ),
+        )
+        con.commit()
+
+
 _PREFERENCE_UNSET = object()
 
 
@@ -934,6 +1011,8 @@ __all__ = [
     "update_member_directory",
     "complete_member_onboarding",
     "require_member_directory",
+    "list_due_member_onboarding_reminders",
+    "record_member_onboarding_reminder",
     "update_member_profile_preferences",
     "add_profile_character",
     "update_profile_character",

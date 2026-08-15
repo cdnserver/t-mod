@@ -65,6 +65,7 @@ class WebAssetContractTests(unittest.TestCase):
             "admin.css",
             "style.css",
             "portal-theme.css",
+            "portal-focus.css",
             "login.css",
             "games.css",
             "ovr.css",

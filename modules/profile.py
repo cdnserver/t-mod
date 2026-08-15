@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import discord
@@ -89,6 +89,8 @@ PROFILE_ERROR_MESSAGES = {
     "web_login_taken": "Этот логин уже занят другим участником.",
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
+MEMBER_ONBOARDING_REMINDER_SECONDS = 24 * 60 * 60
+MEMBER_ONBOARDING_WORKER_SECONDS = 60 * 60
 
 
 def _clean_display(value: Any, *, fallback: str = "Не указано") -> str:
@@ -2182,10 +2184,195 @@ class ProfileHomeView(ProfileBaseView):
         await _edit_profile_home(interaction, self.requester_id, self.member)
 
 
+def member_onboarding_embed(*, reminder: bool = False) -> discord.Embed:
+    embed = discord.Embed(
+        title=(
+            "Завершите активацию личного Реактора"
+            if reminder
+            else "Добро пожаловать в Товарищество"
+        ),
+        description=(
+            "Ваш личный Реактор уже открыт, но активация ещё не завершена. "
+            "Заполните короткий профиль — после этого напоминания остановятся."
+            if reminder
+            else (
+                "Для вас открыт персональный веб-онбординг. Он создаст первый "
+                "профиль персонажа, зафиксирует ваше имя для общения и соберёт "
+                "карточку **«Мой мандат»** в Реакторе."
+            )
+        ),
+        color=PROFILE_COLOR,
+    )
+    embed.add_field(
+        name="Что потребуется",
+        value=(
+            "Имя для обращения, первый персонаж, статик и несколько строк о вашей "
+            "работе в Товариществе. Обычно это занимает меньше трёх минут."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Единый ник Discord",
+        value=(
+            "После завершения T-Mod установит ник в формате "
+            "`S. Goodman | 263345 | Иван`. Администраторов смена ника не затрагивает."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text=(
+            "Напоминание приходит раз в сутки и прекратится сразу после активации."
+            if reminder
+            else "Если ссылка устареет, откройте /account и выберите веб-онбординг."
+        )
+    )
+    return embed
+
+
+async def send_member_onboarding_reminder(
+    member: discord.Member,
+    *,
+    reminder: bool,
+    attempted_at: str | None = None,
+) -> tuple[bool, Exception | None]:
+    """Send a fresh signed onboarding URL and durably throttle the next attempt."""
+
+    error: Exception | None = None
+    delivered = False
+    try:
+        from modules.consensus_web import consensus_web_entry_url
+
+        onboarding_url = consensus_web_entry_url(
+            guild_id=member.guild.id,
+            user_id=member.id,
+            destination="/reactor",
+        )
+        view = discord.ui.View(timeout=None)
+        view.add_item(
+            discord.ui.Button(
+                label="Активировать личный Реактор",
+                style=discord.ButtonStyle.link,
+                url=onboarding_url,
+                emoji="⚛️",
+            )
+        )
+        await asyncio.wait_for(
+            member.send(embed=member_onboarding_embed(reminder=reminder), view=view),
+            timeout=12,
+        )
+        delivered = True
+    except Exception as exc:  # Delivery and signed-link failures share one durable cadence.
+        error = exc
+    await asyncio.to_thread(
+        storage.record_member_onboarding_reminder,
+        member.guild.id,
+        member.id,
+        attempted_at=attempted_at,
+        delivered=delivered,
+        error=(f"{type(error).__name__}: {error}" if error is not None else None),
+    )
+    return delivered, error
+
+
+async def deliver_due_member_onboarding_reminders(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Deliver at most one activation reminder per member per 24 hours."""
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    attempted_at = current.isoformat()
+    due_before = (current - timedelta(seconds=MEMBER_ONBOARDING_REMINDER_SECONDS)).isoformat()
+    due = await asyncio.to_thread(
+        storage.list_due_member_onboarding_reminders,
+        guild.id,
+        due_before=due_before,
+    )
+    delivered_count = 0
+    for item in due:
+        user_id = int(item["user_id"])
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                await asyncio.to_thread(
+                    storage.record_member_onboarding_reminder,
+                    guild.id,
+                    user_id,
+                    attempted_at=attempted_at,
+                    delivered=False,
+                    error="member_unavailable",
+                )
+                continue
+        role_ids = {int(role.id) for role in getattr(member, "roles", [])}
+        if member.bot or TVRS_SENATOR_ROLE_ID not in role_ids:
+            await asyncio.to_thread(
+                storage.record_member_onboarding_reminder,
+                guild.id,
+                user_id,
+                attempted_at=attempted_at,
+                delivered=False,
+                error="senator_role_missing",
+            )
+            continue
+        delivered, error = await send_member_onboarding_reminder(
+            member,
+            reminder=True,
+            attempted_at=attempted_at,
+        )
+        if delivered:
+            delivered_count += 1
+        elif error is not None:
+            await log_technical_event(
+                bot,
+                guild,
+                title="Не доставлено напоминание об активации Реактора",
+                details=(
+                    f"Участник: <@{user_id}> (`{user_id}`)\n"
+                    f"Следующая попытка будет не раньше чем через сутки.\n"
+                    f"Ошибка: `{type(error).__name__}: {str(error)[:500]}`"
+                ),
+                dedupe_key=f"profile-onboarding-reminder:{user_id}",
+                cooldown_seconds=MEMBER_ONBOARDING_REMINDER_SECONDS,
+            )
+    return delivered_count
+
+
 def setup_profile(
     bot: commands.Bot,
     remember_command_activity: Callable[[discord.Interaction, str, str], None] | None = None,
 ) -> None:
+    reminder_task: asyncio.Task[None] | None = None
+
+    async def member_onboarding_reminder_worker() -> None:
+        await bot.wait_until_ready()
+        while not bot.is_closed():
+            for guild in list(bot.guilds):
+                try:
+                    await deliver_due_member_onboarding_reminders(bot, guild)
+                except Exception as exc:
+                    await log_technical_event(
+                        bot,
+                        guild,
+                        title="Ошибка цикла напоминаний об активации Реактора",
+                        details=f"`{type(exc).__name__}: {str(exc)[:800]}`",
+                        dedupe_key=f"profile-onboarding-reminder-worker:{guild.id}",
+                        cooldown_seconds=MEMBER_ONBOARDING_WORKER_SECONDS,
+                    )
+            await asyncio.sleep(MEMBER_ONBOARDING_WORKER_SECONDS)
+
+    @bot.listen("on_ready")
+    async def profile_onboarding_reminder_ready() -> None:
+        nonlocal reminder_task
+        if reminder_task is None or reminder_task.done():
+            reminder_task = asyncio.create_task(
+                member_onboarding_reminder_worker(),
+                name="member-onboarding-reminders",
+            )
+
     def account_guild_id(interaction: discord.Interaction) -> int | None:
         configured = str(os.getenv("DISCORD_GUILD_ID", "")).strip()
         if configured.isdigit():
@@ -2296,46 +2483,8 @@ def setup_profile(
         )
         if not newly_required:
             return
-        onboarding = discord.Embed(
-            title="Добро пожаловать в Товарищество",
-            description=(
-                "Для вас открыт персональный веб-онбординг. Он создаст первый "
-                "профиль персонажа, зафиксирует ваше имя для общения и соберёт "
-                "карточку **«Мой мандат»** в Реакторе."
-            ),
-            color=PROFILE_COLOR,
-        )
-        onboarding.add_field(
-            name="Обязательно для новых участников",
-            value=(
-                "Первый персонаж обязателен. После завершения T-Mod установит ник "
-                "в формате `S. Goodman | 263345 | Иван`. Для администраторов "
-                "автоматическая смена ника отключена."
-            ),
-            inline=False,
-        )
-        onboarding.set_footer(
-            text="Если ссылка устареет, откройте /account и нажмите «Пройти веб-онбординг»."
-        )
-        try:
-            from modules.consensus_web import consensus_web_entry_url
-
-            onboarding_url = consensus_web_entry_url(
-                guild_id=after.guild.id,
-                user_id=after.id,
-                destination="/reactor",
-            )
-            view = discord.ui.View(timeout=None)
-            view.add_item(
-                discord.ui.Button(
-                    label="Пройти онбординг",
-                    style=discord.ButtonStyle.link,
-                    url=onboarding_url,
-                    emoji="⚛️",
-                )
-            )
-            await after.send(embed=onboarding, view=view)
-        except discord.DiscordException as exc:
+        delivered, exc = await send_member_onboarding_reminder(after, reminder=False)
+        if not delivered and exc is not None:
             await log_technical_event(
                 bot,
                 after.guild,
@@ -2372,5 +2521,8 @@ __all__ = [
     "profile_microphone_embed",
     "profile_settings_embed",
     "profile_web_access_embed",
+    "member_onboarding_embed",
+    "send_member_onboarding_reminder",
+    "deliver_due_member_onboarding_reminders",
     "setup_profile",
 ]

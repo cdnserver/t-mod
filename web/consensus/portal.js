@@ -11,6 +11,25 @@
     consensus: "Консенсус",
     notifications: "Уведомления",
   };
+  const viewTitles = {
+    overview: "Обзор",
+    mandate: "Мой мандат",
+    projects: "Законопроекты",
+    editor: "Создать законопроект",
+    treasury: "Казна Товарищества",
+    consensus: "Консенсус",
+    games: "T-Mod Games",
+    notifications: "Центр уведомлений",
+  };
+  const viewWidgets = {
+    mandate: ["identity"],
+    projects: ["my_bills", "legislation"],
+    editor: ["editor"],
+    treasury: ["treasury"],
+    consensus: ["consensus"],
+    games: ["games"],
+    notifications: ["notifications"],
+  };
   const fields = {
     idea: "bill-idea",
     desired_outcome: "bill-outcome",
@@ -37,6 +56,7 @@
     renderSignature: "",
     onboardingRequired: false,
     onboardingOpened: false,
+    activeView: "overview",
   };
   const byId = (id) => document.getElementById(id);
   const el = (tag, className = "", text = "") => {
@@ -176,9 +196,62 @@
     const selected = new Set(layout);
     document.querySelectorAll("[data-portal-widget]").forEach((widget) => {
       const key = widget.dataset.portalWidget;
-      widget.hidden = !selected.has(key);
+      widget.dataset.layoutEnabled = selected.has(key) ? "true" : "false";
       widget.style.order = String(layout.indexOf(key) + 1 || 99);
     });
+    document.querySelectorAll("[data-portal-target]").forEach((control) => {
+      const target = control.dataset.portalTarget;
+      const required = viewWidgets[target];
+      control.hidden = Boolean(required && !required.some((key) => selected.has(key)));
+    });
+    const currentRequired = viewWidgets[state.activeView];
+    if (currentRequired && !currentRequired.some((key) => selected.has(key))) {
+      state.activeView = "overview";
+    }
+    activateView(state.activeView, false);
+  }
+
+  function normalizeView(value) {
+    const raw = String(value || "").replace(/^#\/?/, "").split(/[?&]/)[0];
+    const aliases = {
+      "": "overview",
+      home: "overview",
+      identity: "mandate",
+      legislation: "projects",
+      "my-bills": "projects",
+      my_bills: "projects",
+    };
+    const target = aliases[raw] || raw;
+    return Object.hasOwn(viewTitles, target) ? target : "overview";
+  }
+
+  function activateView(value, push = true) {
+    const target = normalizeView(value);
+    state.activeView = target;
+    document.querySelectorAll("[data-portal-view]").forEach((node) => {
+      const viewMatches = node.dataset.portalView === target;
+      const layoutEnabled = node.dataset.portalWidget
+        ? node.dataset.layoutEnabled !== "false"
+        : true;
+      node.hidden = !(viewMatches && layoutEnabled);
+    });
+    document.querySelectorAll("[data-portal-target]").forEach((control) => {
+      control.classList.toggle("active", control.dataset.portalTarget === target);
+      if (control.closest(".portal-section-nav")) {
+        control.setAttribute(
+          "aria-current",
+          control.dataset.portalTarget === target ? "page" : "false",
+        );
+      }
+    });
+    byId("portal-view-title").textContent = viewTitles[target];
+    document.title = `${viewTitles[target]} — Реактор T-Mod`;
+    if (push && location.hash !== `#${target}`) {
+      history.pushState({ portalView: target }, "", `#${target}`);
+    }
+    if (push) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 
   function notification(item) {
@@ -213,6 +286,7 @@
 
   function renderTreasury(treasury = {}) {
     byId("treasury-balance").textContent = formatMoney(treasury.balance);
+    byId("overview-treasury").textContent = formatMoney(treasury.balance);
     byId("treasury-income").textContent = formatMoney(treasury.deposits);
     byId("treasury-expense").textContent = formatMoney(treasury.withdrawals);
     byId("treasury-net").textContent = formatMoney(treasury.net_flow, true);
@@ -327,6 +401,9 @@
     byId("mandate-character").textContent = character
       ? `${character.nickname} · #${character.static_id}`
       : "Персонаж ещё не добавлен";
+    byId("overview-character").textContent = character
+      ? `${character.nickname} · #${character.static_id}`
+      : "Персонаж не выбран";
     byId("mandate-since").textContent = profile.membership_since
       ? formatDate(profile.membership_since)
       : formatDate(data.mandate?.joined_at, "не зафиксировано");
@@ -949,8 +1026,11 @@
     if (signature === state.renderSignature && !forceWorkspace) return false;
     state.renderSignature = signature;
     const name = currentName;
+    byId("portal-side-name").textContent = name;
+    byId("portal-side-avatar").textContent = name.charAt(0).toUpperCase();
     byId("identity-name").textContent = name;
     byId("identity-legal").textContent = data.legal_status || "Прихожанин";
+    byId("overview-legal").textContent = data.legal_status || "Прихожанин";
     byId("portal-avatar").textContent = name.charAt(0).toUpperCase();
     byId("identity-avatar").textContent = name.charAt(0).toUpperCase();
     byId("preview-author").textContent = `Автор: ${name}`;
@@ -958,6 +1038,7 @@
     byId("portal-sync-time").textContent = `обновлено ${
       formatMoment(new Date().toISOString())
     }`;
+    byId("portal-view-freshness").innerHTML = "<i></i> Данные актуальны";
     const profile = data.profile || {};
     byId("portal-profile-status").textContent = profile.status || "активен";
     byId("identity-note").textContent = profile.status_note ||
@@ -979,6 +1060,9 @@
     renderBills();
     hydrateWorkspace(data.legislation?.workspace || null, forceWorkspace);
     renderGovernance(data.legislation || {});
+    byId("overview-bills").textContent = String(
+      (data.legislation?.my_workspaces || []).length,
+    );
 
     const consensus = data.consensus || {};
     byId("consensus-state").textContent = consensus.active
@@ -996,6 +1080,10 @@
         consensus.plenary_number || ""
       }. Откройте панель, чтобы увидеть текущий законопроект.`
       : `В очереди законопроектов: ${queuedBills}.`;
+    byId("overview-consensus").textContent = consensus.active ? "В эфире" : "Ожидание";
+    byId("overview-consensus-detail").textContent = consensus.active
+      ? `Пленарное заседание ${consensus.plenary_number || ""}`.trim()
+      : `В очереди: ${queuedBills}`;
 
     const inbox = data.notifications || { items: [], unread: 0 };
     const unread = Number(inbox.unread || 0);
@@ -1013,6 +1101,8 @@
       label: urgent ? "Важное уведомление T-Mod" : "Новые уведомления T-Mod",
     });
     byId("portal-unread").textContent = `${unread} НОВЫХ`;
+    byId("overview-notifications").textContent = `${unread} новых`;
+    byId("portal-side-unread").textContent = unread ? `${unread} новых` : "Нет новых";
     byId("portal-notification-list").replaceChildren(
       ...(inbox.items || []).slice(0, 8).map(notification),
     );
@@ -1106,6 +1196,11 @@
   }
 
   byId("portal-customize").addEventListener("click", openLayout);
+  byId("portal-sidebar-customize").addEventListener("click", openLayout);
+  document.querySelectorAll("[data-portal-target]").forEach((control) => {
+    control.addEventListener("click", () => activateView(control.dataset.portalTarget));
+  });
+  globalThis.addEventListener("hashchange", () => activateView(location.hash, false));
   byId("mandate-edit").addEventListener("click", () => openOnboarding(true));
   byId("member-onboarding-dialog").addEventListener("cancel", (event) => {
     if (byId("member-onboarding-dialog").dataset.required === "true") {
@@ -1300,6 +1395,8 @@
   });
 
   updateCounters();
+  state.activeView = normalizeView(location.hash);
+  activateView(state.activeView, false);
   void (async () => {
     await load();
     await loadLegislation(true);

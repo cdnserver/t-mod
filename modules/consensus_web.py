@@ -1266,6 +1266,7 @@ def create_consensus_web_app(
             "favicon.svg",
             "portal.css",
             "portal-theme.css",
+            "portal-focus.css",
             "portal.js",
             "ovr.css",
             "ovr.js",
