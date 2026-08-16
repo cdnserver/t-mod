@@ -1,0 +1,158 @@
+/* ============================================================
+   SGL · Internal case console — visual + motion enhancement layer.
+   Additive: loaded AFTER style.css, overrides by order (no class
+   renames — app.js keeps working). Namespace-free but scoped to #app.
+   Cohesive with the public site: Fraunces display + brass palette.
+   ============================================================ */
+
+#app{
+  --g:#d9b871;--g-hi:#f4dfa6;--g-deep:#a17c3b;--wine:#a83f38;--grn:#7fd4ac;
+  --e:cubic-bezier(.16,1,.3,1);
+  font-family:"Inter",system-ui,sans-serif;
+}
+#app .hero h2,#app .intro h2,#app .principles h3,#app .dossier-head h2,
+#app .confirm h3,#app .timeline h3,#app .metrics strong{
+  font-family:"Fraunces",Georgia,serif;
+}
+
+/* ---------- ambient behind the app ---------- */
+#app::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(60vw 60vw at 82% -8%,rgba(217,184,113,.12),transparent 60%),
+    radial-gradient(52vw 52vw at -8% 108%,rgba(168,63,56,.1),transparent 62%)}
+
+/* ---------- rail ---------- */
+#app.ui-anim .rail .brand{animation:ui-rise .55s var(--e) both}
+#app.ui-anim .rail nav button{animation:ui-slidein .5s var(--e) both}
+#app.ui-anim .rail nav button:nth-child(1){animation-delay:.08s}
+#app.ui-anim .rail nav button:nth-child(2){animation-delay:.15s}
+#app.ui-anim .rail nav button:nth-child(3){animation-delay:.22s}
+#app.ui-anim .rail-note{animation:ui-rise .6s .3s var(--e) both}
+.rail nav button{position:relative;overflow:hidden;transition:color .25s,background .3s,border-color .3s}
+.rail nav button::before{content:"";position:absolute;left:0;top:50%;width:3px;height:0;border-radius:2px;
+  background:linear-gradient(var(--g-hi),var(--g));transform:translateY(-50%);transition:height .35s var(--e);
+  box-shadow:0 0 12px rgba(217,184,113,.5)}
+.rail nav button.active::before{height:60%}
+.rail nav button span{transition:transform .3s var(--e),color .25s,border-color .25s}
+.rail nav button:hover span{transform:translateX(2px) rotate(-4deg)}
+.reactor-link{transition:border-color .25s,color .25s,transform .25s var(--e)}
+.reactor-link:hover{color:var(--g);border-color:rgba(217,184,113,.3);transform:translateX(3px)}
+
+/* ---------- topbar ---------- */
+.topbar{border-bottom:1px solid var(--line)}
+.topbar::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(217,184,113,.4),transparent)}
+.topbar h1{font-family:"Fraunces",Georgia,serif;font-weight:420;letter-spacing:-.02em}
+.top-actions>button{transition:transform .5s var(--e),color .25s,border-color .25s,background .25s}
+.top-actions>button:hover{color:var(--g-hi);border-color:rgba(217,184,113,.4);
+  background:rgba(217,184,113,.08);transform:rotate(180deg)}
+.top-actions>button.spin{animation:ui-spin .7s var(--e)}
+.live i{animation:ui-pulse 2s ease-in-out infinite}
+
+/* ---------- screen enter (replays on every switch) ---------- */
+.screen.active{animation:none}
+#app.ui-anim .screen.active>*{animation:ui-rise .6s var(--e) both}
+#app.ui-anim .screen.active>*:nth-child(1){animation-delay:.02s}
+#app.ui-anim .screen.active>*:nth-child(2){animation-delay:.1s}
+#app.ui-anim .screen.active>*:nth-child(3){animation-delay:.18s}
+
+/* ---------- hero (desk) ---------- */
+.hero{position:relative;overflow:hidden;isolation:isolate}
+.hero::after{content:"";position:absolute;top:0;bottom:0;left:-40%;width:32%;z-index:0;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(217,184,113,.08),transparent);
+  transform:skewX(-14deg);animation:ui-sheen 7s var(--e) infinite}
+.hero>div{position:relative;z-index:1}
+.hero h2{font-weight:400;letter-spacing:-.03em}
+.hero button{position:relative;overflow:hidden;transition:transform .3s var(--e),box-shadow .3s}
+.hero button:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(200,160,90,.3)}
+.hero button span{display:inline-block;transition:transform .3s var(--e)}
+.hero button:hover span{transform:translateX(4px)}
+.orbit{animation-duration:22s}
+.pin{animation:ui-pulse 2.4s ease-in-out infinite}
+.pin.p2{animation-delay:.5s}.pin.p3{animation-delay:1s}
+
+/* ---------- metrics ---------- */
+.metrics article{position:relative;overflow:hidden;
+  transition:transform .4s var(--e),border-color .35s,background .35s}
+.metrics article::before{content:"";position:absolute;left:0;top:0;height:2px;width:0;
+  background:linear-gradient(90deg,var(--g),transparent);transition:width .7s var(--e)}
+#app.ui-anim .metrics article.in::before{width:100%}
+.metrics article:hover{transform:translateY(-4px);border-color:rgba(217,184,113,.28);
+  background:rgba(217,184,113,.04)}
+.metrics strong{font-weight:400;letter-spacing:-.03em;
+  background:linear-gradient(180deg,#fff,#d7d2c4);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* ---------- desk grid / lists ---------- */
+.priority,.principles{transition:border-color .35s}
+.priority header button{position:relative;transition:color .2s}
+.priority header button::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:1px;
+  background:var(--g);transform:scaleX(0);transform-origin:right;transition:transform .3s var(--e)}
+.priority header button:hover::after{transform:scaleX(1);transform-origin:left}
+.principles li i{transition:color .25s}
+.principles li:hover i{color:var(--g)}
+
+.mini-case,.case-card,.archive-card{position:relative;overflow:hidden}
+.mini-case::after,.case-card::after,.archive-card::after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+  background:linear-gradient(var(--g-hi),var(--g));transform:scaleY(0);transform-origin:top;transition:transform .35s var(--e)}
+.mini-case:hover::after,.case-card:hover::after,.archive-card:hover::after{transform:scaleY(1)}
+.mini-case{cursor:pointer;transition:transform .3s var(--e),background .3s,border-color .3s}
+.mini-case:hover{transform:translateX(4px);border-color:rgba(217,184,113,.22);background:rgba(217,184,113,.04)}
+.mini-case .state{transition:transform .3s var(--e)}
+.case-card button,.archive-card button{transition:transform .25s var(--e),color .2s,border-color .2s,background .2s}
+.case-card:hover button,.archive-card:hover button{color:#0a0d12;background:var(--g);border-color:var(--g);transform:translateX(3px)}
+
+/* entrance for dynamically added cards (JS toggles .ui-pop) */
+.ui-pop{animation:ui-pop .5s var(--e) both}
+
+/* ---------- filter ---------- */
+.filter input,.filter select{transition:border-color .25s,box-shadow .25s,background .25s}
+.filter input:focus,.filter select:focus{box-shadow:0 0 0 3px rgba(217,184,113,.12)}
+.filter button{position:relative;overflow:hidden;transition:transform .3s var(--e),box-shadow .3s}
+.filter button:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(200,160,90,.28)}
+.intro h2{font-weight:400;letter-spacing:-.03em}
+
+/* ---------- dialog: dossier ---------- */
+dialog[open]{animation:ui-dialog .5s var(--e) both}
+dialog::backdrop{animation:ui-fade .4s both}
+.dossier-head h2{font-weight:420;letter-spacing:-.03em}
+#app-scope .facts span,dialog .facts span{animation:ui-rise .5s var(--e) both}
+dialog .facts span:nth-child(1){animation-delay:.04s}
+dialog .facts span:nth-child(2){animation-delay:.09s}
+dialog .facts span:nth-child(3){animation-delay:.14s}
+dialog .facts span:nth-child(4){animation-delay:.19s}
+dialog .facts span:nth-child(5){animation-delay:.24s}
+dialog .facts span:nth-child(6){animation-delay:.29s}
+.facts span{transition:transform .3s var(--e),border-color .3s,background .3s}
+.facts span:hover{transform:translateY(-2px);border-color:rgba(217,184,113,.22);background:rgba(217,184,113,.03)}
+.timeline{position:relative}
+.timeline article{position:relative;animation:ui-slidein .5s var(--e) both}
+.timeline article:nth-child(2){animation-delay:.06s}
+.timeline article:nth-child(3){animation-delay:.12s}
+.timeline article:nth-child(4){animation-delay:.18s}
+.timeline article:nth-child(5){animation-delay:.24s}
+.timeline article i{animation:ui-pulse 2.6s ease-in-out infinite}
+.dialog .close,dialog .close{transition:transform .3s var(--e),color .2s}
+dialog .close:hover{transform:rotate(90deg);color:var(--g)}
+
+/* ---------- confirm ---------- */
+.confirm-mark{animation:ui-pulse 2s ease-in-out infinite}
+.confirm .danger{transition:transform .25s var(--e),box-shadow .25s}
+.confirm .danger:hover{transform:translateY(-1px);box-shadow:0 10px 26px rgba(200,160,90,.3)}
+
+/* ---------- toast ---------- */
+.toast{animation:ui-toast .45s var(--e) both}
+
+/* ---------- keyframes ---------- */
+@keyframes ui-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes ui-slidein{from{opacity:0;transform:translateX(-14px)}to{opacity:1;transform:none}}
+@keyframes ui-pop{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes ui-pulse{0%,100%{opacity:.45;transform:scale(1)}50%{opacity:1;transform:scale(1.35)}}
+@keyframes ui-sheen{0%,60%{left:-40%}88%,100%{left:120%}}
+@keyframes ui-spin{to{transform:rotate(360deg)}}
+@keyframes ui-dialog{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes ui-fade{from{opacity:0}to{opacity:1}}
+@keyframes ui-toast{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+
+@media(prefers-reduced-motion:reduce){
+  #app *,#app *::before,#app *::after{animation:none!important;transition-duration:.01ms!important}
+}

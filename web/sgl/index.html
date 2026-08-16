@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a1019">
-  <meta name="description" content="SGL — юридическое бюро Соула Гудмана в контуре T‑Mod: обращения, дела, реестр и архив.">
+  <meta name="description" content="T-Mod SGL — юридическое бюро Соула Гудмана: обращения, дела, реестр и архив.">
   <title>SGL · Юридическое бюро Соула Гудмана</title>
   <style>
     :root{color-scheme:dark;--bg:#080d14;--ink:#f4f1e8;--gold:#d8bb77;--line:rgba(216,187,119,.16)}
@@ -15,117 +15,135 @@
   <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/fonts.css">
   <link rel="stylesheet" href="/sgl/assets/style.css?v=20260811-sgl-v11">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/sgl/assets/site.css?v=redesign-1">
+  <link rel="stylesheet" href="/sgl/assets/app-ui.css?v=redesign-1">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
   <section id="loading" class="loading"><div class="seal logo-seal"><span class="sgl-lockup"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span></div><b>Открываем SGL</b><small>приёмная · реестр · архив</small></section>
 
-  <section id="public-site" class="public-site sgl-reference-site" hidden>
-    <div class="ref-ambient" aria-hidden="true"><i></i><i></i><b></b></div>
+  <section id="public-site" class="sx-site" hidden>
+    <div class="sx-progress" aria-hidden="true"><i></i></div>
+    <div class="sx-ambient" aria-hidden="true"><span class="sx-blob a"></span><span class="sx-blob b"></span><span class="sx-grain"></span></div>
 
-    <header class="ref-header ref-pad">
-      <a class="ref-brand" href="/sgl" aria-label="T-Mod SGL · Юридическое бюро Соула Гудмана">
-        <img class="ref-brand-logo" src="/sgl/assets/logo-vector.svg" alt="SGL">
-        <span><strong>Юридическое бюро Соула Гудмана</strong><small>SGL · PHOENIX LEGAL BUREAU</small></span>
+    <header class="sx-nav">
+      <a class="sx-brand" href="/sgl?public=1" aria-label="SGL — Юридическое бюро Соула Гудмана">
+        <span class="sx-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span>
+        <span class="sx-brand-txt"><strong>Юридическое бюро<br>Соула Гудмана</strong><small>SGL · PHOENIX LEGAL BUREAU</small></span>
       </a>
-      <nav class="ref-nav" aria-label="Навигация публичной страницы">
+      <nav class="sx-nav-links" aria-label="Разделы">
         <a href="#services">Услуги</a>
         <a href="#process">Как работаем</a>
         <a href="#standards">Стандарты</a>
       </nav>
-      <a id="public-discord-top" class="ref-nav-cta" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer">Обращение →</a>
+      <a id="public-discord-top" class="sx-cta" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span>Открыть обращение</span><i>↗</i></a>
     </header>
 
-    <main class="ref-main">
-      <section id="top" class="ref-hero ref-pad">
-        <div class="ref-hero-copy">
-          <div class="ref-edition"><span>ЮРИДИЧЕСКОЕ БЮРО</span><b>PHOENIX · 15</b></div>
-          <div class="ref-kicker"><span></span>SAOUL GOODMAN LAW BUREAU</div>
-          <h1>Право должно<br><em>работать на вас.</em></h1>
-          <p>Разбираем ситуацию, собираем сильную позицию и берём на себя документы. От первой консультации до результата — спокойно, конфиденциально и по делу.</p>
-          <div class="ref-actions">
-            <a id="public-discord" class="ref-primary" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span></span><b>Открыть обращение</b><i>↗</i></a>
-            <a id="public-secretary" class="ref-secondary" href="https://discord.com/users/1010474387352322048" target="_blank" rel="noreferrer">Связаться с секретарём <i>→</i></a>
+    <main class="sx-main">
+      <section class="sx-hero" id="top">
+        <div class="sx-hero-copy">
+          <div class="sx-eyebrow" data-reveal><i></i><span>SAOUL GOODMAN LAW BUREAU</span><b>№ 15</b></div>
+          <h1 class="sx-title">
+            <span class="sx-line"><span class="w">Право</span> <span class="w">должно</span></span>
+            <span class="sx-line"><span class="w gold">работать</span> <span class="w gold">на</span> <span class="w gold">вас.</span></span>
+          </h1>
+          <p class="sx-lede" data-reveal>Разбираем ситуацию, собираем сильную позицию и берём на себя документы. От первой консультации до результата — спокойно, конфиденциально и по делу.</p>
+          <div class="sx-actions" data-reveal>
+            <a id="public-discord" class="sx-btn sx-btn-gold" data-magnetic href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span class="sx-sheen"></span><b>Открыть обращение</b><i>↗</i></a>
+            <a id="public-secretary" class="sx-btn sx-btn-ghost" href="https://discord.com/users/1010474387352322048" target="_blank" rel="noreferrer">Связаться с секретарём <i>→</i></a>
           </div>
-          <div class="ref-hero-notes">
-            <span><b>01</b> Ответим и уточним детали</span><span><b>02</b> Оценим правовую позицию</span><span><b>03</b> Предложим следующий шаг</span>
-          </div>
+          <dl class="sx-stats" data-reveal>
+            <div><dt data-count="24" data-suffix="/7">0</dt><dd>приёмная на связи</dd></div>
+            <div><dt data-count="3">0</dt><dd>фазы ведения дела</dd></div>
+            <div><dt data-count="100" data-suffix="%">0</dt><dd>конфиденциальность</dd></div>
+          </dl>
         </div>
 
-        <aside class="ref-intake-panel" aria-label="Приёмная SGL">
-          <header><span>НОВОЕ ОБРАЩЕНИЕ</span><b><i></i>ПРИЁМ ОТКРЫТ</b></header>
-          <div class="ref-intake-body">
-            <div class="ref-case-mark" aria-hidden="true"><span>§</span><b>SGL</b><small>CLIENT INTAKE</small></div>
-            <small class="ref-intake-kicker">ВАШЕ ДЕЛО НАЧИНАЕТСЯ ЗДЕСЬ</small>
-            <h3>Расскажите, что произошло.</h3>
-            <p>Не нужно знать статьи или юридические формулировки. Опишите ситуацию своими словами — секретарь примет обращение и подключит нужного специалиста.</p>
-            <div class="ref-intake-path">
-              <article><b>01</b><span><strong>Факты</strong><small>что произошло и когда</small></span></article>
-              <article><b>02</b><span><strong>Материалы</strong><small>документы, записи, свидетели</small></span></article>
-              <article><b>03</b><span><strong>Позиция</strong><small>оценка и план действий</small></span></article>
-            </div>
-            <div class="ref-confidential"><i></i><span><b>Конфиденциально</b><small>Материалы видит только команда вашего дела</small></span></div>
+        <aside class="sx-docket" data-reveal aria-label="Приёмная SGL">
+          <div class="sx-seal" aria-hidden="true">
+            <svg viewBox="0 0 120 120">
+              <circle class="disc" cx="60" cy="60" r="52"></circle>
+              <circle class="ring" cx="60" cy="60" r="52"></circle>
+              <circle class="ring dash" cx="60" cy="60" r="44"></circle>
+              <g class="txt-spin"><path id="sxseal" d="M60 60 m-34 0 a34 34 0 1 1 68 0 a34 34 0 1 1 -68 0" fill="none"></path>
+                <text class="txt"><textPath href="#sxseal" startOffset="0">· SAOUL GOODMAN LAW BUREAU · PHOENIX ·</textPath></text></g>
+              <text class="glyph" x="60" y="73" text-anchor="middle">§</text>
+            </svg>
+          </div>
+          <header><span>НОВОЕ ОБРАЩЕНИЕ</span><b class="sx-live"><i></i>ПРИЁМ ОТКРЫТ</b></header>
+          <div class="sx-docket-body">
+            <small>ВАШЕ ДЕЛО НАЧИНАЕТСЯ ЗДЕСЬ</small>
+            <h3>Расскажите,<br>что произошло.</h3>
+            <p>Не нужно знать статьи или юридические формулировки. Опишите ситуацию своими словами — секретарь примет обращение и подключит специалиста.</p>
+            <ol class="sx-path">
+              <li><b>01</b><span><strong>Факты</strong><small>что произошло и когда</small></span></li>
+              <li><b>02</b><span><strong>Материалы</strong><small>документы, записи, свидетели</small></span></li>
+              <li><b>03</b><span><strong>Позиция</strong><small>оценка и план действий</small></span></li>
+            </ol>
+            <div class="sx-confidential"><i></i><span><b>Конфиденциально</b><small>Материалы видит только команда вашего дела</small></span></div>
           </div>
         </aside>
       </section>
 
-      <div class="ref-trust ref-pad" aria-label="Принципы работы бюро">
-        <span><b>ЧЁТКАЯ ПОЗИЦИЯ</b><small>без лишних обещаний</small></span>
-        <span><b>ПРОЗРАЧНЫЙ ХОД ДЕЛА</b><small>вы знаете, что происходит</small></span>
-        <span><b>ЗАЩИЩЁННЫЕ МАТЕРИАЛЫ</b><small>доступ только у команды</small></span>
-      </div>
+      <div class="sx-marquee" aria-hidden="true"><div class="sx-marquee-row"><span>Правовая позиция</span><span>Конфиденциальность</span><span>Ведение дела</span><span>Чистая история</span><span>Phoenix · 15</span><span>Команда на дело</span></div></div>
 
-      <section id="services" class="ref-section ref-pad">
-        <div class="ref-section-head">
-          <span>01 — УСЛУГИ</span>
-          <h2>Работаем с обращением <em>от фактов до позиции.</em></h2>
-        </div>
-        <div class="ref-service-grid">
-          <article data-index="01"><span>01</span><h3>Исковые заявления</h3><p>Фиксируем обстоятельства, доказательства, основания и требования в цельный документ, готовый к подаче.</p><em>ДОКУМЕНТ · 1–3 ДНЯ</em></article>
-          <article data-index="02"><span>02</span><h3>Жалобы и обращения</h3><p>Готовим обжалования, заявления и позицию для обращения в нужную инстанцию.</p><em>ДОКУМЕНТ · 1–2 ДНЯ</em></article>
-          <article data-index="03"><span>03</span><h3>Консультация</h3><p>Разбираем ситуацию, объясняем варианты действий, риски и ближайший понятный шаг.</p><em>ВСТРЕЧА · В ДЕНЬ ОБРАЩЕНИЯ</em></article>
-          <article data-index="04"><span>04</span><h3>Сопровождение дела</h3><p>Ведём дело от первого обращения до результата: команда, события, документы и статус — в одном контуре.</p><em>ВЕДЕНИЕ · ДО ЗАКРЫТИЯ</em></article>
+      <section class="sx-section" id="services">
+        <div class="sx-head" data-reveal><span class="sx-mono">01 — УСЛУГИ</span><h2>Работаем с обращением <em>от фактов до позиции.</em></h2></div>
+        <div class="sx-services">
+          <article data-reveal><span class="sx-idx">01</span><h3>Исковые заявления</h3><p>Фиксируем обстоятельства, доказательства, основания и требования в цельный документ, готовый к подаче.</p><em>ДОКУМЕНТ · 1–3 ДНЯ</em></article>
+          <article data-reveal><span class="sx-idx">02</span><h3>Жалобы и обращения</h3><p>Готовим обжалования, заявления и позицию для обращения в нужную инстанцию.</p><em>ДОКУМЕНТ · 1–2 ДНЯ</em></article>
+          <article data-reveal><span class="sx-idx">03</span><h3>Консультация</h3><p>Разбираем ситуацию, объясняем варианты действий, риски и ближайший понятный шаг.</p><em>ВСТРЕЧА · В ДЕНЬ ОБРАЩЕНИЯ</em></article>
+          <article data-reveal><span class="sx-idx">04</span><h3>Сопровождение дела</h3><p>Ведём дело от первого обращения до результата: команда, события, документы и статус — в одном контуре.</p><em>ВЕДЕНИЕ · ДО ЗАКРЫТИЯ</em></article>
         </div>
       </section>
 
-      <section id="process" class="ref-section ref-pad">
-        <div class="ref-section-head">
-          <span>02 — КОНТУР БЮРО</span>
-          <h2>Всё важное <em class="accent">остаётся связанным.</em></h2>
-        </div>
-        <div class="ref-three">
-          <article><b>01</b><h3>Дело и команда</h3><p>Клиент, ведущий юрист и секретарь закрепляются за делом с первого обращения.</p></article>
-          <article><b>02</b><h3>Ход работы</h3><p>События, документы, статус и расчёт видны в одном месте — без переспрашиваний.</p></article>
-          <article><b>03</b><h3>Безопасный архив</h3><p>После закрытия дело сохраняется целиком, история восстанавливается по номеру.</p></article>
+      <section class="sx-section" id="process">
+        <div class="sx-head" data-reveal><span class="sx-mono">02 — КОНТУР БЮРО</span><h2>Всё важное <em class="gold">остаётся связанным.</em></h2></div>
+        <ol class="sx-process">
+          <li data-reveal><b>01</b><div><h3>Дело и команда</h3><p>Клиент, ведущий юрист и секретарь закрепляются за делом с первого обращения.</p></div></li>
+          <li data-reveal><b>02</b><div><h3>Ход работы</h3><p>События, документы, статус и расчёт видны в одном месте — без переспрашиваний.</p></div></li>
+          <li data-reveal><b>03</b><div><h3>Безопасный архив</h3><p>После закрытия дело сохраняется целиком, история восстанавливается по номеру.</p></div></li>
+        </ol>
+      </section>
+
+      <section class="sx-section" id="standards">
+        <div class="sx-head" data-reveal><span class="sx-mono">03 — СТАНДАРТЫ</span><h2>Серьёзное бюро видно <em>по порядку в деталях.</em></h2></div>
+        <div class="sx-standards">
+          <article data-reveal><h3>Чистая история дела</h3><p>Каждое действие фиксируется в реестре. Адвокат на связи и сообщает о любом изменении по делу.</p></article>
+          <article data-reveal><h3>Командный доступ</h3><p>Бюро ведёт работу с группой лиц — группой истцов или ответчиков — в общем контуре дела.</p></article>
+          <article data-reveal><h3>Конфиденциальность</h3><p>Доступ к материалам есть только у команды дела. Ничего не уходит за пределы контура бюро.</p></article>
         </div>
       </section>
 
-      <section id="standards" class="ref-section ref-pad">
-        <div class="ref-section-head">
-          <span>03 — СТАНДАРТЫ</span>
-          <h2>Серьёзное бюро видно <em>по порядку в деталях.</em></h2>
+      <section class="sx-final" id="contact" data-reveal>
+        <div class="sx-seal" aria-hidden="true">
+          <svg viewBox="0 0 120 120">
+            <circle class="disc" cx="60" cy="60" r="52"></circle>
+            <circle class="ring" cx="60" cy="60" r="52"></circle>
+            <circle class="ring dash" cx="60" cy="60" r="44"></circle>
+            <g class="txt-spin"><path id="sxseal2" d="M60 60 m-34 0 a34 34 0 1 1 68 0 a34 34 0 1 1 -68 0" fill="none"></path>
+              <text class="txt"><textPath href="#sxseal2" startOffset="0">· SAOUL GOODMAN LAW BUREAU · PHOENIX ·</textPath></text></g>
+            <text class="glyph" x="60" y="73" text-anchor="middle">§</text>
+          </svg>
         </div>
-        <div class="ref-standard-list">
-          <article><h3>Чистая история дела</h3><p>Каждое действие фиксируется в реестре. Адвокат на связи и сообщает о любом изменении по делу.</p></article>
-          <article><h3>Командный доступ</h3><p>Бюро ведёт работу с группой лиц — группой истцов или ответчиков — в общем контуре дела.</p></article>
-          <article><h3>Конфиденциальность</h3><p>Доступ к материалам есть только у команды дела. Ничего не уходит за пределы контура бюро.</p></article>
-        </div>
-      </section>
-
-      <section id="contact" class="ref-contact ref-pad">
-        <div>
-          <span>SGL · ПРИЁМНАЯ</span>
-          <h2>Опишите ситуацию.<br><em>Бюро примет обращение в работу.</em></h2>
-          <p>Достаточно коротко изложить факты. Дальше — разбор, оценка вариантов и понятный следующий шаг.</p>
-          <div class="ref-actions center">
-            <a id="public-discord-bottom" class="ref-primary" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span></span><b>Перейти в приёмную →</b></a>
-            <a id="public-secretary-bottom" class="ref-secondary" href="https://discord.com/users/1010474387352322048" target="_blank" rel="noreferrer">Написать секретарю</a>
-          </div>
+        <span class="sx-mono">SGL · ПРИЁМНАЯ</span>
+        <h2>Опишите ситуацию.<br><em>Бюро примет обращение в работу.</em></h2>
+        <p>Достаточно коротко изложить факты. Дальше — разбор, оценка вариантов и понятный следующий шаг.</p>
+        <div class="sx-actions center">
+          <a id="public-discord-bottom" class="sx-btn sx-btn-gold" data-magnetic href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span class="sx-sheen"></span><b>Перейти в приёмную</b><i>→</i></a>
+          <a id="public-secretary-bottom" class="sx-btn sx-btn-ghost" href="https://discord.com/users/1010474387352322048" target="_blank" rel="noreferrer">Написать секретарю</a>
         </div>
       </section>
     </main>
 
-    <footer class="ref-footer ref-pad"><span>© SGL · SAOUL GOODMAN LAW BUREAU</span><nav><a href="/sgl?public=1">Сайт бюро ↗</a><a href="https://reactor.tvr.lat/#/sgl" target="_blank" rel="noreferrer">Ядерный Реактор ↗</a></nav><span>POWERED BY T‑MOD</span></footer>
+    <footer class="sx-footer">
+      <span>© SGL · SAOUL GOODMAN LAW BUREAU</span>
+      <nav><a href="/sgl">Рабочая панель ↗</a><a href="https://reactor.tvr.lat/#/sgl" target="_blank" rel="noreferrer">Ядерный Реактор ↗</a></nav>
+      <span class="sx-mono">POWERED BY T‑MOD</span>
+    </footer>
   </section>
 
   <div id="app" class="shell" hidden>
@@ -192,5 +210,7 @@
     })();
   </script>
   <script src="/sgl/assets/app.js?v=20260811-sgl-v11" defer></script>
+  <script src="/sgl/assets/site.js?v=redesign-1" defer></script>
+  <script src="/sgl/assets/app-ui.js?v=redesign-1" defer></script>
 </body>
 </html>
