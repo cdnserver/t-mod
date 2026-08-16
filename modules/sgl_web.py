@@ -67,7 +67,11 @@ def register_sgl_web_routes(
         name = str(request.match_info.get("name") or "")
         if name not in {
             "app.js",
+            "app-ui.css",
+            "app-ui.js",
             "style.css",
+            "site.css",
+            "site.js",
             "favicon.svg",
             "logo.webp",
             "logo-vector.svg",

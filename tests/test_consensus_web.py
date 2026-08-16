@@ -731,6 +731,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             page_text = await page.text()
             registry = await client.get("/api/sgl/bootstrap", headers={"Host": "sgl.tvr.lat"})
             payload = await registry.json()
+            redesigned_assets = {
+                name: await client.get(f"/sgl/assets/{name}")
+                for name in ("site.css", "app-ui.css", "site.js", "app-ui.js")
+            }
 
         self.assertEqual(page.status, 200)
         self.assertIn("T-Mod SGL", page_text)
@@ -738,6 +742,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["mode"], "public")
         self.assertIn("discord.com", payload["public"]["discord_url"])
         self.assertIn("discord.com/users/", payload["public"]["secretary_url"])
+        self.assertTrue(all(response.status == 200 for response in redesigned_assets.values()))
 
     async def test_sgl_registry_uses_shared_administrator_identity(self) -> None:
         principal = self._principal(user_id=42)
