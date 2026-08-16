@@ -1,0 +1,137 @@
+name: T-Mod Desktop release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Версия исходного кода, например desktop-v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            command: electron-builder --win nsis --x64 --publish never
+            artifact: desktop-windows
+            files: |
+              desktop/release/*.exe
+              desktop/release/*.exe.blockmap
+              desktop/release/latest.yml
+          - name: macOS universal
+            os: macos-latest
+            command: electron-builder --mac dmg zip --universal --publish never
+            artifact: desktop-macos
+            files: |
+              desktop/release/*.dmg
+              desktop/release/*.zip
+              desktop/release/*.blockmap
+              desktop/release/latest-mac.yml
+          - name: Linux x64
+            os: ubuntu-latest
+            command: electron-builder --linux AppImage --x64 --publish never
+            artifact: desktop-linux
+            files: |
+              desktop/release/*.AppImage
+              desktop/release/*.AppImage.blockmap
+              desktop/release/latest-linux.yml
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Validate release version
+        shell: bash
+        run: node -e "const p=require('./desktop/package.json'); const expected='desktop-v'+p.version; if(process.env.RELEASE_TAG!==expected){console.error('Expected tag '+expected+', got '+process.env.RELEASE_TAG); process.exit(1)}"
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Test and compile
+        working-directory: desktop
+        run: |
+          pnpm test
+          pnpm typecheck
+          pnpm build
+
+      - name: Build installer
+        working-directory: desktop
+        run: pnpm exec ${{ matrix.command }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish public download
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
+      RELEASE_REPOSITORY: cdnserver/t-mod-releases
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          test -n "$GH_TOKEN" || { echo "DESKTOP_RELEASE_TOKEN is missing"; exit 1; }
+          version="${RELEASE_TAG#desktop-v}"
+          target_tag="v${version}"
+          if gh release view "$target_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$target_tag" release/* --repo "$RELEASE_REPOSITORY" --clobber
+            gh release edit "$target_tag" --repo "$RELEASE_REPOSITORY" --latest
+          else
+            gh release create "$target_tag" release/* \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "T-Mod Desktop ${version}" \
+              --notes "Установщики T-Mod Desktop ${version}. Приложение получает дальнейшие обновления автоматически." \
+              --latest
+          fi
+

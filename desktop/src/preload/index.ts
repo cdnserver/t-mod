@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   BootstrapResult,
   DesktopState,
+  DesktopUpdateState,
   ServiceId,
   TModDesktopApi,
 } from "../shared/contracts";
@@ -17,6 +18,9 @@ const api: TModDesktopApi = {
   minimize: () => ipcRenderer.invoke("desktop:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("desktop:maximize"),
   close: () => ipcRenderer.invoke("desktop:close"),
+  checkForUpdates: () =>
+    ipcRenderer.invoke("desktop:update-check") as Promise<DesktopUpdateState>,
+  installUpdate: () => ipcRenderer.invoke("desktop:update-install") as Promise<boolean>,
   onState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: DesktopState) => listener(state);
     ipcRenderer.on("desktop:state", handler);
@@ -26,6 +30,12 @@ const api: TModDesktopApi = {
     const handler = () => listener();
     ipcRenderer.on("desktop:auth-changed", handler);
     return () => ipcRenderer.removeListener("desktop:auth-changed", handler);
+  },
+  onUpdate: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) =>
+      listener(state);
+    ipcRenderer.on("desktop:update", handler);
+    return () => ipcRenderer.removeListener("desktop:update", handler);
   },
 };
 

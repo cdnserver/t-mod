@@ -19,6 +19,8 @@
     "@fontsource/manrope": "5.3.0",
     "@fontsource/unbounded": "5.3.0",
     "@vitejs/plugin-react": "6.0.5",
+    "electron-log": "5.4.4",
+    "electron-updater": "6.8.9",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -48,7 +50,8 @@
     "icon": "resources/icon.png",
     "asar": true,
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "T-Mod-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -57,12 +60,25 @@
       "createStartMenuShortcut": true
     },
     "mac": {
-      "target": "dmg",
-      "category": "public.app-category.productivity"
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "T-Mod-mac-${arch}.${ext}"
     },
     "linux": {
       "target": "AppImage",
-      "category": "Utility"
-    }
+      "category": "Utility",
+      "artifactName": "T-Mod-Linux-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "cdnserver",
+        "repo": "t-mod-releases",
+        "releaseType": "release"
+      }
+    ]
   }
 }

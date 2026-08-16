@@ -11,6 +11,7 @@ import type {
   DesktopBootstrap,
   DesktopNotification,
   DesktopState,
+  DesktopUpdateState,
   ServiceId,
 } from "../shared/contracts";
 import { serviceById, services } from "../shared/services";
@@ -63,7 +64,7 @@ const mockBootstrap: DesktopBootstrap = {
   },
 };
 
-function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "back" | "forward" | "command" | "lock" }) {
+function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "back" | "forward" | "command" | "lock" | "download" }) {
   const paths: Record<string, React.ReactNode> = {
     home: <><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></>,
     reactor: <><path d="M4 8.5h16M4 15.5h16"/><path d="M8.5 4v16M15.5 4v16"/><circle cx="12" cy="12" r="3"/></>,
@@ -81,6 +82,7 @@ function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "bac
     forward: <path d="M9 18l6-6-6-6"/>,
     command: <><path d="M9 7V5.5A2.5 2.5 0 106.5 8H18M15 17v1.5a2.5 2.5 0 102.5-2.5H6"/></>,
     lock: <><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 018 0v3"/></>,
+    download: <><path d="M12 3v12M7.5 10.5L12 15l4.5-4.5"/><path d="M5 20h14"/></>,
   };
   return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -119,6 +121,11 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({
+    phase: "development",
+    currentVersion: "0.1.0",
+  });
+  const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const searchRef = useRef<HTMLInputElement>(null);
 
   const loadBootstrap = useCallback(async () => {
@@ -148,6 +155,14 @@ export function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loadBootstrap]);
+
+  useEffect(() => {
+    const api = browserApi();
+    if (!api) return;
+    const unsubscribeUpdate = api.onUpdate(setUpdateState);
+    void api.checkForUpdates().then(setUpdateState);
+    return unsubscribeUpdate;
+  }, []);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -198,6 +213,21 @@ export function App() {
   const unread = bootstrap.data?.notifications.unread || 0;
   const userName = bootstrap.data?.viewer.name || "гость";
   const style = { "--active-accent": activeDefinition?.accent || "#8ea4ff" } as CSSProperties;
+  const updateBusy = ["checking", "available", "downloading"].includes(updateState.phase);
+  const updateLabel = updateState.phase === "ready"
+    ? `Установить ${updateState.version ? `v${updateState.version}` : "обновление"}`
+    : updateState.phase === "downloading" || updateState.phase === "available"
+      ? `Загрузка ${updateState.percent || 0}%`
+      : updateState.phase === "checking"
+        ? "Проверяем версию"
+        : `v${updateState.currentVersion}`;
+
+  const runUpdateAction = () => {
+    const api = browserApi();
+    if (!api || updateBusy) return;
+    if (updateState.phase === "ready") void api.installUpdate();
+    else void api.checkForUpdates().then(setUpdateState);
+  };
 
   return (
     <div className="desktop" style={style}>
@@ -253,6 +283,20 @@ export function App() {
           <div className="surface-title"><span style={{ background: activeDefinition.accent }}/><strong>{activeDefinition.title}</strong><small>{activeDefinition.eyebrow}</small></div>
         </div>
         <div className="top-actions">
+          {browserApi() && (
+            <button
+              className={`update-pill ${updateState.phase}`}
+              onClick={runUpdateAction}
+              disabled={updateBusy}
+              title={updateState.message || "Проверить обновления T-Mod"}
+            >
+              <Icon name={updateState.phase === "ready" ? "download" : "refresh"}/>
+              <span>{updateLabel}</span>
+              {(updateState.phase === "downloading" || updateState.phase === "available") && (
+                <i style={{ width: `${updateState.percent || 0}%` }}/>
+              )}
+            </button>
+          )}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => setNotificationsOpen((open) => !open)} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
           <div className="window-actions"><button onClick={() => void browserApi()?.minimize()}>—</button><button onClick={() => void browserApi()?.toggleMaximize()}>□</button><button className="close" onClick={() => void browserApi()?.close()}>×</button></div>
@@ -288,6 +332,14 @@ export function App() {
           onClose={() => setPaletteOpen(false)}
           onOpen={selectService}
         />
+      )}
+      {updateState.phase === "ready" && dismissedUpdate !== updateState.version && (
+        <aside className="update-toast" role="status">
+          <span className="update-toast-icon"><Icon name="download"/></span>
+          <div><small>T-Mod готов к обновлению</small><strong>Версия {updateState.version}</strong><p>Перезапуск займёт несколько секунд.</p></div>
+          <button className="update-later" onClick={() => setDismissedUpdate(updateState.version)}>Позже</button>
+          <button className="update-install" onClick={() => void browserApi()?.installUpdate()}>Перезапустить</button>
+        </aside>
       )}
     </div>
   );

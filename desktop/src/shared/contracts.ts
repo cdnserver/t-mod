@@ -66,6 +66,25 @@ export interface DesktopState {
   error?: string;
 }
 
+export type DesktopUpdatePhase =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "current"
+  | "error"
+  | "development";
+
+export interface DesktopUpdateState {
+  phase: DesktopUpdatePhase;
+  currentVersion: string;
+  version?: string;
+  percent?: number;
+  message?: string;
+  checkedAt?: string;
+}
+
 export interface TModDesktopApi {
   bootstrap(): Promise<BootstrapResult>;
   navigate(serviceId: ServiceId): Promise<DesktopState>;
@@ -76,8 +95,11 @@ export interface TModDesktopApi {
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;
+  checkForUpdates(): Promise<DesktopUpdateState>;
+  installUpdate(): Promise<boolean>;
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
+  onUpdate(listener: (state: DesktopUpdateState) => void): () => void;
 }
 
 declare global {
