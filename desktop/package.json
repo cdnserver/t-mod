@@ -1,0 +1,68 @@
+{
+  "name": "tmod-desktop",
+  "version": "0.1.0",
+  "description": "Единый рабочий хаб экосистемы T-Mod",
+  "main": "./out/main/index.js",
+  "author": "TVR x SGL",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "package": "pnpm build && electron-builder --dir",
+    "dist": "pnpm build && electron-builder"
+  },
+  "dependencies": {
+    "@fontsource/manrope": "5.3.0",
+    "@fontsource/unbounded": "5.3.0",
+    "@vitejs/plugin-react": "6.0.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "lat.tvr.tmod.desktop",
+    "productName": "T-Mod",
+    "artifactName": "T-Mod-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "icon": "resources/icon.png",
+    "asar": true,
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility"
+    }
+  }
+}

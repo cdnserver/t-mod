@@ -1,0 +1,87 @@
+export const serviceIds = [
+  "home",
+  "reactor",
+  "consensus",
+  "atlas",
+  "sgl",
+  "ovr",
+  "games",
+  "tasks",
+  "admin",
+] as const;
+
+export type ServiceId = (typeof serviceIds)[number];
+
+export interface DesktopService {
+  id: Exclude<ServiceId, "home">;
+  title: string;
+  url: string;
+  enabled: boolean;
+  reason: string | null;
+}
+
+export interface DesktopNotification {
+  id: number;
+  severity: "info" | "success" | "warning" | "critical";
+  kind: string;
+  title: string;
+  body: string;
+  route: string | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface DesktopBootstrap {
+  protocol_version: 1;
+  generated_at: string;
+  viewer: {
+    id: number;
+    name: string;
+    display_name: string;
+    account_tier: "zero" | "member" | "administrator";
+    guild_member: boolean;
+    administrator: boolean;
+    sections: string[];
+  };
+  services: DesktopService[];
+  notifications: {
+    items: DesktopNotification[];
+    unread: number;
+  };
+}
+
+export interface BootstrapResult {
+  authenticated: boolean;
+  online: boolean;
+  data?: DesktopBootstrap;
+  error?: string;
+}
+
+export interface DesktopState {
+  activeService: ServiceId;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  url?: string;
+  error?: string;
+}
+
+export interface TModDesktopApi {
+  bootstrap(): Promise<BootstrapResult>;
+  navigate(serviceId: ServiceId): Promise<DesktopState>;
+  reload(): Promise<void>;
+  goBack(): Promise<void>;
+  goForward(): Promise<void>;
+  openLogin(): Promise<DesktopState>;
+  minimize(): Promise<void>;
+  toggleMaximize(): Promise<void>;
+  close(): Promise<void>;
+  onState(listener: (state: DesktopState) => void): () => void;
+  onAuthChanged(listener: () => void): () => void;
+}
+
+declare global {
+  interface Window {
+    tmodDesktop?: TModDesktopApi;
+  }
+}

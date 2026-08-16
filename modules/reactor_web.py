@@ -1262,6 +1262,138 @@ def register_reactor_web_routes(
         )
         return web.json_response({"viewer": viewer(principal), **payload})
 
+    async def desktop_bootstrap(request: web.Request) -> web.Response:
+        """Return the small, stable projection consumed by T-Mod Desktop.
+
+        The desktop shell deliberately receives neither the session cookie nor
+        Discord credentials.  Electron keeps the shared HttpOnly cookie in its
+        persistent network partition and calls this endpoint on behalf of the
+        local shell.
+        """
+
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            return web.json_response(
+                {
+                    "error": "desktop_login_required",
+                    "login_url": "https://tvr.lat/login?next=/reactor",
+                },
+                status=401,
+            )
+
+        guild_member = bool(principal.guild_member)
+        administrator = bool(principal.administrator)
+        grants: list[dict[str, Any]] = []
+        notification_payload: dict[str, Any] = {"items": [], "unread": 0}
+        preferred_name = ""
+
+        if guild_member:
+            grants, notification_payload, profile_snapshot = await asyncio.gather(
+                asyncio.to_thread(
+                    web_auth_storage.web_section_grants,
+                    int(guild_id),
+                    int(principal.user_id),
+                ),
+                asyncio.to_thread(
+                    reactor_storage.reactor_list_notifications,
+                    int(guild_id),
+                    int(principal.user_id),
+                    limit=12,
+                ),
+                asyncio.to_thread(
+                    profile_storage.get_profile_snapshot,
+                    int(guild_id),
+                    int(principal.user_id),
+                ),
+            )
+            profile, _ = profile_snapshot
+            preferred_name = str(getattr(profile, "preferred_name", "") or "").strip()
+
+        granted_sections = sorted(
+            {
+                str(row.get("section") or "").strip().lower()
+                for row in grants
+                if str(row.get("section") or "").strip()
+            }
+        )
+        admin_access = administrator or bool(granted_sections)
+        ovr_access = administrator or "ovr" in granted_sections
+
+        def service(
+            service_id: str,
+            title: str,
+            url: str,
+            *,
+            enabled: bool = True,
+            reason: str | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "id": service_id,
+                "title": title,
+                "url": url,
+                "enabled": bool(enabled),
+                "reason": reason if not enabled else None,
+            }
+
+        member_reason = "Доступ открывается участникам Товарищества."
+        payload = {
+            "protocol_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "viewer": {
+                "id": int(principal.user_id),
+                "name": preferred_name or str(principal.display_name),
+                "display_name": str(principal.display_name),
+                "account_tier": str(principal.account_tier),
+                "guild_member": guild_member,
+                "administrator": administrator,
+                "sections": granted_sections,
+            },
+            "services": [
+                service(
+                    "reactor",
+                    "Мой Reactor",
+                    "https://tvr.lat/reactor",
+                    enabled=guild_member,
+                    reason=member_reason,
+                ),
+                service("consensus", "Consensus", "https://consensus.tvr.lat/"),
+                service("atlas", "Atlas", "https://atlas.tvr.lat/"),
+                service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
+                service(
+                    "ovr",
+                    "ОВР",
+                    "https://ovr.tvr.lat/ovr",
+                    enabled=ovr_access,
+                    reason="Портал открывается после ручной выдачи доступа.",
+                ),
+                service(
+                    "games",
+                    "T-Mod Games",
+                    "https://tvr.lat/games",
+                    enabled=guild_member,
+                    reason=member_reason,
+                ),
+                service(
+                    "tasks",
+                    "Общие задачи",
+                    "https://consensus.tvr.lat/tasks",
+                    enabled=guild_member,
+                    reason=member_reason,
+                ),
+                service(
+                    "admin",
+                    "Ядерный Reactor",
+                    "https://reactor.tvr.lat/admin",
+                    enabled=admin_access,
+                    reason="Нужен административный или секционный доступ.",
+                ),
+            ],
+            "notifications": notification_payload,
+        }
+        response = web.json_response(payload)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     async def read_notifications(request: web.Request) -> web.Response:
         principal = await personal_request(request)
         body = await json_body(request, principal)
@@ -1812,6 +1944,7 @@ def register_reactor_web_routes(
     app.router.add_post("/api/ovr", ovr_command)
     app.router.add_post("/api/reactor/preferences", preferences)
     app.router.add_get("/api/reactor/notifications", notifications)
+    app.router.add_get("/api/desktop/v1/bootstrap", desktop_bootstrap)
     app.router.add_post("/api/reactor/notifications/read", read_notifications)
     app.router.add_get("/api/admin/reactor/attention", attention)
     app.router.add_get("/api/admin/reactor/health", health)

@@ -1338,6 +1338,7 @@ def create_consensus_web_app(
                 not principal.guild_member
                 and not request.path.startswith("/api/atlas")
                 and request.path != "/api/sgl/bootstrap"
+                and request.path != "/api/desktop/v1/bootstrap"
             ):
                 raise web.HTTPForbidden(
                     text=json.dumps(
@@ -1357,6 +1358,11 @@ def create_consensus_web_app(
         if request.path == "/api/sgl/bootstrap":
             # The SGL landing is public. The route itself returns only contact
             # information unless a verified manager identity is present.
+            return None, False
+        if request.path == "/api/desktop/v1/bootstrap":
+            # The desktop shell needs a deterministic login-required response
+            # without consuming the shared brute-force failure budget while it
+            # performs its lightweight background refresh.
             return None, False
         remote = _request_remote(request)
         now = asyncio.get_running_loop().time()
