@@ -25,7 +25,9 @@ import type {
 
 const { autoUpdater } = electronUpdater;
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// electron-vite injects its own `__dirname` shim into the ESM bundle.
+// A distinct name avoids a duplicate top-level declaration in packaged builds.
+const bundleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const SHELL_HEADER_HEIGHT = 70;
 const SHELL_SIDEBAR_WIDTH = 286;
 const DESKTOP_PARTITION = "persist:tmod-desktop-v1";
@@ -325,7 +327,7 @@ async function createWindow(): Promise<void> {
 
   shellView = new WebContentsView({
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.mjs"),
+      preload: path.join(bundleDirectory, "../preload/index.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -390,7 +392,7 @@ async function createWindow(): Promise<void> {
   if (rendererUrl) {
     await shellView.webContents.loadURL(rendererUrl);
   } else {
-    await shellView.webContents.loadFile(path.join(__dirname, "../renderer/index.html"));
+    await shellView.webContents.loadFile(path.join(bundleDirectory, "../renderer/index.html"));
   }
   mainWindow.show();
 }

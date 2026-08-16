@@ -87,6 +87,7 @@ jobs:
           pnpm test
           pnpm typecheck
           pnpm build
+          pnpm check:bundle
 
       - name: Build installer
         working-directory: desktop
@@ -134,4 +135,3 @@ jobs:
               --notes "Установщики T-Mod Desktop ${version}. Приложение получает дальнейшие обновления автоматически." \
               --latest
           fi
-

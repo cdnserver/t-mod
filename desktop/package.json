@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -12,6 +12,7 @@
     "preview": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "check:bundle": "node --check out/main/index.js && node --check out/preload/index.mjs",
     "package": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder"
   },
