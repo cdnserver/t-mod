@@ -24,7 +24,11 @@ import {
   services,
 } from "../shared/services";
 
-function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "back" | "forward" | "command" | "lock" | "download" | "logout" | "shield" }) {
+type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
+  "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
+  "maximize" | "close";
+
+function Icon({ name }: { name: IconName }) {
   const paths: Record<string, ReactNode> = {
     home: <><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></>,
     reactor: <><path d="M4 8.5h16M4 15.5h16"/><path d="M8.5 4v16M15.5 4v16"/><circle cx="12" cy="12" r="3"/></>,
@@ -45,8 +49,11 @@ function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "bac
     download: <><path d="M12 3v12M7.5 10.5L12 15l4.5-4.5"/><path d="M5 20h14"/></>,
     logout: <><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></>,
     shield: <><path d="M12 2.5l8 3.2v5.6c0 5.1-3.3 8.4-8 10.2-4.7-1.8-8-5.1-8-10.2V5.7z"/><path d="M9 12l2 2 4-4"/></>,
+    minimize: <path d="M6 12h12"/>,
+    maximize: <rect x="6" y="6" width="12" height="12" rx="1.5"/>,
+    close: <path d="M7 7l10 10M17 7L7 17"/>,
   };
-  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">{paths[name]}</svg>;
 }
 
 function greeting(name: string): string {
@@ -91,8 +98,11 @@ export function App() {
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const searchRef = useRef<HTMLInputElement>(null);
+  const bootstrapInFlight = useRef(false);
+  const hasLoadedBootstrap = useRef(false);
 
   const loadBootstrap = useCallback(async () => {
+    if (bootstrapInFlight.current) return;
     const api = browserApi();
     if (!api) {
       setBootstrapLoading(false);
@@ -103,10 +113,13 @@ export function App() {
       });
       return;
     }
-    setBootstrapLoading(true);
+    bootstrapInFlight.current = true;
+    if (!hasLoadedBootstrap.current) setBootstrapLoading(true);
     try {
       setBootstrap(await api.bootstrap());
     } finally {
+      hasLoadedBootstrap.current = true;
+      bootstrapInFlight.current = false;
       setBootstrapLoading(false);
     }
   }, []);
@@ -117,6 +130,7 @@ export function App() {
     if (!api) return;
     const unsubscribeState = api.onState(setDesktopState);
     const unsubscribeAuth = api.onAuthChanged(loadBootstrap);
+    const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
     const refresh = window.setInterval(() => {
       if (document.visibilityState === "visible") void loadBootstrap();
     }, 45_000);
@@ -127,10 +141,19 @@ export function App() {
     return () => {
       unsubscribeState();
       unsubscribeAuth();
+      unsubscribePalette();
       window.clearInterval(refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loadBootstrap]);
+
+  useEffect(() => {
+    if (bootstrap.online) return;
+    const refresh = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadBootstrap();
+    }, 7_500);
+    return () => window.clearInterval(refresh);
+  }, [bootstrap.online, loadBootstrap]);
 
   useEffect(() => {
     const api = browserApi();
@@ -162,6 +185,14 @@ export function App() {
     if (paletteOpen) window.setTimeout(() => searchRef.current?.focus(), 40);
   }, [paletteOpen]);
 
+  useEffect(() => {
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen);
+  }, [paletteOpen, notificationsOpen]);
+
+  useEffect(() => () => {
+    void browserApi()?.setShellOverlayOpen(false);
+  }, []);
+
   const access = useMemo(
     () => new Map(bootstrap.data?.services.map((service) => [service.id, service]) || []),
     [bootstrap.data],
@@ -187,6 +218,16 @@ export function App() {
   const notifications = bootstrap.data?.notifications.items || [];
   const unread = bootstrap.data?.notifications.unread || 0;
   const userName = bootstrap.data?.viewer.name || "T-Mod";
+  const connectionState = bootstrap.online
+    ? "online"
+    : bootstrap.authenticated
+      ? "reconnecting"
+      : "offline";
+  const connectionLabel = bootstrap.online
+    ? "Контур на связи"
+    : bootstrap.authenticated
+      ? "Восстанавливаем связь"
+      : "Нет соединения";
   const style = { "--active-accent": activeDefinition?.accent || "#8ea4ff" } as CSSProperties;
   const updateBusy = ["checking", "available", "downloading"].includes(updateState.phase);
   const updateLabel = updateState.phase === "ready"
@@ -261,8 +302,8 @@ export function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className={`connection ${bootstrap.online ? "online" : "offline"}`}>
-            <span className="connection-dot"/><span>{bootstrap.online ? "Контур на связи" : "Нет соединения"}</span>
+          <div className={`connection ${connectionState}`}>
+            <span className="connection-dot"/><span>{connectionLabel}</span>
           </div>
           <div className="identity-row">
           <button className="identity" onClick={() => bootstrap.authenticated ? void selectService("reactor") : void selectService("home")}>
@@ -298,7 +339,11 @@ export function App() {
           )}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => setNotificationsOpen((open) => !open)} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
-          <div className="window-actions"><button onClick={() => void browserApi()?.minimize()}>—</button><button onClick={() => void browserApi()?.toggleMaximize()}>□</button><button className="close" onClick={() => void browserApi()?.close()}>×</button></div>
+          <div className="window-actions">
+            <button aria-label="Свернуть" title="Свернуть" onClick={() => void browserApi()?.minimize()}><Icon name="minimize"/></button>
+            <button aria-label="Развернуть" title="Развернуть" onClick={() => void browserApi()?.toggleMaximize()}><Icon name="maximize"/></button>
+            <button className="close" aria-label="Закрыть" title="Закрыть" onClick={() => void browserApi()?.close()}><Icon name="close"/></button>
+          </div>
         </div>
         {desktopState.loading && <div className="load-line"/>}
       </header>

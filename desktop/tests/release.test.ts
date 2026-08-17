@@ -24,7 +24,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.2.0");
+    expect(manifest.version).toBe("0.2.1");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -34,5 +34,15 @@ describe("desktop release contract", () => {
     ]);
     expect(manifest.build.win.target).toBe("nsis");
     expect(manifest.build.mac.target).toContain("zip");
+  });
+
+  it("keeps shell controls above every remote service contour", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const preload = readFileSync(resolve(root, "src/preload/index.ts"), "utf8");
+    expect(main).toContain('ipcMain.handle("desktop:shell-overlay"');
+    expect(main).toContain('mainWindow?.webContents.send("desktop:command-palette")');
+    expect(main).toContain("syncServiceVisibility");
+    expect(preload).toContain('ipcRenderer.invoke("desktop:shell-overlay"');
+    expect(preload).toContain('ipcRenderer.on("desktop:command-palette"');
   });
 });

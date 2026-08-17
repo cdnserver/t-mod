@@ -112,6 +112,7 @@ export interface TModDesktopApi {
   reload(): Promise<void>;
   goBack(): Promise<void>;
   goForward(): Promise<void>;
+  setShellOverlayOpen(open: boolean): Promise<void>;
   openLogin(): Promise<DesktopState>;
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
@@ -121,6 +122,7 @@ export interface TModDesktopApi {
   openReleasePage(): Promise<boolean>;
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
+  onCommandPalette(listener: () => void): () => void;
   onUpdate(listener: (state: DesktopUpdateState) => void): () => void;
 }
 

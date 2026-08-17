@@ -43,14 +43,19 @@ const AUTH_LOGIN_URL = "https://tvr.lat/auth/login?client=desktop";
 const LOGOUT_URL = "https://tvr.lat/logout";
 const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
+const BOOTSTRAP_ATTEMPTS = 3;
+const BOOTSTRAP_TIMEOUT_MS = 8_000;
 
 let mainWindow: BrowserWindow | null = null;
 let serviceView: WebContentsView | null = null;
 let activeService: ServiceId = "home";
 let serviceLoading = false;
 let lastServiceError: string | undefined;
+let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
+let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
+let bootstrapInFlight: Promise<BootstrapResult> | undefined;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -211,6 +216,15 @@ function positionViews(): void {
   });
 }
 
+function syncServiceVisibility(): void {
+  if (!serviceView) return;
+  serviceView.setVisible(
+    !shellOverlayOpen &&
+    activeService !== "home" &&
+    !lastServiceError,
+  );
+}
+
 function secureContents(contents: WebContents, options: { local: boolean }): void {
   const { local } = options;
   contents.on("will-attach-webview", (event) => event.preventDefault());
@@ -238,7 +252,7 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
 
   if (serviceId === "home") {
     serviceLoading = false;
-    serviceView.setVisible(false);
+    syncServiceVisibility();
     emitState();
     return state();
   }
@@ -248,19 +262,19 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   if (!remote || !remote.enabled) {
     lastServiceError = remote?.reason || "service_access_denied";
     serviceLoading = false;
-    serviceView.setVisible(false);
+    syncServiceVisibility();
     emitState();
     return state();
   }
   if (!target || !isTrustedTModUrl(target)) {
     lastServiceError = "service_route_invalid";
     serviceLoading = false;
-    serviceView.setVisible(false);
+    syncServiceVisibility();
     emitState();
     return state();
   }
 
-  serviceView.setVisible(true);
+  syncServiceVisibility();
   serviceLoading = true;
   emitState();
   const current = serviceView.webContents.getURL();
@@ -270,6 +284,7 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
     } catch (error) {
       lastServiceError = error instanceof Error ? error.message : String(error);
       serviceLoading = false;
+      syncServiceVisibility();
       emitState();
     }
   } else {
@@ -279,46 +294,81 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   return state();
 }
 
-async function bootstrap(): Promise<BootstrapResult> {
-  try {
-    const response = await desktopSession().fetch(BOOTSTRAP_URL, {
-      method: "GET",
-      cache: "no-store",
-      credentials: "include",
-      headers: { Accept: "application/json" },
-    });
-    if (response.status === 401) {
-      clearServiceManifest();
-      return { authenticated: false, online: true, error: "login_required" };
-    }
-    if (!response.ok) {
-      clearServiceManifest();
-      return {
-        authenticated: false,
-        online: true,
-        error: `bootstrap_http_${response.status}`,
-      };
-    }
-    const data = await response.json() as DesktopBootstrap;
-    if (!applyServiceManifest(data)) {
-      clearServiceManifest();
-      return {
-        authenticated: false,
-        online: true,
-        error: "desktop_protocol_invalid",
-      };
-    }
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function bootstrapUnavailable(error: string): BootstrapResult {
+  if (lastSuccessfulBootstrap) {
     return {
       authenticated: true,
-      online: true,
-      data,
-    };
-  } catch (error) {
-    return {
-      authenticated: false,
       online: false,
-      error: error instanceof Error ? error.message : "network_unavailable",
+      data: lastSuccessfulBootstrap,
+      error,
     };
+  }
+  return { authenticated: false, online: false, error };
+}
+
+async function performBootstrap(): Promise<BootstrapResult> {
+  let lastError = "network_unavailable";
+  for (let attempt = 0; attempt < BOOTSTRAP_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await wait(attempt === 1 ? 300 : 900);
+    try {
+      const response = await desktopSession().fetch(BOOTSTRAP_URL, {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
+      });
+      if (response.status === 401) {
+        lastSuccessfulBootstrap = undefined;
+        clearServiceManifest();
+        return { authenticated: false, online: true, error: "login_required" };
+      }
+      if (
+        response.status === 408 ||
+        response.status === 425 ||
+        response.status === 429 ||
+        response.status >= 500
+      ) {
+        lastError = `bootstrap_http_${response.status}`;
+        continue;
+      }
+      if (!response.ok) {
+        return {
+          authenticated: false,
+          online: true,
+          error: `bootstrap_http_${response.status}`,
+        };
+      }
+      const data = await response.json() as DesktopBootstrap;
+      if (!applyServiceManifest(data)) {
+        clearServiceManifest();
+        return {
+          authenticated: false,
+          online: true,
+          error: "desktop_protocol_invalid",
+        };
+      }
+      lastSuccessfulBootstrap = data;
+      return { authenticated: true, online: true, data };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "network_unavailable";
+    }
+  }
+  return bootstrapUnavailable(lastError);
+}
+
+async function bootstrap(): Promise<BootstrapResult> {
+  if (bootstrapInFlight) return bootstrapInFlight;
+  const request = performBootstrap();
+  bootstrapInFlight = request;
+  try {
+    return await request;
+  } finally {
+    if (bootstrapInFlight === request) bootstrapInFlight = undefined;
   }
 }
 
@@ -368,7 +418,7 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
     activeService = "home";
     serviceLoading = false;
     lastServiceError = undefined;
-    serviceView?.setVisible(false);
+    syncServiceVisibility();
     emitState();
     return { ok: true };
   } catch {
@@ -392,10 +442,11 @@ async function logout(): Promise<boolean> {
     return false;
   }
   clearServiceManifest();
+  lastSuccessfulBootstrap = undefined;
   activeService = "home";
   serviceLoading = false;
   lastServiceError = undefined;
-  serviceView?.setVisible(false);
+  syncServiceVisibility();
   emitState();
   return true;
 }
@@ -419,10 +470,17 @@ function registerIpc(): void {
     if (!trusted(event) || !isServiceId(serviceId)) return state();
     return navigate(serviceId);
   });
+  ipcMain.handle("desktop:shell-overlay", (event, open: unknown) => {
+    if (!trusted(event)) return;
+    shellOverlayOpen = open === true;
+    syncServiceVisibility();
+    if (shellOverlayOpen) mainWindow?.webContents.focus();
+    else if (serviceView?.getVisible()) serviceView.webContents.focus();
+  });
   ipcMain.handle("desktop:open-login", async (event) => {
     if (!trusted(event) || !serviceView) return state();
     activeService = "reactor";
-    serviceView.setVisible(true);
+    syncServiceVisibility();
     serviceLoading = true;
     emitState();
     await serviceView.webContents.loadURL(LOGIN_URL);
@@ -432,7 +490,7 @@ function registerIpc(): void {
     if (!trusted(event) || !serviceView) return;
     lastServiceError = undefined;
     serviceLoading = true;
-    serviceView.setVisible(true);
+    syncServiceVisibility();
     emitState();
     serviceView.webContents.reload();
   });
@@ -508,16 +566,18 @@ async function createWindow(): Promise<void> {
   networkSession.setPermissionCheckHandler(() => false);
 
   mainWindow.contentView.addChildView(serviceView);
-  serviceView.setVisible(false);
+  syncServiceVisibility();
   positionViews();
 
   serviceView.webContents.on("did-start-loading", () => {
     serviceLoading = true;
     lastServiceError = undefined;
+    syncServiceVisibility();
     emitState();
   });
   serviceView.webContents.on("did-stop-loading", () => {
     serviceLoading = false;
+    syncServiceVisibility();
     emitState();
     if (isTrustedTModUrl(serviceView?.webContents.getURL() || "")) {
       mainWindow?.webContents.send("desktop:auth-changed");
@@ -527,11 +587,17 @@ async function createWindow(): Promise<void> {
     if (code === -3) return;
     serviceLoading = false;
     lastServiceError = description || `load_error_${code}`;
-    serviceView?.setVisible(false);
+    syncServiceVisibility();
     emitState();
   });
   serviceView.webContents.on("did-navigate", emitState);
   serviceView.webContents.on("did-navigate-in-page", emitState);
+  serviceView.webContents.on("before-input-event", (event, input) => {
+    if ((input.control || input.meta) && input.key.toLowerCase() === "k") {
+      event.preventDefault();
+      mainWindow?.webContents.send("desktop:command-palette");
+    }
+  });
 
   mainWindow.on("resize", positionViews);
   mainWindow.on("maximize", positionViews);
@@ -542,6 +608,7 @@ async function createWindow(): Promise<void> {
     }
     serviceView = null;
     mainWindow = null;
+    shellOverlayOpen = false;
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
