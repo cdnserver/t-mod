@@ -786,6 +786,69 @@
     if (ok) { closeDialog("task-dialog"); event.currentTarget.reset(); }
   }
 
+  async function downloadProtectedReport(event) {
+    event.preventDefault();
+    if (!state.detail?.case?.id) {
+      toast("Сначала откройте расследование.", "error");
+      return;
+    }
+    const password = byId("report-password").value;
+    const confirmation = byId("report-password-confirm").value;
+    if (password.length < 8 || password.length > 128) {
+      toast("Пароль должен содержать от 8 до 128 символов.", "error");
+      return;
+    }
+    if (password !== confirmation) {
+      toast("Пароли отчёта не совпадают.", "error");
+      return;
+    }
+
+    setBusy(true, "Шифруем архивное досье");
+    try {
+      const response = await fetch(`/api/ovr/${encodeURIComponent(state.detail.case.id)}/report.pdf`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: timeoutSignal(60000),
+        headers: {
+          Accept: "application/pdf, application/json",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": state.csrf,
+        },
+        body: JSON.stringify({ password, password_confirmation: confirmation }),
+      });
+      if (!response.ok) {
+        let message = `Ошибка HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          message = payload.message || payload.error || message;
+        } catch { /* Ответ без JSON. */ }
+        throw new Error(message);
+      }
+      const report = await response.blob();
+      if (!report.size) throw new Error("Сервер вернул пустой отчёт.");
+      const filename = `ovr-${String(state.detail.case.case_number || 0).padStart(3, "0")}-dossier.pdf`;
+      const url = URL.createObjectURL(report);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      event.currentTarget.reset();
+      closeDialog("report-dialog");
+      toast("Защищённое досье сформировано и загружено.");
+    } catch (error) {
+      toast(error.name === "AbortError" ? "Формирование отчёта заняло слишком много времени." : error.message, "error");
+    } finally {
+      byId("report-password").value = "";
+      byId("report-password-confirm").value = "";
+      setBusy(false);
+    }
+  }
+
   document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => closeDialog(button.dataset.close)));
   document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();
@@ -800,6 +863,11 @@
     toast(ok ? "Реестр синхронизирован." : "Не удалось обновить реестр.", ok ? "success" : "error");
   });
   byId("case-reload").addEventListener("click", () => void refreshCase());
+  byId("case-report").addEventListener("click", () => {
+    byId("report-form").reset();
+    openDialog("report-dialog");
+    window.setTimeout(() => byId("report-password").focus(), 60);
+  });
   byId("ovr-search").addEventListener("input", renderBoard);
   byId("ovr-filters").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-filter]");
@@ -826,6 +894,7 @@
   byId("material-form").addEventListener("submit", submitMaterial);
   byId("relation-form").addEventListener("submit", submitRelation);
   byId("task-form").addEventListener("submit", submitTask);
+  byId("report-form").addEventListener("submit", downloadProtectedReport);
   byId("confirm-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const action = state.confirmAction;

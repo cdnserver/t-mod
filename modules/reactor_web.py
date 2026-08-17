@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,10 @@ from modules.minecraft_files import (
 )
 from modules.profile import PROFILE_ROLE_HIERARCHY
 from modules.member_identity import fellowship_discord_nickname, nickname_change_exempt
+from modules.ovr_artifacts import (
+    encrypt_investigation_report,
+    generate_investigation_report,
+)
 from modules.technical_log import log_technical_event
 from modules.reactor_legislation import (
     ReactorLegislationError,
@@ -1341,6 +1346,102 @@ def register_reactor_web_routes(
                 status=409 if "revision" in code or code in {"ovr_case_closed"} else 400,
             )
 
+    async def ovr_report(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        if not await has_ovr_access(principal):
+            return web.json_response(
+                {
+                    "error": "ovr_access_required",
+                    "message": "Доступ к порталу ОВР выдаётся администратором вручную.",
+                },
+                status=403,
+            )
+        body = await json_body(request, principal)
+        raw_case_id = str(request.match_info.get("case_id") or "").strip()
+        if not raw_case_id.isdigit():
+            return web.json_response(
+                {"error": "ovr_case_id_invalid", "message": "Неверный номер расследования."},
+                status=400,
+            )
+        password = str(body.get("password") or "")
+        confirmation = str(body.get("password_confirmation") or "")
+        if password != confirmation:
+            return web.json_response(
+                {
+                    "error": "ovr_report_password_mismatch",
+                    "message": "Пароли отчёта не совпадают.",
+                },
+                status=400,
+            )
+        if len(password) < 8 or len(password) > 128:
+            return web.json_response(
+                {
+                    "error": "ovr_report_password_invalid",
+                    "message": "Пароль отчёта должен содержать от 8 до 128 символов.",
+                },
+                status=400,
+            )
+        try:
+            detail = await asyncio.to_thread(
+                ovr_storage.case_detail,
+                int(raw_case_id),
+                guild_id=int(guild_id),
+            )
+
+            def build_encrypted_report() -> tuple[bytes, str]:
+                case = detail["case"]
+                filename = f"ovr-{int(case.get('case_number') or 0):03d}-dossier.pdf"
+                with tempfile.TemporaryDirectory(prefix="tmod-ovr-report-") as directory:
+                    temporary = Path(directory)
+                    plain = temporary / "report.pdf"
+                    encrypted = temporary / filename
+                    generate_investigation_report(
+                        detail,
+                        destination=plain,
+                        force=True,
+                    )
+                    encrypt_investigation_report(plain, encrypted, password)
+                    payload = encrypted.read_bytes()
+                    if not payload:
+                        raise OSError("ovr_report_empty")
+                    return payload, filename
+
+            payload, filename = await asyncio.to_thread(build_encrypted_report)
+        except ValueError as exc:
+            code = str(exc)
+            return web.json_response(
+                {
+                    "error": code,
+                    "message": (
+                        "Расследование не найдено."
+                        if code == "ovr_case_not_found"
+                        else "Не удалось проверить параметры защищённого отчёта."
+                    ),
+                },
+                status=404 if code == "ovr_case_not_found" else 400,
+            )
+        except Exception:
+            logger.exception(
+                "OVR PDF report generation failed for case %s",
+                raw_case_id,
+            )
+            return web.json_response(
+                {
+                    "error": "ovr_report_generation_failed",
+                    "message": "Не удалось сформировать защищённый отчёт. Попробуйте ещё раз.",
+                },
+                status=500,
+            )
+
+        response = web.Response(body=payload, content_type="application/pdf")
+        response.headers["Content-Disposition"] = (
+            f"attachment; filename*=UTF-8''{quote(filename)}"
+        )
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     async def preferences(request: web.Request) -> web.Response:
         principal = await personal_request(request)
         body = await json_body(request, principal)
@@ -2054,6 +2155,7 @@ def register_reactor_web_routes(
     app.router.add_post("/api/reactor/ovr", ovr_command)
     app.router.add_get("/api/ovr", ovr_get)
     app.router.add_post("/api/ovr", ovr_command)
+    app.router.add_post("/api/ovr/{case_id}/report.pdf", ovr_report)
     app.router.add_post("/api/reactor/preferences", preferences)
     app.router.add_get("/api/reactor/notifications", notifications)
     app.router.add_get("/api/desktop/v1/bootstrap", desktop_bootstrap)

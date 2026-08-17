@@ -8,9 +8,9 @@
     <meta name="description" content="Закрытый оперативно-аналитический контур ОВР T-Mod.">
     <title>ОВР · T-Mod</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <link rel="stylesheet" href="/assets/ovr.css?v=2">
+    <link rel="stylesheet" href="/assets/ovr.css?v=3">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/ovr.js?v=2" defer></script>
+    <script src="/assets/ovr.js?v=3" defer></script>
   </head>
   <body>
     <div class="ovr-atmosphere" aria-hidden="true"><i></i><i></i><b></b></div>
@@ -76,7 +76,10 @@
         <div class="case-commandbar">
           <button id="case-back" class="case-back" type="button"><span>←</span> Реестр</button>
           <div><small id="case-breadcrumb">ОВР-000</small><span> / </span><strong id="case-command-name">Расследование</strong></div>
-          <button id="case-reload" class="icon-button" type="button" title="Обновить расследование">↻</button>
+          <div class="case-command-actions">
+            <button id="case-report" class="button button-secondary" type="button"><span>⇩</span> Защищённый PDF</button>
+            <button id="case-reload" class="icon-button" type="button" title="Обновить расследование">↻</button>
+          </div>
         </div>
 
         <section class="case-hero">
@@ -233,6 +236,16 @@
         <header><div><small id="confirm-kicker">ПОДТВЕРЖДЕНИЕ</small><h2 id="confirm-title">Подтвердите действие</h2><p id="confirm-copy">Действие будет внесено в журнал.</p></div><button class="dialog-close" type="button" data-close="confirm-dialog">×</button></header>
         <label><span>Служебное основание</span><textarea id="confirm-note" rows="5" maxlength="5000" required></textarea></label>
         <footer><button class="button button-secondary" type="button" data-close="confirm-dialog">Отмена</button><button id="confirm-submit" class="button button-primary" type="submit">Подтвердить</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="report-dialog" class="ovr-dialog confirm-dialog">
+      <form id="report-form">
+        <header><div><small>ЗАЩИЩЁННОЕ ДОСЬЕ</small><h2>Сформировать PDF-отчёт</h2><p>В отчёт войдут профиль человека, аналитика, материалы, связи, задачи, решение и полная хронология. Файл будет зашифрован AES-256.</p></div><button class="dialog-close" type="button" data-close="report-dialog">×</button></header>
+        <div class="report-security-note"><i>⌁</i><div><strong>Пароль известен только вам</strong><span>Он не сохраняется в T-Mod и не передаётся в адресной строке. Восстановить забытый пароль невозможно.</span></div></div>
+        <label><span>Пароль PDF · минимум 8 символов</span><input id="report-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+        <label><span>Повторите пароль</span><input id="report-password-confirm" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+        <footer><button class="button button-secondary" type="button" data-close="report-dialog">Отмена</button><button class="button button-primary" type="submit">Зашифровать и скачать</button></footer>
       </form>
     </dialog>
 

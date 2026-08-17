@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
+from pypdf import PdfReader
 
 import storage
 from modules.consensus_core import (
@@ -764,6 +766,74 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail_payload["detail"]["case"]["case_kind"], "admission")
         self.assertEqual(claim_response.status, 200)
         self.assertEqual(claim_payload["detail"]["case"]["status"], "screening")
+
+    async def test_ovr_report_requires_matching_password_and_returns_encrypted_pdf(self) -> None:
+        principal = self._principal(user_id=12)
+        principal.member.guild_permissions.administrator = False
+        storage.web_set_section_grant(
+            77,
+            12,
+            "ovr",
+            enabled=True,
+            granted_by_id=1,
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                created = await client.post(
+                    "/api/ovr",
+                    headers={
+                        "Host": "ovr.tvr.lat",
+                        "X-CSRF-Token": principal.csrf_token,
+                    },
+                    json={
+                        "action": "create",
+                        "first_name": "Kim",
+                        "last_name": "Wexler",
+                        "static_id": "710",
+                        "discord_text": "kim",
+                        "case_kind": "background",
+                        "priority": "normal",
+                        "objective": "Подготовить архивное досье.",
+                    },
+                )
+                case_id = (await created.json())["case"]["id"]
+                mismatch = await client.post(
+                    f"/api/ovr/{case_id}/report.pdf",
+                    headers={
+                        "Host": "ovr.tvr.lat",
+                        "X-CSRF-Token": principal.csrf_token,
+                    },
+                    json={
+                        "password": "first-password",
+                        "password_confirmation": "second-password",
+                    },
+                )
+                report = await client.post(
+                    f"/api/ovr/{case_id}/report.pdf",
+                    headers={
+                        "Host": "ovr.tvr.lat",
+                        "X-CSRF-Token": principal.csrf_token,
+                    },
+                    json={
+                        "password": "OVR-web-2026",
+                        "password_confirmation": "OVR-web-2026",
+                    },
+                )
+                report_body = await report.read()
+
+        self.assertEqual(mismatch.status, 400)
+        self.assertEqual(report.status, 200)
+        self.assertEqual(report.content_type, "application/pdf")
+        self.assertIn("no-store", report.headers["Cache-Control"])
+        self.assertIn("attachment", report.headers["Content-Disposition"])
+        reader = PdfReader(BytesIO(report_body))
+        self.assertTrue(reader.is_encrypted)
+        self.assertGreater(int(reader.decrypt("OVR-web-2026")), 0)
+        self.assertGreaterEqual(len(reader.pages), 3)
 
     async def test_sgl_surface_has_public_bureau_landing(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
