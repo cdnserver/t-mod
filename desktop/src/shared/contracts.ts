@@ -57,6 +57,25 @@ export interface BootstrapResult {
   error?: string;
 }
 
+export interface DesktopLoginCredentials {
+  login: string;
+  pin: string;
+}
+
+export interface DesktopLoginResult {
+  ok: boolean;
+  error?:
+    | "invalid"
+    | "locked"
+    | "reset_required"
+    | "character_required"
+    | "atlas_access"
+    | "banned"
+    | "network_unavailable"
+    | "login_failed"
+    | "invalid_input";
+}
+
 export interface DesktopState {
   activeService: ServiceId;
   loading: boolean;
@@ -87,6 +106,8 @@ export interface DesktopUpdateState {
 
 export interface TModDesktopApi {
   bootstrap(): Promise<BootstrapResult>;
+  login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult>;
+  logout(): Promise<boolean>;
   navigate(serviceId: ServiceId): Promise<DesktopState>;
   reload(): Promise<void>;
   goBack(): Promise<void>;
@@ -97,6 +118,7 @@ export interface TModDesktopApi {
   close(): Promise<void>;
   checkForUpdates(): Promise<DesktopUpdateState>;
   installUpdate(): Promise<boolean>;
+  openReleasePage(): Promise<boolean>;
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
   onUpdate(listener: (state: DesktopUpdateState) => void): () => void;

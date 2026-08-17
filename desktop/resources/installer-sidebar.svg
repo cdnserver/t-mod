@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+  <defs>
+    <radialGradient id="g" cx="50%" cy="40%" r="62%">
+      <stop offset="0" stop-color="#8797ff" stop-opacity=".42"/>
+      <stop offset=".45" stop-color="#3b4375" stop-opacity=".13"/>
+      <stop offset="1" stop-color="#080a10" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#111522"/><stop offset="1" stop-color="#07090f"/>
+    </linearGradient>
+  </defs>
+  <rect width="164" height="314" fill="url(#b)"/>
+  <circle cx="82" cy="119" r="92" fill="url(#g)"/>
+  <circle cx="82" cy="119" r="54" fill="none" stroke="#aab5ff" stroke-opacity=".32"/>
+  <circle cx="82" cy="119" r="40" fill="none" stroke="#aab5ff" stroke-opacity=".22" stroke-dasharray="3 7"/>
+  <circle cx="82" cy="119" r="27" fill="#6f7ecb" stroke="#cbd2ff" stroke-opacity=".52"/>
+  <path d="M67 104h30v8H87v25H77v-25H67z" fill="#0a0d16"/>
+  <circle cx="35" cy="79" r="2.5" fill="#d9deff"/>
+  <circle cx="129" cy="153" r="2" fill="#8f9cf0"/>
+  <text x="82" y="218" text-anchor="middle" fill="#f3f5ff" font-family="Arial,sans-serif" font-size="20" font-weight="700">T-MOD</text>
+  <text x="82" y="237" text-anchor="middle" fill="#77809a" font-family="Arial,sans-serif" font-size="7" letter-spacing="1.8">DESKTOP SYSTEM</text>
+  <line x1="37" y1="258" x2="127" y2="258" stroke="#ffffff" stroke-opacity=".09"/>
+  <text x="82" y="279" text-anchor="middle" fill="#596176" font-family="Arial,sans-serif" font-size="7">TVR × SGL</text>
+</svg>

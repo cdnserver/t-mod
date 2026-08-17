@@ -1,12 +1,15 @@
 import {
   app,
-  BaseWindow,
+  BrowserWindow,
+  dialog,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   session,
   shell,
   WebContentsView,
 } from "electron";
+import type { WebContents } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import log from "electron-log/main";
@@ -14,10 +17,13 @@ import electronUpdater from "electron-updater";
 import {
   isServiceId,
   isTrustedTModUrl,
-  serviceById,
 } from "../shared/services";
 import type {
   BootstrapResult,
+  DesktopBootstrap,
+  DesktopLoginCredentials,
+  DesktopLoginResult,
+  DesktopService,
   DesktopState,
   DesktopUpdateState,
   ServiceId,
@@ -33,15 +39,18 @@ const SHELL_SIDEBAR_WIDTH = 286;
 const DESKTOP_PARTITION = "persist:tmod-desktop-v1";
 const BOOTSTRAP_URL = "https://tvr.lat/api/desktop/v1/bootstrap";
 const LOGIN_URL = "https://tvr.lat/login?next=/reactor";
-const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const AUTH_LOGIN_URL = "https://tvr.lat/auth/login?client=desktop";
+const LOGOUT_URL = "https://tvr.lat/logout";
+const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
+const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
 
-let mainWindow: BaseWindow | null = null;
-let shellView: WebContentsView | null = null;
+let mainWindow: BrowserWindow | null = null;
 let serviceView: WebContentsView | null = null;
 let activeService: ServiceId = "home";
 let serviceLoading = false;
 let lastServiceError: string | undefined;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
+let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -52,6 +61,26 @@ nativeTheme.themeSource = "dark";
 
 function desktopSession() {
   return session.fromPartition(DESKTOP_PARTITION, { cache: true });
+}
+
+function clearServiceManifest(): void {
+  serviceManifest = new Map();
+}
+
+function applyServiceManifest(data: DesktopBootstrap): boolean {
+  if (data.protocol_version !== 1 || !Array.isArray(data.services)) return false;
+  const next = new Map<Exclude<ServiceId, "home">, DesktopService>();
+  for (const service of data.services) {
+    if (
+      isServiceId(service.id) &&
+      typeof service.url === "string" &&
+      isTrustedTModUrl(service.url)
+    ) {
+      next.set(service.id, service);
+    }
+  }
+  serviceManifest = next;
+  return next.size > 0;
 }
 
 function state(): DesktopState {
@@ -66,8 +95,8 @@ function state(): DesktopState {
 }
 
 function emitState(): void {
-  if (shellView && !shellView.webContents.isDestroyed()) {
-    shellView.webContents.send("desktop:state", state());
+  if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("desktop:state", state());
   }
 }
 
@@ -77,8 +106,8 @@ function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
     ...next,
     currentVersion: app.getVersion(),
   };
-  if (shellView && !shellView.webContents.isDestroyed()) {
-    shellView.webContents.send("desktop:update", updateState);
+  if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("desktop:update", updateState);
   }
   return updateState;
 }
@@ -113,15 +142,26 @@ function configureAutoUpdater(): void {
   log.initialize();
   log.transports.file.level = "info";
   autoUpdater.logger = log;
+  autoUpdater.setFeedURL({
+    provider: "github",
+    owner: "cdnserver",
+    repo: "t-mod-releases",
+  });
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("checking-for-update", () => {
     setUpdateState({ phase: "checking", message: undefined, percent: undefined });
   });
   autoUpdater.on("update-available", (info) => {
-    setUpdateState({ phase: "available", version: info.version, percent: 0 });
+    setUpdateState({
+      phase: "available",
+      version: info.version,
+      percent: 0,
+      message: "Новая версия найдена. Загружаем её в фоне.",
+    });
   });
   autoUpdater.on("download-progress", (progress) => {
     setUpdateState({
@@ -134,6 +174,7 @@ function configureAutoUpdater(): void {
       phase: "ready",
       version: info.version,
       percent: 100,
+      message: "Обновление загружено и готово к установке.",
       checkedAt: new Date().toISOString(),
     });
   });
@@ -142,25 +183,26 @@ function configureAutoUpdater(): void {
       phase: "current",
       version: info.version,
       percent: undefined,
+      message: "Установлена актуальная версия T-Mod.",
       checkedAt: new Date().toISOString(),
     });
   });
   autoUpdater.on("error", (error) => {
     setUpdateState({
       phase: "error",
-      message: error.message || "Не удалось получить обновление.",
+      message: "Автообновление временно недоступно. Можно открыть страницу загрузки.",
       checkedAt: new Date().toISOString(),
     });
   });
 
   setTimeout(() => void checkForUpdates(), 5_000);
   updateTimer = setInterval(() => void checkForUpdates(), UPDATE_INTERVAL_MS);
+  powerMonitor.on("resume", () => void checkForUpdates());
 }
 
 function positionViews(): void {
-  if (!mainWindow || !shellView || !serviceView) return;
+  if (!mainWindow || !serviceView) return;
   const [width, height] = mainWindow.getContentSize();
-  shellView.setBounds({ x: 0, y: 0, width, height });
   serviceView.setBounds({
     x: SHELL_SIDEBAR_WIDTH,
     y: SHELL_HEADER_HEIGHT,
@@ -169,9 +211,8 @@ function positionViews(): void {
   });
 }
 
-function secureContents(view: WebContentsView, options: { local: boolean }): void {
+function secureContents(contents: WebContents, options: { local: boolean }): void {
   const { local } = options;
-  const contents = view.webContents;
   contents.on("will-attach-webview", (event) => event.preventDefault());
   contents.setWindowOpenHandler(({ url }) => {
     if (local) return { action: "deny" };
@@ -191,6 +232,7 @@ function secureContents(view: WebContentsView, options: { local: boolean }): voi
 
 async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   if (!serviceView || !mainWindow) return state();
+  const retryAfterError = Boolean(lastServiceError);
   activeService = serviceId;
   lastServiceError = undefined;
 
@@ -201,9 +243,19 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
     return state();
   }
 
-  const target = serviceById[serviceId]?.url;
+  const remote = serviceManifest.get(serviceId);
+  const target = remote?.url;
+  if (!remote || !remote.enabled) {
+    lastServiceError = remote?.reason || "service_access_denied";
+    serviceLoading = false;
+    serviceView.setVisible(false);
+    emitState();
+    return state();
+  }
   if (!target || !isTrustedTModUrl(target)) {
     lastServiceError = "service_route_invalid";
+    serviceLoading = false;
+    serviceView.setVisible(false);
     emitState();
     return state();
   }
@@ -212,7 +264,7 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   serviceLoading = true;
   emitState();
   const current = serviceView.webContents.getURL();
-  if (current !== target) {
+  if (current !== target || retryAfterError) {
     try {
       await serviceView.webContents.loadURL(target);
     } catch (error) {
@@ -232,23 +284,35 @@ async function bootstrap(): Promise<BootstrapResult> {
     const response = await desktopSession().fetch(BOOTSTRAP_URL, {
       method: "GET",
       cache: "no-store",
+      credentials: "include",
       headers: { Accept: "application/json" },
     });
     if (response.status === 401) {
+      clearServiceManifest();
       return { authenticated: false, online: true, error: "login_required" };
     }
     if (!response.ok) {
+      clearServiceManifest();
       return {
         authenticated: false,
         online: true,
         error: `bootstrap_http_${response.status}`,
       };
     }
+    const data = await response.json() as DesktopBootstrap;
+    if (!applyServiceManifest(data)) {
+      clearServiceManifest();
+      return {
+        authenticated: false,
+        online: true,
+        error: "desktop_protocol_invalid",
+      };
+    }
     return {
       authenticated: true,
       online: true,
-      data: await response.json(),
-    } as BootstrapResult;
+      data,
+    };
   } catch (error) {
     return {
       authenticated: false,
@@ -258,15 +322,99 @@ async function bootstrap(): Promise<BootstrapResult> {
   }
 }
 
+function loginErrorFromLocation(location: string | null): DesktopLoginResult["error"] {
+  if (!location) return undefined;
+  try {
+    const error = new URL(location, LOGIN_URL).searchParams.get("error");
+    if (
+      error === "invalid" ||
+      error === "locked" ||
+      error === "reset_required" ||
+      error === "character_required" ||
+      error === "atlas_access"
+    ) {
+      return error;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+async function login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> {
+  const loginValue = String(credentials?.login || "").trim();
+  const pin = String(credentials?.pin || "").trim();
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginValue) || !/^\d{8}$/.test(pin)) {
+    return { ok: false, error: "invalid_input" };
+  }
+  try {
+    const form = new URLSearchParams({ login: loginValue, pin });
+    const response = await desktopSession().fetch(AUTH_LOGIN_URL, {
+      method: "POST",
+      redirect: "manual",
+      credentials: "include",
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: form.toString(),
+    });
+    if (response.status === 403) return { ok: false, error: "banned" };
+    if (response.status >= 500) return { ok: false, error: "network_unavailable" };
+    const error = loginErrorFromLocation(response.headers.get("location") || response.url);
+    if (error) return { ok: false, error };
+    const result = await bootstrap();
+    if (!result.authenticated) return { ok: false, error: "login_failed" };
+    activeService = "home";
+    serviceLoading = false;
+    lastServiceError = undefined;
+    serviceView?.setVisible(false);
+    emitState();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "network_unavailable" };
+  }
+}
+
+async function logout(): Promise<boolean> {
+  try {
+    await desktopSession().fetch(LOGOUT_URL, {
+      redirect: "manual",
+      credentials: "include",
+    });
+  } catch {
+    // The dedicated desktop partition contains only T-Mod sessions. Clearing
+    // it locally still guarantees logout when the network is unavailable.
+  }
+  try {
+    await desktopSession().clearStorageData({ storages: ["cookies"] });
+  } catch {
+    return false;
+  }
+  clearServiceManifest();
+  activeService = "home";
+  serviceLoading = false;
+  lastServiceError = undefined;
+  serviceView?.setVisible(false);
+  emitState();
+  return true;
+}
+
 function registerIpc(): void {
   const trusted = (event: Electron.IpcMainInvokeEvent): boolean =>
-    Boolean(shellView && event.sender.id === shellView.webContents.id);
+    Boolean(mainWindow && event.sender.id === mainWindow.webContents.id);
 
   ipcMain.handle("desktop:bootstrap", (event) =>
     trusted(event)
       ? bootstrap()
       : ({ authenticated: false, online: false, error: "untrusted_sender" } satisfies BootstrapResult),
   );
+  ipcMain.handle("desktop:login", (event, credentials: DesktopLoginCredentials) =>
+    trusted(event)
+      ? login(credentials)
+      : ({ ok: false, error: "login_failed" } satisfies DesktopLoginResult),
+  );
+  ipcMain.handle("desktop:logout", (event) => trusted(event) ? logout() : false);
   ipcMain.handle("desktop:navigate", (event, serviceId: unknown) => {
     if (!trusted(event) || !isServiceId(serviceId)) return state();
     return navigate(serviceId);
@@ -281,7 +429,12 @@ function registerIpc(): void {
     return state();
   });
   ipcMain.handle("desktop:reload", (event) => {
-    if (trusted(event)) serviceView?.webContents.reload();
+    if (!trusted(event) || !serviceView) return;
+    lastServiceError = undefined;
+    serviceLoading = true;
+    serviceView.setVisible(true);
+    emitState();
+    serviceView.webContents.reload();
   });
   ipcMain.handle("desktop:back", (event) => {
     if (trusted(event) && serviceView?.webContents.navigationHistory.canGoBack()) {
@@ -311,10 +464,16 @@ function registerIpc(): void {
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return true;
   });
+  ipcMain.handle("desktop:update-open-release", (event) => {
+    if (!trusted(event)) return false;
+    void shell.openExternal(RELEASE_URL);
+    return true;
+  });
 }
 
 async function createWindow(): Promise<void> {
-  mainWindow = new BaseWindow({
+  log.info("Creating T-Mod desktop window");
+  mainWindow = new BrowserWindow({
     width: 1480,
     height: 940,
     minWidth: 1080,
@@ -323,11 +482,8 @@ async function createWindow(): Promise<void> {
     frame: false,
     backgroundColor: "#07090f",
     title: "T-Mod",
-  });
-
-  shellView = new WebContentsView({
     webPreferences: {
-      preload: path.join(bundleDirectory, "../preload/index.mjs"),
+      preload: path.join(bundleDirectory, "../preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -345,13 +501,12 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  secureContents(shellView, { local: true });
-  secureContents(serviceView, { local: false });
+  secureContents(mainWindow.webContents, { local: true });
+  secureContents(serviceView.webContents, { local: false });
   const networkSession = desktopSession();
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
 
-  mainWindow.contentView.addChildView(shellView);
   mainWindow.contentView.addChildView(serviceView);
   serviceView.setVisible(false);
   positionViews();
@@ -365,13 +520,14 @@ async function createWindow(): Promise<void> {
     serviceLoading = false;
     emitState();
     if (isTrustedTModUrl(serviceView?.webContents.getURL() || "")) {
-      shellView?.webContents.send("desktop:auth-changed");
+      mainWindow?.webContents.send("desktop:auth-changed");
     }
   });
   serviceView.webContents.on("did-fail-load", (_event, code, description) => {
     if (code === -3) return;
     serviceLoading = false;
     lastServiceError = description || `load_error_${code}`;
+    serviceView?.setVisible(false);
     emitState();
   });
   serviceView.webContents.on("did-navigate", emitState);
@@ -381,23 +537,39 @@ async function createWindow(): Promise<void> {
   mainWindow.on("maximize", positionViews);
   mainWindow.on("unmaximize", positionViews);
   mainWindow.on("closed", () => {
-    shellView?.webContents.close();
-    serviceView?.webContents.close();
-    shellView = null;
+    if (serviceView && !serviceView.webContents.isDestroyed()) {
+      serviceView.webContents.close();
+    }
     serviceView = null;
     mainWindow = null;
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
   if (rendererUrl) {
-    await shellView.webContents.loadURL(rendererUrl);
+    await mainWindow.loadURL(rendererUrl);
   } else {
-    await shellView.webContents.loadFile(path.join(bundleDirectory, "../renderer/index.html"));
+    await mainWindow.loadFile(path.join(bundleDirectory, "../renderer/index.html"));
   }
+  log.info("T-Mod desktop shell loaded");
   mainWindow.show();
+  mainWindow.focus();
+  log.info("T-Mod desktop window shown");
+}
+
+const ownsInstanceLock = app.requestSingleInstanceLock();
+if (!ownsInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
 }
 
 app.whenReady().then(async () => {
+  if (!ownsInstanceLock) return;
   app.setAppUserModelId("lat.tvr.tmod.desktop");
   app.setAsDefaultProtocolClient("tmod");
   registerIpc();
@@ -406,8 +578,17 @@ app.whenReady().then(async () => {
   setUpdateState({});
 
   app.on("activate", () => {
-    if (BaseWindow.getAllWindows().length === 0) void createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
+}).catch((error: unknown) => {
+  const message = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack || ""}` : String(error);
+  log.error("T-Mod startup failed", message);
+  console.error("T-Mod startup failed", message);
+  dialog.showErrorBox(
+    "T-Mod не удалось запустить",
+    "Приложение не смогло открыть главное окно. Переустановите последнюю версию или отправьте журнал разработчику.",
+  );
+  app.quit();
 });
 
 app.on("window-all-closed", () => {

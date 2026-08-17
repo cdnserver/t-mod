@@ -5,67 +5,27 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
 } from "react";
 import type {
   BootstrapResult,
-  DesktopBootstrap,
+  DesktopLoginCredentials,
+  DesktopLoginResult,
   DesktopNotification,
   DesktopState,
   DesktopUpdateState,
   ServiceId,
 } from "../shared/contracts";
-import { serviceById, services } from "../shared/services";
+import {
+  resolveNotificationServiceId,
+  serviceById,
+  services,
+} from "../shared/services";
 
-const mockBootstrap: DesktopBootstrap = {
-  protocol_version: 1,
-  generated_at: new Date().toISOString(),
-  viewer: {
-    id: 721577061143019555,
-    name: "Иван",
-    display_name: "S. Goodman | 263345 | Иван",
-    account_tier: "administrator",
-    guild_member: true,
-    administrator: true,
-    sections: ["minecraft", "ovr"],
-  },
-  services: services
-    .filter((service) => service.id !== "home")
-    .map((service) => ({
-      id: service.id as Exclude<ServiceId, "home">,
-      title: service.title,
-      url: service.url || "",
-      enabled: true,
-      reason: null,
-    })),
-  notifications: {
-    unread: 3,
-    items: [
-      {
-        id: 1,
-        severity: "warning",
-        kind: "consensus",
-        title: "Заседание требует внимания",
-        body: "Подготовка к пленарному консенсусу открыта.",
-        route: "consensus",
-        read_at: null,
-        created_at: new Date().toISOString(),
-      },
-      {
-        id: 2,
-        severity: "success",
-        kind: "atlas",
-        title: "Atlas обновил библиотеку",
-        body: "Новые материалы готовы к поиску.",
-        route: "atlas",
-        read_at: null,
-        created_at: new Date(Date.now() - 36e5).toISOString(),
-      },
-    ],
-  },
-};
-
-function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "back" | "forward" | "command" | "lock" | "download" }) {
-  const paths: Record<string, React.ReactNode> = {
+function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "back" | "forward" | "command" | "lock" | "download" | "logout" | "shield" }) {
+  const paths: Record<string, ReactNode> = {
     home: <><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></>,
     reactor: <><path d="M4 8.5h16M4 15.5h16"/><path d="M8.5 4v16M15.5 4v16"/><circle cx="12" cy="12" r="3"/></>,
     consensus: <><path d="M4 20h16M6 17V9M10 17V9M14 17V9M18 17V9M3 7l9-4 9 4z"/></>,
@@ -83,6 +43,8 @@ function Icon({ name }: { name: ServiceId | "search" | "bell" | "refresh" | "bac
     command: <><path d="M9 7V5.5A2.5 2.5 0 106.5 8H18M15 17v1.5a2.5 2.5 0 102.5-2.5H6"/></>,
     lock: <><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 018 0v3"/></>,
     download: <><path d="M12 3v12M7.5 10.5L12 15l4.5-4.5"/><path d="M5 20h14"/></>,
+    logout: <><path d="M10 4H5v16h5M14 8l4 4-4 4M8 12h10"/></>,
+    shield: <><path d="M12 2.5l8 3.2v5.6c0 5.1-3.3 8.4-8 10.2-4.7-1.8-8-5.1-8-10.2V5.7z"/><path d="M9 12l2 2 4-4"/></>,
   };
   return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -107,11 +69,13 @@ function browserApi() {
 }
 
 export function App() {
+  const bridgeAvailable = Boolean(browserApi());
   const [bootstrap, setBootstrap] = useState<BootstrapResult>({
-    authenticated: !browserApi(),
-    online: true,
-    data: browserApi() ? undefined : mockBootstrap,
+    authenticated: false,
+    online: bridgeAvailable,
+    error: bridgeAvailable ? "loading" : "desktop_bridge_unavailable",
   });
+  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable);
   const [desktopState, setDesktopState] = useState<DesktopState>({
     activeService: "home",
     loading: false,
@@ -123,16 +87,28 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
-    currentVersion: "0.1.0",
+    currentVersion: "—",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const searchRef = useRef<HTMLInputElement>(null);
 
   const loadBootstrap = useCallback(async () => {
     const api = browserApi();
-    if (!api) return;
-    setBootstrap((current) => ({ ...current, online: true }));
-    setBootstrap(await api.bootstrap());
+    if (!api) {
+      setBootstrapLoading(false);
+      setBootstrap({
+        authenticated: false,
+        online: false,
+        error: "desktop_bridge_unavailable",
+      });
+      return;
+    }
+    setBootstrapLoading(true);
+    try {
+      setBootstrap(await api.bootstrap());
+    } finally {
+      setBootstrapLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -160,7 +136,6 @@ export function App() {
     const api = browserApi();
     if (!api) return;
     const unsubscribeUpdate = api.onUpdate(setUpdateState);
-    void api.checkForUpdates().then(setUpdateState);
     return unsubscribeUpdate;
   }, []);
 
@@ -201,7 +176,7 @@ export function App() {
 
   const selectService = async (serviceId: ServiceId) => {
     const remote = serviceId === "home" ? undefined : access.get(serviceId);
-    if (remote && !remote.enabled) return;
+    if (serviceId !== "home" && (!bootstrap.authenticated || !remote?.enabled)) return;
     setPaletteOpen(false);
     setNotificationsOpen(false);
     const api = browserApi();
@@ -211,7 +186,7 @@ export function App() {
 
   const notifications = bootstrap.data?.notifications.items || [];
   const unread = bootstrap.data?.notifications.unread || 0;
-  const userName = bootstrap.data?.viewer.name || "гость";
+  const userName = bootstrap.data?.viewer.name || "T-Mod";
   const style = { "--active-accent": activeDefinition?.accent || "#8ea4ff" } as CSSProperties;
   const updateBusy = ["checking", "available", "downloading"].includes(updateState.phase);
   const updateLabel = updateState.phase === "ready"
@@ -220,13 +195,32 @@ export function App() {
       ? `Загрузка ${updateState.percent || 0}%`
       : updateState.phase === "checking"
         ? "Проверяем версию"
+        : updateState.phase === "error"
+          ? "Скачать обновление"
         : `v${updateState.currentVersion}`;
 
   const runUpdateAction = () => {
     const api = browserApi();
     if (!api || updateBusy) return;
     if (updateState.phase === "ready") void api.installUpdate();
+    else if (updateState.phase === "error") void api.openReleasePage();
     else void api.checkForUpdates().then(setUpdateState);
+  };
+
+  const login = async (credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> => {
+    const api = browserApi();
+    if (!api) return { ok: false, error: "login_failed" };
+    const result = await api.login(credentials);
+    if (result.ok) await loadBootstrap();
+    return result;
+  };
+
+  const logout = async () => {
+    const api = browserApi();
+    if (!api) return;
+    await api.logout();
+    setBootstrap({ authenticated: false, online: true, error: "login_required" });
+    setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
   };
 
   return (
@@ -245,7 +239,9 @@ export function App() {
         <nav className="nav-list" aria-label="Сервисы T-Mod">
           {services.map((service) => {
             const remote = service.id === "home" ? undefined : access.get(service.id);
-            const locked = Boolean(remote && !remote.enabled);
+            const locked = service.id !== "home" && (
+              !bootstrap.authenticated || !remote || !remote.enabled
+            );
             const active = desktopState.activeService === service.id;
             return (
               <button
@@ -253,7 +249,7 @@ export function App() {
                 className={`nav-item ${active ? "active" : ""} ${locked ? "locked" : ""}`}
                 style={{ "--service-accent": service.accent } as CSSProperties}
                 onClick={() => void selectService(service.id)}
-                title={locked ? remote?.reason || "Нет доступа" : service.description}
+                title={locked ? remote?.reason || "Войдите в T-Mod Account" : service.description}
               >
                 <span className="nav-icon"><Icon name={locked ? "lock" : service.id}/></span>
                 <span className="nav-copy"><strong>{service.title}</strong><small>{service.eyebrow}</small></span>
@@ -268,11 +264,14 @@ export function App() {
           <div className={`connection ${bootstrap.online ? "online" : "offline"}`}>
             <span className="connection-dot"/><span>{bootstrap.online ? "Контур на связи" : "Нет соединения"}</span>
           </div>
-          <button className="identity" onClick={() => !bootstrap.authenticated && void browserApi()?.openLogin()}>
+          <div className="identity-row">
+          <button className="identity" onClick={() => bootstrap.authenticated ? void selectService("reactor") : void selectService("home")}>
             <span className="avatar">{userName.slice(0, 1).toUpperCase()}</span>
             <span><strong>{bootstrap.authenticated ? userName : "Войти в T-Mod"}</strong><small>{bootstrap.data?.viewer.account_tier === "administrator" ? "Администратор" : bootstrap.data?.viewer.guild_member ? "Товарищество" : "Единый аккаунт"}</small></span>
             <span className="identity-arrow">›</span>
           </button>
+          {bootstrap.authenticated && <button className="logout-button" onClick={() => void logout()} title="Выйти из аккаунта"><Icon name="logout"/></button>}
+          </div>
         </div>
       </aside>
 
@@ -309,11 +308,21 @@ export function App() {
           <Home
             name={userName}
             bootstrap={bootstrap}
+            loading={bootstrapLoading}
+            bridgeAvailable={bridgeAvailable}
             notifications={notifications}
             access={access}
             onOpen={selectService}
-            onLogin={() => void browserApi()?.openLogin()}
+            onLogin={login}
           />
+        ) : desktopState.error ? (
+          <section className="service-error-stage">
+            <span><Icon name="refresh"/></span>
+            <p className="kicker">СЕРВИС НЕДОСТУПЕН</p>
+            <h1>{activeDefinition.title} не открылся</h1>
+            <p>Соединение могло прерваться или доступ изменился. Ваши данные не потеряны.</p>
+            <div><button className="primary" onClick={() => void selectService(desktopState.activeService)}>Повторить <b>↻</b></button><button onClick={() => void selectService("home")}>Вернуться в Центр</button></div>
+          </section>
         ) : (
           <div className="service-underlay"><div className="service-orbit"/><p>Открываем {activeDefinition.title}</p></div>
         )}
@@ -328,6 +337,7 @@ export function App() {
           setQuery={setQuery}
           items={visibleServices}
           access={access}
+          authenticated={bootstrap.authenticated}
           inputRef={searchRef}
           onClose={() => setPaletteOpen(false)}
           onOpen={selectService}
@@ -348,6 +358,8 @@ export function App() {
 function Home({
   name,
   bootstrap,
+  loading,
+  bridgeAvailable,
   notifications,
   access,
   onOpen,
@@ -355,20 +367,72 @@ function Home({
 }: {
   name: string;
   bootstrap: BootstrapResult;
+  loading: boolean;
+  bridgeAvailable: boolean;
   notifications: DesktopNotification[];
   access: Map<string, { enabled: boolean; reason: string | null }>;
   onOpen: (id: ServiceId) => Promise<void>;
-  onLogin: () => void;
+  onLogin: (credentials: DesktopLoginCredentials) => Promise<DesktopLoginResult>;
 }) {
+  const [loginValue, setLoginValue] = useState("");
+  const [pin, setPin] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<DesktopLoginResult["error"]>();
+
+  if (loading) {
+    return (
+      <section className="session-stage" aria-live="polite">
+        <div className="session-orbit"><span>T</span><i/><i/></div>
+        <p className="kicker">T-MOD ACCOUNT</p>
+        <h1>Восстанавливаем<br/>защищённую сессию</h1>
+        <p>Проверяем аккаунт, доступные пространства и актуальную версию клиента.</p>
+        <div className="session-progress"><i/></div>
+      </section>
+    );
+  }
+
   if (!bootstrap.authenticated) {
+    const messages: Record<NonNullable<DesktopLoginResult["error"]>, string> = {
+      invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
+      locked: "Слишком много попыток. Подождите несколько минут и попробуйте снова.",
+      reset_required: "PIN заблокирован. Напишите T-Mod команду /reset в Discord.",
+      character_required: "Сначала добавьте персонажа через /account в Discord.",
+      atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
+      banned: "Доступ к экосистеме T-Mod заблокирован.",
+      network_unavailable: "Нет связи с T-Mod. Проверьте интернет и повторите вход.",
+      login_failed: "Сессию не удалось подтвердить. Повторите вход.",
+      invalid_input: "Логин — от 3 символов, PIN — ровно 8 цифр.",
+    };
+    const submit = async (event: FormEvent) => {
+      event.preventDefault();
+      if (loginBusy || !bridgeAvailable) return;
+      setLoginBusy(true);
+      setLoginError(undefined);
+      try {
+        const result = await onLogin({ login: loginValue, pin });
+        if (!result.ok) setLoginError(result.error || "login_failed");
+      } finally {
+        setLoginBusy(false);
+      }
+    };
     return (
       <section className="login-stage">
-        <div className="login-sigil"><span>T</span><i/><i/><i/></div>
-        <p className="kicker">ЕДИНЫЙ КОНТУР</p>
-        <h1>Вся экосистема<br/>в одном движении.</h1>
-        <p>Один аккаунт для Atlas, Consensus, SGL, Reactor и следующих систем T‑Mod.</p>
-        <button className="primary" onClick={onLogin}>Войти в T-Mod <span>→</span></button>
-        {!bootstrap.online && <small className="offline-note">Сеть недоступна. Хаб продолжит проверять соединение.</small>}
+        <div className="login-visual">
+          <div className="login-sigil"><span>T</span><i/><i/><i/></div>
+          <p className="kicker">ЕДИНЫЙ КОНТУР</p>
+          <h1>Один вход.<br/>Вся экосистема.</h1>
+          <p>Ваши права, сервисы и сессия синхронизируются через защищённый T-Mod Account.</p>
+          <div className="login-assurances"><span><Icon name="shield"/><b>HttpOnly-сессия</b></span><span><i/>Все домены tvr.lat</span></div>
+        </div>
+        <form className="desktop-login-form" onSubmit={(event) => void submit(event)}>
+          <header><p>T·ID</p><h2>Войти в T-Mod</h2><span>Данные задаются через <b>/account</b> в личных сообщениях боту.</span></header>
+          <label><span>Логин</span><input value={loginValue} onChange={(event) => setLoginValue(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="ваш.логин" disabled={loginBusy}/></label>
+          <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
+          {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
+          {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите T-Mod из последнего релиза.</output>}
+          <button className="primary" type="submit" disabled={loginBusy || !bridgeAvailable}>{loginBusy ? "Проверяем аккаунт…" : "Войти в T-Mod"}<span>→</span></button>
+          <footer><i className={bootstrap.online ? "online" : ""}/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Нет соединения с сервером"}</span></footer>
+        </form>
       </section>
     );
   }
@@ -386,16 +450,16 @@ function Home({
       </section>
 
       <section className="overview-grid">
-        <article className="reactor-card" onClick={() => void onOpen("reactor")}>
+        <article className={`reactor-card ${access.get("reactor")?.enabled ? "" : "locked"}`} onClick={() => access.get("reactor")?.enabled && void onOpen("reactor")}>
           <div className="reactor-visual"><i/><i/><i/><span>T</span></div>
-          <div className="reactor-copy"><p>Личный Reactor</p><h2>Ваш мандат<br/>в активном состоянии</h2><span>Открыть пространство <b>→</b></span></div>
+          <div className="reactor-copy"><p>Личный Reactor</p><h2>{access.get("reactor")?.enabled ? <>Ваш мандат<br/>в активном состоянии</> : <>Доступ откроется<br/>после вступления</>}</h2><span>{access.get("reactor")?.enabled ? <>Открыть пространство <b>→</b></> : access.get("reactor")?.reason}</span></div>
           <div className="reactor-noise"/>
         </article>
         <article className="attention-card">
           <div className="section-heading"><span><Icon name="bell"/></span><div><p>Центр внимания</p><h2>{notifications.length ? `${notifications.length} важных события` : "Всё спокойно"}</h2></div></div>
           <div className="mini-events">
             {notifications.slice(0, 3).map((item) => (
-              <button key={item.id} onClick={() => item.route && void onOpen((item.route.split("/")[0] || "home") as ServiceId)}>
+              <button key={item.id} onClick={() => { const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}>
                 <i className={item.severity}/><span><strong>{item.title}</strong><small>{item.body}</small></span><time>{formatTime(item.created_at)}</time>
               </button>
             ))}
@@ -409,7 +473,7 @@ function Home({
         <div className="space-grid">
           {services.filter((service) => !["home", "reactor"].includes(service.id)).map((service) => {
             const remote = access.get(service.id);
-            const locked = Boolean(remote && !remote.enabled);
+            const locked = !remote || !remote.enabled;
             return (
               <button key={service.id} className={`space-card ${locked ? "locked" : ""}`} style={{ "--service-accent": service.accent } as CSSProperties} onClick={() => !locked && void onOpen(service.id)}>
                 <span className="space-icon"><Icon name={locked ? "lock" : service.id}/></span>
@@ -425,9 +489,9 @@ function Home({
 }
 
 function Notifications({ items, unread, onClose, onOpen }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {
-  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">Поток T-Mod</p><h2>Уведомления</h2></div><span>{unread} новых</span></header><div className="notification-list">{items.map((item) => <button key={item.id} onClick={() => item.route && void onOpen((item.route.split("/")[0] || "home") as ServiceId)}><i className={item.severity}/><span><strong>{item.title}</strong><p>{item.body}</p><small>{formatTime(item.created_at)}</small></span></button>)}{!items.length && <div className="drawer-empty"><Icon name="bell"/><p>В центре уведомлений тихо.</p></div>}</div></aside></>;
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">Поток T-Mod</p><h2>Уведомления</h2></div><span>{unread} новых</span></header><div className="notification-list">{items.map((item) => <button key={item.id} onClick={() => { const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><strong>{item.title}</strong><p>{item.body}</p><small>{formatTime(item.created_at)}</small></span></button>)}{!items.length && <div className="drawer-empty"><Icon name="bell"/><p>В центре уведомлений тихо.</p></div>}</div></aside></>;
 }
 
-function CommandPalette({ query, setQuery, items, access, inputRef, onClose, onOpen }: { query: string; setQuery: (query: string) => void; items: typeof services; access: Map<string, { enabled: boolean; reason: string | null }>; inputRef: React.RefObject<HTMLInputElement | null>; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {
-  return <div className="palette-layer"><button className="scrim" onClick={onClose} aria-label="Закрыть"/><section className="palette"><div className="palette-input"><Icon name="search"/><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Открыть сервис, задачу или инструмент…"/><kbd>ESC</kbd></div><div className="palette-results"><p>Пространства T-Mod</p>{items.map((service) => { const remote = access.get(service.id); const locked = Boolean(remote && !remote.enabled); return <button key={service.id} disabled={locked} onClick={() => void onOpen(service.id)} style={{ "--service-accent": service.accent } as CSSProperties}><span><Icon name={locked ? "lock" : service.id}/></span><div><strong>{service.title}</strong><small>{locked ? remote?.reason : service.description}</small></div><kbd>↵</kbd></button>; })}</div><footer><span><kbd>↑↓</kbd> навигация</span><span><kbd>Enter</kbd> открыть</span><span>Локальная командная строка — команды не покидают T-Mod</span></footer></section></div>;
+function CommandPalette({ query, setQuery, items, access, authenticated, inputRef, onClose, onOpen }: { query: string; setQuery: (query: string) => void; items: typeof services; access: Map<string, { enabled: boolean; reason: string | null }>; authenticated: boolean; inputRef: RefObject<HTMLInputElement | null>; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {
+  return <div className="palette-layer"><button className="scrim" onClick={onClose} aria-label="Закрыть"/><section className="palette"><div className="palette-input"><Icon name="search"/><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Открыть сервис, задачу или инструмент…"/><kbd>ESC</kbd></div><div className="palette-results"><p>Пространства T-Mod</p>{items.map((service) => { const remote = access.get(service.id); const locked = service.id !== "home" && (!authenticated || !remote || !remote.enabled); return <button key={service.id} disabled={locked} onClick={() => void onOpen(service.id)} style={{ "--service-accent": service.accent } as CSSProperties}><span><Icon name={locked ? "lock" : service.id}/></span><div><strong>{service.title}</strong><small>{locked ? remote?.reason || "Войдите в T-Mod Account" : service.description}</small></div><kbd>↵</kbd></button>; })}</div><footer><span><kbd>Esc</kbd> закрыть</span><span><kbd>Enter</kbd> открыть</span><span>Команды выполняются только внутри T-Mod</span></footer></section></div>;
 }

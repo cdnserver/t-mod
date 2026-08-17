@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+  <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#121625"/><stop offset="1" stop-color="#080a10"/></linearGradient></defs>
+  <rect width="150" height="57" fill="url(#b)"/>
+  <circle cx="27" cy="28.5" r="17" fill="none" stroke="#93a1fa" stroke-opacity=".34"/>
+  <circle cx="27" cy="28.5" r="11" fill="#6f7ecb"/>
+  <path d="M20 23h14v4h-5v12h-4V27h-5z" fill="#090b12"/>
+  <text x="52" y="27" fill="#f3f5ff" font-family="Arial,sans-serif" font-size="14" font-weight="700">T-Mod</text>
+  <text x="52" y="39" fill="#6f7890" font-family="Arial,sans-serif" font-size="6" letter-spacing="1.1">ЕДИНЫЙ КОНТУР</text>
+</svg>

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isServiceId, isTrustedTModUrl, mergeServiceAccess, services } from "../src/shared/services";
+import {
+  isServiceId,
+  isTrustedTModUrl,
+  mergeServiceAccess,
+  resolveNotificationServiceId,
+  services,
+} from "../src/shared/services";
 
 describe("desktop service boundary", () => {
   it("accepts only declared service identifiers", () => {
@@ -28,5 +34,13 @@ describe("desktop service boundary", () => {
     ]);
     expect(merged).toHaveLength(services.length);
     expect(merged.find((item) => item.id === "ovr")?.description).toBe("Нужен ручной доступ.");
+  });
+
+  it("routes notifications only to declared desktop services", () => {
+    expect(resolveNotificationServiceId("/reactor/bills/74")).toBe("reactor");
+    expect(resolveNotificationServiceId("https://consensus.tvr.lat/host")).toBe("consensus");
+    expect(resolveNotificationServiceId("admin")).toBe("admin");
+    expect(resolveNotificationServiceId("javascript:alert(1)")).toBeNull();
+    expect(resolveNotificationServiceId(null)).toBeNull();
   });
 });

@@ -22,12 +22,14 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         storage.DATA_DIR = Path(self.temp_dir.name)
         storage.DATABASE_FILE = storage.DATA_DIR / "desktop-bootstrap.db"
         storage.init_db()
+        self.guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda _user_id: None,
+            fetch_member=AsyncMock(return_value=None),
+        )
         self.bot = SimpleNamespace(
-            get_guild=lambda guild_id: (
-                SimpleNamespace(id=77, name="Товарищество")
-                if guild_id == 77
-                else None
-            )
+            get_guild=lambda guild_id: self.guild if guild_id == 77 else None,
         )
 
     def tearDown(self) -> None:
@@ -109,6 +111,42 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(services["reactor"]["enabled"])
             self.assertTrue(services["atlas"]["enabled"])
             self.assertTrue(services["sgl"]["enabled"])
+        finally:
+            await client.close()
+
+    async def test_desktop_login_accepts_zero_account_with_character(self) -> None:
+        credential = SimpleNamespace(user_id=99, session_version=1)
+        result = SimpleNamespace(status="ok", credential=credential)
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch(
+                    "modules.consensus_web.credential_storage.authenticate_web_credential",
+                    return_value=result,
+                ),
+                patch(
+                    "modules.consensus_web.global_ban_storage.is_globally_banned",
+                    return_value=False,
+                ),
+                patch(
+                    "modules.consensus_web.profile_storage.list_profile_characters",
+                    return_value=[SimpleNamespace(nickname="Zero User", static_id="99")],
+                ),
+                patch(
+                    "modules.consensus_web.credential_storage.web_section_grants",
+                    return_value=[],
+                ),
+            ):
+                response = await client.post(
+                    "/auth/login?client=desktop",
+                    data={"login": "zero.user", "pin": "12345678"},
+                    allow_redirects=False,
+                )
+            self.assertEqual(response.status, 303)
+            self.assertEqual(response.headers["Location"], "/")
+            self.assertIn("tmod_account_session", response.cookies)
         finally:
             await client.close()
 

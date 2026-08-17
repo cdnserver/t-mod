@@ -119,3 +119,16 @@ export function isTrustedTModUrl(value: string): boolean {
     return false;
   }
 }
+
+export function resolveNotificationServiceId(route: string | null): ServiceId | null {
+  if (!route) return null;
+  const firstSegment = route
+    .trim()
+    .replace(/^https:\/\/[^/]+/i, "")
+    .split(/[/?#]/)
+    .filter(Boolean)[0];
+  if (firstSegment === "admin") return "admin";
+  if (firstSegment === "reactor") return "reactor";
+  if (firstSegment === "host") return "consensus";
+  return isServiceId(firstSegment) ? firstSegment : null;
+}

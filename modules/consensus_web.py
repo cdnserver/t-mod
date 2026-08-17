@@ -1451,6 +1451,7 @@ def create_consensus_web_app(
     async def credential_login(request: web.Request) -> web.Response:
         remote = _request_remote(request)
         now = asyncio.get_running_loop().time()
+        desktop_client = request.query.get("client") == "desktop"
         attempts = _login_failures[remote]
         while attempts and now - attempts[0] > 10 * 60:
             attempts.popleft()
@@ -1584,7 +1585,7 @@ def create_consensus_web_app(
         )
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
-        if member is None:
+        if member is None and not desktop_client:
             if next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(
                     location="/login?next=%2Fatlas&error=atlas_access"

@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -12,7 +12,7 @@
     "preview": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check:bundle": "node --check out/main/index.js && node --check out/preload/index.mjs",
+    "check:bundle": "node --check out/main/index.js && node --check out/preload/index.cjs",
     "package": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder"
   },
@@ -41,7 +41,8 @@
     "productName": "T-Mod",
     "artifactName": "T-Mod-${version}-${os}-${arch}.${ext}",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "resources"
     },
     "files": [
       "out/**/*",
@@ -50,15 +51,25 @@
     ],
     "icon": "resources/icon.png",
     "asar": true,
+    "compression": "maximum",
     "win": {
       "target": "nsis",
       "artifactName": "T-Mod-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "T-Mod",
+      "uninstallDisplayName": "T-Mod Desktop",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerSidebar": "resources/installer-sidebar.bmp",
+      "uninstallerSidebar": "resources/installer-sidebar.bmp",
+      "installerHeader": "resources/installer-header.bmp"
     },
     "mac": {
       "target": [
@@ -66,7 +77,30 @@
         "zip"
       ],
       "category": "public.app-category.productivity",
-      "artifactName": "T-Mod-mac-${arch}.${ext}"
+      "artifactName": "T-Mod-mac-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "background": "resources/dmg-background.png",
+      "iconSize": 112,
+      "window": {
+        "width": 600,
+        "height": 420
+      },
+      "contents": [
+        {
+          "x": 170,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 430,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "linux": {
       "target": "AppImage",
