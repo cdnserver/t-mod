@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,6 +68,143 @@ class LegislationGovernanceTests(unittest.TestCase):
         self.assertNotIn("findings", public)
         self.assertNotIn("nowa_links", public)
         self.assertEqual(private["findings"], "Служебные сведения")
+
+    def test_ovr_investigation_lifecycle_is_atomic_and_revision_safe(self) -> None:
+        case = ovr.create_case(
+            guild_id=1, first_name="Jimmy", last_name="McGill", static_id="456",
+            discord_text="jimmy", discord_user_id=None, forum_url=None,
+            additional_info="Кандидат на вступление", actor_id=2,
+            actor_display="Инициатор", case_kind="admission", priority="important",
+            objective="Проверить биографию и значимые связи.",
+        )
+        stale_revision = case["revision"]
+        case = ovr.update_case(
+            case["id"], guild_id=1, expected_revision=case["revision"],
+            action="claim", actor_id=9, actor_display="Сотрудник ОВР",
+        )
+        with self.assertRaisesRegex(ValueError, "ovr_case_revision_conflict"):
+            ovr.add_material(
+                case["id"], guild_id=1, expected_revision=stale_revision,
+                actor_id=9, actor_display="Сотрудник ОВР", kind="document",
+                title="Устаревшая запись", content="Не должна сохраниться.",
+            )
+
+        detail = ovr.add_material(
+            case["id"], guild_id=1, expected_revision=case["revision"],
+            actor_id=9, actor_display="Сотрудник ОВР", kind="document",
+            title="Профиль кандидата", content="Сведения подтверждены источником.",
+            reliability="high",
+        )
+        detail = ovr.set_material_status(
+            case["id"], guild_id=1,
+            expected_revision=detail["case"]["revision"],
+            material_id=detail["materials"][0]["id"], status="verified",
+            actor_id=9, actor_display="Сотрудник ОВР",
+        )
+        detail = ovr.add_relation(
+            case["id"], guild_id=1,
+            expected_revision=detail["case"]["revision"],
+            actor_id=9, actor_display="Сотрудник ОВР", person_name="Kim Wexler",
+            relation_type="Доверенное лицо", confidence="confirmed",
+        )
+        detail = ovr.add_task(
+            case["id"], guild_id=1,
+            expected_revision=detail["case"]["revision"],
+            actor_id=9, actor_display="Сотрудник ОВР", title="Проверить форум",
+            assignee_display="Аналитик", priority="urgent",
+        )
+        detail = ovr.set_task_status(
+            case["id"], guild_id=1,
+            expected_revision=detail["case"]["revision"],
+            task_id=detail["tasks"][0]["id"], status="done",
+            actor_id=9, actor_display="Сотрудник ОВР",
+        )
+        case = ovr.update_case(
+            case["id"], guild_id=1,
+            expected_revision=detail["case"]["revision"], action="analysis",
+            actor_id=9, actor_display="Сотрудник ОВР", hypothesis="Риски не выявлены",
+            executive_summary="Материалы проверены.", risk_level="low",
+        )
+        case = ovr.update_case(
+            case["id"], guild_id=1, expected_revision=case["revision"],
+            action="decision", actor_id=9, actor_display="Сотрудник ОВР",
+        )
+        case = ovr.update_case(
+            case["id"], guild_id=1, expected_revision=case["revision"],
+            action="approve", actor_id=9, actor_display="Сотрудник ОВР",
+            note="Проверка завершена, препятствий не установлено.",
+        )
+        final = ovr.case_detail(case["id"], guild_id=1)
+        self.assertEqual(final["case"]["status"], "approved")
+        self.assertEqual(final["case"]["progress"], 100)
+        self.assertEqual(len(final["materials"]), 1)
+        self.assertEqual(final["materials"][0]["status"], "verified")
+        self.assertEqual(len(final["relations"]), 1)
+        self.assertEqual(final["tasks"][0]["status"], "done")
+        self.assertGreaterEqual(len(final["events"]), 9)
+
+        reopened = ovr.update_case(
+            case["id"], guild_id=1, expected_revision=case["revision"],
+            action="reopen", actor_id=9, actor_display="Сотрудник ОВР",
+            note="Появились новые обстоятельства.",
+        )
+        self.assertEqual(reopened["status"], "screening")
+
+    def test_ovr_migration_preserves_existing_cases(self) -> None:
+        storage.DATABASE_FILE.unlink()
+        with sqlite3.connect(storage.DATABASE_FILE) as con:
+            con.executescript(
+                """
+                CREATE TABLE ovr_cases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    case_number INTEGER NOT NULL,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    static_id TEXT NOT NULL,
+                    discord_text TEXT NOT NULL,
+                    discord_user_id INTEGER,
+                    forum_url TEXT,
+                    additional_info TEXT,
+                    nowa_links TEXT,
+                    findings TEXT,
+                    risk_level TEXT NOT NULL DEFAULT 'unrated',
+                    status TEXT NOT NULL DEFAULT 'new',
+                    decision TEXT,
+                    decision_reason TEXT,
+                    assigned_to_id INTEGER,
+                    assigned_to_display TEXT,
+                    created_by_id INTEGER NOT NULL,
+                    created_by_display TEXT,
+                    due_at TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    UNIQUE(guild_id, case_number)
+                );
+                INSERT INTO ovr_cases(
+                    guild_id, case_number, first_name, last_name, static_id,
+                    discord_text, created_by_id, due_at, created_at, updated_at
+                ) VALUES(
+                    1, 12, 'Старое', 'Дело', '777', 'legacy', 2,
+                    '2026-08-20T00:00:00+00:00',
+                    '2026-08-18T00:00:00+00:00',
+                    '2026-08-18T00:00:00+00:00'
+                );
+                """
+            )
+
+        storage.init_db()
+        cases = ovr.list_cases(1, full_access=True)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]["case_number"], 12)
+        self.assertEqual(cases[0]["case_kind"], "admission")
+        self.assertEqual(cases[0]["priority"], "normal")
+        detail = ovr.case_detail(cases[0]["id"], guild_id=1)
+        self.assertEqual(detail["materials"], [])
+        self.assertEqual(detail["relations"], [])
+        self.assertEqual(detail["tasks"], [])
 
 
 if __name__ == "__main__":

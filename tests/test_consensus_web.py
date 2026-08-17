@@ -712,6 +712,42 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 allowed_api = await client.get(
                     "/api/ovr", headers={"Host": "ovr.tvr.lat"}
                 )
+                created_response = await client.post(
+                    "/api/ovr",
+                    headers={
+                        "Host": "ovr.tvr.lat",
+                        "X-CSRF-Token": regular_member.csrf_token,
+                    },
+                    json={
+                        "action": "create",
+                        "first_name": "Jimmy",
+                        "last_name": "McGill",
+                        "static_id": "456",
+                        "discord_text": "jimmy",
+                        "case_kind": "admission",
+                        "priority": "important",
+                        "objective": "Проверить биографию кандидата.",
+                    },
+                )
+                created_payload = await created_response.json()
+                detail_response = await client.get(
+                    f"/api/ovr?case_id={created_payload['case']['id']}",
+                    headers={"Host": "ovr.tvr.lat"},
+                )
+                detail_payload = await detail_response.json()
+                claim_response = await client.post(
+                    "/api/ovr",
+                    headers={
+                        "Host": "ovr.tvr.lat",
+                        "X-CSRF-Token": regular_member.csrf_token,
+                    },
+                    json={
+                        "action": "claim",
+                        "case_id": created_payload["case"]["id"],
+                        "expected_revision": created_payload["case"]["revision"],
+                    },
+                )
+                claim_payload = await claim_response.json()
                 denied_payload = await denied_api.json()
                 allowed_page_text = await allowed_page.text()
                 allowed_payload = await allowed_api.json()
@@ -723,6 +759,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ВНЕШНЯЯ РАЗВЕДКА", allowed_page_text)
         self.assertEqual(allowed_api.status, 200)
         self.assertTrue(allowed_payload["full_access"])
+        self.assertEqual(created_response.status, 200)
+        self.assertEqual(detail_response.status, 200)
+        self.assertEqual(detail_payload["detail"]["case"]["case_kind"], "admission")
+        self.assertEqual(claim_response.status, 200)
+        self.assertEqual(claim_payload["detail"]["case"]["status"], "screening")
 
     async def test_sgl_surface_has_public_bureau_landing(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]

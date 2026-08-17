@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#05080b">
+    <meta name="description" content="Закрытый оперативно-аналитический контур ОВР T-Mod.">
     <title>ОВР · T-Mod</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <link rel="stylesheet" href="/assets/ovr.css?v=1">
+    <link rel="stylesheet" href="/assets/ovr.css?v=2">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/ovr.js?v=1" defer></script>
+    <script src="/assets/ovr.js?v=2" defer></script>
   </head>
   <body>
     <div class="ovr-atmosphere" aria-hidden="true"><i></i><i></i><b></b></div>
@@ -18,13 +19,15 @@
       <div class="ovr-seal"><span>ОВР</span><i></i><i></i></div>
       <small>ЗАКРЫТЫЙ КОНТУР T-MOD</small>
       <h1>Устанавливаем защищённое соединение</h1>
-      <p id="ovr-gate-message">Проверяем полномочия и получаем актуальный реестр дел…</p>
+      <p id="ovr-gate-message">Проверяем полномочия и получаем актуальный реестр расследований…</p>
       <a id="ovr-login" href="/login?next=/ovr" hidden>Войти в систему</a>
     </section>
 
     <div id="ovr-shell" class="ovr-shell" hidden>
       <header class="ovr-header">
-        <a class="ovr-brand" href="/"><span>ОВР</span><div><strong>ВНЕШНЯЯ РАЗВЕДКА</strong><small>BECKER SYSTEMS × TVR.LAT</small></div></a>
+        <button class="ovr-brand" id="ovr-home" type="button">
+          <span>ОВР</span><div><strong>ВНЕШНЯЯ РАЗВЕДКА</strong><small>BECKER SYSTEMS × TVR.LAT</small></div>
+        </button>
         <nav>
           <a href="https://tvr.lat/">Личный Реактор</a>
           <a href="https://reactor.tvr.lat/">Ядерный Реактор</a>
@@ -32,33 +35,33 @@
         </nav>
       </header>
 
-      <main>
+      <main id="ovr-registry-page">
         <section class="ovr-hero">
           <div>
-            <span class="eyebrow"><i></i> ДОПУСК ПОДТВЕРЖДЁН</span>
-            <h1>Проверка кандидатов.<br><em>Без слепых зон.</em></h1>
-            <p>Каждое обращение становится отдельным досье с ответственным сотрудником, сроком в 48 часов и неизменяемой историей решений.</p>
+            <span class="eyebrow"><i></i> ОПЕРАТИВНЫЙ ДОПУСК ПОДТВЕРЖДЁН</span>
+            <h1>Расследования.<br><em>Без слепых зон.</em></h1>
+            <p>Единый цикл работы ОВР: от входящего сигнала и профиля человека до доказательной базы, карты связей, задач сотрудников и мотивированного решения.</p>
             <div class="hero-actions">
-              <button id="ovr-new" class="button button-primary" type="button"><span>＋</span> Открыть новое дело</button>
-              <button id="ovr-refresh" class="button button-secondary" type="button"><span>↻</span> Обновить данные</button>
+              <button id="ovr-new" class="button button-primary" type="button"><span>＋</span> Открыть расследование</button>
+              <button id="ovr-refresh" class="button button-secondary" type="button"><span>↻</span> Синхронизировать</button>
             </div>
           </div>
           <div class="ovr-radar" aria-hidden="true"><span>ОВР</span><i></i><i></i><i></i><b></b></div>
         </section>
 
         <section class="ovr-metrics" aria-label="Состояние реестра">
-          <article><small>В ПРОВЕРКЕ</small><strong id="metric-active">0</strong><span>активных дел</span></article>
-          <article><small>ТРЕБУЮТ СВЕДЕНИЙ</small><strong id="metric-info">0</strong><span>ожидают дополнения</span></article>
-          <article><small>СРОК ИСТЕКАЕТ</small><strong id="metric-due">0</strong><span>менее 12 часов</span></article>
-          <article><small>РЕШЕНИЯ</small><strong id="metric-closed">0</strong><span>завершённых проверок</span></article>
+          <article><small>В РАБОТЕ</small><strong id="metric-active">0</strong><span>активных расследований</span></article>
+          <article><small>АНАЛИТИКА</small><strong id="metric-analysis">0</strong><span>формируют выводы</span></article>
+          <article><small>КОНТРОЛЬ СРОКА</small><strong id="metric-due">0</strong><span>требуют внимания</span></article>
+          <article><small>РЕШЕНИЯ</small><strong id="metric-closed">0</strong><span>завершено всего</span></article>
         </section>
 
         <section class="ovr-workspace">
           <header class="workspace-head">
-            <div><small>ОПЕРАТИВНЫЙ РЕЕСТР</small><h2>Дела о вступлении</h2></div>
+            <div><small>ОПЕРАТИВНЫЙ РЕЕСТР</small><h2>Все расследования</h2><p>Карточки отсортированы по этапу, срочности и контрольному сроку.</p></div>
             <div class="workspace-tools">
-              <label class="ovr-search"><span>⌕</span><input id="ovr-search" type="search" placeholder="Имя, статик, Discord или номер дела"></label>
-              <div id="ovr-filters" class="ovr-filters" aria-label="Фильтр дел">
+              <label class="ovr-search"><span>⌕</span><input id="ovr-search" type="search" placeholder="Человек, статик, Discord или ОВР-номер"></label>
+              <div id="ovr-filters" class="ovr-filters" aria-label="Фильтр расследований">
                 <button class="active" type="button" data-filter="active">Активные</button>
                 <button type="button" data-filter="all">Все</button>
                 <button type="button" data-filter="closed">Завершённые</button>
@@ -69,44 +72,171 @@
         </section>
       </main>
 
+      <main id="ovr-case-page" class="case-page" hidden>
+        <div class="case-commandbar">
+          <button id="case-back" class="case-back" type="button"><span>←</span> Реестр</button>
+          <div><small id="case-breadcrumb">ОВР-000</small><span> / </span><strong id="case-command-name">Расследование</strong></div>
+          <button id="case-reload" class="icon-button" type="button" title="Обновить расследование">↻</button>
+        </div>
+
+        <section class="case-hero">
+          <div class="subject-monogram"><span id="case-monogram">—</span><i></i><i></i></div>
+          <div class="case-identity">
+            <span class="eyebrow" id="case-kicker"><i></i> РАССЛЕДОВАНИЕ ОВР</span>
+            <h1 id="case-title">Карточка человека</h1>
+            <p id="case-subtitle">Загружаем оперативную сводку…</p>
+            <div id="case-pills" class="case-pills"></div>
+          </div>
+          <div class="case-progress">
+            <div id="case-progress-ring" class="progress-ring" style="--progress:0"><span id="case-progress-value">0%</span></div>
+            <small>ГОТОВНОСТЬ ДОСЬЕ</small>
+          </div>
+        </section>
+
+        <nav id="case-tabs" class="case-tabs" aria-label="Разделы расследования">
+          <button class="active" type="button" data-tab="overview">Сводка</button>
+          <button type="button" data-tab="materials">Материалы <b id="tab-material-count">0</b></button>
+          <button type="button" data-tab="relations">Связи <b id="tab-relation-count">0</b></button>
+          <button type="button" data-tab="tasks">Задачи <b id="tab-task-count">0</b></button>
+          <button type="button" data-tab="timeline">Хронология</button>
+        </nav>
+
+        <section class="case-panel active" data-panel="overview">
+          <div class="case-layout">
+            <div class="case-main-column">
+              <article class="intel-card subject-card">
+                <header><div><small>ПРОФИЛЬ ОБЪЕКТА</small><h2>Идентификационная карта</h2></div><span id="case-classification-mark">RESTRICTED</span></header>
+                <div id="case-facts" class="case-facts"></div>
+                <div class="profile-notes">
+                  <div><small>ИЗВЕСТНЫЕ ПСЕВДОНИМЫ</small><p id="case-aliases-view">Не установлены</p></div>
+                  <div><small>ОРГАНИЗАЦИИ И СВЯЗИ</small><p id="case-affiliations-view">Не установлены</p></div>
+                  <div><small>ИСХОДНЫЕ СВЕДЕНИЯ</small><p id="case-additional-view">Не указаны</p></div>
+                </div>
+              </article>
+
+              <article class="intel-card analysis-card">
+                <header><div><small>АНАЛИТИЧЕСКОЕ ЯДРО</small><h2>Версия и выводы расследования</h2></div><button id="case-save" class="button button-secondary" type="button">Сохранить изменения</button></header>
+                <label><span>Цель расследования</span><textarea id="case-objective" rows="3" maxlength="3000" placeholder="Какой вопрос должно разрешить расследование?"></textarea></label>
+                <label><span>Рабочая гипотеза</span><textarea id="case-hypothesis" rows="4" maxlength="5000" placeholder="Версия событий, которую необходимо подтвердить или опровергнуть"></textarea></label>
+                <label><span>Оперативная сводка</span><textarea id="case-summary" rows="5" maxlength="5000" placeholder="Краткая картина для руководства: главное, риски и пробелы"></textarea></label>
+                <label><span>Установленные факты и итоговый анализ</span><textarea id="case-findings" rows="8" maxlength="12000" placeholder="Отделяйте подтверждённые факты от предположений"></textarea></label>
+                <div class="analysis-grid">
+                  <label><span>Связи с семьёй Nowa</span><textarea id="case-nowa" rows="4" maxlength="5000" placeholder="Сведения или отметка об отсутствии связи"></textarea></label>
+                  <div class="analysis-settings">
+                    <label><span>Риск</span><select id="case-risk"><option value="unrated">Не определён</option><option value="low">Низкий</option><option value="medium">Средний</option><option value="high">Высокий</option><option value="critical">Критический</option></select></label>
+                    <label><span>Приоритет</span><select id="case-priority"><option value="normal">Обычный</option><option value="important">Важный</option><option value="urgent">Срочный</option><option value="critical">Критический</option></select></label>
+                    <label><span>Гриф</span><select id="case-classification"><option value="restricted">Ограничено</option><option value="secret">Секретно</option><option value="top_secret">Особой важности</option></select></label>
+                  </div>
+                </div>
+                <div class="profile-edit-grid">
+                  <label><span>Псевдонимы</span><textarea id="case-aliases" rows="2" maxlength="1000"></textarea></label>
+                  <label><span>Организации и принадлежность</span><textarea id="case-affiliations" rows="2" maxlength="3000"></textarea></label>
+                </div>
+              </article>
+            </div>
+
+            <aside class="case-side-column">
+              <article class="intel-card control-card">
+                <small>УПРАВЛЕНИЕ РАССЛЕДОВАНИЕМ</small>
+                <div id="case-stage" class="case-stage"></div>
+                <div id="case-actions" class="case-actions"></div>
+              </article>
+              <article class="intel-card snapshot-card">
+                <small>СОСТОЯНИЕ ДОСЬЕ</small>
+                <div id="case-snapshot"></div>
+              </article>
+              <article class="intel-card quick-log-card">
+                <small>СЛУЖЕБНАЯ ЗАПИСЬ</small>
+                <textarea id="case-note" rows="5" maxlength="5000" placeholder="Наблюдение, основание действия или важный контекст"></textarea>
+                <button id="case-add-note" class="button button-secondary" type="button">Добавить в хронологию</button>
+              </article>
+            </aside>
+          </div>
+        </section>
+
+        <section class="case-panel" data-panel="materials">
+          <header class="panel-heading"><div><small>ДОКАЗАТЕЛЬНАЯ БАЗА</small><h2>Материалы расследования</h2><p>Документы, свидетельства, наблюдения и внешние источники с отдельной оценкой надёжности.</p></div><button id="material-new" class="button button-primary" type="button">＋ Добавить материал</button></header>
+          <div id="case-materials" class="material-grid"></div>
+        </section>
+
+        <section class="case-panel" data-panel="relations">
+          <header class="panel-heading"><div><small>КАРТА ОКРУЖЕНИЯ</small><h2>Люди и связи</h2><p>Установленные контакты, характер отношений и степень подтверждения.</p></div><button id="relation-new" class="button button-primary" type="button">＋ Добавить связь</button></header>
+          <div id="case-relations" class="relations-map"></div>
+        </section>
+
+        <section class="case-panel" data-panel="tasks">
+          <header class="panel-heading"><div><small>ОПЕРАТИВНЫЙ ПЛАН</small><h2>Задачи сотрудников</h2><p>Конкретные действия, ответственные и контрольные сроки внутри расследования.</p></div><button id="task-new" class="button button-primary" type="button">＋ Поставить задачу</button></header>
+          <div id="case-tasks" class="task-board"></div>
+        </section>
+
+        <section class="case-panel" data-panel="timeline">
+          <header class="panel-heading"><div><small>НЕИЗМЕНЯЕМЫЙ ЖУРНАЛ</small><h2>Хронология расследования</h2><p>Каждое значимое действие сохраняется вместе с автором и временем.</p></div></header>
+          <div id="case-timeline" class="case-timeline full"></div>
+        </section>
+      </main>
+
       <footer class="ovr-footer"><span><i></i> Контур защищён · действия протоколируются</span><span id="ovr-sync">Ожидание синхронизации</span></footer>
     </div>
 
     <dialog id="ovr-create-dialog" class="ovr-dialog">
       <form id="ovr-create-form">
-        <header><div><small>НОВОЕ ДОСЬЕ</small><h2>Кандидат на вступление</h2><p>Укажите исходные данные. После регистрации начнётся отсчёт 48 часов.</p></div><button class="dialog-close" type="button" data-close="ovr-create-dialog" aria-label="Закрыть">×</button></header>
+        <header><div><small>НОВОЕ РАССЛЕДОВАНИЕ</small><h2>Регистрация объекта</h2><p>Создайте исходную карточку. Все сведения можно развивать внутри досье.</p></div><button class="dialog-close" type="button" data-close="ovr-create-dialog" aria-label="Закрыть">×</button></header>
         <div class="form-grid">
           <label><span>Имя</span><input id="ovr-first-name" maxlength="80" autocomplete="off" required></label>
           <label><span>Фамилия</span><input id="ovr-last-name" maxlength="80" autocomplete="off" required></label>
           <label><span>Статик</span><input id="ovr-static" maxlength="12" inputmode="numeric" required></label>
           <label><span>Discord</span><input id="ovr-discord" maxlength="200" required></label>
+          <label><span>Тип расследования</span><select id="ovr-kind"><option value="admission">Проверка при вступлении</option><option value="background">Фоновая проверка</option><option value="incident">Инцидент</option><option value="internal">Внутренняя проверка</option><option value="other">Иное</option></select></label>
+          <label><span>Приоритет</span><select id="ovr-priority"><option value="normal">Обычный</option><option value="important">Важный</option><option value="urgent">Срочный</option><option value="critical">Критический</option></select></label>
         </div>
-        <label><span>Ссылка на форум</span><input id="ovr-forum" type="url" maxlength="500" placeholder="https://forum.majestic-rp.ru/..."></label>
-        <label><span>Дополнительная известная информация</span><textarea id="ovr-additional" maxlength="3000" rows="5" placeholder="Связи, рекомендации, обстоятельства обращения…"></textarea></label>
-        <footer><button class="button button-secondary" type="button" data-close="ovr-create-dialog">Отмена</button><button class="button button-primary" type="submit">Зарегистрировать дело</button></footer>
+        <label><span>Ссылка на форум</span><input id="ovr-forum" type="url" maxlength="1000" placeholder="https://forum.majestic-rp.ru/..."></label>
+        <label><span>Цель расследования</span><textarea id="ovr-objective" maxlength="3000" rows="3" placeholder="Что именно необходимо установить?"></textarea></label>
+        <label><span>Исходные сведения</span><textarea id="ovr-additional" maxlength="5000" rows="5" placeholder="Обстоятельства обращения, известные связи и первичный сигнал"></textarea></label>
+        <footer><button class="button button-secondary" type="button" data-close="ovr-create-dialog">Отмена</button><button class="button button-primary" type="submit">Открыть расследование</button></footer>
       </form>
     </dialog>
 
-    <dialog id="ovr-case-dialog" class="ovr-dialog ovr-case-dialog">
-      <div class="case-dialog-shell">
-        <header><div><small id="case-kicker">ДЕЛО ОВР</small><h2 id="case-title">Карточка кандидата</h2><p id="case-subtitle">—</p></div><button class="dialog-close" type="button" data-close="ovr-case-dialog" aria-label="Закрыть">×</button></header>
-        <div class="case-dialog-grid">
-          <section class="dossier-column">
-            <article class="case-facts" id="case-facts"></article>
-            <label><span>Собранные сведения</span><textarea id="case-findings" rows="7" placeholder="Результаты проверки, подтверждённые факты и наблюдения"></textarea></label>
-            <label><span>Связи с семьёй Nowa</span><textarea id="case-nowa" rows="4" placeholder="Известные связи или отметка об их отсутствии"></textarea></label>
-            <div class="form-grid">
-              <label><span>Уровень риска</span><select id="case-risk"><option value="unrated">Не определён</option><option value="low">Низкий</option><option value="medium">Средний</option><option value="high">Высокий</option><option value="critical">Критический</option></select></label>
-              <label><span>Служебная запись</span><textarea id="case-note" rows="3" placeholder="Обоснование действия или решения"></textarea></label>
-            </div>
-            <div id="case-actions" class="case-actions"></div>
-          </section>
-          <aside><small>ХРОНОЛОГИЯ</small><div id="case-timeline" class="case-timeline"></div></aside>
-        </div>
-      </div>
+    <dialog id="material-dialog" class="ovr-dialog compact-dialog">
+      <form id="material-form">
+        <header><div><small>НОВЫЙ МАТЕРИАЛ</small><h2>Пополнить доказательную базу</h2></div><button class="dialog-close" type="button" data-close="material-dialog">×</button></header>
+        <div class="form-grid"><label><span>Тип</span><select id="material-kind"><option value="document">Документ</option><option value="link">Ссылка</option><option value="testimony">Свидетельство</option><option value="observation">Наблюдение</option><option value="media">Медиа</option><option value="other">Иное</option></select></label><label><span>Надёжность</span><select id="material-reliability"><option value="unrated">Не оценена</option><option value="low">Низкая</option><option value="medium">Средняя</option><option value="high">Высокая</option><option value="confirmed">Подтверждено</option></select></label></div>
+        <label><span>Название</span><input id="material-title" maxlength="200" required></label>
+        <label><span>Ссылка на источник</span><input id="material-url" type="url" maxlength="1000"></label>
+        <label><span>Описание и содержание</span><textarea id="material-content" maxlength="8000" rows="6"></textarea></label>
+        <footer><button class="button button-secondary" type="button" data-close="material-dialog">Отмена</button><button class="button button-primary" type="submit">Добавить материал</button></footer>
+      </form>
     </dialog>
 
-    <div id="ovr-busy" class="ovr-busy" hidden><div><i></i><strong>Обновляем защищённый контур</strong><span>Это займёт несколько секунд</span></div></div>
+    <dialog id="relation-dialog" class="ovr-dialog compact-dialog">
+      <form id="relation-form">
+        <header><div><small>НОВАЯ СВЯЗЬ</small><h2>Добавить человека в окружение</h2></div><button class="dialog-close" type="button" data-close="relation-dialog">×</button></header>
+        <div class="form-grid"><label><span>Имя / обозначение</span><input id="relation-name" maxlength="160" required></label><label><span>Характер связи</span><input id="relation-type" maxlength="120" placeholder="Партнёр, семья, организация…" required></label><label><span>Статик</span><input id="relation-static" maxlength="12" inputmode="numeric"></label><label><span>Discord</span><input id="relation-discord" maxlength="200"></label></div>
+        <label><span>Степень подтверждения</span><select id="relation-confidence"><option value="unrated">Не оценена</option><option value="low">Слабая</option><option value="medium">Средняя</option><option value="high">Высокая</option><option value="confirmed">Подтверждено</option></select></label>
+        <label><span>Подробности</span><textarea id="relation-details" maxlength="3000" rows="5"></textarea></label>
+        <footer><button class="button button-secondary" type="button" data-close="relation-dialog">Отмена</button><button class="button button-primary" type="submit">Добавить связь</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="task-dialog" class="ovr-dialog compact-dialog">
+      <form id="task-form">
+        <header><div><small>ОПЕРАТИВНАЯ ЗАДАЧА</small><h2>Следующее действие</h2></div><button class="dialog-close" type="button" data-close="task-dialog">×</button></header>
+        <label><span>Задача</span><input id="task-title" maxlength="240" required></label>
+        <label><span>Описание результата</span><textarea id="task-description" maxlength="4000" rows="4"></textarea></label>
+        <div class="form-grid"><label><span>Приоритет</span><select id="task-priority"><option value="normal">Обычный</option><option value="important">Важный</option><option value="urgent">Срочный</option><option value="critical">Критический</option></select></label><label><span>Срок</span><input id="task-due" type="datetime-local"></label></div>
+        <label><span>Ответственный</span><input id="task-assignee" maxlength="200" placeholder="Имя сотрудника"></label>
+        <footer><button class="button button-secondary" type="button" data-close="task-dialog">Отмена</button><button class="button button-primary" type="submit">Поставить задачу</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="ovr-dialog confirm-dialog">
+      <form id="confirm-form">
+        <header><div><small id="confirm-kicker">ПОДТВЕРЖДЕНИЕ</small><h2 id="confirm-title">Подтвердите действие</h2><p id="confirm-copy">Действие будет внесено в журнал.</p></div><button class="dialog-close" type="button" data-close="confirm-dialog">×</button></header>
+        <label><span>Служебное основание</span><textarea id="confirm-note" rows="5" maxlength="5000" required></textarea></label>
+        <footer><button class="button button-secondary" type="button" data-close="confirm-dialog">Отмена</button><button id="confirm-submit" class="button button-primary" type="submit">Подтвердить</button></footer>
+      </form>
+    </dialog>
+
+    <div id="ovr-busy" class="ovr-busy" hidden><div><i></i><strong>Синхронизируем защищённый контур</strong><span>Не закрывайте страницу</span></div></div>
     <div id="ovr-toast" class="ovr-toast" hidden></div>
   </body>
 </html>

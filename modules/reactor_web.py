@@ -1138,25 +1138,38 @@ def register_reactor_web_routes(
                 },
                 status=403,
             )
+        requested_case_id = str(request.query.get("case_id") or "").strip()
+        if requested_case_id:
+            if not requested_case_id.isdigit():
+                return web.json_response(
+                    {"error": "ovr_case_id_invalid", "message": "Неверный номер расследования."},
+                    status=400,
+                )
+            try:
+                detail = await asyncio.to_thread(
+                    ovr_storage.case_detail,
+                    int(requested_case_id),
+                    guild_id=int(guild_id),
+                )
+            except ValueError as exc:
+                return web.json_response(
+                    {"error": str(exc), "message": "Расследование не найдено."},
+                    status=404,
+                )
+            return web.json_response(
+                {"viewer": viewer(principal), "full_access": True, "detail": detail}
+            )
         cases = await asyncio.to_thread(
             ovr_storage.list_cases,
             int(guild_id),
             actor_id=int(principal.user_id),
             full_access=True,
         )
-        events: dict[str, list[dict[str, Any]]] = {}
-        event_rows = await asyncio.gather(
-            *(asyncio.to_thread(ovr_storage.case_events, int(item["id"])) for item in cases)
-        )
-        events = {
-            str(case["id"]): rows for case, rows in zip(cases, event_rows, strict=True)
-        }
         return web.json_response(
             {
                 "viewer": viewer(principal),
                 "full_access": True,
                 "cases": cases,
-                "events": events,
             }
         )
 
@@ -1196,18 +1209,88 @@ def register_reactor_web_routes(
                     ),
                     forum_url=str(body.get("forum_url") or "") or None,
                     additional_info=str(body.get("additional_info") or ""),
+                    case_kind=str(body.get("case_kind") or "admission"),
+                    priority=str(body.get("priority") or "normal"),
+                    classification=str(body.get("classification") or "restricted"),
+                    objective=str(body.get("objective") or ""),
                     actor_id=int(principal.user_id),
                     actor_display=actor_display,
                 )
                 return web.json_response({"ok": True, "case": case})
+            case_id = int(body.get("case_id") or 0)
+            expected_revision = int(body.get("expected_revision") or 0)
+            common = {
+                "guild_id": int(guild_id),
+                "expected_revision": expected_revision,
+                "actor_id": int(principal.user_id),
+                "actor_display": actor_display,
+            }
+            if action == "material_add":
+                detail = await asyncio.to_thread(
+                    ovr_storage.add_material,
+                    case_id,
+                    **common,
+                    kind=str(body.get("kind") or "document"),
+                    title=str(body.get("title") or ""),
+                    content=str(body.get("content") or ""),
+                    source_url=str(body.get("source_url") or ""),
+                    reliability=str(body.get("reliability") or "unrated"),
+                )
+                return web.json_response({"ok": True, "detail": detail})
+            if action == "material_status":
+                detail = await asyncio.to_thread(
+                    ovr_storage.set_material_status,
+                    case_id,
+                    **common,
+                    material_id=int(body.get("material_id") or 0),
+                    status=str(body.get("status") or "new"),
+                )
+                return web.json_response({"ok": True, "detail": detail})
+            if action == "relation_add":
+                detail = await asyncio.to_thread(
+                    ovr_storage.add_relation,
+                    case_id,
+                    **common,
+                    person_name=str(body.get("person_name") or ""),
+                    relation_type=str(body.get("relation_type") or ""),
+                    static_id=str(body.get("static_id") or ""),
+                    discord_text=str(body.get("discord_text") or ""),
+                    details=str(body.get("details") or ""),
+                    confidence=str(body.get("confidence") or "unrated"),
+                )
+                return web.json_response({"ok": True, "detail": detail})
+            if action == "task_add":
+                assignee_id = (
+                    int(body["assignee_id"])
+                    if str(body.get("assignee_id") or "").isdigit()
+                    else None
+                )
+                detail = await asyncio.to_thread(
+                    ovr_storage.add_task,
+                    case_id,
+                    **common,
+                    title=str(body.get("title") or ""),
+                    description=str(body.get("description") or ""),
+                    priority=str(body.get("priority") or "normal"),
+                    assignee_id=assignee_id,
+                    assignee_display=str(body.get("assignee_display") or ""),
+                    due_at=str(body.get("due_at") or ""),
+                )
+                return web.json_response({"ok": True, "detail": detail})
+            if action == "task_status":
+                detail = await asyncio.to_thread(
+                    ovr_storage.set_task_status,
+                    case_id,
+                    **common,
+                    task_id=int(body.get("task_id") or 0),
+                    status=str(body.get("status") or "todo"),
+                )
+                return web.json_response({"ok": True, "detail": detail})
             case = await asyncio.to_thread(
                 ovr_storage.update_case,
-                int(body.get("case_id") or 0),
-                guild_id=int(guild_id),
-                expected_revision=int(body.get("expected_revision") or 0),
+                case_id,
+                **common,
                 action=action,
-                actor_id=int(principal.user_id),
-                actor_display=actor_display,
                 note=str(body.get("note") or ""),
                 findings=(
                     str(body.get("findings")) if "findings" in body else None
@@ -1218,15 +1301,44 @@ def register_reactor_web_routes(
                 risk_level=(
                     str(body.get("risk_level")) if "risk_level" in body else None
                 ),
+                objective=(str(body.get("objective")) if "objective" in body else None),
+                executive_summary=(
+                    str(body.get("executive_summary"))
+                    if "executive_summary" in body else None
+                ),
+                hypothesis=(str(body.get("hypothesis")) if "hypothesis" in body else None),
+                aliases=(str(body.get("aliases")) if "aliases" in body else None),
+                affiliations=(
+                    str(body.get("affiliations")) if "affiliations" in body else None
+                ),
+                priority=(str(body.get("priority")) if "priority" in body else None),
+                classification=(
+                    str(body.get("classification"))
+                    if "classification" in body else None
+                ),
             )
-            return web.json_response({"ok": True, "case": case})
+            detail = await asyncio.to_thread(
+                ovr_storage.case_detail,
+                int(case["id"]),
+                guild_id=int(guild_id),
+            )
+            return web.json_response({"ok": True, "case": case, "detail": detail})
         except (TypeError, ValueError) as exc:
+            code = str(exc)
+            messages = {
+                "ovr_case_revision_conflict": "Карточка уже изменилась у другого сотрудника. Обновите расследование.",
+                "ovr_case_closed": "Завершённое расследование сначала необходимо открыть повторно.",
+                "ovr_note_required": "Добавьте служебное обоснование действия.",
+                "ovr_material_empty": "Добавьте описание материала или ссылку на источник.",
+                "ovr_case_not_found": "Расследование не найдено.",
+                "ovr_case_transition_invalid": "Этот переход недоступен на текущем этапе расследования.",
+            }
             return web.json_response(
                 {
-                    "error": str(exc),
-                    "message": "Проверьте анкету или обновите карточку дела.",
+                    "error": code,
+                    "message": messages.get(code, "Проверьте заполнение полей расследования."),
                 },
-                status=409 if "revision" in str(exc) else 400,
+                status=409 if "revision" in code or code in {"ovr_case_closed"} else 400,
             )
 
     async def preferences(request: web.Request) -> web.Response:

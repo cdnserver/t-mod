@@ -1092,6 +1092,14 @@ def init_db() -> None:
                 discord_user_id INTEGER,
                 forum_url TEXT,
                 additional_info TEXT,
+                case_kind TEXT NOT NULL DEFAULT 'admission',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                classification TEXT NOT NULL DEFAULT 'restricted',
+                objective TEXT,
+                executive_summary TEXT,
+                hypothesis TEXT,
+                aliases TEXT,
+                affiliations TEXT,
                 nowa_links TEXT,
                 findings TEXT,
                 risk_level TEXT NOT NULL DEFAULT 'unrated',
@@ -1126,6 +1134,64 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_ovr_case_events_case
             ON ovr_case_events(case_id, id ASC);
+
+            CREATE TABLE IF NOT EXISTS ovr_case_materials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'document',
+                title TEXT NOT NULL,
+                content TEXT,
+                source_url TEXT,
+                reliability TEXT NOT NULL DEFAULT 'unrated',
+                status TEXT NOT NULL DEFAULT 'new',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_case_materials_case
+            ON ovr_case_materials(case_id, active, id DESC);
+
+            CREATE TABLE IF NOT EXISTS ovr_case_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                person_name TEXT NOT NULL,
+                relation_type TEXT NOT NULL,
+                static_id TEXT,
+                discord_text TEXT,
+                details TEXT,
+                confidence TEXT NOT NULL DEFAULT 'unrated',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_case_relations_case
+            ON ovr_case_relations(case_id, active, id DESC);
+
+            CREATE TABLE IF NOT EXISTS ovr_case_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'todo',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                assignee_id INTEGER,
+                assignee_display TEXT,
+                due_at TEXT,
+                created_by_id INTEGER NOT NULL,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_case_tasks_case
+            ON ovr_case_tasks(case_id, status, priority, id DESC);
 
             CREATE TABLE IF NOT EXISTS admin_broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1645,6 +1711,18 @@ def init_db() -> None:
         }.items():
             _add_column_if_missing(con, "member_profiles", column, definition)
 
+        for column, definition in {
+            "case_kind": "TEXT NOT NULL DEFAULT 'admission'",
+            "priority": "TEXT NOT NULL DEFAULT 'normal'",
+            "classification": "TEXT NOT NULL DEFAULT 'restricted'",
+            "objective": "TEXT",
+            "executive_summary": "TEXT",
+            "hypothesis": "TEXT",
+            "aliases": "TEXT",
+            "affiliations": "TEXT",
+        }.items():
+            _add_column_if_missing(con, "ovr_cases", column, definition)
+
         _add_column_if_missing(
             con,
             "tvrs_bill_workspaces",
@@ -1889,49 +1967,6 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_legislation_tasks_block
             ON tvrs_legislation_tasks(bill_id, source_block_id)
             WHERE bill_id IS NOT NULL AND source_block_id IS NOT NULL;
-
-            CREATE TABLE IF NOT EXISTS ovr_cases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL,
-                case_number INTEGER NOT NULL,
-                first_name TEXT NOT NULL,
-                last_name TEXT NOT NULL,
-                static_id TEXT NOT NULL,
-                discord_text TEXT NOT NULL,
-                discord_user_id INTEGER,
-                forum_url TEXT,
-                additional_info TEXT,
-                nowa_links TEXT,
-                findings TEXT,
-                risk_level TEXT NOT NULL DEFAULT 'unrated',
-                status TEXT NOT NULL DEFAULT 'new',
-                decision TEXT,
-                decision_reason TEXT,
-                assigned_to_id INTEGER,
-                assigned_to_display TEXT,
-                created_by_id INTEGER NOT NULL,
-                created_by_display TEXT,
-                due_at TEXT NOT NULL,
-                revision INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                decided_at TEXT,
-                UNIQUE(guild_id, case_number)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ovr_cases_board
-            ON ovr_cases(guild_id, status, due_at, case_number DESC);
-            CREATE TABLE IF NOT EXISTS ovr_case_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL,
-                case_id INTEGER NOT NULL,
-                actor_id INTEGER NOT NULL,
-                actor_display TEXT,
-                action TEXT NOT NULL,
-                note TEXT,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_ovr_case_events_case
-            ON ovr_case_events(case_id, id ASC);
             """
         )
 
