@@ -8,9 +8,9 @@
     <meta name="description" content="Закрытый оперативно-аналитический контур ОВР T-Mod.">
     <title>ОВР · T-Mod</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <link rel="stylesheet" href="/assets/ovr.css?v=3">
+    <link rel="stylesheet" href="/assets/ovr.css?v=4">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/ovr.js?v=3" defer></script>
+    <script src="/assets/ovr.js?v=4" defer></script>
   </head>
   <body>
     <div class="ovr-atmosphere" aria-hidden="true"><i></i><i></i><b></b></div>
@@ -29,6 +29,7 @@
           <span>ОВР</span><div><strong>ВНЕШНЯЯ РАЗВЕДКА</strong><small>BECKER SYSTEMS × TVR.LAT</small></div>
         </button>
         <nav>
+          <span class="ovr-session"><i></i><span><small>ОПЕРАТОР</small><strong id="ovr-operator">Проверка допуска</strong></span></span>
           <a href="https://tvr.lat/">Личный Реактор</a>
           <a href="https://reactor.tvr.lat/">Ядерный Реактор</a>
           <a href="/auth/logout">Выйти</a>
@@ -61,6 +62,7 @@
             <div><small>ОПЕРАТИВНЫЙ РЕЕСТР</small><h2>Все расследования</h2><p>Карточки отсортированы по этапу, срочности и контрольному сроку.</p></div>
             <div class="workspace-tools">
               <label class="ovr-search"><span>⌕</span><input id="ovr-search" type="search" placeholder="Человек, статик, Discord или ОВР-номер"></label>
+              <label class="ovr-sort"><span>Сортировка</span><select id="ovr-sort"><option value="priority">Приоритет и срок</option><option value="updated">Недавно изменённые</option><option value="number">По номеру дела</option><option value="name">По имени</option></select></label>
               <div id="ovr-filters" class="ovr-filters" aria-label="Фильтр расследований">
                 <button class="active" type="button" data-filter="active">Активные</button>
                 <button type="button" data-filter="all">Все</button>
@@ -77,6 +79,7 @@
           <button id="case-back" class="case-back" type="button"><span>←</span> Реестр</button>
           <div><small id="case-breadcrumb">ОВР-000</small><span> / </span><strong id="case-command-name">Расследование</strong></div>
           <div class="case-command-actions">
+            <button id="case-copy-link" class="button button-secondary" type="button"><span>⌁</span> Скопировать ссылку</button>
             <button id="case-report" class="button button-secondary" type="button"><span>⇩</span> Защищённый PDF</button>
             <button id="case-reload" class="icon-button" type="button" title="Обновить расследование">↻</button>
           </div>
@@ -85,7 +88,7 @@
         <section class="case-hero">
           <div class="subject-monogram"><span id="case-monogram">—</span><i></i><i></i></div>
           <div class="case-identity">
-            <span class="eyebrow" id="case-kicker"><i></i> РАССЛЕДОВАНИЕ ОВР</span>
+            <span class="eyebrow" id="case-kicker"><i></i><span id="case-kicker-copy">РАССЛЕДОВАНИЕ ОВР</span></span>
             <h1 id="case-title">Карточка человека</h1>
             <p id="case-subtitle">Загружаем оперативную сводку…</p>
             <div id="case-pills" class="case-pills"></div>
@@ -147,6 +150,11 @@
               <article class="intel-card snapshot-card">
                 <small>СОСТОЯНИЕ ДОСЬЕ</small>
                 <div id="case-snapshot"></div>
+              </article>
+              <article class="intel-card readiness-card">
+                <header><div><small>КОНТРОЛЬ КАЧЕСТВА</small><h2>Готовность решения</h2></div><strong id="case-readiness-score">0/6</strong></header>
+                <div id="case-readiness-list" class="readiness-list"></div>
+                <p id="case-next-action" class="case-next-action">Формируем рекомендации…</p>
               </article>
               <article class="intel-card quick-log-card">
                 <small>СЛУЖЕБНАЯ ЗАПИСЬ</small>

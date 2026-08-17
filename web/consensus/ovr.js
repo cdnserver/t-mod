@@ -4,13 +4,21 @@
   const byId = (id) => document.getElementById(id);
   const state = {
     csrf: "",
+    viewer: null,
     cases: [],
     detail: null,
     filter: "active",
+    sort: "priority",
     activeTab: "overview",
     busy: false,
+    dirty: false,
     confirmAction: null,
   };
+
+  const dossierFieldIds = [
+    "case-objective", "case-hypothesis", "case-summary", "case-findings", "case-nowa",
+    "case-risk", "case-priority", "case-classification", "case-aliases", "case-affiliations",
+  ];
 
   const labels = {
     status: {
@@ -81,6 +89,23 @@
   const textOr = (value, fallback = "Не указано") => String(value || "").trim() || fallback;
   const caseNumber = (item) => `ОВР-${String(item?.case_number || 0).padStart(3, "0")}`;
   const fullName = (item) => `${item?.first_name || ""} ${item?.last_name || ""}`.trim() || "Без имени";
+  const eventElement = (event) => event?.target instanceof Element ? event.target : null;
+
+  function friendlyError(error) {
+    if (error?.name === "AbortError" || error?.name === "TimeoutError") return "Сервер отвечает дольше обычного. Повторите действие — введённые данные сохранены на экране.";
+    const message = String(error?.message || error || "Неизвестная ошибка");
+    if (/target|null|closest|lastChild|interface_outdated/i.test(message)) return "Интерфейс обновился не полностью. Обновите страницу один раз — данные расследования не потеряны.";
+    if (/failed to fetch|networkerror|load failed/i.test(message)) return "Связь с защищённым контуром прервалась. Проверьте соединение и повторите действие.";
+    return message;
+  }
+
+  function setDirty(active) {
+    state.dirty = Boolean(active);
+    const button = byId("case-save");
+    if (!button) return;
+    button.classList.toggle("has-changes", state.dirty);
+    button.textContent = state.dirty ? "Сохранить изменения · есть правки" : "Сохранить изменения";
+  }
 
   function timeoutSignal(ms) {
     if (globalThis.AbortSignal?.timeout) return AbortSignal.timeout(ms);
@@ -90,17 +115,25 @@
   }
 
   async function request(path, options = {}) {
-    const response = await fetch(path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...options,
-      signal: options.signal || timeoutSignal(options.method === "POST" ? 30000 : 15000),
-      headers: {
-        Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json", "X-CSRF-Token": state.csrf } : {}),
-        ...(options.headers || {}),
-      },
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        credentials: "same-origin",
+        cache: "no-store",
+        ...options,
+        signal: options.signal || timeoutSignal(options.method === "POST" ? 30000 : 15000),
+        headers: {
+          Accept: "application/json",
+          ...(options.body ? { "Content-Type": "application/json", "X-CSRF-Token": state.csrf } : {}),
+          ...(options.headers || {}),
+        },
+      });
+    } catch (error) {
+      const wrapped = new Error(friendlyError(error));
+      wrapped.name = error?.name || "NetworkError";
+      wrapped.code = "network_unavailable";
+      throw wrapped;
+    }
     let data = {};
     try { data = await response.json(); } catch { data = {}; }
     if (!response.ok) {
@@ -115,7 +148,8 @@
 
   function toast(message, kind = "success") {
     const item = byId("ovr-toast");
-    item.textContent = String(message);
+    if (!item) return;
+    item.textContent = friendlyError(message);
     item.dataset.kind = kind;
     item.hidden = false;
     clearTimeout(toast.timer);
@@ -125,6 +159,7 @@
   function setBusy(active, copy = "Сохраняем изменения") {
     state.busy = active;
     const overlay = byId("ovr-busy");
+    if (!overlay) return;
     overlay.hidden = !active;
     const title = overlay.querySelector("strong");
     if (title) title.textContent = copy;
@@ -132,7 +167,7 @@
 
   function openDialog(id) {
     const dialog = byId(id);
-    if (!dialog.open) dialog.showModal();
+    if (dialog && !dialog.open) dialog.showModal();
   }
 
   function closeDialog(id) {
@@ -188,18 +223,28 @@
   }
 
   function stampSync() {
-    byId("ovr-sync").textContent = `Актуально на ${new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
+    const target = byId("ovr-sync");
+    if (target) target.textContent = `Актуально на ${new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date())}`;
   }
 
   function visibleCases() {
-    const query = byId("ovr-search").value.trim().toLowerCase();
-    return state.cases.filter((item) => {
+    const query = (byId("ovr-search")?.value || "").trim().toLowerCase();
+    const items = state.cases.filter((item) => {
       const isClosed = closedStatuses.has(item.status);
       if (state.filter === "active" && isClosed) return false;
       if (state.filter === "closed" && !isClosed) return false;
       if (!query) return true;
       return [item.case_number, item.first_name, item.last_name, item.static_id, item.discord_text, item.assigned_to_display, item.case_kind]
         .some((value) => String(value || "").toLowerCase().includes(query));
+    });
+    const priority = { critical: 0, urgent: 1, important: 2, normal: 3 };
+    return items.sort((left, right) => {
+      if (state.sort === "updated") return new Date(right.updated_at || 0) - new Date(left.updated_at || 0);
+      if (state.sort === "number") return Number(right.case_number || 0) - Number(left.case_number || 0);
+      if (state.sort === "name") return fullName(left).localeCompare(fullName(right), "ru");
+      return (priority[left.priority] ?? 4) - (priority[right.priority] ?? 4)
+        || new Date(left.due_at || "9999-12-31") - new Date(right.due_at || "9999-12-31")
+        || Number(right.case_number || 0) - Number(left.case_number || 0);
     });
   }
 
@@ -395,6 +440,32 @@
     }));
   }
 
+  function renderReadiness(item, detail) {
+    const checks = [
+      [Boolean(item.assigned_to_display), "Назначен ответственный сотрудник"],
+      [Boolean(String(item.objective || "").trim()), "Сформулирована цель расследования"],
+      [detail.materials.length > 0, "Добавлен хотя бы один материал"],
+      [detail.materials.some((entry) => entry.status === "verified"), "Есть проверенный материал"],
+      [item.risk_level && item.risk_level !== "unrated", "Определён уровень риска"],
+      [Boolean(String(item.executive_summary || "").trim()) && Boolean(String(item.findings || "").trim()), "Готовы сводка и итоговый анализ"],
+    ];
+    const complete = checks.filter(([ready]) => ready).length;
+    byId("case-readiness-score").textContent = `${complete}/${checks.length}`;
+    byId("case-readiness-score").dataset.complete = complete === checks.length ? "true" : "false";
+    byId("case-readiness-list").replaceChildren(...checks.map(([ready, copy]) => {
+      const row = node("div", "readiness-item");
+      row.dataset.ready = ready ? "true" : "false";
+      row.append(node("i", "", ready ? "✓" : "·"), node("span", "", copy));
+      return row;
+    }));
+    const next = checks.find(([ready]) => !ready)?.[1];
+    byId("case-next-action").textContent = next
+      ? `Следующий шаг: ${next.toLowerCase()}.`
+      : item.status === "decision"
+        ? "Досье готово к мотивированному решению."
+        : "Базовый стандарт досье выполнен. Можно переходить к следующему этапу.";
+  }
+
   function renderMaterials(materials) {
     const target = byId("case-materials");
     if (!materials.length) {
@@ -527,7 +598,7 @@
     byId("case-breadcrumb").textContent = caseNumber(item);
     byId("case-command-name").textContent = fullName(item);
     byId("case-monogram").textContent = `${String(item.first_name || "?")[0]}${String(item.last_name || "?")[0]}`.toUpperCase();
-    byId("case-kicker").lastChild.textContent = ` ${labels.kind[item.case_kind] || "РАССЛЕДОВАНИЕ ОВР"}`.toUpperCase();
+    byId("case-kicker-copy").textContent = String(labels.kind[item.case_kind] || "РАССЛЕДОВАНИЕ ОВР").toUpperCase();
     byId("case-title").textContent = fullName(item);
     byId("case-subtitle").textContent = `${caseNumber(item)} · статик ${item.static_id} · ${textOr(item.discord_text, "Discord не указан")}`;
     byId("case-pills").replaceChildren(
@@ -574,11 +645,13 @@
     renderStage(item);
     renderActions(item);
     renderSnapshot(item, detail);
+    renderReadiness(item, detail);
     renderMaterials(detail.materials);
     renderRelations(detail.relations);
     renderTasks(detail.tasks);
     renderTimeline(detail.events);
     selectTab(state.activeTab);
+    setDirty(false);
   }
 
   function selectTab(tab) {
@@ -605,6 +678,10 @@
   async function mutateCase(action, extra = {}, message = "Изменения сохранены.") {
     const item = state.detail?.case;
     if (!item || state.busy) return false;
+    if (state.dirty && action !== "update") {
+      toast("Сначала сохраните изменения в аналитической карточке — так они не потеряются при обновлении дела.", "warning");
+      return false;
+    }
     setBusy(true);
     try {
       const data = await request("/api/ovr", {
@@ -634,8 +711,11 @@
   async function loadRegistry({ silent = false } = {}) {
     try {
       const data = await request("/api/ovr");
+      state.viewer = data.viewer || state.viewer;
       state.csrf = data.viewer?.csrf_token || state.csrf;
       state.cases = Array.isArray(data.cases) ? data.cases : [];
+      const operator = byId("ovr-operator");
+      if (operator) operator.textContent = textOr(data.viewer?.display_name, "Сотрудник ОВР");
       renderBoard();
       stampSync();
       byId("ovr-gate").hidden = true;
@@ -649,8 +729,8 @@
       } else if (error.status === 403) {
         byId("ovr-gate-message").textContent = "Этот контур закрыт. Запросите у администратора отдельный доступ к ОВР.";
       } else if (!silent) {
-        byId("ovr-gate-message").textContent = error.message;
-        toast(error.message, "error");
+        byId("ovr-gate-message").textContent = friendlyError(error);
+        toast(friendlyError(error), "error");
       }
       return false;
     }
@@ -659,6 +739,7 @@
   async function fetchCase(id, { silent = false } = {}) {
     try {
       const data = await request(`/api/ovr?case_id=${encodeURIComponent(id)}`);
+      state.viewer = data.viewer || state.viewer;
       state.csrf = data.viewer?.csrf_token || state.csrf;
       applyDetail(data.detail);
       return true;
@@ -682,14 +763,23 @@
       byId("case-subtitle").textContent = "Получаем материалы, связи и журнал…";
     }
     setBusy(true, "Открываем расследование");
-    await fetchCase(caseId);
+    const loaded = await fetchCase(caseId);
     setBusy(false);
+    if (!loaded) {
+      showRegistry(false);
+      toast("Не удалось открыть расследование. Реестр и введённые данные остались без изменений.", "error");
+      return;
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function refreshCase(silent = false) {
     const id = state.detail?.case?.id;
     if (!id) return;
+    if (state.dirty) {
+      if (!silent) toast("Сначала сохраните изменения в аналитической карточке.", "warning");
+      return;
+    }
     if (!silent) setBusy(true, "Получаем свежую карточку");
     const ok = await fetchCase(id, { silent });
     if (!silent) {
@@ -699,17 +789,41 @@
   }
 
   function showRegistry(push = true) {
+    if (state.dirty) {
+      toast("Сохраните изменения перед возвратом в реестр.", "warning");
+      return false;
+    }
     state.detail = null;
     byId("ovr-case-page").hidden = true;
     byId("ovr-registry-page").hidden = false;
     if (push && location.hash) history.pushState({}, "", location.pathname + location.search);
     window.scrollTo({ top: 0, behavior: "smooth" });
+    return true;
   }
 
   function route() {
     const match = location.hash.match(/^#\/case\/(\d+)$/);
     if (match) void openCase(Number(match[1]), false);
     else showRegistry(false);
+  }
+
+  async function copyCaseLink() {
+    if (!state.detail?.case?.id) return;
+    const url = new URL(location.href);
+    url.hash = `/case/${state.detail.case.id}`;
+    try {
+      await navigator.clipboard.writeText(url.toString());
+    } catch {
+      const input = node("textarea");
+      input.value = url.toString();
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.append(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+    toast("Защищённая ссылка на расследование скопирована.");
   }
 
   async function createCase(event) {
@@ -868,16 +982,21 @@
     openDialog("report-dialog");
     window.setTimeout(() => byId("report-password").focus(), 60);
   });
+  byId("case-copy-link").addEventListener("click", () => void copyCaseLink());
   byId("ovr-search").addEventListener("input", renderBoard);
+  byId("ovr-sort").addEventListener("change", (event) => {
+    state.sort = event.currentTarget.value;
+    renderBoard();
+  });
   byId("ovr-filters").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-filter]");
+    const button = eventElement(event)?.closest("button[data-filter]");
     if (!button) return;
     state.filter = button.dataset.filter;
     byId("ovr-filters").querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
     renderBoard();
   });
   byId("case-tabs").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-tab]");
+    const button = eventElement(event)?.closest("button[data-tab]");
     if (button) selectTab(button.dataset.tab);
   });
   byId("case-save").addEventListener("click", () => void mutateCase("update", dossierPayload(), "Аналитическая карточка сохранена."));
@@ -904,7 +1023,33 @@
     state.confirmAction = null;
     await mutateCase(action, { note }, successMessage(action));
   });
+  dossierFieldIds.forEach((id) => byId(id).addEventListener("input", () => setDirty(true)));
+  window.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && state.detail?.case && state.dirty) {
+      event.preventDefault();
+      void mutateCase("update", dossierPayload(), "Аналитическая карточка сохранена.");
+    }
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (!state.dirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  window.addEventListener("error", (event) => {
+    console.error("OVR interface error", event.error || event.message);
+    toast(friendlyError(event.error || event.message), "error");
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    console.error("OVR async error", event.reason);
+    toast(friendlyError(event.reason), "error");
+  });
   window.addEventListener("popstate", route);
+
+  window.setInterval(() => {
+    if (document.hidden || state.busy || state.dirty) return;
+    if (state.detail?.case?.id) void refreshCase(true);
+    else void loadRegistry({ silent: true });
+  }, 45000);
 
   void (async () => {
     const loaded = await loadRegistry();

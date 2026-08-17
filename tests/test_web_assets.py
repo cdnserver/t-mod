@@ -99,6 +99,18 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertIn("Electron", source)
         self.assertIn("tmod-desktop-recommendation-v1", source)
 
+    def test_ovr_ui_is_cache_versioned_and_guards_event_targets(self) -> None:
+        html = (WEB / "ovr.html").read_text(encoding="utf-8")
+        source = (WEB / "ovr.js").read_text(encoding="utf-8")
+
+        self.assertIn('/assets/ovr.css?v=4', html)
+        self.assertIn('/assets/ovr.js?v=4', html)
+        self.assertIn('id="case-kicker-copy"', html)
+        self.assertIn('id="case-readiness-list"', html)
+        self.assertNotIn("event.target.closest", source)
+        self.assertNotIn(".lastChild.textContent", source)
+        self.assertIn("if (state.dirty && action !== \"update\")", source)
+
 
 if __name__ == "__main__":
     unittest.main()
