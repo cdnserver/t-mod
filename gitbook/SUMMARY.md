@@ -1,6 +1,8 @@
-# Содержание
+# Table of contents
 
-* [T-Mod — руководство пользователя](readme.md)
+* [README](README.md)
+* [T-Mod — руководство пользователя](t-mod-rukovodstvo-polzovatelya.md)
+* [\[Dev\] T-Mod Atlas](dev-t-mod-atlas.md)
 * [Что нового](changelog/2026-08-14.md)
 
 ## Быстрый старт
@@ -20,7 +22,7 @@
 ## Товарищество
 
 * [Операционный центр](tvrs/operations-center.md)
-* [Главное меню `/tvrs`](tvrs/universality.md)
+* [Главное меню /tvrs](tvrs/universality.md)
 * [Казна](tvrs/finance.md)
 * [Крафты и производство](tvrs/craft.md)
 * [Рынок RU15](tvrs/market.md)
