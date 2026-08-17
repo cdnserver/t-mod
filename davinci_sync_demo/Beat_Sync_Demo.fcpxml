@@ -1,0 +1,165 @@
+<?xml version='1.0' encoding='utf-8'?>
+<fcpxml version="1.10">
+  <resources>
+    <format id="r1" name="FFVideoFormat1080p60" frameDuration="1/60s" width="1920" height="1080" />
+    <asset id="r2" name="Gource source video" src="file:///Users/roberts/Documents/Codex/2026-07-14/files-mentioned-by-the-user-esgiel/esgiel/artifacts/t-mod-gource-1080p60.mp4" start="0s" duration="32.366667s" hasVideo="1" hasAudio="0" format="r1" />
+    <asset id="r3" name="120 BPM sync demo music" src="file:///Users/roberts/Documents/Codex/2026-07-14/files-mentioned-by-the-user-esgiel/esgiel/davinci_sync_demo/sync_demo_music.wav" start="0s" duration="24.000000s" hasVideo="0" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000" />
+  </resources>
+  <library location="file:///">
+    <event name="AI Sync Demo">
+      <project name="Beat Sync Demo">
+        <sequence format="r1" duration="24.000000s" tcStart="0s" tcFormat="NDF">
+          <spine>
+            <asset-clip name="Beat cut 01" ref="r2" offset="0.000000s" start="0.000000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 01" />
+            </asset-clip>
+            <asset-clip name="Beat cut 02" ref="r2" offset="0.500000s" start="0.666667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 02" />
+            </asset-clip>
+            <asset-clip name="Beat cut 03" ref="r2" offset="1.000000s" start="1.333333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 03" />
+            </asset-clip>
+            <asset-clip name="Beat cut 04" ref="r2" offset="1.500000s" start="2.016667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 04" />
+            </asset-clip>
+            <asset-clip name="Beat cut 05" ref="r2" offset="2.000000s" start="2.683333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 05" />
+            </asset-clip>
+            <asset-clip name="Beat cut 06" ref="r2" offset="2.500000s" start="3.350000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 06" />
+            </asset-clip>
+            <asset-clip name="Beat cut 07" ref="r2" offset="3.000000s" start="4.016667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 07" />
+            </asset-clip>
+            <asset-clip name="Beat cut 08" ref="r2" offset="3.500000s" start="4.683333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 08" />
+            </asset-clip>
+            <asset-clip name="Beat cut 09" ref="r2" offset="4.000000s" start="5.366667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 09" />
+            </asset-clip>
+            <asset-clip name="Beat cut 10" ref="r2" offset="4.500000s" start="6.033333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 10" />
+            </asset-clip>
+            <asset-clip name="Beat cut 11" ref="r2" offset="5.000000s" start="6.700000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 11" />
+            </asset-clip>
+            <asset-clip name="Beat cut 12" ref="r2" offset="5.500000s" start="7.366667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 12" />
+            </asset-clip>
+            <asset-clip name="Beat cut 13" ref="r2" offset="6.000000s" start="8.033333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 13" />
+            </asset-clip>
+            <asset-clip name="Beat cut 14" ref="r2" offset="6.500000s" start="8.716667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 14" />
+            </asset-clip>
+            <asset-clip name="Beat cut 15" ref="r2" offset="7.000000s" start="9.383333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 15" />
+            </asset-clip>
+            <asset-clip name="Beat cut 16" ref="r2" offset="7.500000s" start="10.050000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 16" />
+            </asset-clip>
+            <asset-clip name="Beat cut 17" ref="r2" offset="8.000000s" start="10.716667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 17" />
+            </asset-clip>
+            <asset-clip name="Beat cut 18" ref="r2" offset="8.500000s" start="11.383333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 18" />
+            </asset-clip>
+            <asset-clip name="Beat cut 19" ref="r2" offset="9.000000s" start="12.066667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 19" />
+            </asset-clip>
+            <asset-clip name="Beat cut 20" ref="r2" offset="9.500000s" start="12.733333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 20" />
+            </asset-clip>
+            <asset-clip name="Beat cut 21" ref="r2" offset="10.000000s" start="13.400000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 21" />
+            </asset-clip>
+            <asset-clip name="Beat cut 22" ref="r2" offset="10.500000s" start="14.066667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 22" />
+            </asset-clip>
+            <asset-clip name="Beat cut 23" ref="r2" offset="11.000000s" start="14.733333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 23" />
+            </asset-clip>
+            <asset-clip name="Beat cut 24" ref="r2" offset="11.500000s" start="15.416667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 24" />
+            </asset-clip>
+            <asset-clip name="Beat cut 25" ref="r2" offset="12.000000s" start="16.083333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 25" />
+            </asset-clip>
+            <asset-clip name="Beat cut 26" ref="r2" offset="12.500000s" start="16.750000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 26" />
+            </asset-clip>
+            <asset-clip name="Beat cut 27" ref="r2" offset="13.000000s" start="17.416667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 27" />
+            </asset-clip>
+            <asset-clip name="Beat cut 28" ref="r2" offset="13.500000s" start="18.083333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 28" />
+            </asset-clip>
+            <asset-clip name="Beat cut 29" ref="r2" offset="14.000000s" start="18.766667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 29" />
+            </asset-clip>
+            <asset-clip name="Beat cut 30" ref="r2" offset="14.500000s" start="19.433333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 30" />
+            </asset-clip>
+            <asset-clip name="Beat cut 31" ref="r2" offset="15.000000s" start="20.100000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 31" />
+            </asset-clip>
+            <asset-clip name="Beat cut 32" ref="r2" offset="15.500000s" start="20.766667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 32" />
+            </asset-clip>
+            <asset-clip name="Beat cut 33" ref="r2" offset="16.000000s" start="21.433333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 33" />
+            </asset-clip>
+            <asset-clip name="Beat cut 34" ref="r2" offset="16.500000s" start="22.116667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 34" />
+            </asset-clip>
+            <asset-clip name="Beat cut 35" ref="r2" offset="17.000000s" start="22.783333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 35" />
+            </asset-clip>
+            <asset-clip name="Beat cut 36" ref="r2" offset="17.500000s" start="23.450000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 36" />
+            </asset-clip>
+            <asset-clip name="Beat cut 37" ref="r2" offset="18.000000s" start="24.116667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 37" />
+            </asset-clip>
+            <asset-clip name="Beat cut 38" ref="r2" offset="18.500000s" start="24.783333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 38" />
+            </asset-clip>
+            <asset-clip name="Beat cut 39" ref="r2" offset="19.000000s" start="25.466667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 39" />
+            </asset-clip>
+            <asset-clip name="Beat cut 40" ref="r2" offset="19.500000s" start="26.133333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 40" />
+            </asset-clip>
+            <asset-clip name="Beat cut 41" ref="r2" offset="20.000000s" start="26.800000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 41" />
+            </asset-clip>
+            <asset-clip name="Beat cut 42" ref="r2" offset="20.500000s" start="27.466667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 42" />
+            </asset-clip>
+            <asset-clip name="Beat cut 43" ref="r2" offset="21.000000s" start="28.133333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 43" />
+            </asset-clip>
+            <asset-clip name="Beat cut 44" ref="r2" offset="21.500000s" start="28.816667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 44" />
+            </asset-clip>
+            <asset-clip name="Beat cut 45" ref="r2" offset="22.000000s" start="29.483333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 45" />
+            </asset-clip>
+            <asset-clip name="Beat cut 46" ref="r2" offset="22.500000s" start="30.150000s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 46" />
+            </asset-clip>
+            <asset-clip name="Beat cut 47" ref="r2" offset="23.000000s" start="30.816667s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 47" />
+            </asset-clip>
+            <asset-clip name="Beat cut 48" ref="r2" offset="23.500000s" start="31.483333s" duration="0.500000s" lane="0">
+              <marker start="0s" duration="1/60s" value="Beat 48" />
+            </asset-clip>
+            <asset-clip name="SYNC MUSIC — 120 BPM" ref="r3" offset="0s" start="0s" duration="24.000000s" lane="-1">
+              <note value="Original demo music, 120 BPM. Cuts land on every beat." />
+            </asset-clip>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
