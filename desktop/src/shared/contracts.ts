@@ -55,6 +55,15 @@ export interface BootstrapResult {
   online: boolean;
   data?: DesktopBootstrap;
   error?: string;
+  lastSuccessfulAt?: string;
+}
+
+export interface DesktopShellPreferences {
+  sidebarCollapsed: boolean;
+  compactMode: boolean;
+  reduceMotion: boolean;
+  solidSurfaces: boolean;
+  serviceZoom: number;
 }
 
 export interface DesktopLoginCredentials {
@@ -113,6 +122,9 @@ export interface TModDesktopApi {
   goBack(): Promise<void>;
   goForward(): Promise<void>;
   setShellOverlayOpen(open: boolean): Promise<void>;
+  applyPreferences(preferences: DesktopShellPreferences): Promise<DesktopShellPreferences>;
+  copyCurrentLink(): Promise<boolean>;
+  openCurrentLink(): Promise<boolean>;
   openLogin(): Promise<DesktopState>;
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;

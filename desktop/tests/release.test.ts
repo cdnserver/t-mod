@@ -24,7 +24,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.2.1");
+    expect(manifest.version).toBe("0.3.0");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -44,5 +44,15 @@ describe("desktop release contract", () => {
     expect(main).toContain("syncServiceVisibility");
     expect(preload).toContain('ipcRenderer.invoke("desktop:shell-overlay"');
     expect(preload).toContain('ipcRenderer.on("desktop:command-palette"');
+  });
+
+  it("keeps beta sessions resilient and exposes shell preferences", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const preload = readFileSync(resolve(root, "src/preload/index.ts"), "utf8");
+    expect(main).toContain("SERVICE_RETRY_DELAYS");
+    expect(main).toContain("TModDesktop/${app.getVersion()}");
+    expect(main).toContain('ipcMain.handle("desktop:preferences"');
+    expect(preload).toContain('ipcRenderer.invoke("desktop:preferences"');
+    expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
   });
 });

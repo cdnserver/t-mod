@@ -14,6 +14,7 @@ import type {
   DesktopLoginCredentials,
   DesktopLoginResult,
   DesktopNotification,
+  DesktopShellPreferences,
   DesktopState,
   DesktopUpdateState,
   ServiceId,
@@ -26,7 +27,32 @@ import {
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
-  "maximize" | "close";
+  "maximize" | "close" | "settings" | "menu" | "link" | "external";
+
+const PREFERENCES_KEY = "tmod-desktop-preferences-v1";
+const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  sidebarCollapsed: false,
+  compactMode: false,
+  reduceMotion: false,
+  solidSurfaces: false,
+  serviceZoom: 1,
+};
+
+function loadPreferences(): DesktopShellPreferences {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || "{}") as Partial<DesktopShellPreferences>;
+    const zoom = Number(stored.serviceZoom);
+    return {
+      sidebarCollapsed: stored.sidebarCollapsed === true,
+      compactMode: stored.compactMode === true,
+      reduceMotion: stored.reduceMotion === true,
+      solidSurfaces: stored.solidSurfaces === true,
+      serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
+    };
+  } catch {
+    return { ...DEFAULT_PREFERENCES };
+  }
+}
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<string, ReactNode> = {
@@ -52,6 +78,10 @@ function Icon({ name }: { name: IconName }) {
     minimize: <path d="M6 12h12"/>,
     maximize: <rect x="6" y="6" width="12" height="12" rx="1.5"/>,
     close: <path d="M7 7l10 10M17 7L7 17"/>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21h-4v-.1a1.7 1.7 0 00-1-1.5 1.7 1.7 0 00-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3v-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 001.9.3 1.7 1.7 0 001-1.5V3h4v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 00-.3 1.9 1.7 1.7 0 001.5 1h.1v4h-.1a1.7 1.7 0 00-1.5 1z"/></>,
+    menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
+    link: <><path d="M10 13a4.5 4.5 0 006.4.1l2-2a4.5 4.5 0 00-6.4-6.4l-1.1 1.1"/><path d="M14 11a4.5 4.5 0 00-6.4-.1l-2 2A4.5 4.5 0 0012 19.3l1.1-1.1"/></>,
+    external: <><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h6"/></>,
   };
   return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">{paths[name]}</svg>;
 }
@@ -92,6 +122,9 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
+  const [toast, setToast] = useState<string>();
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
     currentVersion: "—",
@@ -156,6 +189,17 @@ export function App() {
   }, [bootstrap.online, loadBootstrap]);
 
   useEffect(() => {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
+    void browserApi()?.applyPreferences(preferences);
+  }, [preferences]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(undefined), 2_400);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
     const api = browserApi();
     if (!api) return;
     const unsubscribeUpdate = api.onUpdate(setUpdateState);
@@ -171,6 +215,7 @@ export function App() {
       if (event.key === "Escape") {
         setPaletteOpen(false);
         setNotificationsOpen(false);
+        setSettingsOpen(false);
       }
       if ((event.metaKey || event.ctrlKey) && /^[1-4]$/.test(event.key)) {
         const target = services[Number(event.key) - 1];
@@ -186,8 +231,8 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen);
-  }, [paletteOpen, notificationsOpen]);
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen);
+  }, [paletteOpen, notificationsOpen, settingsOpen]);
 
   useEffect(() => () => {
     void browserApi()?.setShellOverlayOpen(false);
@@ -210,6 +255,7 @@ export function App() {
     if (serviceId !== "home" && (!bootstrap.authenticated || !remote?.enabled)) return;
     setPaletteOpen(false);
     setNotificationsOpen(false);
+    setSettingsOpen(false);
     const api = browserApi();
     if (api) setDesktopState(await api.navigate(serviceId));
     else setDesktopState((current) => ({ ...current, activeService: serviceId }));
@@ -264,10 +310,28 @@ export function App() {
     setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
   };
 
+  const desktopClasses = [
+    "desktop",
+    preferences.sidebarCollapsed ? "sidebar-collapsed" : "",
+    preferences.compactMode ? "compact-mode" : "",
+    preferences.reduceMotion ? "reduce-motion" : "",
+    preferences.solidSurfaces ? "solid-surfaces" : "",
+  ].filter(Boolean).join(" ");
+
+  const copyCurrentLink = async () => {
+    if (await browserApi()?.copyCurrentLink()) setToast("Ссылка на раздел скопирована");
+  };
+
   return (
-    <div className="desktop" style={style}>
+    <div className={desktopClasses} style={style}>
       <div className="aurora" aria-hidden="true"><i/><i/><i/></div>
       <aside className="sidebar">
+        <button
+          className="sidebar-toggle"
+          onClick={() => setPreferences((current) => ({ ...current, sidebarCollapsed: !current.sidebarCollapsed }))}
+          aria-label={preferences.sidebarCollapsed ? "Развернуть меню" : "Свернуть меню"}
+          title={preferences.sidebarCollapsed ? "Развернуть меню" : "Свернуть меню"}
+        ><Icon name="menu"/></button>
         <button className="brand" onClick={() => void selectService("home")} aria-label="T-Mod — домой">
           <span className="brand-mark"><span>T</span></span>
           <span><strong>T-Mod</strong><small>desktop system</small></span>
@@ -338,7 +402,10 @@ export function App() {
             </button>
           )}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
+          {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
+          {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
           <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => setNotificationsOpen((open) => !open)} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
+          <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
           <div className="window-actions">
             <button aria-label="Свернуть" title="Свернуть" onClick={() => void browserApi()?.minimize()}><Icon name="minimize"/></button>
             <button aria-label="Развернуть" title="Развернуть" onClick={() => void browserApi()?.toggleMaximize()}><Icon name="maximize"/></button>
@@ -359,6 +426,7 @@ export function App() {
             access={access}
             onOpen={selectService}
             onLogin={login}
+            onRetry={loadBootstrap}
           />
         ) : desktopState.error ? (
           <section className="service-error-stage">
@@ -375,6 +443,17 @@ export function App() {
 
       {notificationsOpen && (
         <Notifications items={notifications} unread={unread} onClose={() => setNotificationsOpen(false)} onOpen={selectService}/>
+      )}
+      {settingsOpen && (
+        <SettingsDrawer
+          preferences={preferences}
+          online={bootstrap.online}
+          lastSuccessfulAt={bootstrap.lastSuccessfulAt}
+          updateState={updateState}
+          onChange={setPreferences}
+          onClose={() => setSettingsOpen(false)}
+          onReconnect={loadBootstrap}
+        />
       )}
       {paletteOpen && (
         <CommandPalette
@@ -396,6 +475,7 @@ export function App() {
           <button className="update-install" onClick={() => void browserApi()?.installUpdate()}>Перезапустить</button>
         </aside>
       )}
+      {toast && <div className="desktop-toast" role="status">{toast}</div>}
     </div>
   );
 }
@@ -409,6 +489,7 @@ function Home({
   access,
   onOpen,
   onLogin,
+  onRetry,
 }: {
   name: string;
   bootstrap: BootstrapResult;
@@ -418,6 +499,7 @@ function Home({
   access: Map<string, { enabled: boolean; reason: string | null }>;
   onOpen: (id: ServiceId) => Promise<void>;
   onLogin: (credentials: DesktopLoginCredentials) => Promise<DesktopLoginResult>;
+  onRetry: () => Promise<void>;
 }) {
   const [loginValue, setLoginValue] = useState("");
   const [pin, setPin] = useState("");
@@ -432,6 +514,19 @@ function Home({
         <h1>Восстанавливаем<br/>защищённую сессию</h1>
         <p>Проверяем аккаунт, доступные пространства и актуальную версию клиента.</p>
         <div className="session-progress"><i/></div>
+      </section>
+    );
+  }
+
+  if (bridgeAvailable && !bootstrap.authenticated && !bootstrap.online) {
+    return (
+      <section className="offline-stage" aria-live="polite">
+        <div className="offline-signal"><span/><i/><i/></div>
+        <p className="kicker">ДАННЫЕ В БЕЗОПАСНОСТИ</p>
+        <h1>T-Mod временно<br/>не отвечает</h1>
+        <p>Приложение продолжает восстанавливать соединение в фоне. Если вы уже входили, повторная авторизация не потребуется.</p>
+        <button className="primary" onClick={() => void onRetry()}><Icon name="refresh"/> Проверить сейчас</button>
+        <small>Это может быть краткий перезапуск сервиса или нестабильная сеть.</small>
       </section>
     );
   }
@@ -535,6 +630,44 @@ function Home({
 
 function Notifications({ items, unread, onClose, onOpen }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">Поток T-Mod</p><h2>Уведомления</h2></div><span>{unread} новых</span></header><div className="notification-list">{items.map((item) => <button key={item.id} onClick={() => { const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><strong>{item.title}</strong><p>{item.body}</p><small>{formatTime(item.created_at)}</small></span></button>)}{!items.length && <div className="drawer-empty"><Icon name="bell"/><p>В центре уведомлений тихо.</p></div>}</div></aside></>;
+}
+
+function SettingsDrawer({
+  preferences,
+  online,
+  lastSuccessfulAt,
+  updateState,
+  onChange,
+  onClose,
+  onReconnect,
+}: {
+  preferences: DesktopShellPreferences;
+  online: boolean;
+  lastSuccessfulAt?: string;
+  updateState: DesktopUpdateState;
+  onChange: (preferences: DesktopShellPreferences) => void;
+  onClose: () => void;
+  onReconnect: () => Promise<void>;
+}) {
+  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces">) =>
+    onChange({ ...preferences, [key]: !preferences[key] });
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
+    <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <div className="settings-scroll">
+      <section><p className="settings-label">Интерфейс</p>
+        <SettingToggle label="Компактный режим" hint="Больше информации на одном экране" active={preferences.compactMode} onClick={() => toggle("compactMode")}/>
+        <SettingToggle label="Спокойные анимации" hint="Минимум движения и эффектов" active={preferences.reduceMotion} onClick={() => toggle("reduceMotion")}/>
+        <SettingToggle label="Плотные поверхности" hint="Меньше прозрачности, выше контраст" active={preferences.solidSurfaces} onClick={() => toggle("solidSurfaces")}/>
+        <div className="setting-row zoom-setting"><span><strong>Масштаб сервисов</strong><small>Применяется ко всем пространствам</small></span><div>{[0.9, 1, 1.1].map((zoom) => <button key={zoom} className={preferences.serviceZoom === zoom ? "active" : ""} onClick={() => onChange({ ...preferences, serviceZoom: zoom })}>{Math.round(zoom * 100)}%</button>)}</div></div>
+      </section>
+      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b>Beta</b></div></section>
+      <button className="reset-preferences" onClick={() => onChange({ ...DEFAULT_PREFERENCES })}>Вернуть настройки по умолчанию</button>
+    </div>
+  </aside></>;
+}
+
+function SettingToggle({ label, hint, active, onClick }: { label: string; hint: string; active: boolean; onClick: () => void }) {
+  return <button className="setting-row" onClick={onClick}><span><strong>{label}</strong><small>{hint}</small></span><i className={`toggle ${active ? "active" : ""}`}><b/></i></button>;
 }
 
 function CommandPalette({ query, setQuery, items, access, authenticated, inputRef, onClose, onOpen }: { query: string; setQuery: (query: string) => void; items: typeof services; access: Map<string, { enabled: boolean; reason: string | null }>; authenticated: boolean; inputRef: RefObject<HTMLInputElement | null>; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {

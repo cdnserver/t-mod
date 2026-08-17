@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   nativeTheme,
@@ -24,6 +25,7 @@ import type {
   DesktopLoginCredentials,
   DesktopLoginResult,
   DesktopService,
+  DesktopShellPreferences,
   DesktopState,
   DesktopUpdateState,
   ServiceId,
@@ -36,15 +38,28 @@ const { autoUpdater } = electronUpdater;
 const bundleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const SHELL_HEADER_HEIGHT = 70;
 const SHELL_SIDEBAR_WIDTH = 286;
+const SHELL_SIDEBAR_COLLAPSED_WIDTH = 78;
 const DESKTOP_PARTITION = "persist:tmod-desktop-v1";
-const BOOTSTRAP_URL = "https://tvr.lat/api/desktop/v1/bootstrap";
+const BOOTSTRAP_URLS = [
+  "https://tvr.lat/api/desktop/v1/bootstrap",
+  "https://reactor.tvr.lat/api/desktop/v1/bootstrap",
+] as const;
 const LOGIN_URL = "https://tvr.lat/login?next=/reactor";
 const AUTH_LOGIN_URL = "https://tvr.lat/auth/login?client=desktop";
 const LOGOUT_URL = "https://tvr.lat/logout";
 const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
-const BOOTSTRAP_ATTEMPTS = 3;
-const BOOTSTRAP_TIMEOUT_MS = 8_000;
+const BOOTSTRAP_ATTEMPTS = 4;
+const BOOTSTRAP_TIMEOUT_MS = 12_000;
+const SERVICE_RETRY_DELAYS = [700, 1_800, 4_000] as const;
+const RETRYABLE_NETWORK_ERRORS = new Set([-2, -7, -21, -101, -102, -105, -106, -118, -324]);
+const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  sidebarCollapsed: false,
+  compactMode: false,
+  reduceMotion: false,
+  solidSurfaces: false,
+  serviceZoom: 1,
+};
 
 let mainWindow: BrowserWindow | null = null;
 let serviceView: WebContentsView | null = null;
@@ -56,6 +71,11 @@ let updateTimer: ReturnType<typeof setInterval> | undefined;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
 let bootstrapInFlight: Promise<BootstrapResult> | undefined;
+let lastSuccessfulBootstrapAt: string | undefined;
+let shellPreferences = { ...DEFAULT_PREFERENCES };
+let serviceRetryAttempt = 0;
+let serviceRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let lastMainFrameHttpStatus = 0;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -208,12 +228,70 @@ function configureAutoUpdater(): void {
 function positionViews(): void {
   if (!mainWindow || !serviceView) return;
   const [width, height] = mainWindow.getContentSize();
+  const sidebarWidth = shellPreferences.sidebarCollapsed
+    ? SHELL_SIDEBAR_COLLAPSED_WIDTH
+    : SHELL_SIDEBAR_WIDTH;
   serviceView.setBounds({
-    x: SHELL_SIDEBAR_WIDTH,
+    x: sidebarWidth,
     y: SHELL_HEADER_HEIGHT,
-    width: Math.max(1, width - SHELL_SIDEBAR_WIDTH),
+    width: Math.max(1, width - sidebarWidth),
     height: Math.max(1, height - SHELL_HEADER_HEIGHT),
   });
+}
+
+function normalizePreferences(value: unknown): DesktopShellPreferences {
+  const candidate = value && typeof value === "object"
+    ? value as Partial<DesktopShellPreferences>
+    : {};
+  const zoom = Number(candidate.serviceZoom);
+  return {
+    sidebarCollapsed: candidate.sidebarCollapsed === true,
+    compactMode: candidate.compactMode === true,
+    reduceMotion: candidate.reduceMotion === true,
+    solidSurfaces: candidate.solidSurfaces === true,
+    serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
+  };
+}
+
+function applyPreferences(value: unknown): DesktopShellPreferences {
+  shellPreferences = normalizePreferences(value);
+  positionViews();
+  serviceView?.webContents.setZoomFactor(shellPreferences.serviceZoom);
+  return shellPreferences;
+}
+
+function clearServiceRetry(resetAttempt = true): void {
+  if (serviceRetryTimer) clearTimeout(serviceRetryTimer);
+  serviceRetryTimer = undefined;
+  if (resetAttempt) serviceRetryAttempt = 0;
+}
+
+function scheduleServiceRetry(code: number, description: string): boolean {
+  if (!serviceView || activeService === "home") return false;
+  const retryable = code >= 500 || RETRYABLE_NETWORK_ERRORS.has(code);
+  const delay = SERVICE_RETRY_DELAYS[serviceRetryAttempt];
+  if (!retryable || delay === undefined) return false;
+  clearServiceRetry(false);
+  serviceRetryAttempt += 1;
+  serviceLoading = true;
+  lastServiceError = undefined;
+  syncServiceVisibility();
+  emitState();
+  serviceRetryTimer = setTimeout(() => {
+    serviceRetryTimer = undefined;
+    const target = serviceManifest.get(activeService as Exclude<ServiceId, "home">)?.url;
+    if (!target || !serviceView) return;
+    void serviceView.webContents.loadURL(target).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error || description);
+      if (!scheduleServiceRetry(code, message)) {
+        serviceLoading = false;
+        lastServiceError = message;
+        syncServiceVisibility();
+        emitState();
+      }
+    });
+  }, delay);
+  return true;
 }
 
 function syncServiceVisibility(): void {
@@ -246,6 +324,7 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
 
 async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   if (!serviceView || !mainWindow) return state();
+  clearServiceRetry();
   const retryAfterError = Boolean(lastServiceError);
   activeService = serviceId;
   lastServiceError = undefined;
@@ -282,10 +361,13 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
     try {
       await serviceView.webContents.loadURL(target);
     } catch (error) {
-      lastServiceError = error instanceof Error ? error.message : String(error);
-      serviceLoading = false;
-      syncServiceVisibility();
-      emitState();
+      const message = error instanceof Error ? error.message : String(error);
+      if (!scheduleServiceRetry(-2, message)) {
+        lastServiceError = message;
+        serviceLoading = false;
+        syncServiceVisibility();
+        emitState();
+      }
     }
   } else {
     serviceLoading = false;
@@ -305,21 +387,26 @@ function bootstrapUnavailable(error: string): BootstrapResult {
       online: false,
       data: lastSuccessfulBootstrap,
       error,
+      lastSuccessfulAt: lastSuccessfulBootstrapAt,
     };
   }
-  return { authenticated: false, online: false, error };
+  return { authenticated: false, online: false, error: "network_unavailable" };
 }
 
 async function performBootstrap(): Promise<BootstrapResult> {
   let lastError = "network_unavailable";
   for (let attempt = 0; attempt < BOOTSTRAP_ATTEMPTS; attempt += 1) {
-    if (attempt > 0) await wait(attempt === 1 ? 300 : 900);
+    if (attempt > 0) await wait(attempt === 1 ? 350 : attempt === 2 ? 1_000 : 2_200);
     try {
-      const response = await desktopSession().fetch(BOOTSTRAP_URL, {
+      const endpoint = BOOTSTRAP_URLS[attempt % BOOTSTRAP_URLS.length];
+      const response = await desktopSession().fetch(endpoint, {
         method: "GET",
         cache: "no-store",
         credentials: "include",
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          "X-TMod-Desktop-Version": app.getVersion(),
+        },
         signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
       });
       if (response.status === 401) {
@@ -353,9 +440,15 @@ async function performBootstrap(): Promise<BootstrapResult> {
         };
       }
       lastSuccessfulBootstrap = data;
-      return { authenticated: true, online: true, data };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "network_unavailable";
+      lastSuccessfulBootstrapAt = new Date().toISOString();
+      return {
+        authenticated: true,
+        online: true,
+        data,
+        lastSuccessfulAt: lastSuccessfulBootstrapAt,
+      };
+    } catch {
+      lastError = "network_unavailable";
     }
   }
   return bootstrapUnavailable(lastError);
@@ -443,6 +536,7 @@ async function logout(): Promise<boolean> {
   }
   clearServiceManifest();
   lastSuccessfulBootstrap = undefined;
+  lastSuccessfulBootstrapAt = undefined;
   activeService = "home";
   serviceLoading = false;
   lastServiceError = undefined;
@@ -477,8 +571,26 @@ function registerIpc(): void {
     if (shellOverlayOpen) mainWindow?.webContents.focus();
     else if (serviceView?.getVisible()) serviceView.webContents.focus();
   });
+  ipcMain.handle("desktop:preferences", (event, preferences: unknown) =>
+    trusted(event) ? applyPreferences(preferences) : DEFAULT_PREFERENCES,
+  );
+  ipcMain.handle("desktop:copy-current-link", (event) => {
+    if (!trusted(event) || !serviceView) return false;
+    const url = serviceView.webContents.getURL();
+    if (!isTrustedTModUrl(url)) return false;
+    clipboard.writeText(url);
+    return true;
+  });
+  ipcMain.handle("desktop:open-current-link", (event) => {
+    if (!trusted(event) || !serviceView) return false;
+    const url = serviceView.webContents.getURL();
+    if (!isTrustedTModUrl(url)) return false;
+    void shell.openExternal(url);
+    return true;
+  });
   ipcMain.handle("desktop:open-login", async (event) => {
     if (!trusted(event) || !serviceView) return state();
+    clearServiceRetry();
     activeService = "reactor";
     syncServiceVisibility();
     serviceLoading = true;
@@ -488,6 +600,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:reload", (event) => {
     if (!trusted(event) || !serviceView) return;
+    clearServiceRetry();
     lastServiceError = undefined;
     serviceLoading = true;
     syncServiceVisibility();
@@ -561,6 +674,9 @@ async function createWindow(): Promise<void> {
 
   secureContents(mainWindow.webContents, { local: true });
   secureContents(serviceView.webContents, { local: false });
+  serviceView.webContents.setUserAgent(
+    `${serviceView.webContents.getUserAgent()} TModDesktop/${app.getVersion()}`,
+  );
   const networkSession = desktopSession();
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
@@ -570,12 +686,22 @@ async function createWindow(): Promise<void> {
   positionViews();
 
   serviceView.webContents.on("did-start-loading", () => {
+    lastMainFrameHttpStatus = 0;
     serviceLoading = true;
     lastServiceError = undefined;
     syncServiceVisibility();
     emitState();
   });
   serviceView.webContents.on("did-stop-loading", () => {
+    if (serviceRetryTimer) return;
+    if (lastMainFrameHttpStatus >= 500) {
+      if (scheduleServiceRetry(lastMainFrameHttpStatus, `HTTP ${lastMainFrameHttpStatus}`)) return;
+      serviceLoading = false;
+      lastServiceError = `service_http_${lastMainFrameHttpStatus}`;
+      syncServiceVisibility();
+      emitState();
+      return;
+    }
     serviceLoading = false;
     syncServiceVisibility();
     emitState();
@@ -583,14 +709,26 @@ async function createWindow(): Promise<void> {
       mainWindow?.webContents.send("desktop:auth-changed");
     }
   });
-  serviceView.webContents.on("did-fail-load", (_event, code, description) => {
-    if (code === -3) return;
+  serviceView.webContents.on("did-finish-load", () => {
+    if (lastMainFrameHttpStatus >= 500) return;
+    clearServiceRetry();
+    serviceLoading = false;
+    lastServiceError = undefined;
+    syncServiceVisibility();
+    emitState();
+  });
+  serviceView.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return;
+    if (scheduleServiceRetry(code, description)) return;
     serviceLoading = false;
     lastServiceError = description || `load_error_${code}`;
     syncServiceVisibility();
     emitState();
   });
-  serviceView.webContents.on("did-navigate", emitState);
+  serviceView.webContents.on("did-navigate", (_event, _url, httpResponseCode) => {
+    lastMainFrameHttpStatus = Number(httpResponseCode || 0);
+    emitState();
+  });
   serviceView.webContents.on("did-navigate-in-page", emitState);
   serviceView.webContents.on("before-input-event", (event, input) => {
     if ((input.control || input.meta) && input.key.toLowerCase() === "k") {
@@ -603,6 +741,7 @@ async function createWindow(): Promise<void> {
   mainWindow.on("maximize", positionViews);
   mainWindow.on("unmaximize", positionViews);
   mainWindow.on("closed", () => {
+    clearServiceRetry();
     if (serviceView && !serviceView.webContents.isDestroyed()) {
       serviceView.webContents.close();
     }

@@ -1015,12 +1015,24 @@
     }
   }
 
+  function renderDesktopRecommendation(data) {
+    const banner = byId("desktop-recommendation");
+    if (!banner) return;
+    const inDesktop = /(?:TModDesktop\/|\bElectron\/)/i.test(navigator.userAgent);
+    const dismissed = localStorage.getItem("tmod-desktop-recommendation-v1") === "dismissed";
+    const senator = (data.legal_positions || []).some((item) =>
+      String(item.label || "").trim() === "Сенатор Товарищества"
+    );
+    banner.hidden = inDesktop || dismissed || !senator;
+  }
+
   function render(data, forceWorkspace = false) {
     state.data = data;
     state.csrf = data.viewer.csrf_token;
     state.layout = Array.isArray(data.layout) ? data.layout : state.layout;
     const currentName = chosenName(data);
     byId("portal-welcome").textContent = greeting(currentName);
+    renderDesktopRecommendation(data);
     const { cache_state: _cacheState, ...stableData } = data;
     const signature = JSON.stringify(stableData);
     if (signature === state.renderSignature && !forceWorkspace) return false;
@@ -1368,6 +1380,10 @@
   byId("editor-ai").addEventListener("click", () => void runAiEditor());
   byId("editor-publish").addEventListener("click", () => void publishDraft());
   byId("editor-cancel").addEventListener("click", () => void cancelDraft());
+  byId("desktop-recommendation-dismiss")?.addEventListener("click", () => {
+    localStorage.setItem("tmod-desktop-recommendation-v1", "dismissed");
+    byId("desktop-recommendation").hidden = true;
+  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !state.busy) {
       void load(true);

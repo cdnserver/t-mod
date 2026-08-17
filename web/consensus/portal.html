@@ -11,11 +11,11 @@
       name="description"
       content="Казна и законодательное пространство участника Товарищества."
     >
-    <link rel="stylesheet" href="/assets/portal.css">
+    <link rel="stylesheet" href="/assets/portal.css?v=5">
     <link rel="stylesheet" href="/assets/portal-theme.css?v=3">
     <link rel="stylesheet" href="/assets/portal-focus.css?v=1">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js?v=4" defer></script>
+    <script src="/assets/portal.js?v=5" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -52,6 +52,13 @@
           <a class="portal-logout" href="/auth/logout">Выйти</a>
         </nav>
       </header>
+
+      <aside id="desktop-recommendation" class="desktop-recommendation" hidden>
+        <div class="desktop-recommendation-mark"><span>T</span><i></i><i></i></div>
+        <div class="desktop-recommendation-copy"><small>T-MOD DESKTOP · BETA</small><strong>Ваш рабочий контур — теперь в приложении</strong><p>Быстрее переходите между Реактором и Консенсусом, получайте уведомления и новые функции раньше веб-версии.</p></div>
+        <a href="https://github.com/cdnserver/t-mod-releases/releases/latest" target="_blank" rel="noopener noreferrer">Скачать приложение <span>↗</span></a>
+        <button id="desktop-recommendation-dismiss" type="button" aria-label="Больше не показывать">×</button>
+      </aside>
 
       <div class="portal-app-frame">
         <aside class="portal-sidebar" aria-label="Разделы личного Реактора">

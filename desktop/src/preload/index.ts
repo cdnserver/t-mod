@@ -4,6 +4,7 @@ import type {
   DesktopLoginCredentials,
   DesktopLoginResult,
   DesktopState,
+  DesktopShellPreferences,
   DesktopUpdateState,
   ServiceId,
   TModDesktopApi,
@@ -21,6 +22,10 @@ const api: TModDesktopApi = {
   goForward: () => ipcRenderer.invoke("desktop:forward"),
   setShellOverlayOpen: (open: boolean) =>
     ipcRenderer.invoke("desktop:shell-overlay", open),
+  applyPreferences: (preferences: DesktopShellPreferences) =>
+    ipcRenderer.invoke("desktop:preferences", preferences) as Promise<DesktopShellPreferences>,
+  copyCurrentLink: () => ipcRenderer.invoke("desktop:copy-current-link") as Promise<boolean>,
+  openCurrentLink: () => ipcRenderer.invoke("desktop:open-current-link") as Promise<boolean>,
   openLogin: () => ipcRenderer.invoke("desktop:open-login") as Promise<DesktopState>,
   minimize: () => ipcRenderer.invoke("desktop:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("desktop:maximize"),

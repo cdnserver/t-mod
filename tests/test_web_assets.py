@@ -90,6 +90,15 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertTrue((ATLAS_WEB / "style.css").is_file())
         self.assertTrue((ATLAS_WEB / "favicon.svg").is_file())
 
+    def test_desktop_recommendation_is_senator_only_and_hidden_in_app(self) -> None:
+        html = (WEB / "portal.html").read_text(encoding="utf-8")
+        source = (WEB / "portal.js").read_text(encoding="utf-8")
+        self.assertIn('id="desktop-recommendation"', html)
+        self.assertIn("Сенатор Товарищества", source)
+        self.assertIn("TModDesktop", source)
+        self.assertIn("Electron", source)
+        self.assertIn("tmod-desktop-recommendation-v1", source)
+
 
 if __name__ == "__main__":
     unittest.main()
