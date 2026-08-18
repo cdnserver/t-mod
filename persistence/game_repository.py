@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
@@ -182,11 +184,160 @@ def game_update(
     return _project(row)
 
 
+def game_send_chess_message(
+    guild_id: int,
+    match_id: str,
+    *,
+    actor_user_id: int,
+    recipient_user_id: int,
+    sender_display: str,
+    message: str,
+    allow_moderator: bool = False,
+    cooldown_seconds: int = 12,
+    lifetime_seconds: int = 20,
+) -> dict[str, Any]:
+    """Append a short-lived, recipient-only message to a live chess match."""
+
+    clean_message = re.sub(r"\s+", " ", str(message or "")).strip()
+    if not clean_message or len(clean_message) > 180:
+        raise GameStorageError("game_message_invalid")
+
+    actor_id = int(actor_user_id)
+    recipient_id = int(recipient_user_id)
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    cooldown_after = (now - timedelta(seconds=max(1, int(cooldown_seconds)))).isoformat()
+    expires_at = (now + timedelta(seconds=max(8, min(60, int(lifetime_seconds))))).isoformat()
+
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM game_matches WHERE guild_id = ? AND id = ?",
+            (int(guild_id), str(match_id)),
+        ).fetchone()
+        if row is None:
+            raise GameStorageError("game_missing")
+        if str(row["game_type"]) != "chess":
+            raise GameStorageError("game_message_chess_only")
+        if str(row["status"]) != "active":
+            raise GameStorageError("game_not_active")
+
+        participant_ids = {int(row["host_user_id"])}
+        if row["guest_user_id"] is not None:
+            participant_ids.add(int(row["guest_user_id"]))
+        if recipient_id not in participant_ids:
+            raise GameStorageError("game_message_target_invalid")
+        if actor_id not in participant_ids and not allow_moderator:
+            raise GameStorageError("game_not_yours")
+        if actor_id == recipient_id:
+            raise GameStorageError("game_message_target_self")
+
+        recent = con.execute(
+            """
+            SELECT 1 FROM game_match_events
+            WHERE match_id = ? AND actor_user_id = ? AND action = 'chess_message'
+              AND created_at >= ?
+            LIMIT 1
+            """,
+            (str(match_id), actor_id, cooldown_after),
+        ).fetchone()
+        if recent is not None:
+            raise GameStorageError("game_message_rate_limited")
+
+        host_side = str(row["host_side"])
+        recipient_side = (
+            host_side
+            if recipient_id == int(row["host_user_id"])
+            else ("black" if host_side == "white" else "white")
+        )
+        payload = {
+            "recipient_user_id": recipient_id,
+            "recipient_side": recipient_side,
+            "sender_display": str(sender_display or "Игрок")[:100],
+            "message": clean_message,
+            "expires_at": expires_at,
+        }
+        cursor = con.execute(
+            """
+            INSERT INTO game_match_events(
+                match_id, actor_user_id, action, payload_json, created_at
+            ) VALUES(?, ?, 'chess_message', ?, ?)
+            """,
+            (str(match_id), actor_id, _json(payload), now_iso),
+        )
+        con.commit()
+    return {
+        "id": int(cursor.lastrowid),
+        "match_id": str(match_id),
+        "actor_user_id": actor_id,
+        "created_at": now_iso,
+        **payload,
+    }
+
+
+def game_list_chess_messages_for_user(
+    guild_id: int,
+    match_id: str,
+    user_id: int,
+    *,
+    after_id: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Return only live chess messages addressed to the authenticated user."""
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with connect_readonly() as con:
+        match = con.execute(
+            "SELECT id, game_type FROM game_matches WHERE guild_id = ? AND id = ?",
+            (int(guild_id), str(match_id)),
+        ).fetchone()
+        if match is None:
+            raise GameStorageError("game_missing")
+        if str(match["game_type"]) != "chess":
+            raise GameStorageError("game_message_chess_only")
+        rows = con.execute(
+            """
+            SELECT id, actor_user_id, payload_json, created_at
+            FROM game_match_events
+            WHERE match_id = ? AND action = 'chess_message' AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (str(match_id), max(0, int(after_id)), max(1, min(100, int(limit)))),
+        ).fetchall()
+
+    cursor = max([int(after_id), *(int(row["id"]) for row in rows)])
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if int(payload.get("recipient_user_id") or 0) != int(user_id):
+            continue
+        if str(payload.get("expires_at") or "") <= now_iso:
+            continue
+        messages.append(
+            {
+                "id": int(row["id"]),
+                "actor_user_id": int(row["actor_user_id"]) if row["actor_user_id"] else None,
+                "recipient_side": str(payload.get("recipient_side") or ""),
+                "sender_display": str(payload.get("sender_display") or "Игрок")[:100],
+                "message": str(payload.get("message") or "")[:180],
+                "created_at": str(row["created_at"]),
+                "expires_at": str(payload.get("expires_at") or ""),
+            }
+        )
+    return {"cursor": cursor, "messages": messages}
+
+
 __all__ = [
     "GameStorageError",
     "game_create",
     "game_get",
     "game_join",
     "game_list_for_user",
+    "game_list_chess_messages_for_user",
+    "game_send_chess_message",
     "game_update",
 ]

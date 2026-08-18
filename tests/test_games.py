@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -143,6 +144,75 @@ class GameRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(games.game_get(1, match["id"]))
         self.assertIsNone(games.game_get(2, match["id"]))
 
+    def test_chess_message_is_private_and_rate_limited(self) -> None:
+        match = games.game_create(
+            guild_id=1,
+            game_type="chess",
+            mode="friend",
+            host_user_id=10,
+            host_display="Первый",
+            host_side="white",
+            bot_level=1,
+            state=new_chess_state(),
+        )
+        games.game_join(1, match["id"], 20, "Второй")
+        sent = games.game_send_chess_message(
+            1,
+            match["id"],
+            actor_user_id=10,
+            recipient_user_id=20,
+            sender_display="Первый",
+            message="  Шах и мат через три хода!  ",
+        )
+
+        sender_view = games.game_list_chess_messages_for_user(1, match["id"], 10)
+        recipient_view = games.game_list_chess_messages_for_user(1, match["id"], 20)
+        self.assertEqual(sender_view["messages"], [])
+        self.assertEqual(recipient_view["messages"][0]["message"], "Шах и мат через три хода!")
+        self.assertEqual(recipient_view["messages"][0]["recipient_side"], "black")
+        self.assertEqual(recipient_view["cursor"], sent["id"])
+
+        with self.assertRaisesRegex(games.GameStorageError, "game_message_rate_limited"):
+            games.game_send_chess_message(
+                1,
+                match["id"],
+                actor_user_id=10,
+                recipient_user_id=20,
+                sender_display="Первый",
+                message="Ещё раз",
+            )
+
+    def test_chess_message_rejects_outsiders_and_wrong_target(self) -> None:
+        match = games.game_create(
+            guild_id=1,
+            game_type="chess",
+            mode="friend",
+            host_user_id=10,
+            host_display="Первый",
+            host_side="black",
+            bot_level=1,
+            state=new_chess_state(),
+        )
+        games.game_join(1, match["id"], 20, "Второй")
+        with self.assertRaisesRegex(games.GameStorageError, "game_not_yours"):
+            games.game_send_chess_message(
+                1,
+                match["id"],
+                actor_user_id=30,
+                recipient_user_id=20,
+                sender_display="Зритель",
+                message="Помеха",
+            )
+        with self.assertRaisesRegex(games.GameStorageError, "game_message_target_invalid"):
+            games.game_send_chess_message(
+                1,
+                match["id"],
+                actor_user_id=10,
+                recipient_user_id=30,
+                sender_display="Первый",
+                message="Не туда",
+            )
+
 
 class GameWebTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -251,6 +321,25 @@ class GameWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"X-Test-User": "20", "X-CSRF-Token": "csrf-20"},
             )
             joined = (await joined_response.json())["match"]
+            await asyncio.to_thread(
+                games.game_send_chess_message,
+                1,
+                created["id"],
+                actor_user_id=10,
+                recipient_user_id=20,
+                sender_display="Автор",
+                message="Твой король под наблюдением",
+            )
+            sender_messages_response = await client.get(
+                f"/api/games/matches/{created['id']}/messages",
+                headers={"X-Test-User": "10"},
+            )
+            recipient_messages_response = await client.get(
+                f"/api/games/matches/{created['id']}/messages",
+                headers={"X-Test-User": "20"},
+            )
+            sender_messages = await sender_messages_response.json()
+            recipient_messages = await recipient_messages_response.json()
             spectator_response = await client.get(
                 f"/api/games/matches/{created['id']}",
                 headers={"X-Test-User": "30"},
@@ -263,6 +352,11 @@ class GameWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(joined_response.status, 200)
         self.assertEqual(joined["viewer_side"], "black")
         self.assertTrue(joined["can_move"] is False)
+        self.assertEqual(sender_messages["messages"], [])
+        self.assertEqual(
+            recipient_messages["messages"][0]["message"],
+            "Твой король под наблюдением",
+        )
         self.assertTrue(spectator["spectator"])
         self.assertFalse(spectator["can_join"])
         self.assertEqual(spectator["legal_moves"], [])

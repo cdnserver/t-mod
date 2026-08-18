@@ -222,6 +222,21 @@
       <div><span><svg><use href="#i-flag"></use></svg></span><small>ПОДТВЕРЖДЕНИЕ</small><h2>Завершить партию?</h2><p>Сопернику будет засчитана победа. Отменить это действие уже не получится.</p><footer><button type="button" data-close>Продолжить игру</button><button id="confirm-resign" type="button">Сдаться</button></footer></div>
     </dialog>
 
+    <section id="chess-message-overlay" class="chess-message-overlay" role="alert" aria-live="assertive" hidden>
+      <div class="chess-message-vignette" aria-hidden="true"></div>
+      <div class="chess-message-grid" aria-hidden="true"></div>
+      <article>
+        <span class="chess-message-mark"><svg><use href="#piece-king"></use></svg></span>
+        <small>T-MOD CHESS · ЛИЧНАЯ РЕПЛИКА</small>
+        <p id="chess-message-text"></p>
+        <footer>
+          <span>От <b id="chess-message-sender"></b></span>
+          <button id="dismiss-chess-message" type="button">Закрыть</button>
+        </footer>
+        <i class="chess-message-progress" aria-hidden="true"></i>
+      </article>
+    </section>
+
     <div id="games-toast" class="games-toast" role="status" aria-live="polite" hidden><svg><use href="#i-check"></use></svg><span></span></div>
   </body>
 </html>

@@ -10,6 +10,12 @@
     busy: false,
     thinking: false,
     timer: null,
+    messageTimer: null,
+    messageCursor: 0,
+    messageQueue: [],
+    messageVisible: false,
+    messagePolling: false,
+    messageDismissTimer: null,
     pendingPromotion: null,
   };
 
@@ -178,7 +184,13 @@
 
   function showLobby() {
     clearInterval(state.timer);
+    clearInterval(state.messageTimer);
+    state.messageCursor = 0;
+    state.messageQueue = [];
+    state.messagePolling = false;
+    dismissChessMessage(true);
     state.timer = null;
+    state.messageTimer = null;
     state.match = null;
     state.selected = null;
     state.thinking = false;
@@ -308,16 +320,84 @@
     }, 4000);
   }
 
+  function dismissChessMessage(immediate = false) {
+    clearTimeout(state.messageDismissTimer);
+    const overlay = byId("chess-message-overlay");
+    if (!overlay) return;
+    state.messageVisible = false;
+    overlay.classList.remove("visible");
+    const finish = () => {
+      overlay.hidden = true;
+      if (state.messageQueue.length) showNextChessMessage();
+    };
+    if (immediate) finish();
+    else setTimeout(finish, 260);
+  }
+
+  function showNextChessMessage() {
+    if (state.messageVisible || !state.messageQueue.length) return;
+    const item = state.messageQueue.shift();
+    const overlay = byId("chess-message-overlay");
+    if (!overlay) return;
+    byId("chess-message-text").textContent = String(item.message || "");
+    byId("chess-message-sender").textContent = String(item.sender_display || "Игрок");
+    const progress = overlay.querySelector(".chess-message-progress");
+    progress.style.animation = "none";
+    void progress.offsetWidth;
+    progress.style.animation = "";
+    state.messageVisible = true;
+    overlay.hidden = false;
+    requestAnimationFrame(() => overlay.classList.add("visible"));
+    state.messageDismissTimer = setTimeout(() => dismissChessMessage(), 6200);
+  }
+
+  async function pollChessMessages() {
+    const match = state.match;
+    if (!match || match.game_type !== "chess" || !match.viewer_side || state.messagePolling) return;
+    state.messagePolling = true;
+    try {
+      const data = await api(
+        `/api/games/matches/${encodeURIComponent(match.id)}/messages?after=${state.messageCursor}`,
+        { timeout: 5000 },
+      );
+      state.messageCursor = Math.max(state.messageCursor, Number(data.cursor) || 0);
+      const incoming = Array.isArray(data.messages) ? data.messages : [];
+      if (incoming.length) {
+        state.messageQueue.push(...incoming);
+        showNextChessMessage();
+      }
+    } catch {
+      // A missed pass is harmless: the next short poll retries while the message is live.
+    } finally {
+      state.messagePolling = false;
+    }
+  }
+
+  function startMessagePolling(match) {
+    clearInterval(state.messageTimer);
+    state.messageTimer = null;
+    if (match.game_type !== "chess" || !match.viewer_side || !["active", "waiting"].includes(match.status)) return;
+    void pollChessMessages();
+    state.messageTimer = setInterval(() => {
+      if (!document.hidden) void pollChessMessages();
+    }, 1100);
+  }
+
   async function enterMatch(match) {
     state.match = match;
     state.selected = null;
     state.thinking = false;
+    state.messageCursor = 0;
+    state.messageQueue = [];
+    state.messagePolling = false;
+    dismissChessMessage(true);
     history.replaceState(null, "", `/games/${match.id}`);
     byId("lobby-screen").hidden = true;
     byId("match-screen").hidden = false;
     showApp();
     renderMatch();
     startPolling(match);
+    startMessagePolling(match);
   }
 
   async function refreshMatch() {
@@ -329,6 +409,7 @@
         state.selected = null;
         renderMatch();
         startPolling(state.match);
+        startMessagePolling(state.match);
       }
     } catch {
       // The next polling pass retries without disturbing the current board.
@@ -603,6 +684,7 @@
       state.match = data.match;
       state.selected = null;
       startPolling(state.match);
+      startMessagePolling(state.match);
     } catch (error) {
       toast(error.message, true);
       await refreshMatch();
@@ -720,6 +802,7 @@
       state.selected = null;
       renderMatch();
       startPolling(state.match);
+      startMessagePolling(state.match);
       toast("Вы за игровым столом. Хорошей партии!");
     } catch (error) {
       toast(error.message, true);
@@ -741,6 +824,7 @@
       closeDialog(byId("confirm-game-dialog"));
       renderMatch();
       startPolling(state.match);
+      startMessagePolling(state.match);
       toast("Партия завершена.");
     } catch (error) {
       toast(error.message, true);
@@ -798,10 +882,17 @@
     byId("join-match").addEventListener("click", joinMatch);
     byId("resign-match").addEventListener("click", () => openDialog(byId("confirm-game-dialog")));
     byId("confirm-resign").addEventListener("click", resign);
+    byId("dismiss-chess-message").addEventListener("click", () => dismissChessMessage());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.messageVisible) dismissChessMessage();
+    });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && state.match && !state.busy) void refreshMatch();
     });
-    globalThis.addEventListener("pagehide", () => clearInterval(state.timer));
+    globalThis.addEventListener("pagehide", () => {
+      clearInterval(state.timer);
+      clearInterval(state.messageTimer);
+    });
   }
 
   async function boot() {

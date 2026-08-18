@@ -195,6 +195,24 @@ def register_games_web_routes(
             return error_response(games.GameStorageError("game_missing"))
         return web.json_response({"viewer": viewer(selected), "match": projection(match, selected)})
 
+    async def chess_messages(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        try:
+            after_id = max(0, int(request.query.get("after", "0")))
+        except (TypeError, ValueError):
+            after_id = 0
+        try:
+            result = await asyncio.to_thread(
+                games.game_list_chess_messages_for_user,
+                int(guild_id),
+                str(request.match_info["match_id"]),
+                int(selected.user_id),
+                after_id=after_id,
+            )
+        except games.GameStorageError as exc:
+            return error_response(exc)
+        return web.json_response(result)
+
     async def command(request: web.Request) -> web.Response:
         selected = await principal(request)
         payload = await body(request, selected)
@@ -257,6 +275,7 @@ def register_games_web_routes(
     app.router.add_get("/api/games/lobby", lobby)
     app.router.add_post("/api/games/matches", create)
     app.router.add_get("/api/games/matches/{match_id}", detail)
+    app.router.add_get("/api/games/matches/{match_id}/messages", chess_messages)
     app.router.add_post("/api/games/matches/{match_id}/command", command)
 
 
