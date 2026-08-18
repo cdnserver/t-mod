@@ -368,6 +368,69 @@ def start_consensus_schedule(
     return dict(row) if row is not None else None
 
 
+def update_started_consensus_schedule(
+    *,
+    guild_id: int,
+    session_key: str,
+    title: str,
+    duration_minutes: int,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Update the public passport of a schedule already bound to a session.
+
+    The live consensus state remains authoritative for procedure.  This method
+    only changes display metadata and uses optimistic locking so two host
+    consoles cannot silently overwrite each other.
+    """
+
+    clean_key = str(session_key or "").strip()
+    clean_title = _clean_text(
+        title,
+        minimum=3,
+        maximum=100,
+        error="consensus_schedule_title_invalid",
+    )
+    clean_duration = int(duration_minutes)
+    if clean_duration < 15 or clean_duration > 480:
+        raise ValueError("consensus_schedule_duration_invalid")
+    if int(guild_id) <= 0 or not clean_key:
+        raise ValueError("consensus_schedule_scope_invalid")
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        changed = con.execute(
+            """
+            UPDATE tvrs_consensus_schedules
+            SET title = ?, duration_minutes = ?, revision = revision + 1,
+                updated_at = ?
+            WHERE guild_id = ? AND started_session_key = ?
+              AND status = 'started' AND revision = ?
+            """,
+            (
+                clean_title,
+                clean_duration,
+                now,
+                int(guild_id),
+                clean_key,
+                int(expected_revision),
+            ),
+        )
+        if changed.rowcount != 1:
+            con.rollback()
+            raise ValueError("consensus_schedule_conflict")
+        row = con.execute(
+            """
+            SELECT * FROM tvrs_consensus_schedules
+            WHERE guild_id = ? AND started_session_key = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(guild_id), clean_key),
+        ).fetchone()
+        con.commit()
+    if row is None:  # pragma: no cover - protected by the update predicate
+        raise RuntimeError("consensus_schedule_update_failed")
+    return dict(row)
+
+
 def complete_consensus_schedule(
     guild_id: int,
     *,
@@ -412,4 +475,5 @@ __all__ = [
     "list_consensus_schedules",
     "save_consensus_schedule",
     "start_consensus_schedule",
+    "update_started_consensus_schedule",
 ]

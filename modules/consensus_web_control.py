@@ -194,11 +194,16 @@ def consensus_web_capabilities(
         return ["open_registration"] if is_chair(principal.member) else []
     if not _is_live_leader(session, principal):
         return _participant_capabilities(session, principal)
-    return _stage_capabilities(
+    capabilities = _stage_capabilities(
         stage,
         permanent=principal.user_id == TVRS_PERMANENT_CHAIR_ID,
         simulation=False,
     )
+    # The command itself resolves the bound schedule under optimistic locking.
+    # Keeping capability calculation free of database I/O makes live polling
+    # cheap; the UI enables this control only when a schedule payload exists.
+    capabilities.append("update_session_settings")
+    return capabilities
 
 
 def _stage_capabilities(
@@ -700,14 +705,22 @@ async def _execute_live(
 
     if action == "set_timer":
         seconds = int(payload.get("seconds") or 0)
-        if seconds not in {30, 60, 180, 300}:
+        if seconds < 15 or seconds > 7200:
             raise ConsensusWebCommandError(
                 "invalid_timer",
-                "Доступны таймеры 30 секунд, 1, 3 или 5 минут.",
+                "Таймер должен быть от 15 секунд до 2 часов.",
             )
+        timer_mode = str(payload.get("mode") or "extend").strip().lower()
+        if timer_mode not in {"extend", "replace"}:
+            raise ConsensusWebCommandError(
+                "invalid_timer_mode",
+                "Выберите продление текущего таймера или установку нового.",
+            )
+        replace = timer_mode == "replace"
         was_extension = bool(
             session.timer_deadline
             and session.timer_deadline > datetime.now(timezone.utc)
+            and not replace
         )
         await set_vote_timer(
             bot,
@@ -716,11 +729,50 @@ async def _execute_live(
             seconds,
             expected_bill_id=expected_bill_id,
             expected_revision=revision,
+            replace=replace,
         )
         return (
             f"К текущему таймеру добавлено {seconds} секунд."
             if was_extension
             else f"Таймер установлен на {seconds} секунд."
+        )
+
+    if action == "update_session_settings":
+        schedule = await asyncio.to_thread(
+            schedule_storage.get_consensus_schedule_for_session,
+            int(guild.id),
+            str(session.session_key),
+        )
+        if schedule is None:
+            raise ConsensusWebCommandError(
+                "schedule_missing",
+                "У этого заседания нет связанного паспорта планирования.",
+                status=409,
+            )
+        try:
+            updated = await asyncio.to_thread(
+                schedule_storage.update_started_consensus_schedule,
+                guild_id=int(guild.id),
+                session_key=str(session.session_key),
+                title=str(payload.get("title") or ""),
+                duration_minutes=int(payload.get("duration_minutes") or 0),
+                expected_revision=int(payload.get("schedule_revision") or 0),
+            )
+        except ValueError as exc:
+            code = str(exc).split(":", 1)[0]
+            messages = {
+                "consensus_schedule_title_invalid": "Название должно содержать от 3 до 100 символов.",
+                "consensus_schedule_duration_invalid": "Плановая длительность должна быть от 15 до 480 минут.",
+                "consensus_schedule_conflict": "Паспорт уже изменён в другой вкладке. Пульт обновляется.",
+            }
+            raise ConsensusWebCommandError(
+                code,
+                messages.get(code, "Не удалось изменить паспорт заседания."),
+                status=409 if code == "consensus_schedule_conflict" else 400,
+            ) from exc
+        return (
+            f"Паспорт обновлён: «{updated['title']}», "
+            f"плановая длительность — {int(updated['duration_minutes'])} мин."
         )
 
     if action == "finalize_vote":

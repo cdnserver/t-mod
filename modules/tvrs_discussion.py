@@ -91,6 +91,7 @@ async def set_vote_timer(
     *,
     expected_bill_id: int | None = None,
     expected_revision: int | None = None,
+    replace: bool = False,
 ) -> None:
     clean_seconds = max(0, int(seconds))
     async with consensus_session_lock(session.guild_id):
@@ -110,7 +111,7 @@ async def set_vote_timer(
         previous_task = session.timer_task
         now = datetime.now(timezone.utc)
         previous_deadline = session.timer_deadline
-        is_extension = bool(previous_deadline and previous_deadline > now)
+        is_extension = bool(previous_deadline and previous_deadline > now and not replace)
         if is_extension:
             deadline = previous_deadline + timedelta(seconds=clean_seconds)
             total_seconds = max(clean_seconds, int(session.timer_seconds or 0) + clean_seconds)
@@ -126,6 +127,7 @@ async def set_vote_timer(
                 seconds=total_seconds,
                 deadline=deadline,
                 actor=ConsensusActor(session.leader_id, session.leader_display),
+                **({"added_seconds": 0} if replace else {}),
             )
         finally:
             # The helper can re-raise cancellation after the blocking commit.
@@ -154,7 +156,7 @@ async def set_vote_timer(
             f"К таймеру добавлено {format_timer(clean_seconds)}. "
             f"Новое оставшееся время: {format_timer(runtime_seconds)}."
             if is_extension
-            else f"Установлен таймер голосования: {format_timer(clean_seconds)}."
+            else f"Таймер голосования установлен на {format_timer(clean_seconds)}."
         ),
     )
     await update_host_vote_message(bot, guild, session)

@@ -10,6 +10,11 @@ let pollTimer = null;
 let clockTimer = null;
 let toastTimer = null;
 let promptSignature = "";
+let commanding = false;
+let fetchSequence = 0;
+let appliedSequence = 0;
+let pendingCommand = null;
+const commandJournal = [];
 
 function readSetting(key, fallback = "") {
   try {
@@ -53,6 +58,44 @@ const RESULT_LABELS = {
   vetoed: "завершён применением права вето",
   oral: "зафиксирован устно",
 };
+
+const ACTIONS = {
+  start_vote: { label: "Представить первый проект", note: "Зафиксировать состав и открыть представление", confirm: true },
+  resend_invitations: { label: "Повторить приглашения", note: "Добавить вошедших позже и повторить доставку" },
+  cancel_session: { label: "Отменить заседание", note: "Заседание завершится без итогового протокола", confirm: true, danger: true },
+  open_vote: { label: "Поставить на воут", note: "Кнопки голосования станут доступны сенаторам" },
+  leader_vote: { label: "Голос ведущего", note: "Позиция ведущего учитывается как обычный голос" },
+  finalize_vote: { label: "Зафиксировать досрочно", note: "Приём голосов завершится немедленно", confirm: true, danger: true },
+  retry_finalization: { label: "Повторить фиксацию", note: "Безопасно повторить незавершённую запись результата" },
+  pause: { label: "Объявить паузу", note: "Стадия, проект и голоса будут сохранены", confirm: true },
+  resume: { label: "Продолжить заседание", note: "T-Mod сначала проверит голосовой кворум" },
+  choose_discussion: { label: "Открыть дискуссию", note: "Выберите предмет дискуссии", confirm: true },
+  end_discussion: { label: "Завершить дискуссию", note: "Воут продолжится с сохранёнными позициями", confirm: true },
+  veto: { label: "Применить право вето", note: "Особое необратимое решение будет внесено в протокол", confirm: true, danger: true },
+  next_bill: { label: "Представить следующий проект", note: "Воут останется закрыт до отдельной команды" },
+  finish_session: { label: "Завершить консенсус", note: "Сформировать официальный итог и протокол", confirm: true, danger: true },
+};
+
+const PRIMARY_BY_STAGE = {
+  registration: "start_vote",
+  presentation: "open_vote",
+  finalizing: "retry_finalization",
+  discussion_type: "choose_discussion",
+  discussion: "end_discussion",
+  paused: "resume",
+  after_result: "next_bill",
+};
+
+const STAGE_RAIL = [
+  ["registration", "Состав"],
+  ["presentation", "Проект"],
+  ["voting", "Воут"],
+  ["discussion", "Дискуссия"],
+  ["finalizing", "Фиксация"],
+  ["after_result", "Результат"],
+  ["next", "Повестка"],
+  ["finished", "Протокол"],
+];
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -470,6 +513,204 @@ function renderMetrics(data) {
   text("host-agenda-count", agendaItems(data).length || data.queue?.length || 0);
 }
 
+function addJournal(message, kind = "ok") {
+  commandJournal.unshift({
+    message: String(message || "Состояние обновлено"),
+    kind,
+    at: new Date(),
+  });
+  commandJournal.splice(20);
+  const list = byId("host-command-log");
+  list.replaceChildren();
+  commandJournal.forEach((entry) => {
+    const item = node("li", entry.kind === "error" ? "error" : "");
+    item.append(
+      node("time", "", entry.at.toLocaleTimeString("ru-RU")),
+      node("span", "", entry.message),
+    );
+    list.append(item);
+  });
+  text("host-command-count", commandJournal.length);
+}
+
+function currentBillId(data = state) {
+  return Number(data?.session?.current_bill?.id || 0) || null;
+}
+
+function isStateOlder(candidate, current) {
+  const nextSession = candidate?.session;
+  const activeSession = current?.session;
+  if (!nextSession || !activeSession) return false;
+  if (String(nextSession.key) !== String(activeSession.key)) return false;
+  return Number(nextSession.revision || 0) < Number(activeSession.revision || 0);
+}
+
+function renderStageRail(data) {
+  const rail = byId("host-stage-rail");
+  const session = data.session;
+  const stage = String(session?.stage || (data.schedule ? "scheduled" : "idle"));
+  const results = session?.results || [];
+  rail.replaceChildren();
+  STAGE_RAIL.forEach(([key, label], index) => {
+    const item = node("div", "host-stage-step");
+    const aliases = key === "discussion" ? ["discussion", "discussion_type"] : [key];
+    const current = aliases.includes(stage);
+    let status = "ожидает";
+    let done = false;
+    if (key === "registration") done = Boolean(session && stage !== "registration");
+    if (key === "presentation") done = Boolean(session?.current_bill && !["registration", "presentation"].includes(stage));
+    if (key === "voting") done = Boolean(results.length && stage === "after_result");
+    if (key === "discussion") status = current ? "сейчас" : "по запросу";
+    if (key === "finalizing") done = Boolean(results.length && stage === "after_result");
+    if (key === "after_result") done = results.length > 0 && stage !== "after_result";
+    if (key === "next") status = `${Number(data.queue?.length || 0)} впереди`;
+    if (key === "finished") done = Boolean(session?.finished || stage === "finished");
+    if (current) {
+      item.classList.add("current");
+      status = "сейчас";
+    } else if (done) {
+      item.classList.add("done");
+      status = "зафиксировано";
+    }
+    item.append(node("span", "", `${String(index + 1).padStart(2, "0")} · ${label}`), node("small", "", status));
+    rail.append(item);
+  });
+}
+
+function renderRoster(data) {
+  const roster = byId("host-roster");
+  const participants = data.session?.participants || [];
+  const confirmed = participants.filter((item) => item.confirmed).length;
+  text("host-roster-summary", `${confirmed} / ${participants.length}`);
+  roster.replaceChildren();
+  if (!participants.length) {
+    roster.append(node("div", "host-roster-empty", "Состав появится после подготовки заседания."));
+    return;
+  }
+  participants.forEach((participant) => {
+    const item = node(
+      "div",
+      `host-roster-item${participant.confirmed ? " confirmed" : ""}${participant.voted ? " voted" : ""}`,
+    );
+    const identity = node("div", "");
+    identity.append(
+      node("strong", "", participant.name || "Участник"),
+      node("small", "", `${participant.kind || "Участник"} · ${participant.dm_ready ? "пульт доставлен" : "доставка ожидается"}`),
+    );
+    let marker = participant.confirmed ? "подтверждён" : "ожидается";
+    if (participant.voted) {
+      marker = participant.vote
+        ? `голос: ${{ yes: "за", no: "против", abstain: "воздержался" }[participant.vote] || "принят"}`
+        : "голос принят";
+    }
+    item.append(node("i", ""), identity, node("span", "", marker));
+    roster.append(item);
+  });
+}
+
+function renderTelemetry(data) {
+  const session = data.session;
+  const updated = new Date(data.updated_at || Date.now());
+  const age = Math.max(0, Math.round((Date.now() - updated.getTime()) / 1000));
+  text("host-sync-age", age < 2 ? "сейчас" : `${age} сек назад`);
+  byId("host-sync-badge").className = `host-sync-badge${age > 8 ? " stale" : ""}`;
+  text("host-revision", session ? `r${Number(session.revision || 0)}` : "—");
+  text("host-session-key", session?.key ? String(session.key).slice(0, 10) : "—");
+  text("host-cache-state", String(data.cache_state || "live"));
+  text("host-leader-name", session?.leader?.name || data.schedule?.host?.name || "—");
+  const canSettings = Boolean((data.capabilities || []).includes("update_session_settings") && data.schedule);
+  byId("host-session-settings").disabled = commanding || !canSettings;
+}
+
+function actionPayload(action) {
+  if (action === "start_vote") return { confirm_current_roster: true };
+  if (["cancel_session", "finalize_vote", "veto", "finish_session"].includes(action)) return { confirm: true };
+  if (action === "pause") return { reason: "Процедурная пауза объявлена ведущим через единый пульт." };
+  return {};
+}
+
+function makeCommandButton(action, { primary = false, payload = null, label = null } = {}) {
+  const meta = ACTIONS[action] || { label: action, note: "Команда заседания" };
+  const button = node("button", meta.danger ? "danger" : "");
+  button.type = "button";
+  button.dataset.consensusCommand = action;
+  button.disabled = commanding;
+  if (primary) {
+    button.className = `host-primary-command${commanding ? " busy" : ""}`;
+    button.append(node("span", "", commanding ? "Команда выполняется" : (label || meta.label)), node("small", "", commanding ? "Ждём подтверждение живого состояния" : meta.note));
+  } else {
+    button.textContent = label || meta.label;
+    button.title = meta.note;
+  }
+  button.addEventListener("click", () => requestCommand(action, payload || actionPayload(action)));
+  return button;
+}
+
+function choosePrimaryAction(data) {
+  const capabilities = new Set(data.capabilities || []);
+  const stage = String(data.session?.stage || "");
+  if (stage === "voting") {
+    const received = Number(data.session?.voting?.received || 0);
+    const expected = Number(data.session?.voting?.expected || 0);
+    return capabilities.has("finalize_vote") && expected > 0 && received >= expected ? "finalize_vote" : null;
+  }
+  const selected = PRIMARY_BY_STAGE[stage];
+  if (selected === "next_bill" && !Number(data.queue?.length || 0) && capabilities.has("finish_session")) return "finish_session";
+  return selected && capabilities.has(selected) ? selected : null;
+}
+
+function renderControls(data) {
+  const capabilities = new Set(data.capabilities || []);
+  const core = byId("host-secondary-controls");
+  const existingPrimary = byId("host-primary-command");
+  const primaryAction = choosePrimaryAction(data);
+  const primary = primaryAction
+    ? makeCommandButton(primaryAction, { primary: true })
+    : makeCommandButton("noop", { primary: true, label: data.session?.stage === "voting" ? "Голосование идёт" : "Нет активной команды" });
+  primary.id = "host-primary-command";
+  if (!primaryAction) {
+    primary.disabled = true;
+    primary.dataset.consensusCommand = "";
+    const small = primary.querySelector("small");
+    if (small) small.textContent = data.session?.stage === "voting"
+      ? "Следим за составом, голосами и таймером"
+      : "Пульт ожидает следующего состояния";
+  }
+  existingPrimary.replaceWith(primary);
+  core.replaceChildren();
+
+  const secondaryOrder = [
+    "resend_invitations", "pause", "resume", "retry_finalization",
+    "next_bill", "finish_session", "cancel_session", "veto",
+  ];
+  secondaryOrder.forEach((action) => {
+    if (capabilities.has(action) && action !== primaryAction) core.append(makeCommandButton(action));
+  });
+  if (capabilities.has("leader_vote")) {
+    [["yes", "Голос: за"], ["no", "Голос: против"], ["abstain", "Воздержаться"]].forEach(([vote, label]) => {
+      core.append(makeCommandButton("leader_vote", { payload: { vote }, label }));
+    });
+  }
+  if (capabilities.has("finalize_vote") && primaryAction !== "finalize_vote") {
+    core.append(makeCommandButton("finalize_vote"));
+  }
+  text("host-command-guidance", primaryAction
+    ? ACTIONS[primaryAction].note
+    : data.session?.stage === "voting"
+      ? "Состояние обновляется автоматически. Позиции сенаторов скрыты от всех, кроме ведущего."
+      : "Доступные команды вычисляются из фактической стадии, а не из истории на экране.");
+
+  const timerEnabled = capabilities.has("set_timer") && !commanding;
+  byId("host-timer-buttons").querySelectorAll("button").forEach((button) => { button.disabled = !timerEnabled; });
+}
+
+function renderMachine(data) {
+  renderStageRail(data);
+  renderControls(data);
+  renderRoster(data);
+  renderTelemetry(data);
+}
+
 function render(data) {
   state = data;
   const viewer = data.viewer || {};
@@ -489,7 +730,11 @@ function render(data) {
   const schedule = data.schedule;
   const plenary = session?.plenary_number || schedule?.plenary_number || data.last_session?.plenary_number || 0;
   text("host-mode", data.mode === "simulation" ? "УЧЕБНЫЙ КОНТУР" : "РАБОЧИЙ КОНТУР");
-  text("host-session-title", plenary ? `${ordinal(plenary)} пленарный консенсус` : "Пленарный консенсус");
+  text(
+    "host-session-title",
+    cleanSpeech(schedule?.title)
+      || (plenary ? `${ordinal(plenary)} пленарный консенсус` : "Пленарный консенсус"),
+  );
   text(
     "host-session-meta",
     session
@@ -508,17 +753,20 @@ function render(data) {
   text("host-next-speech", prompt.next);
   text("host-updated-at", `сверено ${new Date(data.updated_at || Date.now()).toLocaleTimeString("ru-RU")}`);
   renderMetrics(data);
+  renderMachine(data);
   renderAgenda(data);
   void hydrateAgenda(data);
+  updateClock();
 
   if (prompt.key !== promptSignature) {
+    const hadPrompt = Boolean(promptSignature);
     const live = byId("host-live");
     live.classList.remove("prompt-changed");
     void live.offsetWidth;
     live.classList.add("prompt-changed");
     if (promptSignature) globalThis.TModTabSignal?.pulse(`Новая реплика · ${prompt.label}`);
     promptSignature = prompt.key;
-    if (autoScroll) live.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (autoScroll && hadPrompt) live.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
 
@@ -546,11 +794,13 @@ function schedulePoll(delay) {
   }, next);
 }
 
-async function fetchState() {
-  if (fetching) return;
+async function fetchState({ force = false } = {}) {
+  if (fetching && !force) return;
+  const sequence = ++fetchSequence;
   fetching = true;
   try {
-    const response = await fetch(`/api/state?mode=${encodeURIComponent(selectedMode)}`, {
+    const freshness = force ? "&fresh=1" : "";
+    const response = await fetch(`/api/state?mode=${encodeURIComponent(selectedMode)}${freshness}`, {
       credentials: "same-origin",
       cache: "no-store",
       signal: timeoutSignal(10000),
@@ -568,6 +818,8 @@ async function fetchState() {
       window.location.replace("/login?next=/host");
       return;
     }
+    if (sequence < appliedSequence || isStateOlder(payload, state)) return;
+    appliedSequence = sequence;
     render(payload);
     setConnection("online", "в эфире");
   } catch (error) {
@@ -579,7 +831,113 @@ async function fetchState() {
       byId("host-login-link").hidden = false;
     }
   } finally {
-    fetching = false;
+    if (sequence === fetchSequence) fetching = false;
+  }
+}
+
+function showToast(message, kind = "ok") {
+  const toast = byId("host-toast");
+  text("host-toast", message);
+  toast.dataset.kind = kind;
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 3200);
+}
+
+function confirmExtra(action, payload) {
+  const container = byId("host-confirm-extra");
+  container.replaceChildren();
+  if (action === "choose_discussion") {
+    const label = node("label", "", "Тип дискуссии");
+    const select = document.createElement("select");
+    select.id = "host-discussion-type";
+    ["Правовая", "Фактическая", "Процедурная", "Иная"].forEach((value) => {
+      const option = node("option", "", value);
+      option.value = value;
+      select.append(option);
+    });
+    label.append(select);
+    container.append(label);
+  }
+  if (action === "pause") {
+    const label = node("label", "", "Причина паузы");
+    const input = document.createElement("input");
+    input.id = "host-pause-reason";
+    input.type = "text";
+    input.maxLength = 300;
+    input.value = payload.reason || "Процедурная пауза";
+    label.append(input);
+    container.append(label);
+  }
+  if (action === "start_vote") {
+    container.append(node("p", "host-dialog-warning", "Начало фиксирует текущий подтверждённый состав. Неподтвердившиеся участники не войдут в кворум автоматически."));
+  }
+}
+
+function requestCommand(action, payload = {}) {
+  if (commanding || !state) return;
+  const meta = ACTIONS[action] || { label: action, note: "Команда заседания" };
+  if (meta.confirm) {
+    pendingCommand = { action, payload: { ...payload } };
+    text("host-confirm-title", meta.label);
+    text("host-confirm-copy", meta.note);
+    confirmExtra(action, payload);
+    byId("host-confirm-submit").classList.toggle("danger", Boolean(meta.danger));
+    byId("host-confirm-dialog").showModal();
+    return;
+  }
+  void executeCommand(action, payload);
+}
+
+async function executeCommand(action, payload = {}) {
+  const snapshot = state;
+  const session = snapshot?.session;
+  if (commanding || !snapshot?.viewer?.csrf_token) return;
+  commanding = true;
+  renderControls(snapshot);
+  const meta = ACTIONS[action] || { label: action };
+  addJournal(`${meta.label}: команда отправлена`, "pending");
+  try {
+    const response = await fetch("/api/command", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": snapshot.viewer.csrf_token,
+        "X-Idempotency-Key": globalThis.crypto?.randomUUID?.() || `host-${Date.now()}-${Math.random()}`,
+      },
+      body: JSON.stringify({
+        mode: selectedMode,
+        action,
+        session_key: String(session?.key || ""),
+        revision: Number(session?.revision || 0),
+        bill_id: currentBillId(snapshot),
+        payload,
+      }),
+      signal: timeoutSignal(18000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(result.message || `Команда не выполнена · HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    if (result.state && !isStateOlder(result.state, state)) render(result.state);
+    addJournal(result.message || `${meta.label}: выполнено`);
+    showToast(result.message || "Команда выполнена");
+    globalThis.TModTabSignal?.pulse(meta.label);
+    window.setTimeout(() => void fetchState({ force: true }), 220);
+  } catch (error) {
+    const message = error?.name === "TimeoutError"
+      ? "Ответ задерживается. Пульт сверяет фактическое состояние — не повторяйте команду."
+      : String(error?.message || "Команда не выполнена");
+    addJournal(message, "error");
+    showToast(message, "error");
+    await fetchState({ force: true });
+  } finally {
+    commanding = false;
+    if (state) renderControls(state);
   }
 }
 
@@ -633,6 +991,70 @@ byId("host-fullscreen").addEventListener("click", async () => {
   }
 });
 
+byId("host-confirm-submit").addEventListener("click", () => {
+  if (!pendingCommand) return;
+  const command = pendingCommand;
+  if (command.action === "choose_discussion") {
+    command.payload.discussion_type = document.querySelector("#host-discussion-type")?.value || "Иная";
+  }
+  if (command.action === "pause") {
+    command.payload.reason = document.querySelector("#host-pause-reason")?.value || "Процедурная пауза";
+  }
+  pendingCommand = null;
+  byId("host-confirm-dialog").close();
+  void executeCommand(command.action, command.payload);
+});
+
+byId("host-confirm-dialog").addEventListener("close", () => { pendingCommand = null; });
+
+byId("host-timer-buttons").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-timer-seconds]");
+  if (!button) return;
+  const seconds = Number(button.dataset.timerSeconds || 0);
+  if (seconds > 0) void executeCommand("set_timer", { seconds, mode: "extend" });
+});
+
+byId("host-custom-timer").addEventListener("click", () => {
+  byId("host-timer-dialog").showModal();
+});
+
+byId("host-timer-submit").addEventListener("click", () => {
+  const seconds = (Number(byId("host-timer-minutes").value || 0) * 60)
+    + Number(byId("host-timer-seconds").value || 0);
+  if (seconds < 15 || seconds > 7200) {
+    showToast("Укажите от 15 секунд до 2 часов", "error");
+    return;
+  }
+  const mode = document.querySelector('input[name="host-timer-operation"]:checked')?.value || "extend";
+  byId("host-timer-dialog").close();
+  void executeCommand("set_timer", { seconds, mode });
+});
+
+byId("host-session-settings").addEventListener("click", () => {
+  if (!state?.schedule) return;
+  byId("host-settings-title").value = state.schedule.title || "";
+  byId("host-settings-duration").value = String(state.schedule.duration_minutes || 90);
+  byId("host-settings-dialog").showModal();
+});
+
+byId("host-settings-submit").addEventListener("click", () => {
+  const title = byId("host-settings-title").value.trim();
+  const duration = Number(byId("host-settings-duration").value || 0);
+  if (title.length < 3 || title.length > 100 || duration < 15 || duration > 480) {
+    showToast("Проверьте название и длительность заседания", "error");
+    return;
+  }
+  const scheduleRevision = Number(state?.schedule?.revision || 0);
+  byId("host-settings-dialog").close();
+  void executeCommand("update_session_settings", {
+    title,
+    duration_minutes: duration,
+    schedule_revision: scheduleRevision,
+  });
+});
+
+byId("host-refresh").addEventListener("click", () => void fetchState({ force: true }));
+
 function updateClock() {
   text("host-moscow-clock", new Intl.DateTimeFormat("ru-RU", {
     timeZone: "Europe/Moscow",
@@ -641,7 +1063,31 @@ function updateClock() {
     second: "2-digit",
     hour12: false,
   }).format(new Date()));
-  if (state?.session) text("host-timer", formatTimer(state.session.timer_deadline));
+  if (state?.session) {
+    const timer = formatTimer(state.session.timer_deadline);
+    text("host-timer", timer);
+    text("host-timer-large", state.session.timer_deadline ? timer : "--:--");
+    const remaining = state.session.timer_deadline
+      ? Math.max(0, Math.ceil((new Date(state.session.timer_deadline).getTime() - Date.now()) / 1000))
+      : null;
+    byId("host-timer-large").closest(".host-timer-face")?.classList.toggle("urgent", remaining !== null && remaining <= 30);
+    text(
+      "host-timer-mode",
+      remaining === null
+        ? "не запущен"
+        : state.session.timer_added_seconds
+          ? `продлён суммарно на ${state.session.timer_added_seconds} сек`
+          : "отсчёт синхронизирован",
+    );
+    if (state.updated_at) {
+      const age = Math.max(0, Math.round((Date.now() - new Date(state.updated_at).getTime()) / 1000));
+      text("host-sync-age", age < 2 ? "сейчас" : `${age} сек назад`);
+      byId("host-sync-badge").classList.toggle("stale", age > 8);
+    }
+  } else {
+    text("host-timer-large", "--:--");
+    text("host-timer-mode", "не запущен");
+  }
 }
 
 applyScale(scriptScale);

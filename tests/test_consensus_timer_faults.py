@@ -257,6 +257,47 @@ class ConsensusTimerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         project.assert_not_awaited()
         host.assert_not_awaited()
 
+    async def test_replace_timer_sets_new_deadline_instead_of_extending_old_one(self) -> None:
+        captured: dict[str, object] = {}
+
+        def persist_timer(current, *, seconds, deadline, actor, added_seconds) -> None:
+            captured.update(
+                seconds=seconds,
+                deadline=deadline,
+                actor=actor,
+                added_seconds=added_seconds,
+            )
+            current.timer_seconds = seconds
+            current.timer_deadline = deadline
+            current.timer_added_seconds = added_seconds
+
+        with (
+            patch(
+                "modules.tvrs_discussion._consensus.set_timer",
+                side_effect=persist_timer,
+            ),
+            patch("modules.tvrs_discussion.update_all_vote_dms", new=AsyncMock()),
+            patch("modules.tvrs_discussion.update_host_vote_message", new=AsyncMock()),
+        ):
+            await set_vote_timer(
+                self.bot,  # type: ignore[arg-type]
+                self.guild,  # type: ignore[arg-type]
+                self.session,
+                45,
+                expected_bill_id=10,
+                replace=True,
+            )
+
+        self.assertEqual(captured["seconds"], 45)
+        self.assertEqual(captured["added_seconds"], 0)
+        self.assertEqual(self.session.timer_seconds, 45)
+        self.assertLess(
+            (self.session.timer_deadline - datetime.now(timezone.utc)).total_seconds(),
+            46,
+        )
+        await asyncio.sleep(0)
+        self.assertTrue(self.timer_task.cancelled())
+
     async def test_cancelled_timer_change_still_installs_committed_runtime_task(self) -> None:
         write_started = threading.Event()
         allow_write = threading.Event()

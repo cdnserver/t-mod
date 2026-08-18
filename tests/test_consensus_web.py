@@ -411,6 +411,88 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             ["participant_vote", "request_discussion"],
         )
 
+    async def test_host_timer_accepts_custom_duration_and_replace_mode(self) -> None:
+        timer = AsyncMock()
+        guild = SimpleNamespace(id=77, name="Товарищество", get_channel=lambda _id: None)
+        with patch(
+            "modules.consensus_web_control.set_vote_timer",
+            new=timer,
+        ):
+            message = await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                guild,
+                self._principal(),
+                mode="live",
+                action="set_timer",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={"seconds": 725, "mode": "replace"},
+            )
+
+        self.assertEqual(message, "Таймер установлен на 725 секунд.")
+        timer.assert_awaited_once_with(
+            self.bot,
+            guild,
+            self.session,
+            725,
+            expected_bill_id=self.bill.id,
+            expected_revision=self.session.revision,
+            replace=True,
+        )
+
+    async def test_host_updates_bound_session_passport_with_revision_lock(self) -> None:
+        guild = SimpleNamespace(id=77, name="Товарищество", get_channel=lambda _id: None)
+        schedule = storage.save_consensus_schedule(
+            guild_id=77,
+            plenary_number=6,
+            title="Шестой пленарный консенсус",
+            description="Повестка",
+            invitation_text="Приглашение",
+            scheduled_for=datetime.now(timezone.utc) + timedelta(minutes=10),
+            duration_minutes=90,
+            voice_channel_id=88,
+            actor_id=1,
+            actor_display="Председатель",
+        )
+        started = storage.start_consensus_schedule(
+            77,
+            session_key=self.session.session_key,
+            schedule_id=schedule["id"],
+        )
+
+        self.assertIn(
+            "update_session_settings",
+            consensus_web_capabilities(
+                mode="live",
+                session=self.session,
+                principal=self._principal(),
+            ),
+        )
+        message = await execute_consensus_web_command(  # type: ignore[arg-type]
+            self.bot,
+            guild,
+            self._principal(),
+            mode="live",
+            action="update_session_settings",
+            session_key=self.session.session_key,
+            revision=self.session.revision,
+            bill_id=self.bill.id,
+            payload={
+                "title": "Особое пленарное заседание",
+                "duration_minutes": 135,
+                "schedule_revision": started["revision"],
+            },
+        )
+
+        self.assertIn("Особое пленарное заседание", message)
+        updated = storage.get_consensus_schedule_for_session(
+            77,
+            self.session.session_key,
+        )
+        self.assertEqual(updated["title"], "Особое пленарное заседание")
+        self.assertEqual(updated["duration_minutes"], 135)
+
     async def test_participant_vote_uses_shared_coordinator_without_revision_conflict(self) -> None:
         principal = self._principal(user_id=4)
 
@@ -1056,7 +1138,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 host_page = await client.get("/host")
             self.assertEqual(host_page.status, 200)
             host_text = await host_page.text()
-            self.assertIn("живой сценарий ведущего", host_text)
+            self.assertIn("машина ведения заседания", host_text)
             self.assertIn('id="host-live-text"', host_text)
             self.assertIn('id="host-agenda-list"', host_text)
 

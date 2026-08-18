@@ -12,6 +12,7 @@ class WebAssetContractTests(unittest.TestCase):
     PAGE_SCRIPTS = {
         "admin.html": ("admin.js", "reactor.js"),
         "index.html": ("app.js",),
+        "host.html": ("host.js",),
         "portal.html": ("portal.js",),
         "ovr.html": ("ovr.js",),
         "games.html": ("games.js",),

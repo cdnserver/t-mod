@@ -6,12 +6,12 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#060908">
     <style>html,body{background:#060908;color:#f1f4ee}</style>
-    <title>T·Consensus — суфлёр ведущего</title>
+    <title>T·Consensus — пульт ведущего</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/assets/host.css?v=1">
+    <link rel="stylesheet" href="/assets/host.css?v=2">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/host.js?v=1" defer></script>
+    <script src="/assets/host.js?v=2" defer></script>
   </head>
   <body>
     <div class="host-atmosphere" aria-hidden="true">
@@ -21,19 +21,19 @@
     <header class="host-bar">
       <a class="host-brand" href="/">
         <i>T</i>
-        <span><b>CONSENSUS</b><small>живой сценарий ведущего</small></span>
+        <span><b>CONSENSUS</b><small>машина ведения заседания</small></span>
       </a>
       <div class="host-status">
         <span id="host-connection"><i></i><b>подключение</b></span>
         <time id="host-moscow-clock">--:--:--</time>
         <small>ВРЕМЯ ТОВАРИЩЕСТВА</small>
       </div>
-      <nav class="host-tools" aria-label="Настройки суфлёра">
+      <nav class="host-tools" aria-label="Настройки пульта">
         <button id="host-font-down" type="button" title="Уменьшить текст">А−</button>
         <button id="host-font-up" type="button" title="Увеличить текст">А+</button>
         <button id="host-auto-scroll" type="button" aria-pressed="true">Следовать за этапом</button>
         <button id="host-fullscreen" type="button">На весь экран</button>
-        <a href="/">Пульт ↗</a>
+        <a href="/">Трансляция ↗</a>
       </nav>
     </header>
 
@@ -51,6 +51,73 @@
         </div>
       </section>
 
+      <section class="host-machine" aria-label="Управление консенсусом">
+        <header class="host-machine-head">
+          <div>
+            <span>КОМАНДНЫЙ КОНТУР</span>
+            <h2>Пульт ведущего</h2>
+            <p id="host-command-guidance">Получаем доступные действия из живого состояния T-Mod.</p>
+          </div>
+          <div class="host-sync-badge" id="host-sync-badge">
+            <i></i><span>синхронизация</span><b id="host-sync-age">—</b>
+          </div>
+        </header>
+
+        <div class="host-stage-rail" id="host-stage-rail" aria-label="Ход заседания"></div>
+
+        <div class="host-command-grid">
+          <article class="host-command-core">
+            <span class="host-section-label">ГЛАВНОЕ ДЕЙСТВИЕ</span>
+            <button id="host-primary-command" class="host-primary-command" type="button" disabled>
+              <span>Ожидаем состояние</span><small>Команда появится здесь</small>
+            </button>
+            <div id="host-secondary-controls" class="host-secondary-controls"></div>
+          </article>
+
+          <article class="host-timer-console">
+            <div class="host-timer-face">
+              <span>ТАЙМЕР ЭТАПА</span>
+              <strong id="host-timer-large">--:--</strong>
+              <small id="host-timer-mode">не запущен</small>
+            </div>
+            <div class="host-timer-buttons" id="host-timer-buttons">
+              <button type="button" data-timer-seconds="30">+ 30 сек</button>
+              <button type="button" data-timer-seconds="60">+ 1 мин</button>
+              <button type="button" data-timer-seconds="180">+ 3 мин</button>
+              <button type="button" data-timer-seconds="300">+ 5 мин</button>
+              <button type="button" id="host-custom-timer">Настроить…</button>
+            </div>
+          </article>
+
+          <article class="host-live-roster">
+            <header>
+              <div><span>СОСТАВ И ДОСТАВКА</span><h3>Участники</h3></div>
+              <b id="host-roster-summary">0 / 0</b>
+            </header>
+            <div id="host-roster" class="host-roster"></div>
+          </article>
+
+          <article class="host-telemetry">
+            <header>
+              <div><span>СОСТОЯНИЕ МАШИНЫ</span><h3>Телеметрия</h3></div>
+              <button id="host-refresh" type="button">Сверить</button>
+            </header>
+            <dl>
+              <div><dt>Редакция</dt><dd id="host-revision">—</dd></div>
+              <div><dt>Сессия</dt><dd id="host-session-key">—</dd></div>
+              <div><dt>Источник</dt><dd id="host-cache-state">—</dd></div>
+              <div><dt>Ведущий</dt><dd id="host-leader-name">—</dd></div>
+            </dl>
+            <button id="host-session-settings" class="host-settings-button" type="button" disabled>Паспорт заседания</button>
+          </article>
+        </div>
+
+        <details class="host-command-journal" open>
+          <summary>Журнал действий <span id="host-command-count">0</span></summary>
+          <ol id="host-command-log"></ol>
+        </details>
+      </section>
+
       <section id="host-live" class="host-live" aria-live="polite" aria-atomic="true">
         <header>
           <div>
@@ -60,7 +127,7 @@
           <button id="host-copy-live" type="button">Копировать</button>
         </header>
         <div id="host-live-text" class="host-live-text" tabindex="0">
-          Суфлёр сверяет план заседания с T-Mod.
+          Пульт сверяет план заседания с T-Mod.
         </div>
         <footer>
           <span id="host-live-note">Дождитесь подтверждения действия в пульте перед оглашением.</span>
@@ -120,11 +187,57 @@
 
     <section id="host-gate" class="host-gate" role="status">
       <span class="host-loader" aria-hidden="true"></span>
-      <h1 id="host-gate-title">Готовим эфирный сценарий</h1>
+      <h1 id="host-gate-title">Готовим машину заседания</h1>
       <p id="host-gate-copy">Проверяем личность ведущего, план заседания и повестку.</p>
       <a id="host-login-link" href="/login?next=/host" hidden>Войти в T-Mod Account</a>
     </section>
 
     <div id="host-toast" class="host-toast" role="status" hidden>Реплика скопирована</div>
+
+    <dialog id="host-confirm-dialog" class="host-dialog">
+      <form method="dialog">
+        <span class="host-dialog-kicker">ПРОВЕРКА КОМАНДЫ</span>
+        <h2 id="host-confirm-title">Подтвердите действие</h2>
+        <p id="host-confirm-copy">Система ещё раз проверит редакцию сессии перед выполнением.</p>
+        <div id="host-confirm-extra"></div>
+        <menu>
+          <button value="cancel" type="submit">Отмена</button>
+          <button id="host-confirm-submit" value="default" type="button">Выполнить</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="host-timer-dialog" class="host-dialog">
+      <form method="dialog">
+        <span class="host-dialog-kicker">ХРОНОМЕТР</span>
+        <h2>Настроить таймер этапа</h2>
+        <p>Можно заменить оставшееся время или добавить его к уже идущему таймеру.</p>
+        <label>Минуты<input id="host-timer-minutes" type="number" min="0" max="120" value="3" inputmode="numeric"></label>
+        <label>Секунды<input id="host-timer-seconds" type="number" min="0" max="59" value="0" inputmode="numeric"></label>
+        <fieldset>
+          <legend>Режим</legend>
+          <label><input type="radio" name="host-timer-operation" value="extend" checked> Продлить текущий таймер</label>
+          <label><input type="radio" name="host-timer-operation" value="replace"> Установить заново</label>
+        </fieldset>
+        <menu>
+          <button value="cancel" type="submit">Отмена</button>
+          <button id="host-timer-submit" value="default" type="button">Применить</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="host-settings-dialog" class="host-dialog">
+      <form method="dialog">
+        <span class="host-dialog-kicker">ПАСПОРТ ЗАСЕДАНИЯ</span>
+        <h2>Название и плановая длительность</h2>
+        <p>Изменение сразу появится во всех веб-панелях. Процедурная стадия и голоса не затрагиваются.</p>
+        <label>Название<input id="host-settings-title" type="text" minlength="3" maxlength="100"></label>
+        <label>Плановая длительность, минут<input id="host-settings-duration" type="number" min="15" max="480" value="90" inputmode="numeric"></label>
+        <menu>
+          <button value="cancel" type="submit">Отмена</button>
+          <button id="host-settings-submit" value="default" type="button">Сохранить паспорт</button>
+        </menu>
+      </form>
+    </dialog>
   </body>
 </html>
