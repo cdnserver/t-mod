@@ -662,6 +662,72 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "stale_bill")
         self.assertEqual(self.session.votes[4], "no")
 
+    async def test_result_screen_can_present_next_bill_with_visible_result_id(self) -> None:
+        self.session.stage = "after_result"
+        self.session.current_bill = None
+        self.session.votes.clear()
+        self.session.results.append(
+            LiveResult(
+                bill_id=self.bill.id,
+                bill_number=self.bill.bill_number,
+                title=self.bill.title,
+                status="accepted",
+                internal_percent=75.0,
+                overall_percent=75.0,
+                internal_active=True,
+                votes={1: "yes", 2: "yes", 3: "yes", 4: "no"},
+                source_channel_id=88,
+                source_message_id=99,
+                required_percent=50.0,
+                opposed_percent=25.0,
+                block_votes={
+                    "first": "yes",
+                    "second": "yes",
+                    "third": "yes",
+                    "consensus": "no",
+                },
+            )
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_channel=lambda _id: SimpleNamespace(id=88),
+        )
+        state = await build_consensus_web_state(  # type: ignore[arg-type]
+            self.bot,
+            77,
+            principal=self._principal(),
+        )
+        visible_bill_id = int(state["session"]["current_bill"]["id"])
+        begin_next = AsyncMock()
+
+        with patch(
+            "modules.consensus_web_control.begin_next_bill_vote",
+            new=begin_next,
+        ):
+            message = await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                guild,
+                self._principal(),
+                mode="live",
+                action="next_bill",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=visible_bill_id,
+                payload={},
+            )
+
+        self.assertEqual(message, "Следующий законопроект представлен; воут пока закрыт.")
+        begin_next.assert_awaited_once_with(
+            self.bot,
+            guild,
+            self.session,
+            guild.get_channel(88),
+            expected_stage="after_result",
+            expected_result_bill_id=self.bill.id,
+            expected_revision=self.session.revision,
+        )
+
     def test_entry_ticket_is_single_use_and_guild_scoped(self) -> None:
         ticket = create_entry_ticket(guild_id=77, user_id=1)
 

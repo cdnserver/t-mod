@@ -293,7 +293,24 @@ def _validate_generation(
             status=409,
             details={"current_revision": int(session.revision)},
         )
-    if bill_id is not None and int(bill_id) != consensus_bill_id(session):
+    expected_bill_id = consensus_bill_id(session)
+    if (
+        expected_bill_id == 0
+        and session.results
+        and (
+            session.stage == "after_result"
+            or (
+                session.stage == "paused"
+                and getattr(session, "previous_stage", None) == "after_result"
+            )
+        )
+    ):
+        # The public state deliberately keeps the just-decided bill visible on
+        # the result screen, while the coordinator has already cleared
+        # ``current_bill``.  Fence result-screen commands against the result
+        # generation instead of rejecting the correct visible bill as stale.
+        expected_bill_id = consensus_result_bill_id(session)
+    if bill_id is not None and int(bill_id) != expected_bill_id:
         raise ConsensusWebCommandError(
             "stale_bill",
             "Команда относится к уже сменившемуся законопроекту.",
