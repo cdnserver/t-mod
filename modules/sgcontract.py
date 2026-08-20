@@ -7,6 +7,7 @@ import traceback
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import discord
@@ -323,10 +324,14 @@ def generate_contract_files(case: storage.SGLCase, guild: discord.Guild | None, 
     values = default_values(case, guild)
     values.update({k: v for k, v in overrides.items() if v is not None and str(v).strip() != ""})
     template = _ensure_template_exists()
-    stamp = datetime.now(LOCAL_TZ).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(LOCAL_TZ).strftime("%Y%m%d_%H%M%S_%f")
     contract_number = safe_file_name(values["contractNumber"])
-    run_dir = OUTPUT_DIR / f"{contract_number}_{stamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # A manager can generate the same contract concurrently from the web and
+    # Discord surfaces.  Never share an output directory or LibreOffice
+    # profile between those runs: the files must remain attributable to one
+    # generation attempt.
+    run_dir = OUTPUT_DIR / f"{contract_number}_{stamp}_{uuid4().hex[:10]}"
+    run_dir.mkdir(parents=True, exist_ok=False)
     docx_path = run_dir / f"{contract_number}.docx"
     _replace_docx_placeholders(template, docx_path, values)
     pdf_path = _convert_docx_to_pdf(docx_path, run_dir)
@@ -404,6 +409,8 @@ class SGLContractModal(discord.ui.Modal):
             result = await asyncio.to_thread(generate_contract_files, case, interaction.guild, overrides)
             values: dict[str, str] = result["values"]  # type: ignore[assignment]
             pages: list[Path] = result["pages"]  # type: ignore[assignment]
+            if not pages:
+                raise RuntimeError("Генератор не подготовил страницы договора.")
             too_large = [p.name for p in pages if file_too_large(p)]
             if too_large:
                 await interaction.followup.send(t("sgbureau.contract.errors.files_too_large", files=", ".join(too_large), dir=str(result["dir"])), ephemeral=True)
@@ -414,13 +421,15 @@ class SGLContractModal(discord.ui.Modal):
                 color=EMBED_COLOR,
             )
             embed.set_footer(text=t("sgbureau.contract.footer"))
-            if isinstance(interaction.channel, discord.TextChannel):
-                first = True
-                for start in range(0, len(pages), 10):
-                    chunk = pages[start:start + 10]
-                    files = [discord.File(str(path), filename=f"{values['contractNumber']}_page_{start + idx + 1}.jpg") for idx, path in enumerate(chunk)]
-                    await interaction.channel.send(embed=embed if first else None, files=files, allowed_mentions=discord.AllowedMentions.none())
-                    first = False
+            if not isinstance(interaction.channel, discord.TextChannel):
+                raise RuntimeError("Канал дела недоступен для отправки договора.")
+            attachment_prefix = safe_file_name(values["contractNumber"])
+            first = True
+            for start in range(0, len(pages), 10):
+                chunk = pages[start:start + 10]
+                files = [discord.File(str(path), filename=f"{attachment_prefix}_page_{start + idx + 1}.jpg") for idx, path in enumerate(chunk)]
+                await interaction.channel.send(embed=embed if first else None, files=files, allowed_mentions=discord.AllowedMentions.none())
+                first = False
             await interaction.followup.send(t("sgbureau.contract.done_private", contract_number=values["contractNumber"], pages=len(pages)), ephemeral=True)
         except Exception as exc:
             traceback.print_exc()

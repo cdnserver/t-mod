@@ -12,6 +12,11 @@ from discord.ext import commands
 from persistence import bureau_context as storage
 from localization import safe_command_description, safe_command_name, t
 from modules.sgcontract import SGLContractModal
+from modules.sgl_messages import (
+    capture_discord_case_message,
+    mark_discord_case_message_deleted,
+    update_discord_case_message,
+)
 
 
 def env_int(name: str, default: int = 0) -> int:
@@ -3055,6 +3060,10 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
             return
         if not isinstance(message.channel, discord.TextChannel):
             return
+        # The live web workspace reads this canonical transcript.  Keep the
+        # normal Discord-first workflow intact: recording is independent from
+        # the legacy "describe the situation" state transition below.
+        await capture_discord_case_message(message)
         content = (message.content or "").strip()
         if not content or content.startswith("/"):
             return
@@ -3082,6 +3091,34 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
         schedule_case_refresh(bot, message.guild, updated)
         await message.channel.send(embed=build_situation_embed(updated, message.author, content), allowed_mentions=discord.AllowedMentions.none())
 
+    async def handle_case_message_edit(
+        before: discord.Message, after: discord.Message
+    ) -> None:
+        if after.guild is None or after.author.bot:
+            return
+        updated = await update_discord_case_message(after)
+        if updated is None:
+            # A short gateway outage can make the edit the first observed
+            # event.  Capturing the current message is still preferable to
+            # silently leaving the web transcript incomplete.
+            await capture_discord_case_message(after)
+
+    async def handle_case_message_delete(message: discord.Message) -> None:
+        if message.guild is None:
+            return
+        await mark_discord_case_message_deleted(
+            guild_id=message.guild.id,
+            discord_message_id=message.id,
+        )
+
+    async def handle_case_raw_message_delete(
+        payload: discord.RawMessageDeleteEvent,
+    ) -> None:
+        await mark_discord_case_message_deleted(
+            guild_id=payload.guild_id,
+            discord_message_id=payload.message_id,
+        )
+
 
     async def handle_sgbureau_ready() -> None:
         await schedule_pending_case_archives(bot)
@@ -3090,3 +3127,6 @@ def setup_sgbureau(bot: commands.Bot, remember_command_activity: Callable[[disco
 
     bot.add_listener(handle_sgbureau_ready, "on_ready")
     bot.add_listener(handle_case_message, "on_message")
+    bot.add_listener(handle_case_message_edit, "on_message_edit")
+    bot.add_listener(handle_case_message_delete, "on_message_delete")
+    bot.add_listener(handle_case_raw_message_delete, "on_raw_message_delete")

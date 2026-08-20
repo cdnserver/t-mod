@@ -797,6 +797,205 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            -- The live SGL workspace is deliberately separate from a durable
+            -- archive snapshot.  These rows are the canonical projection of
+            -- messages exchanged while a case channel is still active:
+            -- Discord messages arrive through gateway listeners, while web
+            -- messages are written immediately after Discord accepts them.
+            CREATE TABLE IF NOT EXISTS sgl_case_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                origin TEXT NOT NULL,
+                discord_message_id INTEGER,
+                author_id INTEGER,
+                author_display TEXT NOT NULL DEFAULT '',
+                author_avatar_url TEXT,
+                author_is_bot INTEGER NOT NULL DEFAULT 0,
+                content TEXT NOT NULL DEFAULT '',
+                attachments_json TEXT NOT NULL DEFAULT '[]',
+                reply_to_discord_message_id INTEGER,
+                created_at TEXT NOT NULL,
+                edited_at TEXT,
+                deleted_at TEXT,
+                UNIQUE(guild_id, discord_message_id),
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- A publication is intentionally a durable, reviewable object.
+            -- A forum post is an external side effect, so the title/body and
+            -- state are saved before a browser is allowed to submit anything.
+            CREATE TABLE IF NOT EXISTS sgl_case_forum_publications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                target_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                forum_url TEXT,
+                created_by_id INTEGER,
+                created_by_display TEXT,
+                reviewed_by_id INTEGER,
+                reviewed_by_display TEXT,
+                reviewed_at TEXT,
+                published_at TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- Atlas answers are a durable part of a case file, rather than an
+            -- ephemeral chat window.  The original prompt is retained for
+            -- auditability; citations remain structured for a later export.
+            CREATE TABLE IF NOT EXISTS sgl_case_ai_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'analysis',
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                citations_json TEXT NOT NULL DEFAULT '[]',
+                agent_id TEXT NOT NULL DEFAULT 'atlas-claims',
+                response_mode TEXT NOT NULL DEFAULT 'balanced',
+                created_by_id INTEGER,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- Decisions and handoffs are deliberately kept out of public case
+            -- correspondence.  They form a small, durable staff-only journal:
+            -- the note body is immutable after creation, while its read /
+            -- acknowledgement lifecycle preserves who picked it up and when.
+            CREATE TABLE IF NOT EXISTS sgl_case_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'decision'
+                    CHECK(kind IN ('decision', 'handoff', 'risk', 'note')),
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'read', 'acknowledged', 'superseded')),
+                target_user_id INTEGER,
+                target_display TEXT,
+                created_by_id INTEGER,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                read_at TEXT,
+                read_by_id INTEGER,
+                read_by_display TEXT,
+                acknowledged_at TEXT,
+                acknowledged_by_id INTEGER,
+                acknowledged_by_display TEXT,
+                updated_by_id INTEGER,
+                updated_by_display TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- Each published claim gets one monitored forum projection.  A
+            -- fingerprint lets the bot alert about substantive changes without
+            -- repeatedly notifying about an unchanged topic.
+            CREATE TABLE IF NOT EXISTS sgl_case_forum_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                publication_id INTEGER NOT NULL UNIQUE,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                forum_url TEXT NOT NULL,
+                thread_title TEXT,
+                thread_excerpt TEXT,
+                content_fingerprint TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                last_checked_at TEXT,
+                last_changed_at TEXT,
+                last_notified_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (publication_id) REFERENCES sgl_case_forum_publications(id) ON DELETE CASCADE,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- Tasks and notifications make the web workspace an operational
+            -- surface, not merely a mirror of Discord.  They deliberately
+            -- attach to a case where possible, while retaining a guild-level
+            -- projection for watch failures and other bureau-wide signals.
+            CREATE TABLE IF NOT EXISTS sgl_case_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                priority TEXT NOT NULL DEFAULT 'normal'
+                    CHECK(priority IN ('critical', 'high', 'normal', 'low')),
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'done', 'cancelled')),
+                owner_id INTEGER,
+                owner_display TEXT,
+                due_at TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                completed_at TEXT,
+                completed_by_id INTEGER,
+                completed_by_display TEXT,
+                created_by_id INTEGER,
+                created_by_display TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sgl_case_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                case_id INTEGER,
+                case_number INTEGER,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'info'
+                    CHECK(severity IN ('info', 'success', 'warning', 'critical')),
+                title TEXT NOT NULL,
+                body TEXT,
+                tab TEXT,
+                source TEXT NOT NULL DEFAULT 'system',
+                external_status TEXT NOT NULL DEFAULT 'not_applicable'
+                    CHECK(external_status IN ('not_applicable', 'pending', 'sent', 'failed')),
+                dedupe_key TEXT,
+                acknowledged_at TEXT,
+                acknowledged_by_id INTEGER,
+                acknowledged_by_display TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, dedupe_key),
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
+            -- Keep compact immutable Forum Watch snapshots.  The current
+            -- observation is ideal for monitoring, but a case operator also
+            -- needs to see what changed without scraping the forum again.
+            CREATE TABLE IF NOT EXISTS sgl_case_forum_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                publication_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                snapshot_kind TEXT NOT NULL,
+                thread_title TEXT,
+                thread_excerpt TEXT,
+                content_fingerprint TEXT,
+                captured_at TEXT NOT NULL,
+                FOREIGN KEY (publication_id) REFERENCES sgl_case_forum_publications(id) ON DELETE CASCADE,
+                FOREIGN KEY (case_id) REFERENCES sgl_cases(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS sgl_case_archives (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -2238,6 +2437,45 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_sgl_case_events_case
             ON sgl_case_events(case_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_messages_case
+            ON sgl_case_messages(case_id, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_messages_discord
+            ON sgl_case_messages(guild_id, discord_message_id);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_forum_publications_case
+            ON sgl_case_forum_publications(case_id, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_forum_publications_status
+            ON sgl_case_forum_publications(guild_id, status, id ASC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_ai_notes_case
+            ON sgl_case_ai_notes(case_id, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_decisions_case
+            ON sgl_case_decisions(case_id, status, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_decisions_target
+            ON sgl_case_decisions(guild_id, target_user_id, status, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_forum_observations_guild
+            ON sgl_case_forum_observations(guild_id, status, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_tasks_open
+            ON sgl_case_tasks(guild_id, status, due_at, priority, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_tasks_case
+            ON sgl_case_tasks(case_id, status, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_notifications_inbox
+            ON sgl_case_notifications(guild_id, acknowledged_at, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_notifications_case
+            ON sgl_case_notifications(case_id, acknowledged_at, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_sgl_case_forum_snapshots_case
+            ON sgl_case_forum_snapshots(case_id, id DESC);
 
             CREATE INDEX IF NOT EXISTS idx_sgl_case_archives_source
             ON sgl_case_archives(guild_id, original_channel_id);

@@ -14,12 +14,10 @@
   </style>
   <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/fonts.css">
-  <link rel="stylesheet" href="/sgl/assets/style.css?v=20260811-sgl-v11">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-  <link rel="stylesheet" href="/sgl/assets/site.css?v=20260816-sgl-redesign-v2">
-  <link rel="stylesheet" href="/sgl/assets/app-ui.css?v=20260816-sgl-redesign-v2">
+  <link rel="stylesheet" data-public-only href="/sgl/assets/style.css?v=20260811-sgl-v11">
+  <link rel="stylesheet" data-public-only href="/sgl/assets/site.css?v=20260816-sgl-redesign-v2">
+  <link rel="stylesheet" data-public-only href="/sgl/assets/app-ui.css?v=20260816-sgl-redesign-v2">
+  <link rel="stylesheet" href="/sgl/assets/admin.css?v=20260820-case-os-r15">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -146,52 +144,152 @@
     </footer>
   </section>
 
-  <div id="app" class="shell" hidden>
-    <aside class="rail">
-      <a class="brand" href="/"><img class="brand-logo" src="/sgl/assets/logo-vector.svg" alt="SGL"><span><b>LAW BUREAU</b><small>T‑MOD · CASE SYSTEM</small></span></a>
-      <nav>
-        <button class="active" data-screen="desk"><span>⌂</span><b>Оперативный стол</b></button>
-        <button data-screen="cases"><span>§</span><b>Реестр дел</b></button>
-        <button data-screen="archive"><span>◇</span><b>Архив</b></button>
+  <main id="app" class="sgl-admin" hidden>
+    <svg class="sgl-icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="sgl-i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></symbol>
+      <symbol id="sgl-i-case" viewBox="0 0 24 24"><path d="M4 7.5h16v11H4z"></path><path d="M8 7.5V5h8v2.5M4 11h16M10 14h4"></path></symbol>
+      <symbol id="sgl-i-task" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="m8 9 1.5 1.5L12 7.8M14 9h3M8 15h9"></path></symbol>
+      <symbol id="sgl-i-atlas" viewBox="0 0 24 24"><path d="M12 3 14.3 9.7 21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"></path><path d="m18 3 .7 2.3L21 6l-2.3.7L18 9l-.7-2.3L15 6l2.3-.7L18 3Z"></path></symbol>
+      <symbol id="sgl-i-forum" viewBox="0 0 24 24"><path d="M5 5.5h14v10H9l-4 4v-14Z"></path><path d="M8 9h8M8 12h5"></path></symbol>
+      <symbol id="sgl-i-people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 20c.7-3.2 2.6-5 5.5-5s4.8 1.8 5.5 5M16 11a2.5 2.5 0 1 0-1.1-4.75M17 15c2 0 3.4 1.2 4 3.5"></path></symbol>
+      <symbol id="sgl-i-archive" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM9 11h6"></path></symbol>
+      <symbol id="sgl-i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 5 5"></path></symbol>
+      <symbol id="sgl-i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></symbol>
+      <symbol id="sgl-i-bell" viewBox="0 0 24 24"><path d="M18 10a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4"></path></symbol>
+      <symbol id="sgl-i-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"></path></symbol>
+      <symbol id="sgl-i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></symbol>
+      <symbol id="sgl-i-discord" viewBox="0 0 24 24"><path d="M7.2 5.5A15 15 0 0 1 10 5l.8 1.2a12 12 0 0 1 2.4 0L14 5a15 15 0 0 1 2.8.5c1.8 2.6 2.3 5.1 2.1 7.5-1.5 1.1-3 1.7-4.5 2.1l-1-1.4 1.1-.5-.3-.2a9 9 0 0 1-8.4 0l-.3.2 1.1.5-1 1.4A14 14 0 0 1 3.1 13c-.2-2.4.3-4.9 2.1-7.5Z"></path><circle cx="9" cy="10.5" r="1"></circle><circle cx="15" cy="10.5" r="1"></circle></symbol>
+      <symbol id="sgl-i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"></path></symbol>
+      <symbol id="sgl-i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></symbol>
+      <symbol id="sgl-i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 1 4M20 4v7h-7"></path></symbol>
+      <symbol id="sgl-i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 13h6M9 17h6"></path></symbol>
+      <symbol id="sgl-i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2.3-2.3a5 5 0 0 0-7.1-7.1l-1.3 1.3M14 11a5 5 0 0 0-7.1-.1l-2.3 2.3a5 5 0 0 0 7.1 7.1l1.3-1.3"></path></symbol>
+      <symbol id="sgl-i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m4 17 5-5 3.5 3.5 2.5-2.5 5 5"></path></symbol>
+    </svg>
+
+    <aside class="sgl-admin-sidebar">
+      <a class="sgl-brand" href="/sgl" data-go="today" aria-label="SGL Case OS">
+        <span class="sgl-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt=""></span>
+        <span><strong>SGL</strong><small>CASE OS</small></span>
+      </a>
+      <nav class="sgl-admin-nav" aria-label="Навигация SGL">
+        <button class="is-active" data-go="today" aria-label="Сегодня" title="Сегодня"><svg><use href="#sgl-i-grid"></use></svg><span>Сегодня</span><b id="sgl-nav-queue">0</b></button>
+        <button data-go="work" aria-label="Работа" title="Работа"><svg><use href="#sgl-i-task"></use></svg><span>Работа</span><b id="sgl-nav-tasks">0</b></button>
+        <button data-go="cases" aria-label="Кейсы" title="Кейсы"><svg><use href="#sgl-i-case"></use></svg><span>Кейсы</span><b id="sgl-nav-cases">0</b></button>
+        <button data-go="atlas" aria-label="Atlas" title="Atlas"><svg><use href="#sgl-i-atlas"></use></svg><span>Atlas</span></button>
+        <button data-go="forum" aria-label="Forum Watch" title="Forum Watch"><svg><use href="#sgl-i-forum"></use></svg><span>Forum Watch</span><b id="sgl-nav-forum" class="sgl-nav-alert">0</b></button>
+        <button data-go="people" aria-label="Люди" title="Люди"><svg><use href="#sgl-i-people"></use></svg><span>Люди</span></button>
+        <button data-go="archive" aria-label="Архив" title="Архив"><svg><use href="#sgl-i-archive"></use></svg><span>Архив</span></button>
       </nav>
-      <div class="rail-note"><i></i><span><b>Единый реестр</b><small>синхронизирован с Discord</small></span></div>
-      <a class="reactor-link" href="/sgl?public=1">Сайт бюро <span>↗</span></a>
-      <a class="reactor-link" href="https://reactor.tvr.lat/#/sgl">Ядерный Реактор <span>↗</span></a>
+      <section class="sgl-side-health" id="sgl-side-health">
+        <span class="sgl-status-dot"></span>
+        <div><b>Проверяю интеграции</b><small>Discord · Atlas · Forum</small></div>
+      </section>
+      <footer class="sgl-side-user"><span id="sgl-viewer-name">—</span><small>защищённый кабинет</small></footer>
     </aside>
 
-    <main>
-      <header class="topbar">
-        <div><small id="section-kicker">SGL · COMMAND DESK</small><h1 id="section-title">Оперативный стол</h1></div>
-        <div class="top-actions"><button id="refresh" title="Обновить">↻</button><span class="live"><i></i>ЖИВОЙ РЕЕСТР</span><span class="viewer"><b id="viewer-name">—</b><small>защищённая сессия</small></span></div>
+    <section class="sgl-admin-frame">
+      <header class="sgl-admin-topbar">
+        <div class="sgl-top-title"><span id="sgl-breadcrumb">SGL / сегодня</span><strong id="sgl-page-title">Рабочая очередь</strong></div>
+        <div class="sgl-top-actions">
+          <div class="sgl-search-wrap">
+            <label class="sgl-global-search"><svg><use href="#sgl-i-search"></use></svg><input id="sgl-global-search" autocomplete="off" placeholder="Найти дело, человека или действие"><kbd>⌘ K</kbd></label>
+            <div id="sgl-search-results" class="sgl-search-results" hidden></div>
+          </div>
+          <button id="sgl-refresh" class="sgl-icon-button" title="Обновить данные"><svg><use href="#sgl-i-refresh"></use></svg></button>
+          <button id="sgl-inbox-button" class="sgl-icon-button sgl-inbox-button" title="Открыть уведомления"><svg><use href="#sgl-i-bell"></use></svg><i id="sgl-inbox-count">0</i></button>
+          <button id="sgl-create-case" class="sgl-button sgl-button-primary"><svg><use href="#sgl-i-plus"></use></svg>Новый кейс</button>
+        </div>
       </header>
 
-      <div class="content">
-        <section id="screen-desk" class="screen active">
-          <article class="hero">
-            <div><span class="eyebrow">T‑MOD · SGL</span><h2>Каждое дело.<br><em>В правильном порядке.</em></h2><p>Единая рабочая система бюро: от первого обращения и назначения команды до закрытия и долговечного архива.</p><button data-jump="cases">Открыть реестр <span>→</span></button></div>
-            <div class="docket" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><strong class="hero-logo"><img src="/sgl/assets/logo-vector.svg" alt=""></strong><i class="pin p1"></i><i class="pin p2"></i><i class="pin p3"></i></div>
-          </article>
-          <div class="metrics"><article><small>ВСЕГО ДЕЛ</small><strong id="count-all">0</strong><span>в едином реестре</span></article><article><small>В РАБОТЕ</small><strong id="count-open">0</strong><span>требуют внимания</span></article><article><small>ЗАКРЫТО</small><strong id="count-closed">0</strong><span>работа завершена</span></article><article><small>В АРХИВЕ</small><strong id="count-archives">0</strong><span>сохранено полностью</span></article></div>
-          <div class="desk-grid"><article class="priority"><header><span>ПОСЛЕДНИЕ ДЕЛА</span><button data-jump="cases">Весь реестр →</button></header><div id="recent-cases"></div></article><article class="principles"><span>КОНТУР БЮРО</span><h3>Всё важное остаётся связанным</h3><ol><li><i>01</i><span><b>Дело и команда</b><small>клиент, ведущий юрист и секретарь</small></span></li><li><i>02</i><span><b>Ход работы</b><small>события, документы, чек и статус</small></span></li><li><i>03</i><span><b>Безопасный архив</b><small>история восстанавливается по номеру</small></span></li></ol></article></div>
+      <div class="sgl-admin-content">
+        <section class="sgl-screen is-active" data-screen="today">
+          <header class="sgl-screen-heading"><div><span>ОПЕРАЦИОННАЯ ОЧЕРЕДЬ</span><h1>Что требует решения сейчас</h1><p>Приоритеты собираются из задач, платежей, состояния кейсов и Forum Watch — не из декоративных метрик.</p></div><button class="sgl-button sgl-button-secondary" data-go="cases">Открыть реестр <svg><use href="#sgl-i-arrow"></use></svg></button></header>
+          <section class="sgl-today-summary" id="sgl-today-summary"></section>
+          <div class="sgl-today-grid">
+            <section class="sgl-panel sgl-queue-panel"><header><div><span>СДЕЛАТЬ СЕЙЧАС</span><h2>Очередь работы</h2></div><button class="sgl-text-button" data-go="cases">Все дела</button></header><div id="sgl-triage-list" class="sgl-triage-list"></div></section>
+            <section class="sgl-panel sgl-inbox-panel"><header><div><span>ВХОДЯЩИЕ СИГНАЛЫ</span><h2>Уведомления</h2></div><button id="sgl-ack-all-visible" class="sgl-text-button">Разобрать</button></header><div id="sgl-inbox-list" class="sgl-inbox-list"></div></section>
+          </div>
+          <div class="sgl-today-grid sgl-today-bottom"><section class="sgl-panel"><header><div><span>ПОСЛЕДНИЕ ДЕЙСТВИЯ</span><h2>Аудит бюро</h2></div></header><div id="sgl-activity-list" class="sgl-activity-list"></div></section><section class="sgl-panel sgl-health-panel"><header><div><span>СОСТОЯНИЕ КОНТУРА</span><h2>Интеграции</h2></div></header><div id="sgl-health-list" class="sgl-health-list"></div></section></div>
         </section>
 
-        <section id="screen-cases" class="screen">
-          <div class="intro"><div><small>SGL · CASE REGISTRY</small><h2>Реестр дел</h2><p>Поиск по номеру, клиенту, сотрудникам, типу обращения и статику.</p></div></div>
-          <form id="case-filter" class="filter"><label><span>Поиск</span><input name="q" placeholder="Номер, клиент, сотрудник…"></label><label><span>Состояние</span><select name="status"><option value="">Все состояния</option></select></label><button>Найти</button></form>
-          <div id="case-list" class="case-list"></div>
+        <section class="sgl-screen" data-screen="work">
+          <header class="sgl-screen-heading"><div><span>WORK QUEUE / TEAM</span><h1>Задачи, сроки и владельцы</h1><p>Единая рабочая очередь по всем делам: можно переназначить задачу, перенести срок, закрыть или вернуть её в работу без поиска по каналам.</p></div><button class="sgl-button sgl-button-primary" data-new-task><svg><use href="#sgl-i-plus"></use></svg>Новая задача</button></header>
+          <section id="sgl-work-summary" class="sgl-work-summary" aria-label="Сводка задач"></section>
+          <div class="sgl-work-toolbar"><div id="sgl-work-views" class="sgl-saved-views"><button class="is-active" data-work-view="open">Открытые</button><button data-work-view="mine">Мои</button><button data-work-view="overdue">Просрочены</button><button data-work-view="unassigned">Без исполнителя</button><button data-work-view="done">Готово</button><button data-work-view="all">Все</button></div><label class="sgl-case-search"><svg><use href="#sgl-i-search"></use></svg><input id="sgl-work-search" autocomplete="off" placeholder="Задача, кейс, исполнитель"></label></div>
+          <div class="sgl-table-card sgl-work-table-card"><table class="sgl-data-table sgl-work-table"><thead><tr><th>Задача</th><th>Кейс</th><th>Исполнитель</th><th>Срок</th><th>Приоритет</th><th>Статус</th><th></th></tr></thead><tbody id="sgl-work-list"></tbody></table><div id="sgl-work-empty" class="sgl-empty" hidden>Под этот фильтр задач нет.</div></div>
         </section>
 
-        <section id="screen-archive" class="screen">
-          <div class="intro"><div><small>SGL · DURABLE ARCHIVE</small><h2>Архив дел</h2><p>Снимки переписки и вложений. Администратор может открыть временную восстановленную копию в Discord.</p></div></div>
-          <div id="archive-list" class="archive-list"></div>
+        <section class="sgl-screen" data-screen="cases">
+          <header class="sgl-screen-heading"><div><span>РЕЕСТР КЕЙСОВ</span><h1>Дела, команда и следующий шаг</h1><p>Откройте дело обычным кликом — оно станет рабочим пространством, а не всплывающим окном.</p></div><button class="sgl-button sgl-button-primary" data-create-case><svg><use href="#sgl-i-plus"></use></svg>Новый кейс</button></header>
+          <div class="sgl-case-toolbar"><div id="sgl-saved-views" class="sgl-saved-views"><button class="is-active" data-case-view="all">Все</button><button data-case-view="inbox">Входящие</button><button data-case-view="active">В работе</button><button data-case-view="waiting">Ждут клиента</button><button data-case-view="payment">Оплата</button><button data-case-view="forum">Forum Watch</button><button data-case-view="closed">Закрытые</button></div><label class="sgl-case-search"><svg><use href="#sgl-i-search"></use></svg><input id="sgl-case-search" autocomplete="off" placeholder="№, клиент, статик, адвокат"></label></div>
+          <div class="sgl-table-card"><table class="sgl-data-table"><thead><tr><th>Кейс</th><th>Клиент / вид работы</th><th>Команда</th><th>Стадия</th><th>Следующее действие</th><th>Последняя активность</th><th></th></tr></thead><tbody id="sgl-case-list"></tbody></table><div id="sgl-case-empty" class="sgl-empty" hidden>По этому фильтру дел нет.</div></div>
+        </section>
+
+        <section class="sgl-screen" data-screen="atlas">
+          <header class="sgl-screen-heading"><div><span>ATLAS / CASE INTELLIGENCE</span><h1>Библиотека выводов и рисков</h1><p>Atlas всегда работает внутри выбранного кейса. Здесь — быстрый вход в его материалы и незакрытые приоритеты.</p></div></header>
+          <div class="sgl-atlas-index"><section class="sgl-panel"><header><div><span>ВЫБЕРИТЕ ДЕЛО</span><h2>Рабочий контекст</h2></div></header><div id="sgl-atlas-case-picker" class="sgl-case-picker"></div></section><section class="sgl-panel"><header><div><span>ЧТО МОЖНО ПОЛУЧИТЬ</span><h2>Артефакты Atlas</h2></div></header><div class="sgl-artifact-grid"><article><svg><use href="#sgl-i-file"></use></svg><b>Brief</b><span>Факты, пробелы и контекст</span></article><article><svg><use href="#sgl-i-atlas"></use></svg><b>Risks</b><span>Риски и доказательства</span></article><article><svg><use href="#sgl-i-case"></use></svg><b>Plan</b><span>План, который можно превратить в задачи</span></article><article><svg><use href="#sgl-i-forum"></use></svg><b>Draft</b><span>Проект иска или документа</span></article></div></section></div>
+        </section>
+
+        <section class="sgl-screen" data-screen="forum">
+          <header class="sgl-screen-heading"><div><span>FORUM WATCH</span><h1>Публикации под контролем</h1><p>Честное состояние авторизации, проверки и доставки сигналов в Discord. Вход и captcha остаются ручными.</p></div><button id="sgl-forum-check" class="sgl-button sgl-button-secondary"><svg><use href="#sgl-i-refresh"></use></svg>Проверить сейчас</button></header>
+          <section id="sgl-forum-health" class="sgl-forum-health"></section>
+          <section id="sgl-forum-alert-center" class="sgl-forum-alert-center"></section>
+          <div class="sgl-table-card"><table class="sgl-data-table"><thead><tr><th>Кейс</th><th>Тема</th><th>Состояние</th><th>Последняя проверка</th><th>Сигнал</th><th>Discord</th><th></th></tr></thead><tbody id="sgl-forum-list"></tbody></table><div id="sgl-forum-empty" class="sgl-empty" hidden>Публикаций пока нет.</div></div>
+        </section>
+
+        <section class="sgl-screen" data-screen="people">
+          <header class="sgl-screen-heading"><div><span>РЕЕСТР ЛЮДЕЙ</span><h1>Клиенты и команда</h1><p>Профили используются при создании дел и заполняют договоры, платежи и карточки кейсов.</p></div></header>
+          <label class="sgl-directory-search"><svg><use href="#sgl-i-search"></use></svg><input id="sgl-directory-search" autocomplete="off" placeholder="Имя, static, телефон или Discord ID"></label>
+          <div class="sgl-directory-grid"><section class="sgl-panel"><header><div><span>КЛИЕНТЫ</span><h2 id="sgl-client-count">0 профилей</h2></div></header><div id="sgl-client-list" class="sgl-person-list"></div></section><section class="sgl-panel"><header><div><span>АДВОКАТЫ</span><h2 id="sgl-lawyer-count">0 профилей</h2></div></header><div id="sgl-lawyer-list" class="sgl-person-list"></div></section></div>
+        </section>
+
+        <section class="sgl-screen" data-screen="archive">
+          <header class="sgl-screen-heading"><div><span>EVIDENCE VAULT</span><h1>Архив и временное восстановление</h1><p>Снимок хранится отдельно от Discord. Восстановление создаёт только временную read-only копию канала.</p></div></header>
+          <div class="sgl-table-card"><table class="sgl-data-table"><thead><tr><th>Кейс</th><th>Снимок</th><th>Сообщения / файлы</th><th>Статус</th><th>Действие</th></tr></thead><tbody id="sgl-archive-list"></tbody></table><div id="sgl-archive-empty" class="sgl-empty" hidden>Архив пока пуст.</div></div>
+        </section>
+
+        <section id="sgl-case-workspace" class="sgl-case-workspace" hidden>
+          <header class="sgl-case-header"><div><button id="sgl-case-back" class="sgl-back-button"><svg><use href="#sgl-i-arrow"></use></svg>Кейсы</button><div class="sgl-case-title"><span id="sgl-case-kicker">SGL / ДЕЛО</span><h1 id="sgl-case-title">Загрузка дела…</h1><div id="sgl-case-header-meta" class="sgl-case-header-meta"></div><div id="sgl-case-health" class="sgl-case-health"></div></div></div><div class="sgl-case-header-actions"><a id="sgl-case-discord" class="sgl-button sgl-button-secondary" target="_blank" rel="noreferrer"><svg><use href="#sgl-i-discord"></use></svg>Discord</a><button id="sgl-case-close" class="sgl-button sgl-button-danger">Закрыть дело</button></div></header>
+          <div id="sgl-case-tabs" class="sgl-case-tabs"><button class="is-active" data-case-tab="overview">Обзор</button><button data-case-tab="conversation">Диалог</button><button data-case-tab="timeline">Хронология</button><button data-case-tab="decisions">Решения</button><button data-case-tab="evidence">Материалы</button><button data-case-tab="finance">Финансы и договор</button><button data-case-tab="forum">Форум</button><button data-case-tab="atlas">Atlas</button><button data-case-tab="archive">Архив</button></div>
+          <div class="sgl-case-layout"><aside id="sgl-case-identity" class="sgl-case-identity"></aside><section id="sgl-case-panel" class="sgl-case-panel"></section><aside id="sgl-case-sidecar" class="sgl-case-sidecar"></aside></div>
         </section>
       </div>
-    </main>
-  </div>
+    </section>
 
-  <dialog id="case-dialog"><button class="close" data-close>×</button><div id="case-detail"></div></dialog>
-  <dialog id="confirm-dialog" class="confirm"><div class="confirm-mark">!</div><small>ЗАЩИЩЁННОЕ ДЕЙСТВИЕ</small><h3>Восстановить архив?</h3><p id="confirm-copy"></p><div><button data-close>Отмена</button><button id="confirm-action" class="danger">Восстановить</button></div></dialog>
-  <div id="toast" class="toast" hidden></div>
+    <dialog id="sgl-create-dialog" class="sgl-modal sgl-create-modal">
+      <form id="sgl-create-form" novalidate>
+        <header class="sgl-modal-header"><div><span>НОВОЕ ДЕЛО</span><h2>Создание защищённого кейса</h2><p id="sgl-create-step-caption">01 / 04 · Клиент</p></div><button type="button" class="sgl-modal-close" data-close-modal><svg><use href="#sgl-i-close"></use></svg></button></header>
+        <ol class="sgl-stepper"><li class="is-current"><b>1</b><span>Клиент</span></li><li><b>2</b><span>Команда</span></li><li><b>3</b><span>Факты</span></li><li><b>4</b><span>Проверка</span></li></ol>
+        <section class="sgl-create-step is-active" data-create-step="1"><div class="sgl-form-note">Начните с Discord ID клиента. Если профиль уже есть, выберите его — поля ниже заполнятся автоматически.</div><label>Discord ID клиента<input name="client_id" required inputmode="numeric" placeholder="Например, 123456789012345678"></label><label>Профиль клиента<select id="sgl-create-client-profile"><option value="">Новый или ручной ввод</option></select></label><div class="sgl-form-grid"><label>Ник / имя<input name="client_nick" maxlength="160" placeholder="Как обращаться к клиенту"></label><label>Static ID<input name="static_id" maxlength="100" placeholder="ID персонажа"></label><label>Телефон<input name="phone" maxlength="100" placeholder="Контакт"></label><label>Банковский счёт<input name="bank_account" maxlength="200" placeholder="При необходимости"></label></div><label>Ссылка на документ клиента<input name="passport_url" maxlength="1000" placeholder="https://…"></label></section>
+        <section class="sgl-create-step" data-create-step="2"><div class="sgl-form-note">Эти люди получат доступ к закрытому Discord-каналу нового дела.</div><div class="sgl-form-grid"><div class="sgl-member-field"><label for="sgl-create-lead-lawyer-id">Ведущий адвокат</label><div class="sgl-member-field-control"><input id="sgl-create-lead-lawyer-id" name="lead_lawyer_id" required inputmode="numeric" autocomplete="off" aria-describedby="sgl-member-help-lead" placeholder="Выберите сотрудника"><button type="button" class="sgl-member-picker-trigger" data-open-member-picker data-member-picker-form="sgl-create-form" data-member-picker-target="lead_lawyer_id" data-member-picker-role="Ведущий адвокат" data-member-picker-scope="lawyer" aria-haspopup="dialog" aria-label="Выбрать ведущего адвоката из сотрудников"><svg aria-hidden="true"><use href="#sgl-i-people"></use></svg><span>Выбрать</span></button></div><small id="sgl-member-help-lead">Найдите сотрудника по имени, нику или Discord ID.</small></div><div class="sgl-member-field"><label for="sgl-create-secretary-id">Секретарь</label><div class="sgl-member-field-control"><input id="sgl-create-secretary-id" name="secretary_id" inputmode="numeric" autocomplete="off" aria-describedby="sgl-member-help-secretary" placeholder="Необязательно"><button type="button" class="sgl-member-picker-trigger" data-open-member-picker data-member-picker-form="sgl-create-form" data-member-picker-target="secretary_id" data-member-picker-role="Секретарь" data-member-picker-scope="staff" aria-haspopup="dialog" aria-label="Выбрать секретаря из сотрудников"><svg aria-hidden="true"><use href="#sgl-i-people"></use></svg><span>Выбрать</span></button></div><small id="sgl-member-help-secretary">Можно выбрать из команды или оставить поле пустым.</small></div></div><label>Вид работы<input name="request_type" maxlength="160" placeholder="Например, гражданский иск"></label></section>
+        <section class="sgl-create-step" data-create-step="3"><div class="sgl-form-note">Здесь сохраняются исходные факты. Ссылку на опубликованный иск можно добавить позже — в материалах или Forum Watch.</div><label>Обстоятельства дела<textarea name="situation_text" maxlength="8000" placeholder="Что произошло, какие есть факты и доказательства?"></textarea></label><label>Ссылка на готовый иск<input name="claim_link" maxlength="1000" placeholder="https://forum…"></label><label>Стартовая стадия<select name="status"><option value="created">Открыт</option><option value="awaiting_situation">Ждёт обстоятельства</option><option value="awaiting_link">Ждёт иск</option></select></label></section>
+        <section class="sgl-create-step" data-create-step="4"><div id="sgl-create-review" class="sgl-create-review"></div><div class="sgl-review-warning"><svg><use href="#sgl-i-discord"></use></svg><span>После создания SGL откроет закрытый Discord-канал и выдаст доступ только клиенту, адвокату и секретарю.</span></div></section>
+        <footer class="sgl-modal-footer"><button type="button" id="sgl-create-back" class="sgl-button sgl-button-secondary" hidden>Назад</button><span></span><button type="button" id="sgl-create-next" class="sgl-button sgl-button-primary">Продолжить <svg><use href="#sgl-i-arrow"></use></svg></button><button type="submit" id="sgl-create-submit" class="sgl-button sgl-button-primary" hidden>Создать кейс</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="sgl-task-dialog" class="sgl-modal"><form id="sgl-task-form"><header class="sgl-modal-header"><div><span id="sgl-task-kicker">ЗАДАЧА КЕЙСА</span><h2 id="sgl-task-title">Следующее действие</h2><p id="sgl-task-case-label">—</p></div><button type="button" class="sgl-modal-close" data-close-modal><svg><use href="#sgl-i-close"></use></svg></button></header><label id="sgl-task-case-select-wrap">Кейс<select name="case_number" id="sgl-task-case-select"></select></label><label>Что нужно сделать<input name="title" required maxlength="240" placeholder="Например, запросить подтверждение оплаты"></label><div class="sgl-form-grid"><label>Приоритет<select name="priority"><option value="high">Высокий</option><option value="normal" selected>Обычный</option><option value="low">Низкий</option><option value="critical">Критический</option></select></label><label>Срок<input name="due_at" type="datetime-local"></label></div><label id="sgl-task-status-wrap" hidden>Статус<select name="status"><option value="open">Открыта</option><option value="done">Готово</option><option value="cancelled">Отменена</option></select></label><div class="sgl-member-field"><label for="sgl-task-owner-select">Исполнитель</label><div class="sgl-member-field-control"><select name="owner_id" id="sgl-task-owner-select" aria-describedby="sgl-member-help-owner"></select><button type="button" class="sgl-member-picker-trigger" data-open-member-picker data-member-picker-form="sgl-task-form" data-member-picker-target="owner_id" data-member-picker-role="Исполнитель задачи" data-member-picker-scope="staff" aria-haspopup="dialog" aria-label="Выбрать исполнителя задачи из сотрудников"><svg aria-hidden="true"><use href="#sgl-i-people"></use></svg><span>Подобрать</span></button></div><small id="sgl-member-help-owner">Поиск показывает сотрудников, которым можно назначить задачу.</small></div><label>Контекст<textarea name="description" maxlength="4000" placeholder="Что должен знать исполнитель"></textarea></label><footer class="sgl-modal-footer"><span></span><button id="sgl-task-submit" class="sgl-button sgl-button-primary">Создать задачу</button></footer></form></dialog>
+
+    <dialog id="sgl-member-picker-dialog" class="sgl-modal sgl-member-picker-modal" aria-labelledby="sgl-member-picker-title" aria-describedby="sgl-member-picker-description">
+      <section class="sgl-member-picker">
+        <header class="sgl-modal-header"><div><span>КОМАНДА SGL</span><h2 id="sgl-member-picker-title">Назначить сотрудника</h2><p id="sgl-member-picker-description">Поиск идёт только по участникам рабочего контура. Выбранный Discord ID подставится в исходную форму.</p></div><button type="button" class="sgl-modal-close" data-close-modal aria-label="Закрыть выбор сотрудника"><svg aria-hidden="true"><use href="#sgl-i-close"></use></svg></button></header>
+        <div class="sgl-member-picker-context" aria-label="Контекст назначения"><span>НАЗНАЧАЕТСЯ</span><strong id="sgl-member-picker-role">Сотрудник</strong><small id="sgl-member-picker-target-copy">Выберите человека из команды.</small></div>
+        <label class="sgl-member-picker-search" for="sgl-member-picker-query"><span class="sgl-visually-hidden">Найти сотрудника</span><svg aria-hidden="true"><use href="#sgl-i-search"></use></svg><input id="sgl-member-picker-query" type="search" autocomplete="off" spellcheck="false" placeholder="Имя, ник или Discord ID" aria-controls="sgl-member-picker-results" aria-describedby="sgl-member-picker-status"></label>
+        <div class="sgl-member-picker-filters" aria-label="Быстрый фильтр сотрудников"><button type="button" data-member-picker-filter="all" aria-pressed="true">Все</button><button type="button" data-member-picker-filter="lawyer" aria-pressed="false">Адвокаты</button><button type="button" data-member-picker-filter="secretary" aria-pressed="false">Секретари</button></div>
+        <div id="sgl-member-picker-results" class="sgl-member-picker-results" role="listbox" aria-label="Результаты поиска сотрудников" aria-busy="false" tabindex="-1"><div class="sgl-member-picker-empty" data-member-picker-empty><svg aria-hidden="true"><use href="#sgl-i-people"></use></svg><strong>Команда появится здесь</strong><span>Начните вводить имя, ник или Discord ID, чтобы найти нужного человека.</span></div></div>
+        <p id="sgl-member-picker-status" class="sgl-member-picker-status" role="status" aria-live="polite">Введите не менее двух символов для поиска.</p>
+        <footer class="sgl-member-picker-footer"><button type="button" class="sgl-button sgl-button-secondary" data-member-picker-clear hidden>Снять назначение</button><span></span><button type="button" class="sgl-button sgl-button-secondary" data-close-modal>Отмена</button></footer>
+      </section>
+    </dialog>
+
+    <dialog id="sgl-contract-dialog" class="sgl-modal sgl-contract-modal"><form id="sgl-contract-form"><header class="sgl-modal-header"><div><span>ДОГОВОР</span><h2>Проверка перед отправкой</h2><p>Данные предзаполнены из кейса, профилей и последней квитанции.</p></div><button type="button" class="sgl-modal-close" data-close-modal><svg><use href="#sgl-i-close"></use></svg></button></header><div id="sgl-contract-fields" class="sgl-contract-fields"></div><div class="sgl-review-warning"><svg><use href="#sgl-i-discord"></use></svg><span>После подтверждения SGL сгенерирует документ и отправит страницы в закрытый Discord-канал дела.</span></div><footer class="sgl-modal-footer"><span></span><button class="sgl-button sgl-button-primary">Сформировать и отправить</button></footer></form></dialog>
+
+    <dialog id="sgl-close-dialog" class="sgl-modal"><form id="sgl-close-form"><header class="sgl-modal-header"><div><span>ЗАКРЫТИЕ КЕЙСА</span><h2>Проверка перед архивом</h2><p>Закрытый кейс перейдёт в архивную очередь, но останется доступен через Evidence Vault.</p></div><button type="button" class="sgl-modal-close" data-close-modal><svg><use href="#sgl-i-close"></use></svg></button></header><div id="sgl-close-preflight" class="sgl-close-preflight"></div><label class="sgl-switch"><input type="checkbox" name="publish_portfolio"><span></span>Опубликовать обезличенный результат в портфолио</label><label>Описание для портфолио<textarea name="portfolio_description" maxlength="1500" placeholder="Только если результат можно публиковать безопасно"></textarea></label><footer class="sgl-modal-footer"><span></span><button class="sgl-button sgl-button-danger">Закрыть и передать в архив</button></footer></form></dialog>
+
+    <div id="sgl-toast" class="sgl-toast" hidden role="status"></div>
+  </main>
+
   <script>
     (function(){
       const isPublic = new URLSearchParams(location.search).get("public") === "1";
@@ -209,8 +307,6 @@
       else showPublic();
     })();
   </script>
-  <script src="/sgl/assets/app.js?v=20260811-sgl-v11" defer></script>
-  <script src="/sgl/assets/site.js?v=20260816-sgl-redesign-v2" defer></script>
-  <script src="/sgl/assets/app-ui.js?v=20260816-sgl-redesign-v2" defer></script>
+  <script src="/sgl/assets/app.js?v=20260820-case-os-r15" defer></script>
 </body>
 </html>
