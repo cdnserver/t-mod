@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "..");
+const workspaceRoot = resolve(root, "..");
 
 describe("desktop release contract", () => {
   it("never ships demonstration identities", () => {
@@ -24,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.1");
+    expect(manifest.version).toBe("0.3.2");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -66,5 +67,41 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("launchVisible && <LaunchSequence");
     expect(styles).toContain(".launch-sequence");
     expect(styles).toContain("@keyframes launch-sequence-out");
+    expect(renderer).not.toContain("launch-orbit");
+    expect(styles).not.toContain(".launch-orbit");
+  });
+
+  it("ships one complete vector identity for every desktop contour", () => {
+    const services = [
+      "home",
+      "reactor",
+      "consensus",
+      "atlas",
+      "sgl",
+      "ovr",
+      "games",
+      "tasks",
+      "admin",
+    ];
+    const sizes = [24, 32, 64, 128, 256];
+
+    for (const service of services) {
+      expect(existsSync(resolve(workspaceRoot, `brand/services/${service}.svg`))).toBe(true);
+      expect(existsSync(resolve(workspaceRoot, `brand/services/mono/${service}.svg`))).toBe(true);
+      for (const size of sizes) {
+        expect(existsSync(resolve(workspaceRoot, `brand/exports/color/${size}/${service}.png`))).toBe(true);
+        expect(existsSync(resolve(workspaceRoot, `brand/exports/mono/${size}/${service}.png`))).toBe(true);
+      }
+    }
+
+    for (const variant of ["color", "mono-light", "mono-dark"]) {
+      for (const size of sizes) {
+        expect(existsSync(resolve(workspaceRoot, `brand/exports/tmod-${variant}/${size}/tmod.png`))).toBe(true);
+      }
+    }
+
+    const masterMark = readFileSync(resolve(workspaceRoot, "brand/tmod/mark.svg"), "utf8");
+    const desktopMark = readFileSync(resolve(root, "resources/icon.svg"), "utf8");
+    expect(desktopMark).toBe(masterMark);
   });
 });

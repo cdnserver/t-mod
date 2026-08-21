@@ -1,0 +1,17 @@
+:root {
+  --tmod-background: #06080d;
+  --tmod-surface: #0d1119;
+  --tmod-ink: #f5f7fb;
+  --tmod-muted: #788195;
+  --tmod-home: #91a8ff;
+  --tmod-reactor: #aa8cff;
+  --tmod-consensus: #67b7ff;
+  --tmod-atlas: #52dfc1;
+  --tmod-sgl: #e9b65e;
+  --tmod-ovr: #ee7a83;
+  --tmod-games: #d58af0;
+  --tmod-tasks: #6ed29b;
+  --tmod-admin: #ff8b63;
+  --tmod-display-font: "Unbounded", sans-serif;
+  --tmod-text-font: "Manrope", sans-serif;
+}

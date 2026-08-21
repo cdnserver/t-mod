@@ -56,15 +56,15 @@ function loadPreferences(): DesktopShellPreferences {
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<string, ReactNode> = {
-    home: <><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></>,
-    reactor: <><path d="M4 8.5h16M4 15.5h16"/><path d="M8.5 4v16M15.5 4v16"/><circle cx="12" cy="12" r="3"/></>,
-    consensus: <><path d="M4 20h16M6 17V9M10 17V9M14 17V9M18 17V9M3 7l9-4 9 4z"/></>,
-    atlas: <><circle cx="12" cy="12" r="8.5"/><path d="M8 16l2-6 6-2-2 6z"/><circle cx="12" cy="12" r="1"/></>,
-    sgl: <><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 11h6M9 15h6"/></>,
-    ovr: <><path d="M12 2.5l8 3.2v5.6c0 5.1-3.3 8.4-8 10.2-4.7-1.8-8-5.1-8-10.2V5.7z"/><path d="M8.5 12l2.2 2.2 4.8-5"/></>,
-    games: <><path d="M8 8h8a5 5 0 014.8 6.4l-1 3.2a2.6 2.6 0 01-4.4 1l-1.2-1.4H9.8l-1.2 1.4a2.6 2.6 0 01-4.4-1l-1-3.2A5 5 0 018 8z"/><path d="M8 11v4M6 13h4M16.5 12.5h.01M18.5 14.5h.01"/></>,
-    tasks: <><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9l1.5 1.5L12 8M8 15l1.5 1.5L12 14M14 9h3M14 15h3"/></>,
-    admin: <><path d="M12 2l2.2 5.4L20 8l-4.3 3.7L17 18l-5-3.2L7 18l1.3-6.3L4 8l5.8-.6z"/><circle cx="12" cy="11" r="2.2"/></>,
+    home: <><rect x="8" y="3.5" width="8" height="17" rx="2.5"/><path d="M9.5 8h5M12 8v8.5"/></>,
+    reactor: <><path d="M7 6v12M12 3.5v17M17 6v12M4.5 8.5h15M4.5 15.5h15"/><rect x="9.5" y="8" width="5" height="8" rx="1.5"/></>,
+    consensus: <><path d="M4 20h16M6 17V10M10 17V8M14 17V8M18 17v-7M4.5 7.5 12 3.5l7.5 4"/></>,
+    atlas: <><path d="M4.5 20 10 4h3l6.5 16M7 14h9M16 5l3-3M18 8l4-1"/><circle cx="20.5" cy="2.5" r=".7"/></>,
+    sgl: <><path d="M19 5H10C7.5 5 6 6.5 6 8.5S7.5 12 10 12h4c2.5 0 4 1.5 4 3.5S16.5 19 14 19H5"/><path d="M4 3v18M20 3v18"/></>,
+    ovr: <><path d="M8 3H4v4M16 3h4v4M8 21H4v-4M16 21h4v-4M3.5 12S6.5 7.5 12 7.5 20.5 12 20.5 12 17.5 16.5 12 16.5 3.5 12 3.5 12Z"/><path d="M12 9v6"/></>,
+    games: <><rect x="4" y="4" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/></>,
+    tasks: <><path d="M4 6h16M4 12h16M4 18h16"/><path d="m5 12 3 3 10-10"/></>,
+    admin: <><path d="m12 2 10 10-10 10L2 12 12 2Zm0 4.5 5.5 5.5-5.5 5.5L6.5 12 12 6.5Z"/><rect x="10" y="10" width="4" height="4" rx="1"/></>,
     search: <><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></>,
     bell: <><path d="M18 9a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></>,
     refresh: <><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8A7 7 0 0118 6l2 6M17.9 16A7 7 0 016 18l-2-6"/></>,
@@ -111,9 +111,9 @@ function playLaunchSound(): () => void {
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(0.12, now + 0.08);
-  master.gain.setValueAtTime(0.12, now + 1.85);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + 2.9);
+  master.gain.exponentialRampToValueAtTime(0.075, now + 0.42);
+  master.gain.setValueAtTime(0.075, now + 2.5);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 3.55);
   master.connect(context.destination);
 
   const tone = (
@@ -128,23 +128,22 @@ function playLaunchSound(): () => void {
     oscillator.type = type;
     oscillator.frequency.setValueAtTime(frequency, now + offset);
     envelope.gain.setValueAtTime(0.0001, now + offset);
-    envelope.gain.exponentialRampToValueAtTime(volume, now + offset + 0.08);
+    envelope.gain.exponentialRampToValueAtTime(volume, now + offset + Math.min(0.48, duration * 0.3));
     envelope.gain.exponentialRampToValueAtTime(0.0001, now + offset + duration);
     oscillator.connect(envelope).connect(master);
     oscillator.start(now + offset);
     oscillator.stop(now + offset + duration + 0.04);
   };
 
-  // A restrained ascending signature: a low system pulse, an open fifth and
-  // one glassy confirmation note. It is generated locally and ships without
-  // an external media dependency.
-  tone(110, 0, 2.35, 0.34, "sine");
-  tone(164.81, 0.16, 2.1, 0.22, "triangle");
-  tone(220, 0.38, 1.85, 0.13, "sine");
-  tone(659.25, 1.42, 1.15, 0.09, "sine");
-  tone(987.77, 1.5, 0.9, 0.045, "sine");
+  // A soft continuous signature: three slowly opening harmonics and two
+  // restrained glass notes. It is generated locally without media files.
+  tone(82.41, 0, 3.25, 0.34, "sine");
+  tone(123.47, 0.08, 3.08, 0.2, "sine");
+  tone(164.81, 0.22, 2.9, 0.11, "triangle");
+  tone(493.88, 1.36, 1.55, 0.065, "sine");
+  tone(739.99, 1.54, 1.2, 0.035, "sine");
 
-  const noiseLength = Math.floor(context.sampleRate * 1.5);
+  const noiseLength = Math.floor(context.sampleRate * 2.1);
   const noiseBuffer = context.createBuffer(1, noiseLength, context.sampleRate);
   const noise = noiseBuffer.getChannelData(0);
   for (let index = 0; index < noise.length; index += 1) {
@@ -155,17 +154,17 @@ function playLaunchSound(): () => void {
   const noiseGain = context.createGain();
   noiseSource.buffer = noiseBuffer;
   noiseFilter.type = "lowpass";
-  noiseFilter.frequency.setValueAtTime(420, now);
-  noiseFilter.frequency.exponentialRampToValueAtTime(1_800, now + 1.2);
+  noiseFilter.frequency.setValueAtTime(260, now);
+  noiseFilter.frequency.exponentialRampToValueAtTime(1_250, now + 1.8);
   noiseGain.gain.setValueAtTime(0.0001, now);
-  noiseGain.gain.exponentialRampToValueAtTime(0.035, now + 0.16);
-  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.45);
+  noiseGain.gain.exponentialRampToValueAtTime(0.018, now + 0.6);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 2.05);
   noiseSource.connect(noiseFilter).connect(noiseGain).connect(master);
   noiseSource.start(now);
-  noiseSource.stop(now + 1.5);
+  noiseSource.stop(now + 2.1);
 
   void context.resume().catch(() => undefined);
-  const closeTimer = window.setTimeout(() => void context.close(), 3_200);
+  const closeTimer = window.setTimeout(() => void context.close(), 3_900);
   return () => {
     window.clearTimeout(closeTimer);
     if (context.state !== "closed") void context.close();
@@ -176,23 +175,23 @@ function LaunchSequence({ reduced }: { reduced: boolean }) {
   return (
     <section className={`launch-sequence ${reduced ? "reduced" : ""}`} aria-label="T-Mod запускается" aria-live="polite">
       <div className="launch-noise" aria-hidden="true"/>
-      <div className="launch-stars" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/></div>
-      <div className="launch-core" aria-hidden="true">
-        <div className="launch-orbit orbit-a"><i/></div>
-        <div className="launch-orbit orbit-b"><i/></div>
-        <div className="launch-orbit orbit-c"><i/></div>
-        <div className="launch-sigil"><span>T</span><i/></div>
+      <div className="launch-light-field" aria-hidden="true"><i/><i/><i/><i/><i/></div>
+      <div className="launch-horizon" aria-hidden="true"><i/></div>
+      <div className="launch-monolith" aria-hidden="true">
+        <i/><i/><i/>
+        <span>T</span>
+        <small>TM · 01</small>
       </div>
       <div className="launch-copy">
         <small>TVR × SGL · ЕДИНЫЙ КОНТУР</small>
-        <h1>T‑MOD</h1>
+        <h1 aria-label="T-Mod"><span>T</span><span>‑</span><span>M</span><span>O</span><span>D</span></h1>
         <p>Экосистема приходит в движение</p>
       </div>
-      <div className="launch-status" aria-hidden="true">
-        <span>ПРОВЕРЯЕМ КОНТУР</span><span>СОБИРАЕМ ПРОСТРАНСТВА</span><span>СИСТЕМА ГОТОВА</span>
+      <div className="launch-readiness" aria-hidden="true">
+        <i/><span>ЕДИНЫЙ КОНТУР</span><b>ГОТОВ</b>
       </div>
       <div className="launch-progress" aria-hidden="true"><i/></div>
-      <footer><span>DESKTOP SYSTEM</span><span>SECURE SESSION</span></footer>
+      <footer><span>DESKTOP · 0.3</span><span>SECURE SESSION</span></footer>
     </section>
   );
 }
@@ -231,7 +230,7 @@ export function App() {
     const stopSound = playLaunchSound();
     const timer = window.setTimeout(
       () => setLaunchVisible(false),
-      preferences.reduceMotion ? 1_650 : 3_650,
+      preferences.reduceMotion ? 1_650 : 4_300,
     );
     return () => {
       window.clearTimeout(timer);
