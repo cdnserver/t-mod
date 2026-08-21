@@ -105,6 +105,98 @@ function browserApi() {
   return window.tmodDesktop;
 }
 
+function playLaunchSound(): () => void {
+  if (typeof AudioContext === "undefined") return () => undefined;
+  const context = new AudioContext();
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(0.12, now + 0.08);
+  master.gain.setValueAtTime(0.12, now + 1.85);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 2.9);
+  master.connect(context.destination);
+
+  const tone = (
+    frequency: number,
+    offset: number,
+    duration: number,
+    volume: number,
+    type: OscillatorType = "sine",
+  ) => {
+    const oscillator = context.createOscillator();
+    const envelope = context.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, now + offset);
+    envelope.gain.setValueAtTime(0.0001, now + offset);
+    envelope.gain.exponentialRampToValueAtTime(volume, now + offset + 0.08);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, now + offset + duration);
+    oscillator.connect(envelope).connect(master);
+    oscillator.start(now + offset);
+    oscillator.stop(now + offset + duration + 0.04);
+  };
+
+  // A restrained ascending signature: a low system pulse, an open fifth and
+  // one glassy confirmation note. It is generated locally and ships without
+  // an external media dependency.
+  tone(110, 0, 2.35, 0.34, "sine");
+  tone(164.81, 0.16, 2.1, 0.22, "triangle");
+  tone(220, 0.38, 1.85, 0.13, "sine");
+  tone(659.25, 1.42, 1.15, 0.09, "sine");
+  tone(987.77, 1.5, 0.9, 0.045, "sine");
+
+  const noiseLength = Math.floor(context.sampleRate * 1.5);
+  const noiseBuffer = context.createBuffer(1, noiseLength, context.sampleRate);
+  const noise = noiseBuffer.getChannelData(0);
+  for (let index = 0; index < noise.length; index += 1) {
+    noise[index] = (Math.random() * 2 - 1) * (1 - index / noise.length);
+  }
+  const noiseSource = context.createBufferSource();
+  const noiseFilter = context.createBiquadFilter();
+  const noiseGain = context.createGain();
+  noiseSource.buffer = noiseBuffer;
+  noiseFilter.type = "lowpass";
+  noiseFilter.frequency.setValueAtTime(420, now);
+  noiseFilter.frequency.exponentialRampToValueAtTime(1_800, now + 1.2);
+  noiseGain.gain.setValueAtTime(0.0001, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.035, now + 0.16);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.45);
+  noiseSource.connect(noiseFilter).connect(noiseGain).connect(master);
+  noiseSource.start(now);
+  noiseSource.stop(now + 1.5);
+
+  void context.resume().catch(() => undefined);
+  const closeTimer = window.setTimeout(() => void context.close(), 3_200);
+  return () => {
+    window.clearTimeout(closeTimer);
+    if (context.state !== "closed") void context.close();
+  };
+}
+
+function LaunchSequence({ reduced }: { reduced: boolean }) {
+  return (
+    <section className={`launch-sequence ${reduced ? "reduced" : ""}`} aria-label="T-Mod запускается" aria-live="polite">
+      <div className="launch-noise" aria-hidden="true"/>
+      <div className="launch-stars" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/></div>
+      <div className="launch-core" aria-hidden="true">
+        <div className="launch-orbit orbit-a"><i/></div>
+        <div className="launch-orbit orbit-b"><i/></div>
+        <div className="launch-orbit orbit-c"><i/></div>
+        <div className="launch-sigil"><span>T</span><i/></div>
+      </div>
+      <div className="launch-copy">
+        <small>TVR × SGL · ЕДИНЫЙ КОНТУР</small>
+        <h1>T‑MOD</h1>
+        <p>Экосистема приходит в движение</p>
+      </div>
+      <div className="launch-status" aria-hidden="true">
+        <span>ПРОВЕРЯЕМ КОНТУР</span><span>СОБИРАЕМ ПРОСТРАНСТВА</span><span>СИСТЕМА ГОТОВА</span>
+      </div>
+      <div className="launch-progress" aria-hidden="true"><i/></div>
+      <footer><span>DESKTOP SYSTEM</span><span>SECURE SESSION</span></footer>
+    </section>
+  );
+}
+
 export function App() {
   const bridgeAvailable = Boolean(browserApi());
   const [bootstrap, setBootstrap] = useState<BootstrapResult>({
@@ -130,9 +222,25 @@ export function App() {
     currentVersion: "—",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
+  const [launchVisible, setLaunchVisible] = useState(true);
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
   const hasLoadedBootstrap = useRef(false);
+
+  useEffect(() => {
+    const stopSound = playLaunchSound();
+    const timer = window.setTimeout(
+      () => setLaunchVisible(false),
+      preferences.reduceMotion ? 1_650 : 3_650,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      stopSound();
+    };
+    // Launch preferences are intentionally sampled once. A settings change
+    // must not replay the startup sequence in an already opened application.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadBootstrap = useCallback(async () => {
     if (bootstrapInFlight.current) return;
@@ -476,6 +584,7 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
+      {launchVisible && <LaunchSequence reduced={preferences.reduceMotion}/>}
     </div>
   );
 }

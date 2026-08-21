@@ -33,6 +33,11 @@ import type {
 
 const { autoUpdater } = electronUpdater;
 
+// The startup signature is part of the local application shell and must not
+// depend on a first click in Chromium. Remote service views remain muted by
+// their own permission boundary and cannot use this switch to request media.
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
 // electron-vite injects its own `__dirname` shim into the ESM bundle.
 // A distinct name avoids a duplicate top-level declaration in packaged builds.
 const bundleDirectory = path.dirname(fileURLToPath(import.meta.url));

@@ -53,3 +53,143 @@ button { color: inherit; }
 .offline-stage { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:44px; text-align:center; animation:rise .45s ease both; }.offline-stage h1 { margin:0; font:500 clamp(31px,4vw,56px)/1.08 "Unbounded"; letter-spacing:-.06em; }.offline-stage > p:not(.kicker) { max-width:530px; color:#78808f; font-size:12px; line-height:1.7; }.offline-stage .primary { margin-top:17px; display:flex; align-items:center; gap:9px; }.offline-stage .primary .icon { width:15px; }.offline-stage > small { margin-top:16px; color:#515866; font-size:9px; }.offline-signal { position:relative; width:95px; height:95px; margin-bottom:26px; display:grid; place-items:center; }.offline-signal span { width:13px; height:13px; border-radius:50%; background:#ff9a87; box-shadow:0 0 30px rgba(255,133,112,.7); }.offline-signal i { position:absolute; inset:15px; border:1px solid rgba(255,151,131,.18); border-radius:50%; animation:offline-wave 2s ease-out infinite; }.offline-signal i:last-child { animation-delay:1s; }@keyframes offline-wave { from { transform:scale(.4); opacity:0; } 35% { opacity:1; } to { transform:scale(1.45); opacity:0; } }
 .desktop-toast { position:fixed; z-index:120; left:calc(var(--sidebar) + (100vw - var(--sidebar))/2); bottom:26px; transform:translateX(-50%); padding:10px 14px; border:1px solid rgba(255,255,255,.1); border-radius:11px; color:#e8ebf4; background:rgba(20,23,33,.96); box-shadow:0 18px 55px rgba(0,0,0,.45); font-size:10px; animation:update-in .25s ease both; }
 .desktop.compact-mode .nav-item { min-height:43px; }.desktop.compact-mode .home-scroll { padding-top:35px; }.desktop.compact-mode .space-card { min-height:128px; }.desktop.compact-mode .reactor-card,.desktop.compact-mode .attention-card { min-height:255px; }.desktop.solid-surfaces .sidebar,.desktop.solid-surfaces .topbar { background:#0d1018; backdrop-filter:none; }.desktop.solid-surfaces .settings-drawer,.desktop.solid-surfaces .notification-drawer,.desktop.solid-surfaces .palette { background:#11141e; backdrop-filter:none; }.desktop.reduce-motion *,.desktop.reduce-motion *:before,.desktop.reduce-motion *:after { animation-duration:.01ms !important; animation-iteration-count:1 !important; scroll-behavior:auto !important; transition-duration:.01ms !important; }
+
+/* Launch sequence — rendered inside the Electron shell on every cold start. */
+.launch-sequence {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #f6f7fb;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(118,143,224,.13), transparent 22%),
+    radial-gradient(circle at 50% 46%, rgba(83,205,190,.055), transparent 42%),
+    linear-gradient(145deg, #05070b, #080b12 52%, #05070a);
+  isolation: isolate;
+  animation: launch-sequence-out .65s cubic-bezier(.7,0,.8,.2) 3s forwards;
+}
+.launch-sequence::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+  background-size: 54px 54px;
+  mask-image: radial-gradient(circle at 50% 48%, #000, transparent 72%);
+  content: "";
+  animation: launch-grid-breathe 2.8s ease-in-out both;
+}
+.launch-sequence::after {
+  position: absolute;
+  inset: -40%;
+  z-index: -1;
+  background: conic-gradient(from 0deg, transparent 0 39%, rgba(137,160,231,.08) 44%, transparent 49% 100%);
+  content: "";
+  animation: launch-sweep 5.2s linear infinite;
+}
+.launch-noise {
+  position: absolute;
+  inset: 0;
+  opacity: .035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E");
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+.launch-stars { position: absolute; inset: 0; pointer-events: none; }
+.launch-stars i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #dfe7ff; box-shadow: 0 0 9px rgba(196,210,255,.8); opacity: 0; animation: launch-star 2.5s ease-in-out infinite; }
+.launch-stars i:nth-child(1) { left: 18%; top: 22%; animation-delay: .2s; }
+.launch-stars i:nth-child(2) { left: 76%; top: 17%; animation-delay: .75s; }
+.launch-stars i:nth-child(3) { left: 84%; top: 61%; animation-delay: 1.25s; }
+.launch-stars i:nth-child(4) { left: 13%; top: 68%; animation-delay: 1.7s; }
+.launch-stars i:nth-child(5) { left: 31%; top: 81%; animation-delay: 1s; }
+.launch-stars i:nth-child(6) { left: 65%; top: 78%; animation-delay: .35s; }
+.launch-stars i:nth-child(7) { left: 27%; top: 36%; animation-delay: 2s; }
+.launch-stars i:nth-child(8) { left: 71%; top: 42%; animation-delay: 1.45s; }
+.launch-core {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  width: clamp(190px, 24vw, 320px);
+  height: clamp(190px, 24vw, 320px);
+  transform: translate(-50%,-50%);
+  opacity: 0;
+  animation: launch-core-in .8s cubic-bezier(.16,1,.3,1) .08s forwards;
+}
+.launch-orbit { position: absolute; inset: 0; border: 1px solid rgba(151,172,235,.13); border-radius: 50%; }
+.launch-orbit::before,.launch-orbit::after { position: absolute; border-radius: 50%; content: ""; }
+.launch-orbit::before { inset: 16%; border: 1px solid rgba(255,255,255,.055); }
+.launch-orbit::after { top: 50%; left: -2px; width: 5px; height: 5px; background: #94acec; box-shadow: 0 0 18px #829ce7; }
+.launch-orbit > i { position: absolute; inset: 32%; border: 1px solid rgba(92,214,194,.13); border-radius: 50%; }
+.orbit-a { animation: launch-orbit 8s linear infinite; }
+.orbit-b { inset: 9%; transform: rotate(64deg); animation: launch-orbit-reverse 6s linear infinite; }
+.orbit-b::after { width: 4px; height: 4px; background: #63d0bd; box-shadow: 0 0 16px #55c4b2; }
+.orbit-c { inset: 21%; border-style: dashed; transform: rotate(-34deg); animation: launch-orbit 11s linear infinite; }
+.orbit-c::after { display: none; }
+.launch-sigil {
+  position: absolute;
+  inset: 33%;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 22%;
+  background: linear-gradient(145deg, rgba(255,255,255,.14), rgba(255,255,255,.025));
+  box-shadow: inset 0 1px rgba(255,255,255,.16), 0 24px 70px rgba(0,0,0,.42), 0 0 55px rgba(119,146,222,.12);
+  transform: rotate(45deg);
+  backdrop-filter: blur(18px);
+}
+.launch-sigil span { font: 600 clamp(25px,3.6vw,48px) "Unbounded"; letter-spacing: -.08em; transform: rotate(-45deg) translateX(-1px); text-shadow: 0 0 30px rgba(220,229,255,.18); }
+.launch-sigil i { position: absolute; inset: -8px; border: 1px solid rgba(139,163,230,.12); border-radius: 26%; animation: launch-sigil-pulse 1.9s ease-in-out infinite; }
+.launch-copy {
+  position: absolute;
+  top: calc(46% + clamp(118px, 15vw, 190px));
+  left: 50%;
+  width: min(620px, calc(100vw - 64px));
+  transform: translate(-50%,18px);
+  opacity: 0;
+  text-align: center;
+  animation: launch-copy-in .75s cubic-bezier(.16,1,.3,1) .52s forwards;
+}
+.launch-copy small { display: block; color: #778193; font-size: 8px; font-weight: 700; letter-spacing: .28em; }
+.launch-copy h1 { margin: 9px 0 0; font: 500 clamp(34px,5vw,68px)/1 "Unbounded"; letter-spacing: -.08em; }
+.launch-copy p { margin: 10px 0 0; color: #7c8493; font-size: 11px; letter-spacing: .02em; }
+.launch-status {
+  position: absolute;
+  bottom: 70px;
+  left: 50%;
+  width: min(420px,calc(100vw - 72px));
+  height: 16px;
+  transform: translateX(-50%);
+  color: #737c8e;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  text-align: center;
+}
+.launch-status span { position: absolute; inset: 0; opacity: 0; }
+.launch-status span:nth-child(1) { animation: launch-phase .72s ease .55s both; }
+.launch-status span:nth-child(2) { animation: launch-phase .72s ease 1.3s both; }
+.launch-status span:nth-child(3) { color: #9db5ec; animation: launch-phase-last .92s ease 2.08s both; }
+.launch-progress { position: absolute; right: 0; bottom: 48px; left: 0; width: min(420px,calc(100vw - 72px)); height: 1px; margin: auto; overflow: hidden; background: rgba(255,255,255,.07); }
+.launch-progress i { display: block; width: 100%; height: 100%; background: linear-gradient(90deg,#607bc9,#70cdbb,#dfe5f7); box-shadow: 0 0 18px rgba(110,151,222,.65); transform: translateX(-101%); animation: launch-progress 2.75s cubic-bezier(.4,0,.15,1) .25s forwards; }
+.launch-sequence footer { position: absolute; right: 28px; bottom: 23px; left: 28px; display: flex; justify-content: space-between; color: #3f4653; font-size: 7px; font-weight: 700; letter-spacing: .18em; }
+@keyframes launch-sequence-out { to { visibility: hidden; opacity: 0; transform: scale(1.025); filter: blur(8px); } }
+@keyframes launch-grid-breathe { from { opacity: 0; transform: scale(1.05); } to { opacity: 1; transform: none; } }
+@keyframes launch-sweep { to { transform: rotate(360deg); } }
+@keyframes launch-star { 0%,100% { opacity: 0; transform: scale(.5); } 45% { opacity: .7; transform: scale(1.35); } }
+@keyframes launch-core-in { from { opacity: 0; transform: translate(-50%,-50%) scale(.68) rotate(-12deg); filter: blur(8px); } to { opacity: 1; transform: translate(-50%,-50%); filter: none; } }
+@keyframes launch-orbit { to { transform: rotate(360deg); } }
+@keyframes launch-orbit-reverse { from { transform: rotate(64deg); } to { transform: rotate(-296deg); } }
+@keyframes launch-sigil-pulse { 50% { inset: -13px; opacity: .25; } }
+@keyframes launch-copy-in { to { opacity: 1; transform: translate(-50%,0); } }
+@keyframes launch-phase { 0%,100% { opacity: 0; transform: translateY(5px); } 25%,72% { opacity: 1; transform: none; } }
+@keyframes launch-phase-last { 0% { opacity: 0; transform: translateY(5px); } 25%,100% { opacity: 1; transform: none; } }
+@keyframes launch-progress { to { transform: none; } }
+.launch-sequence.reduced { animation-delay: 1.2s; animation-duration: .45s; }
+.launch-sequence.reduced::after,.launch-sequence.reduced .launch-stars,.launch-sequence.reduced .launch-orbit { animation: none; }
+.launch-sequence.reduced .launch-core,.launch-sequence.reduced .launch-copy { animation-delay: .08s; animation-duration: .25s; }
+.launch-sequence.reduced .launch-status span:nth-child(1),.launch-sequence.reduced .launch-status span:nth-child(2) { display: none; }
+.launch-sequence.reduced .launch-status span:nth-child(3) { animation: none; opacity: 1; }
+.launch-sequence.reduced .launch-progress i { animation-duration: 1.1s; animation-delay: .05s; }

@@ -24,7 +24,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.3.1");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -54,5 +54,17 @@ describe("desktop release contract", () => {
     expect(main).toContain('ipcMain.handle("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
+  });
+
+  it("shows the branded launch sequence and allows its local audio signature", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/styles.css"), "utf8");
+    expect(main).toContain('appendSwitch("autoplay-policy", "no-user-gesture-required")');
+    expect(renderer).toContain("function LaunchSequence");
+    expect(renderer).toContain("function playLaunchSound");
+    expect(renderer).toContain("launchVisible && <LaunchSequence");
+    expect(styles).toContain(".launch-sequence");
+    expect(styles).toContain("@keyframes launch-sequence-out");
   });
 });
