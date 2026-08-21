@@ -303,7 +303,7 @@ def register_sgl_web_routes(
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
         if name not in {
-            "app.js", "app-ui.css", "app-ui.js", "admin.css", "style.css", "site.css",
+            "app.js", "app-ui.css", "app-ui.js", "admin.css", "admin-v2.css", "style.css", "site.css",
             "site.js", "favicon.svg", "logo.webp", "logo-vector.svg",
         }:
             raise web.HTTPNotFound()
@@ -475,6 +475,20 @@ def register_sgl_web_routes(
                 event for event in events
                 if not str(event.get("action") or "").startswith("internal_")
             ]
+            # The common case endpoint is also used by clients participating in
+            # a Discord case.  Keep their conversation, receipts and the final
+            # published document visible, but never project the bureau's work
+            # queue, alerts, monitoring snapshots or Atlas reasoning into that
+            # participant workspace.
+            publications = [
+                publication for publication in publications
+                if str(publication.get("status") or "") == "published"
+            ]
+            ai_notes = []
+            tasks = []
+            notifications = []
+            observations = []
+            forum_snapshots = []
         # Contract defaults can contain the lawyer's profile contact details.
         # A client may view their case, but must not receive an internal
         # prefilled contract packet just because this is the common detail API.

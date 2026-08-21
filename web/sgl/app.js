@@ -62,6 +62,7 @@ const state = {
   memberPicker: { formId: "", target: "", role: "", scope: "staff", filter: "all", query: "", members: [], timer: null, request: 0 },
   palette: { query: "", activeIndex: -1, results: [] },
   modalFocus: {},
+  refreshing: false, lastRefreshAt: 0, refreshTimer: null,
   screen: "today", caseNumber: null, detail: null, caseTab: "overview",
   caseView: "all", caseQuery: "", createStep: 1, casePoll: null, directoryTimer: null,
 };
@@ -122,6 +123,26 @@ function toast(message, failure) {
   node.hidden = false;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { node.hidden = true; }, 4600);
+}
+function syncStatus(mode, copy) {
+  const node = $("sgl-sync-status");
+  if (!node) return;
+  node.dataset.state = mode || "ready";
+  const label = node.querySelector("span");
+  if (label) label.textContent = copy || "Данные актуальны";
+}
+function storedSidebarState() {
+  try { return localStorage.getItem("sgl:sidebar") === "compact"; } catch (_) { return false; }
+}
+function setSidebarCompact(compact) {
+  app.classList.toggle("is-sidebar-compact", Boolean(compact));
+  const button = $("sgl-sidebar-toggle");
+  if (button) {
+    button.setAttribute("aria-expanded", String(!compact));
+    button.setAttribute("aria-label", compact ? "Развернуть навигацию" : "Свернуть навигацию");
+    button.title = compact ? "Развернуть навигацию" : "Свернуть навигацию";
+  }
+  try { localStorage.setItem("sgl:sidebar", compact ? "compact" : "wide"); } catch (_) {}
 }
 function modal(id, show) {
   const node = $(id);
@@ -683,18 +704,26 @@ function renderScreen() {
 }
 
 async function refreshCore(silent) {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  syncStatus("loading", "Обновляю данные");
   try {
     const data = await Promise.all([api("/api/sgl/bootstrap"), api("/api/sgl/operations"), api("/api/sgl/forum/operations"), api("/api/sgl/tasks?limit=200")]);
     state.bootstrap = data[0];
     state.operations = data[1];
     state.forum = data[2];
     state.tasks = data[3].tasks || [];
+    state.lastRefreshAt = Date.now();
     $("sgl-viewer-name").textContent = state.bootstrap.viewer && state.bootstrap.viewer.name || "Сотрудник SGL";
     renderScreen();
     if (state.detail) renderCase();
+    syncStatus("ready", "Актуально сейчас");
     if (!silent) toast("Данные SGL обновлены.");
   } catch (error) {
+    syncStatus("error", "Нет синхронизации");
     if (!silent) toast(error.message || "Не удалось обновить SGL.", true);
+  } finally {
+    state.refreshing = false;
   }
 }
 async function loadDirectory(query) {
@@ -1882,6 +1911,10 @@ function bindEvents() {
     globalResults.setAttribute("aria-label", "Результаты глобального поиска SGL");
   }
   app.addEventListener("click", (event) => {
+    if (event.target.closest("#sgl-sidebar-toggle")) {
+      setSidebarCompact(!app.classList.contains("is-sidebar-compact"));
+      return;
+    }
     const close = event.target.closest("[data-close-modal]");
     if (close) {
       modal(close.closest("dialog").id, false);
@@ -2159,11 +2192,14 @@ async function initialize() {
     removePublicAssets();
     $("public-site").hidden = true;
     app.hidden = false;
+    setSidebarCompact(storedSidebarState());
     $("loading").hidden = true;
     bindEvents();
     await Promise.all([refreshCore(true), loadDirectory("")]);
     await route();
-    setInterval(() => { void refreshCore(true); }, 60000);
+    state.refreshTimer = setInterval(() => {
+      if (!document.hidden) void refreshCore(true);
+    }, 60000);
   } catch (error) {
     $("loading").hidden = true;
     toast(error.message || "SGL не удалось открыть.", true);
@@ -2173,6 +2209,9 @@ async function initialize() {
 window.addEventListener("popstate", () => { void route(); });
 window.addEventListener("hashchange", () => { void route(); });
 window.addEventListener("beforeunload", stopPolling);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - state.lastRefreshAt > 45000) void refreshCore(true);
+});
 let caseTabResizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(caseTabResizeTimer);

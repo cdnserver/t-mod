@@ -18,6 +18,7 @@
   <link rel="stylesheet" data-public-only href="/sgl/assets/site.css?v=20260816-sgl-redesign-v2">
   <link rel="stylesheet" data-public-only href="/sgl/assets/app-ui.css?v=20260816-sgl-redesign-v2">
   <link rel="stylesheet" href="/sgl/assets/admin.css?v=20260820-case-os-r15">
+  <link rel="stylesheet" href="/sgl/assets/admin-v2.css?v=20260821-case-os-r16">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -168,10 +169,13 @@
     </svg>
 
     <aside class="sgl-admin-sidebar">
-      <a class="sgl-brand" href="/sgl" data-go="today" aria-label="SGL Case OS">
-        <span class="sgl-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt=""></span>
-        <span><strong>SGL</strong><small>CASE OS</small></span>
-      </a>
+      <div class="sgl-brand-row">
+        <a class="sgl-brand" href="/sgl" data-go="today" aria-label="SGL Case OS">
+          <span class="sgl-brand-mark"><img src="/sgl/assets/logo-vector.svg" alt=""></span>
+          <span><strong>SGL</strong><small>CASE OS</small></span>
+        </a>
+        <button id="sgl-sidebar-toggle" class="sgl-sidebar-toggle" type="button" aria-label="Свернуть навигацию" aria-expanded="true" title="Свернуть навигацию"><svg><use href="#sgl-i-arrow"></use></svg></button>
+      </div>
       <nav class="sgl-admin-nav" aria-label="Навигация SGL">
         <button class="is-active" data-go="today" aria-label="Сегодня" title="Сегодня"><svg><use href="#sgl-i-grid"></use></svg><span>Сегодня</span><b id="sgl-nav-queue">0</b></button>
         <button data-go="work" aria-label="Работа" title="Работа"><svg><use href="#sgl-i-task"></use></svg><span>Работа</span><b id="sgl-nav-tasks">0</b></button>
@@ -192,6 +196,7 @@
       <header class="sgl-admin-topbar">
         <div class="sgl-top-title"><span id="sgl-breadcrumb">SGL / сегодня</span><strong id="sgl-page-title">Рабочая очередь</strong></div>
         <div class="sgl-top-actions">
+          <div id="sgl-sync-status" class="sgl-sync-status" data-state="loading" role="status" aria-live="polite"><i></i><span>Синхронизация</span></div>
           <div class="sgl-search-wrap">
             <label class="sgl-global-search"><svg><use href="#sgl-i-search"></use></svg><input id="sgl-global-search" autocomplete="off" placeholder="Найти дело, человека или действие"><kbd>⌘ K</kbd></label>
             <div id="sgl-search-results" class="sgl-search-results" hidden></div>
@@ -205,6 +210,12 @@
       <div class="sgl-admin-content">
         <section class="sgl-screen is-active" data-screen="today">
           <header class="sgl-screen-heading"><div><span>ОПЕРАЦИОННАЯ ОЧЕРЕДЬ</span><h1>Что требует решения сейчас</h1><p>Приоритеты собираются из задач, платежей, состояния кейсов и Forum Watch — не из декоративных метрик.</p></div><button class="sgl-button sgl-button-secondary" data-go="cases">Открыть реестр <svg><use href="#sgl-i-arrow"></use></svg></button></header>
+          <nav class="sgl-action-rail" aria-label="Быстрые действия">
+            <button type="button" data-create-case><span><svg><use href="#sgl-i-plus"></use></svg></span><b>Открыть кейс</b><small>Создать дело и команду</small></button>
+            <button type="button" data-new-task><span><svg><use href="#sgl-i-task"></use></svg></span><b>Поставить задачу</b><small>Назначить срок и владельца</small></button>
+            <button type="button" data-go="forum"><span><svg><use href="#sgl-i-forum"></use></svg></span><b>Forum Watch</b><small>Проверить публикации</small></button>
+            <button type="button" data-go="atlas"><span><svg><use href="#sgl-i-atlas"></use></svg></span><b>Открыть Atlas</b><small>Разобрать материалы дела</small></button>
+          </nav>
           <section class="sgl-today-summary" id="sgl-today-summary"></section>
           <div class="sgl-today-grid">
             <section class="sgl-panel sgl-queue-panel"><header><div><span>СДЕЛАТЬ СЕЙЧАС</span><h2>Очередь работы</h2></div><button class="sgl-text-button" data-go="cases">Все дела</button></header><div id="sgl-triage-list" class="sgl-triage-list"></div></section>
@@ -307,6 +318,6 @@
       else showPublic();
     })();
   </script>
-  <script src="/sgl/assets/app.js?v=20260820-case-os-r15" defer></script>
+  <script src="/sgl/assets/app.js?v=20260821-case-os-r16" defer></script>
 </body>
 </html>

@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web" / "consensus"
 ATLAS_WEB = ROOT / "web" / "atlas"
+SGL_WEB = ROOT / "web" / "sgl"
 
 
 class WebAssetContractTests(unittest.TestCase):
@@ -90,6 +91,19 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertEqual(sorted(references - ids), [])
         self.assertTrue((ATLAS_WEB / "style.css").is_file())
         self.assertTrue((ATLAS_WEB / "favicon.svg").is_file())
+
+    def test_sgl_case_os_redesign_contract(self) -> None:
+        html = (SGL_WEB / "index.html").read_text(encoding="utf-8")
+        styles = (SGL_WEB / "admin-v2.css").read_text(encoding="utf-8")
+        id_values = re.findall(r'\bid=["\']([^"\']+)', html)
+
+        self.assertEqual(sorted(item for item in set(id_values) if id_values.count(item) > 1), [])
+        self.assertIn("/sgl/assets/admin-v2.css?v=20260821-case-os-r16", html)
+        self.assertIn('id="sgl-sidebar-toggle"', html)
+        self.assertIn('id="sgl-sync-status"', html)
+        self.assertNotIn("font-size: 9px", styles)
+        self.assertNotIn("font-size: 8px", styles)
+        self.assertNotIn("font-size: 7px", styles)
 
     def test_desktop_recommendation_is_senator_only_and_hidden_in_app(self) -> None:
         html = (WEB / "portal.html").read_text(encoding="utf-8")

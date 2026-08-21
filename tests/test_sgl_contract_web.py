@@ -155,6 +155,65 @@ class SGLContractWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(participant_detail.status, 200)
         self.assertEqual(participant_detail_payload["contract"], {"available": False})
 
+    async def test_participant_case_detail_hides_bureau_only_materials(self) -> None:
+        sgl_repository.record_sgl_case_ai_note(
+            case=self.case,
+            kind="risks",
+            question="Какие внутренние риски?",
+            answer="Внутренняя оценка бюро",
+            citations=[],
+            agent_id="atlas-claims",
+            response_mode="balanced",
+            created_by_id=202,
+            created_by_display="Lawyer",
+        )
+        sgl_repository.create_sgl_case_task(
+            case=self.case,
+            title="Внутренняя задача",
+            created_by_id=202,
+            created_by_display="Lawyer",
+        )
+        sgl_repository.create_sgl_case_forum_publication(
+            case=self.case,
+            target_url="https://forum.example.test/court/",
+            title="Рабочий черновик",
+            body="Непубличный текст",
+            created_by_id=202,
+            created_by_display="Lawyer",
+        )
+        app = create_consensus_web_app(self._bot(), guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._manager()),
+            ):
+                manager_response = await client.get(
+                    f"/api/sgl/cases/{self.case.case_number}",
+                    headers={"Host": "sgl.tvr.lat"},
+                )
+                manager_detail = await manager_response.json()
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._participant()),
+            ):
+                participant_response = await client.get(
+                    f"/api/sgl/cases/{self.case.case_number}",
+                    headers={"Host": "sgl.tvr.lat"},
+                )
+                participant_detail = await participant_response.json()
+
+        self.assertEqual(manager_response.status, 200)
+        self.assertEqual(len(manager_detail["ai_notes"]), 1)
+        self.assertEqual(len(manager_detail["tasks"]), 1)
+        self.assertEqual(len(manager_detail["forum_publications"]), 1)
+        self.assertEqual(participant_response.status, 200)
+        self.assertEqual(participant_detail["ai_notes"], [])
+        self.assertEqual(participant_detail["tasks"], [])
+        self.assertEqual(participant_detail["notifications"], [])
+        self.assertEqual(participant_detail["forum_observations"], [])
+        self.assertEqual(participant_detail["forum_snapshots"], [])
+        self.assertEqual(participant_detail["forum_publications"], [])
+
     async def test_post_sends_only_valid_generated_pages_and_sanitizes_attachment_name(self) -> None:
         channel = _FakeTextChannel()
         app = create_consensus_web_app(self._bot(channel), guild_id=77)  # type: ignore[arg-type]
