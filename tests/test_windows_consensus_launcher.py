@@ -198,7 +198,6 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("checkout -B", desktop)
 
     def test_git_watcher_only_runs_safe_update_for_a_new_clean_release(self) -> None:
-        desktop = (ROOT / "start_tmod_windows.bat").read_text(encoding="utf-8")
         runtime = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
         desktop_installer = (ROOT / "install_desktop_launcher_windows.bat").read_text(
             encoding="utf-8"

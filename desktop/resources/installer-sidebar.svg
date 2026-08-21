@@ -1,22 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#151a2b"/><stop offset=".52" stop-color="#0b0e17"/><stop offset="1" stop-color="#06080d"/>
-    </linearGradient>
-    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#a9b8f4"/></linearGradient>
-    <linearGradient id="right" x1="1" y1="0" x2="0" y2="1"><stop stop-color="#657dcc"/><stop offset="1" stop-color="#b7c4f8"/></linearGradient>
-    <linearGradient id="stem" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#eef2ff"/><stop offset="1" stop-color="#748bdd"/></linearGradient>
-    <linearGradient id="flare" x1="0" y1="0" x2="1" y2="0">
-      <stop stop-color="#96a5ff" stop-opacity="0"/><stop offset=".5" stop-color="#dce2ff" stop-opacity=".5"/><stop offset="1" stop-color="#96a5ff" stop-opacity="0"/>
-    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#151a2b"/><stop offset=".52" stop-color="#0b0e17"/><stop offset="1" stop-color="#06080d"/></linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef2ff"/><stop offset=".48" stop-color="#a3aff6"/><stop offset="1" stop-color="#6271ca"/></linearGradient>
+    <linearGradient id="flare" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#96a5ff" stop-opacity="0"/><stop offset=".5" stop-color="#dce2ff" stop-opacity=".5"/><stop offset="1" stop-color="#96a5ff" stop-opacity="0"/></linearGradient>
   </defs>
   <rect width="164" height="314" fill="url(#bg)"/>
   <path d="M0 50L164 14v62L0 112z" fill="#91a0ff" fill-opacity=".045"/>
   <path d="M0 169l164-45v54L0 222z" fill="#91a0ff" fill-opacity=".035"/>
-  <path d="M75 85h14v55l-7 7-7-7z" fill="url(#stem)"/>
-  <path d="m43 74 37-8v16l-37 7z" fill="url(#left)"/>
-  <path d="m84 66 37 8v15l-37-7z" fill="url(#right)"/>
-  <rect x="79" y="153" width="6" height="6" rx="2" fill="#65d5bd"/>
+  <rect x="57" y="53" width="50" height="104" rx="16" fill="#0b0f1a" stroke="#aab6ff" stroke-opacity=".29"/>
+  <rect x="61" y="57" width="42" height="96" rx="13" fill="url(#glass)"/>
+  <path d="M69 81h26v7H86v43H78V88h-9z" fill="#111729"/>
   <path d="M18 166h128" stroke="url(#flare)" stroke-width="2"/>
   <path d="M35 170h94" stroke="#f1f4ff" stroke-opacity=".11"/>
   <text x="82" y="215" text-anchor="middle" fill="#f3f5ff" font-family="Arial,sans-serif" font-size="20" font-weight="700">T-MOD</text>

@@ -24,6 +24,7 @@ import type {
   DesktopBootstrap,
   DesktopLoginCredentials,
   DesktopLoginResult,
+  DesktopLockReason,
   DesktopService,
   DesktopShellPreferences,
   DesktopState,
@@ -64,6 +65,9 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   reduceMotion: false,
   solidSurfaces: false,
   serviceZoom: 1,
+  idleLockMinutes: 10,
+  lockSound: true,
+  updateChannel: "beta",
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -73,6 +77,8 @@ let serviceLoading = false;
 let lastServiceError: string | undefined;
 let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
+let idleLockTimer: ReturnType<typeof setInterval> | undefined;
+let desktopLocked = false;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
 let bootstrapInFlight: Promise<BootstrapResult> | undefined;
@@ -84,6 +90,7 @@ let lastMainFrameHttpStatus = 0;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
+  channel: "beta",
 };
 
 app.enableSandbox();
@@ -135,6 +142,7 @@ function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
     ...updateState,
     ...next,
     currentVersion: app.getVersion(),
+    channel: shellPreferences.updateChannel,
   };
   if (mainWindow && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send("desktop:update", updateState);
@@ -180,7 +188,9 @@ function configureAutoUpdater(): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.autoRunAppAfterInstall = true;
-  autoUpdater.allowPrerelease = false;
+  autoUpdater.channel = shellPreferences.updateChannel === "dev" ? "dev" : "latest";
+  autoUpdater.allowPrerelease = shellPreferences.updateChannel === "dev";
+  autoUpdater.allowDowngrade = false;
 
   autoUpdater.on("checking-for-update", () => {
     setUpdateState({ phase: "checking", message: undefined, percent: undefined });
@@ -249,20 +259,68 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     ? value as Partial<DesktopShellPreferences>
     : {};
   const zoom = Number(candidate.serviceZoom);
+  const idleLockMinutes = Number(candidate.idleLockMinutes);
   return {
     sidebarCollapsed: candidate.sidebarCollapsed === true,
     compactMode: candidate.compactMode === true,
     reduceMotion: candidate.reduceMotion === true,
     solidSurfaces: candidate.solidSurfaces === true,
     serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
+    idleLockMinutes: [0, 5, 10, 15, 30].includes(idleLockMinutes) ? idleLockMinutes : 10,
+    lockSound: candidate.lockSound !== false,
+    updateChannel: candidate.updateChannel === "dev" ? "dev" : "beta",
   };
 }
 
 function applyPreferences(value: unknown): DesktopShellPreferences {
+  const previousChannel = shellPreferences.updateChannel;
   shellPreferences = normalizePreferences(value);
   positionViews();
   serviceView?.webContents.setZoomFactor(shellPreferences.serviceZoom);
+  if (app.isPackaged && previousChannel !== shellPreferences.updateChannel) {
+    autoUpdater.channel = shellPreferences.updateChannel === "dev" ? "dev" : "latest";
+    autoUpdater.allowPrerelease = shellPreferences.updateChannel === "dev";
+    autoUpdater.allowDowngrade = false;
+    setUpdateState({
+      phase: "idle",
+      version: undefined,
+      percent: undefined,
+      message: shellPreferences.updateChannel === "dev"
+        ? "Канал Dev включён. Проверяем экспериментальные сборки."
+        : "Канал Beta включён. Вы получаете только проверенные выпуски.",
+    });
+    setTimeout(() => void checkForUpdates(), 350);
+  } else {
+    setUpdateState({});
+  }
   return shellPreferences;
+}
+
+function lockDesktop(reason: DesktopLockReason): boolean {
+  if (desktopLocked || !mainWindow || mainWindow.isDestroyed()) return desktopLocked;
+  desktopLocked = true;
+  syncServiceVisibility();
+  mainWindow.webContents.send("desktop:lock-requested", reason);
+  mainWindow.webContents.focus();
+  return true;
+}
+
+function unlockDesktop(): boolean {
+  if (!desktopLocked) return true;
+  desktopLocked = false;
+  syncServiceVisibility();
+  if (!shellOverlayOpen && serviceView?.getVisible()) serviceView.webContents.focus();
+  return true;
+}
+
+function startIdleLockMonitor(): void {
+  if (idleLockTimer) clearInterval(idleLockTimer);
+  idleLockTimer = setInterval(() => {
+    const minutes = shellPreferences.idleLockMinutes;
+    if (!desktopLocked && minutes > 0 && powerMonitor.getSystemIdleTime() >= minutes * 60) {
+      lockDesktop("idle");
+    }
+  }, 5_000);
 }
 
 function clearServiceRetry(resetAttempt = true): void {
@@ -303,6 +361,7 @@ function syncServiceVisibility(): void {
   if (!serviceView) return;
   serviceView.setVisible(
     !shellOverlayOpen &&
+    !desktopLocked &&
     activeService !== "home" &&
     !lastServiceError,
   );
@@ -593,6 +652,8 @@ function registerIpc(): void {
     void shell.openExternal(url);
     return true;
   });
+  ipcMain.handle("desktop:lock", (event) => trusted(event) ? lockDesktop("manual") : false);
+  ipcMain.handle("desktop:unlock", (event) => trusted(event) ? unlockDesktop() : false);
   ipcMain.handle("desktop:open-login", async (event) => {
     if (!trusted(event) || !serviceView) return state();
     clearServiceRetry();
@@ -753,6 +814,7 @@ async function createWindow(): Promise<void> {
     serviceView = null;
     mainWindow = null;
     shellOverlayOpen = false;
+    desktopLocked = false;
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -786,6 +848,7 @@ app.whenReady().then(async () => {
   registerIpc();
   configureAutoUpdater();
   await createWindow();
+  startIdleLockMonitor();
   setUpdateState({});
 
   app.on("activate", () => {
@@ -808,4 +871,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   if (updateTimer) clearInterval(updateTimer);
+  if (idleLockTimer) clearInterval(idleLockTimer);
 });

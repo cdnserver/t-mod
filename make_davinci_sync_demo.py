@@ -44,7 +44,6 @@ def make_music() -> None:
             t = i / SAMPLE_RATE
             beat_index = int(t / BEAT)
             beat_phase = t - beat_index * BEAT
-            bar_phase = t % 2.0
             chord = chord_sets[int(t // 2.0) % len(chord_sets)]
             root = roots[int(t // 2.0) % len(roots)]
 

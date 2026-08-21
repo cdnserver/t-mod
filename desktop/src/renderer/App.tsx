@@ -13,6 +13,7 @@ import type {
   BootstrapResult,
   DesktopLoginCredentials,
   DesktopLoginResult,
+  DesktopLockReason,
   DesktopNotification,
   DesktopShellPreferences,
   DesktopState,
@@ -36,6 +37,9 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   reduceMotion: false,
   solidSurfaces: false,
   serviceZoom: 1,
+  idleLockMinutes: 10,
+  lockSound: true,
+  updateChannel: "beta",
 };
 
 function loadPreferences(): DesktopShellPreferences {
@@ -48,6 +52,11 @@ function loadPreferences(): DesktopShellPreferences {
       reduceMotion: stored.reduceMotion === true,
       solidSurfaces: stored.solidSurfaces === true,
       serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
+      idleLockMinutes: [0, 5, 10, 15, 30].includes(Number(stored.idleLockMinutes))
+        ? Number(stored.idleLockMinutes)
+        : 10,
+      lockSound: stored.lockSound !== false,
+      updateChannel: stored.updateChannel === "dev" ? "dev" : "beta",
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -56,7 +65,7 @@ function loadPreferences(): DesktopShellPreferences {
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<string, ReactNode> = {
-    home: <><path d="m3 8 7-1.5v4L3 12zM14 6.5 21 8v4l-7-1.5z"/><path d="M10 10h4v9l-2 2-2-2z"/></>,
+    home: <><rect x="8" y="3.5" width="8" height="17" rx="2.5"/><path d="M9.5 8h5M12 8v8.5"/></>,
     reactor: <><path d="M7 6v12M12 3.5v17M17 6v12M4.5 8.5h15M4.5 15.5h15"/><rect x="9.5" y="8" width="5" height="8" rx="1.5"/></>,
     consensus: <><path d="M4 20h16M6 17V10M10 17V8M14 17V8M18 17v-7M4.5 7.5 12 3.5l7.5 4"/></>,
     atlas: <><circle cx="10.5" cy="13" r="7.5"/><path d="M3 13h15M5 9c3 2 8 2 11 0M5 17c3-2 8-2 11 0M10.5 5.5c-2.5 2.5-3.5 5-3.5 7.5s1 5 3.5 7.5M10.5 5.5c2.5 2.5 3.5 5 3.5 7.5s-1 5-3.5 7.5M20 2v5M17.5 4.5h5"/></>,
@@ -139,7 +148,7 @@ function playLaunchSound(): () => void {
     oscillator.stop(now + offset + duration + 0.04);
   };
 
-  // The three spatial notes follow the three planes of the launch mark.
+  // Spatial notes follow the glass mark as it comes forward from depth.
   // A low foundation and restrained shimmer keep the signature cinematic.
   tone(55, 0, 4.12, 0.31, "sine");
   tone(110, 0.08, 3.76, 0.15, "sine");
@@ -193,19 +202,104 @@ function LaunchSequence({ reduced }: { reduced: boolean }) {
   return (
     <section className={`launch-sequence ${reduced ? "reduced" : ""}`} aria-label="T-Mod запускается" aria-live="polite">
       <div className="launch-noise" aria-hidden="true"/>
-      <div className="launch-prisms" aria-hidden="true"><i/><i/><i/></div>
-      <div className="launch-slit" aria-hidden="true"><i/></div>
-      <div className="launch-foldmark" aria-hidden="true">
-        <i className="fold-stem"/>
-        <i className="fold-left"/>
-        <i className="fold-right"/>
-        <b/>
+      <div className="launch-letterbox" aria-hidden="true"><i/><b/></div>
+      <div className="launch-cinema-depth" aria-hidden="true"><i/><i/><i/><i/></div>
+      <div className="launch-volumetric" aria-hidden="true"><i/><i/><i/></div>
+      <div className="launch-motes" aria-hidden="true"><i/><i/><i/><i/><i/><i/></div>
+      <div className="launch-aperture" aria-hidden="true"><i/><b/></div>
+      <div className="launch-cube-scene" aria-hidden="true">
+        <i className="launch-cube-shadow"/>
+        <div className="launch-cube-rig">
+          <div className="launch-glass-cube">
+            <i className="glass-back"/>
+            <i className="glass-top"/>
+            <i className="glass-side"/>
+            <i className="glass-core"/>
+            <i className="glass-front"/>
+            <i className="glass-scan"/>
+            <span>T</span>
+            <b/>
+          </div>
+        </div>
+        <i className="launch-cube-reflection"/>
       </div>
       <div className="launch-copy">
         <h1 aria-label="T-Mod"><span>T</span><span>‑</span><span>M</span><span>O</span><span>D</span></h1>
         <p>ЕДИНАЯ ЭКОСИСТЕМА</p>
       </div>
-      <div className="launch-release-line" aria-hidden="true"><i/></div>
+      <div className="launch-cinematic-release" aria-hidden="true"><i/><b/><em/></div>
+    </section>
+  );
+}
+
+function playLockSound(kind: "lock" | "unlock", enabled: boolean): () => void {
+  if (!enabled || typeof AudioContext === "undefined") return () => undefined;
+  const context = new AudioContext();
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(kind === "lock" ? 0.052 : 0.044, now + 0.06);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "lock" ? 1.35 : 0.82));
+  master.connect(context.destination);
+  const notes = kind === "lock" ? [220, 164.81, 110] : [220, 329.63, 493.88];
+  notes.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = index === 0 ? "sine" : "triangle";
+    oscillator.frequency.setValueAtTime(frequency, now + index * 0.09);
+    gain.gain.setValueAtTime(0.0001, now + index * 0.09);
+    gain.gain.exponentialRampToValueAtTime(0.22 / (index + 1), now + 0.1 + index * 0.09);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.65 + index * 0.12);
+    oscillator.connect(gain).connect(master);
+    oscillator.start(now + index * 0.09);
+    oscillator.stop(now + 0.78 + index * 0.12);
+  });
+  void context.resume().catch(() => undefined);
+  const timer = window.setTimeout(() => void context.close(), 1_550);
+  return () => {
+    window.clearTimeout(timer);
+    if (context.state !== "closed") void context.close();
+  };
+}
+
+function LockScreen({
+  name,
+  reason,
+  reduced,
+  onUnlock,
+}: {
+  name: string;
+  reason: DesktopLockReason;
+  reduced: boolean;
+  onUnlock: () => void;
+}) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const time = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" }).format(now);
+  const date = new Intl.DateTimeFormat("ru", { weekday: "long", day: "numeric", month: "long" }).format(now);
+  return (
+    <section
+      className={`lock-screen ${reduced ? "reduced" : ""}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="T-Mod заблокирован"
+      onPointerDown={onUnlock}
+    >
+      <div className="lock-atmosphere" aria-hidden="true"><i/><i/><i/><b/><em/></div>
+      <div className="lock-grid" aria-hidden="true"/>
+      <header className="lock-header"><span className="lock-mini-mark">T</span><strong>T‑MOD</strong><small>{reason === "idle" ? "РЕЖИМ ПОКОЯ" : "ЗАЩИЩЕНО"}</small></header>
+      <div className="lock-time"><strong>{time}</strong><span>{date}</span></div>
+      <div className="lock-core" aria-hidden="true"><i/><span>T</span><b/></div>
+      <div className="lock-welcome">
+        <p>С возвращением, {name}</p>
+        <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onUnlock(); }}>
+          <span>Нажмите любую клавишу</span><i>или коснитесь экрана</i><b>›</b>
+        </button>
+      </div>
+      <footer><span><i/> Контур защищён локально</span><small>T‑Mod Desktop</small></footer>
     </section>
   );
 }
@@ -233,12 +327,16 @@ export function App() {
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
     currentVersion: "—",
+    channel: "beta",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const [launchVisible, setLaunchVisible] = useState(true);
+  const [locked, setLocked] = useState(false);
+  const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
   const hasLoadedBootstrap = useRef(false);
+  const unlockInFlight = useRef(false);
 
   useEffect(() => {
     const stopSound = playLaunchSound();
@@ -324,8 +422,59 @@ export function App() {
     const api = browserApi();
     if (!api) return;
     const unsubscribeUpdate = api.onUpdate(setUpdateState);
-    return unsubscribeUpdate;
+    const unsubscribeLock = api.onLockRequested((reason) => {
+      setPaletteOpen(false);
+      setNotificationsOpen(false);
+      setSettingsOpen(false);
+      setLockReason(reason);
+      setLocked(true);
+    });
+    return () => {
+      unsubscribeUpdate();
+      unsubscribeLock();
+    };
   }, []);
+
+  const unlock = useCallback(() => {
+    const api = browserApi();
+    if (!locked || unlockInFlight.current || !api) return;
+    unlockInFlight.current = true;
+    void api.unlock().then((ok) => {
+      if (ok !== false) {
+        setLocked(false);
+        playLockSound("unlock", preferences.lockSound);
+      }
+    }).finally(() => {
+      unlockInFlight.current = false;
+    });
+  }, [locked, preferences.lockSound]);
+
+  const lockNow = useCallback(() => {
+    setPaletteOpen(false);
+    setNotificationsOpen(false);
+    setSettingsOpen(false);
+    void browserApi()?.lock().then((ok) => {
+      if (ok) {
+        setLockReason("manual");
+        setLocked(true);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!locked) return;
+    const stopSound = playLockSound("lock", preferences.lockSound);
+    const release = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      unlock();
+    };
+    window.addEventListener("keydown", release, true);
+    return () => {
+      stopSound();
+      window.removeEventListener("keydown", release, true);
+    };
+  }, [locked, preferences.lockSound, unlock]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -352,8 +501,8 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen);
-  }, [paletteOpen, notificationsOpen, settingsOpen]);
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || locked);
+  }, [paletteOpen, notificationsOpen, settingsOpen, locked]);
 
   useEffect(() => () => {
     void browserApi()?.setShellOverlayOpen(false);
@@ -522,6 +671,8 @@ export function App() {
               )}
             </button>
           )}
+          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel.toUpperCase()}</button>
+          <button className="circle-action" onClick={lockNow} title="Заблокировать T-Mod"><Icon name="lock"/></button>
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
@@ -574,6 +725,7 @@ export function App() {
           onChange={setPreferences}
           onClose={() => setSettingsOpen(false)}
           onReconnect={loadBootstrap}
+          onLock={lockNow}
         />
       )}
       {paletteOpen && (
@@ -597,6 +749,7 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
+      {locked && <LockScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} onUnlock={unlock}/>}
       {launchVisible && <LaunchSequence reduced={preferences.reduceMotion}/>}
     </div>
   );
@@ -762,6 +915,7 @@ function SettingsDrawer({
   onChange,
   onClose,
   onReconnect,
+  onLock,
 }: {
   preferences: DesktopShellPreferences;
   online: boolean;
@@ -770,8 +924,9 @@ function SettingsDrawer({
   onChange: (preferences: DesktopShellPreferences) => void;
   onClose: () => void;
   onReconnect: () => Promise<void>;
+  onLock: () => void;
 }) {
-  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces">) =>
+  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound">) =>
     onChange({ ...preferences, [key]: !preferences[key] });
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
     <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
@@ -782,7 +937,15 @@ function SettingsDrawer({
         <SettingToggle label="Плотные поверхности" hint="Меньше прозрачности, выше контраст" active={preferences.solidSurfaces} onClick={() => toggle("solidSurfaces")}/>
         <div className="setting-row zoom-setting"><span><strong>Масштаб сервисов</strong><small>Применяется ко всем пространствам</small></span><div>{[0.9, 1, 1.1].map((zoom) => <button key={zoom} className={preferences.serviceZoom === zoom ? "active" : ""} onClick={() => onChange({ ...preferences, serviceZoom: zoom })}>{Math.round(zoom * 100)}%</button>)}</div></div>
       </section>
-      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b>Beta</b></div></section>
+      <section><p className="settings-label">Экран блокировки</p>
+        <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
+        <SettingToggle label="Звук блокировки" hint="Тихий системный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
+        <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Вернуться можно любой клавишей</small></span><b>›</b></button>
+      </section>
+      <section><p className="settings-label">Обновления</p>
+        <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>
+      </section>
+      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>
       <button className="reset-preferences" onClick={() => onChange({ ...DEFAULT_PREFERENCES })}>Вернуть настройки по умолчанию</button>
     </div>
   </aside></>;

@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.3");
+    expect(manifest.version).toBe("0.3.4");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -57,6 +57,24 @@ describe("desktop release contract", () => {
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
   });
 
+  it("locks the complete service surface and supports Beta or Dev updates", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const preload = readFileSync(resolve(root, "src/preload/index.ts"), "utf8");
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/styles.css"), "utf8");
+    expect(main).toContain("powerMonitor.getSystemIdleTime()");
+    expect(main).toContain("!desktopLocked");
+    expect(main).toContain('ipcMain.handle("desktop:lock"');
+    expect(main).toContain('shellPreferences.updateChannel === "dev"');
+    expect(main).toContain('autoUpdater.channel = shellPreferences.updateChannel === "dev" ? "dev" : "latest"');
+    expect(preload).toContain('ipcRenderer.on("desktop:lock-requested"');
+    expect(renderer).toContain("function LockScreen");
+    expect(renderer).toContain("idleLockMinutes: 10");
+    expect(renderer).toContain('updateChannel: "beta"');
+    expect(styles).toContain(".lock-screen");
+    expect(styles).toContain(".update-channel-setting");
+  });
+
   it("shows the branded launch sequence and allows its local audio signature", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
@@ -65,10 +83,10 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("function LaunchSequence");
     expect(renderer).toContain("function playLaunchSound");
     expect(renderer).toContain("launchVisible && <LaunchSequence");
-    expect(renderer).toContain("launch-foldmark");
-    expect(renderer).toContain("fold-left");
+    expect(renderer).toContain("launch-glass-cube");
+    expect(renderer).toContain("glass-front");
     expect(styles).toContain(".launch-sequence");
-    expect(styles).toContain("@keyframes launch-fold-left-in");
+    expect(styles).toContain("@keyframes launch-cube-arrive");
     expect(styles).toContain("@keyframes launch-sequence-out");
     expect(renderer).not.toContain("launch-orbit");
     expect(styles).not.toContain(".launch-orbit");

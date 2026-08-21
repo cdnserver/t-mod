@@ -64,7 +64,12 @@ export interface DesktopShellPreferences {
   reduceMotion: boolean;
   solidSurfaces: boolean;
   serviceZoom: number;
+  idleLockMinutes: number;
+  lockSound: boolean;
+  updateChannel: "beta" | "dev";
 }
+
+export type DesktopLockReason = "idle" | "manual";
 
 export interface DesktopLoginCredentials {
   login: string;
@@ -107,6 +112,7 @@ export type DesktopUpdatePhase =
 export interface DesktopUpdateState {
   phase: DesktopUpdatePhase;
   currentVersion: string;
+  channel: "beta" | "dev";
   version?: string;
   percent?: number;
   message?: string;
@@ -126,6 +132,8 @@ export interface TModDesktopApi {
   copyCurrentLink(): Promise<boolean>;
   openCurrentLink(): Promise<boolean>;
   openLogin(): Promise<DesktopState>;
+  lock(): Promise<boolean>;
+  unlock(): Promise<boolean>;
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;
@@ -135,6 +143,7 @@ export interface TModDesktopApi {
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
   onCommandPalette(listener: () => void): () => void;
+  onLockRequested(listener: (reason: DesktopLockReason) => void): () => void;
   onUpdate(listener: (state: DesktopUpdateState) => void): () => void;
 }
 

@@ -10,6 +10,7 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 import discord
 from aiohttp import web
@@ -36,9 +37,23 @@ from modules.atlas_knowledge import (
     AtlasKnowledgeFileError,
     atlas_extract_knowledge_file,
 )
+from modules.atlas_jobs import AtlasJobWorker
+from modules.atlas_media import (
+    AtlasLocalBlobStore,
+    AtlasMediaConfig,
+    AtlasMediaError,
+    atlas_media_detect_type,
+    atlas_media_kind_for_mime,
+    atlas_media_scan,
+)
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_job_repository as job_storage
+from persistence import atlas_case_repository as case_storage
+from persistence import atlas_document_repository as document_storage
+from persistence import atlas_media_repository as media_storage
+from persistence import atlas_search_repository as search_storage
 from persistence import web_auth_repository as web_auth_storage
 
 
@@ -63,6 +78,13 @@ def register_atlas_web_routes(
     rebuild_task: asyncio.Task[None] | None = None
     forum_sync_task: asyncio.Task[None] | None = None
     forum_sync_runner: AtlasForumSyncRunner | None = None
+    job_worker = AtlasJobWorker(
+        concurrency=2,
+        lease_seconds=180,
+        poll_seconds=0.5,
+    )
+    media_config = AtlasMediaConfig.from_env()
+    media_blobs = AtlasLocalBlobStore(media_config.root)
 
     async def atlas_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "index.html")
@@ -686,6 +708,242 @@ def register_atlas_web_routes(
             return web.json_response({"error": str(exc), "message": "Документ не создан."}, status=400)
         return web.json_response({"document": created}, status=201)
 
+    async def document_detail(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            document_id = int(request.match_info.get("document_id") or 0)
+            if request.method == "GET":
+                detail = await asyncio.to_thread(
+                    document_storage.atlas_document_detail,
+                    organization_id,
+                    int(selected.user_id),
+                    document_id,
+                )
+                return web.json_response(detail)
+            payload = await body(request, selected)
+            operation = str(payload.get("operation") or "revise").strip().lower()
+            if operation == "transition":
+                item = await asyncio.to_thread(
+                    document_storage.atlas_document_transition,
+                    organization_id,
+                    int(selected.user_id),
+                    document_id,
+                    status=str(payload.get("status") or ""),
+                    expected_revision=int(payload.get("expected_revision") or 0),
+                )
+            else:
+                item = await asyncio.to_thread(
+                    document_storage.atlas_document_revise,
+                    organization_id,
+                    int(selected.user_id),
+                    document_id,
+                    title=str(payload.get("title") or ""),
+                    fields=dict(payload.get("fields") or {}),
+                    rendered_text=str(payload.get("rendered_text") or ""),
+                    change_summary=str(payload.get("change_summary") or ""),
+                    expected_revision=int(payload.get("expected_revision") or 0),
+                )
+        except (TypeError, ValueError) as exc:
+            status = 409 if "conflict" in str(exc) else 400
+            return web.json_response({"error": str(exc), "message": "Документ не изменён."}, status=status)
+        return web.json_response({"document": item})
+
+    async def document_comments(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            document_id = int(request.match_info.get("document_id") or 0)
+            raw_comment_id = str(request.match_info.get("comment_id") or "").strip()
+            payload = await body(request, selected)
+            if raw_comment_id:
+                item = await asyncio.to_thread(
+                    document_storage.atlas_document_resolve_comment,
+                    organization_id,
+                    int(selected.user_id),
+                    document_id,
+                    int(raw_comment_id),
+                )
+                return web.json_response({"comment": item})
+            item = await asyncio.to_thread(
+                document_storage.atlas_document_add_comment,
+                organization_id,
+                int(selected.user_id),
+                document_id,
+                body=str(payload.get("body") or ""),
+                revision=int(payload.get("revision") or 0),
+                parent_comment_id=int(payload.get("parent_comment_id") or 0) or None,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Комментарий не сохранён."}, status=400)
+        return web.json_response({"comment": item}, status=201)
+
+    async def document_approvals(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            document_id = int(request.match_info.get("document_id") or 0)
+            raw_approval_id = str(request.match_info.get("approval_id") or "").strip()
+            payload = await body(request, selected)
+            if raw_approval_id:
+                item = await asyncio.to_thread(
+                    document_storage.atlas_document_decide_approval,
+                    organization_id,
+                    int(selected.user_id),
+                    document_id,
+                    int(raw_approval_id),
+                    decision=str(payload.get("decision") or ""),
+                    note=str(payload.get("note") or ""),
+                )
+                return web.json_response({"approval": item})
+            items = await asyncio.to_thread(
+                document_storage.atlas_document_configure_approvals,
+                organization_id,
+                int(selected.user_id),
+                document_id,
+                steps=list(payload.get("steps") or []),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Маршрут согласования не сохранён."}, status=400)
+        return web.json_response({"items": items}, status=201)
+
+    async def timeline(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        if request.method == "GET":
+            try:
+                items = await asyncio.to_thread(
+                    storage.atlas_timeline_page,
+                    organization_id,
+                    actor_user_id=int(selected.user_id),
+                    status=str(request.query.get("status") or "") or None,
+                    limit=int(request.query.get("limit") or 80),
+                    cursor=str(request.query.get("cursor") or "") or None,
+                )
+            except (TypeError, ValueError) as exc:
+                return web.json_response(
+                    {"error": str(exc), "message": "Не удалось открыть историю Atlas."},
+                    status=400,
+                )
+            summary = await asyncio.to_thread(storage.atlas_timeline_summary, organization_id)
+            return web.json_response({**items, "summary": summary})
+
+        payload = await body(request, selected)
+        receipt_key, cached = cached_receipt(selected.user_id, request)
+        if cached is not None:
+            return web.json_response(cached, status=201)
+        check_rate(selected.user_id)
+        try:
+            created = await asyncio.to_thread(
+                storage.atlas_create_timeline_event,
+                organization_id,
+                int(selected.user_id),
+                title=str(payload.get("title") or ""),
+                summary=str(payload.get("summary") or ""),
+                event_kind=str(payload.get("event_kind") or "activity"),
+                status=str(payload.get("status") or "open"),
+                importance=str(payload.get("importance") or "routine"),
+                occurred_at=str(payload.get("occurred_at") or "") or None,
+                source_type=str(payload.get("source_type") or "") or None,
+                source_id=payload.get("source_id"),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                dedupe_key=f"web:{int(selected.user_id)}:{receipt_key}",
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Событие не сохранено. Проверьте поля."},
+                status=400,
+            )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            organization_id,
+            int(selected.user_id),
+            "timeline_event_created",
+            f"Зафиксировано событие «{created['title']}»",
+            target_type="timeline_event",
+            target_id=created["id"],
+            details={"kind": created["event_kind"], "importance": created["importance"]},
+        )
+        response = {"event": created}
+        receipts[(int(selected.user_id), receipt_key)] = (time.monotonic() + 300, response)
+        return web.json_response(response, status=201)
+
+    async def timeline_item(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            event_id = int(request.match_info.get("event_id") or 0)
+            changes = {
+                key: payload[key]
+                for key in ("title", "summary", "status", "importance")
+                if key in payload
+            }
+            updated = await asyncio.to_thread(
+                storage.atlas_update_timeline_event,
+                organization_id,
+                int(selected.user_id),
+                event_id,
+                expected_version=(
+                    int(payload["expected_version"])
+                    if payload.get("expected_version") is not None
+                    else None
+                ),
+                **changes,
+            )
+        except (TypeError, ValueError) as exc:
+            status_code = 409 if str(exc) == "atlas_timeline_version_conflict" else 400
+            return web.json_response(
+                {"error": str(exc), "message": "Событие не обновлено."},
+                status=status_code,
+            )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            organization_id,
+            int(selected.user_id),
+            "timeline_event_updated",
+            f"Обновлено событие «{updated['title']}»",
+            target_type="timeline_event",
+            target_id=updated["id"],
+            details={"status": updated["status"], "version": updated["version"]},
+        )
+        return web.json_response({"event": updated})
+
+    async def entity_links(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            link = await asyncio.to_thread(
+                storage.atlas_link_entities,
+                organization_id,
+                int(selected.user_id),
+                source_type=str(payload.get("source_type") or ""),
+                source_id=payload.get("source_id") or "",
+                relation=str(payload.get("relation") or "related_to"),
+                target_type=str(payload.get("target_type") or ""),
+                target_id=payload.get("target_id") or "",
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Связь не создана."},
+                status=400,
+            )
+        return web.json_response({"link": link}, status=201)
+
     async def message_feedback(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas(selected)
@@ -718,13 +976,14 @@ def register_atlas_web_routes(
         )
         return web.json_response({"feedback": feedback})
 
-    async def index_source(source: dict[str, Any]) -> None:
+    async def index_source(source: dict[str, Any]) -> list[str]:
         point_ids = await atlas_index_source(source)
         await asyncio.to_thread(
             storage.atlas_mark_knowledge_indexed,
             int(source["id"]),
             point_id=point_ids[0] if point_ids else None,
         )
+        return point_ids
 
     async def mark_index_error(source: dict[str, Any], exc: BaseException) -> None:
         await asyncio.to_thread(
@@ -737,6 +996,142 @@ def register_atlas_web_routes(
     async def index_synced_source(source: dict[str, Any]) -> list[str]:
         async with index_lock:
             return await atlas_index_source(source)
+
+    async def run_knowledge_index_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        source_id = int(dict(job.get("payload") or {}).get("source_id") or 0)
+        source = await asyncio.to_thread(storage.atlas_knowledge_source, source_id)
+        if source is None or str(source.get("status") or "") == "archived":
+            return {"source_id": source_id, "skipped": True}
+        await report({"percent": 10, "stage": "preparing", "source_id": source_id})
+        try:
+            async with index_lock:
+                point_ids = await index_source(source)
+        except Exception as exc:
+            await mark_index_error(source, exc)
+            if isinstance(exc, AtlasAIError) and exc.code == "qdrant_index_corrupted":
+                queue_index_reconciliation(force_reset=True)
+            raise
+        await report(
+            {
+                "percent": 90,
+                "stage": "saving",
+                "source_id": source_id,
+                "points": len(point_ids),
+            }
+        )
+        return {
+            "source_id": source_id,
+            "points": len(point_ids),
+            "point_id": point_ids[0] if point_ids else None,
+        }
+
+    job_worker.register("atlas.knowledge.index.v1", run_knowledge_index_job)
+
+    async def run_media_finalize_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        upload_id = str(dict(job.get("payload") or {}).get("upload_id") or "").strip()
+        upload = await asyncio.to_thread(media_storage.atlas_media_upload, upload_id)
+        if upload is None:
+            raise AtlasMediaError("atlas_media_upload_missing", "Сессия загрузки не найдена.")
+        if str(upload.get("status")) == "completed":
+            return {"upload_id": upload_id, "asset_id": int(upload["asset_id"]), "ready": True}
+        await report({"percent": 10, "stage": "verifying", "asset_id": int(upload["asset_id"])})
+        try:
+            prepared_key = str(upload.get("final_storage_key") or "")
+            source_key = (
+                prepared_key
+                if prepared_key and media_blobs.path(prepared_key).is_file()
+                else str(upload["temp_storage_key"])
+            )
+            checksum, actual_size = await asyncio.to_thread(
+                media_blobs.checksum_and_size,
+                source_key,
+            )
+            if actual_size != int(upload["expected_size"]):
+                raise AtlasMediaError(
+                    "atlas_media_size_mismatch",
+                    "Размер сохранённого файла не совпадает с заявленным.",
+                )
+            expected_hash = str(upload.get("expected_sha256") or "").lower()
+            if expected_hash and checksum != expected_hash:
+                raise AtlasMediaError(
+                    "atlas_media_checksum_mismatch",
+                    "Контрольная сумма файла не совпала.",
+                )
+            detected_mime = str(upload.get("detected_mime_type") or "") or atlas_media_detect_type(
+                await asyncio.to_thread(media_blobs.head, source_key),
+                str(upload.get("declared_mime_type") or "") or None,
+            )
+            final_key = prepared_key or media_blobs.final_key(checksum)
+            await asyncio.to_thread(
+                media_storage.atlas_media_prepare_finalize,
+                upload_id,
+                checksum_sha256=checksum,
+                final_storage_key=final_key,
+                detected_mime_type=detected_mime,
+            )
+            await report({"percent": 45, "stage": "safety_check", "asset_id": int(upload["asset_id"])})
+            scan_status = await asyncio.to_thread(
+                atlas_media_scan,
+                media_blobs.path(source_key),
+                media_config.scan_command,
+            )
+            await report({"percent": 70, "stage": "storing", "asset_id": int(upload["asset_id"])})
+            await asyncio.to_thread(
+                media_blobs.finalize,
+                str(upload["temp_storage_key"]),
+                final_key,
+                expected_size=actual_size,
+            )
+            asset = await asyncio.to_thread(
+                media_storage.atlas_media_complete_upload,
+                upload_id,
+                checksum_sha256=checksum,
+                storage_key=final_key,
+                mime_type=detected_mime,
+                media_kind=atlas_media_kind_for_mime(detected_mime),
+                scan_status=scan_status,
+            )
+            await report({"percent": 95, "stage": "ready", "asset_id": int(asset["id"])})
+            return {
+                "upload_id": upload_id,
+                "asset_id": int(asset["id"]),
+                "checksum_sha256": checksum,
+                "mime_type": detected_mime,
+                "ready": True,
+            }
+        except AtlasMediaError as exc:
+            await asyncio.to_thread(
+                media_storage.atlas_media_mark_upload_error,
+                upload_id,
+                error=f"{exc.code}: {exc}",
+                terminal=not exc.retryable,
+            )
+            raise
+        except ValueError as exc:
+            wrapped = AtlasMediaError(str(exc), "Файл не прошёл проверку Atlas.")
+            await asyncio.to_thread(
+                media_storage.atlas_media_mark_upload_error,
+                upload_id,
+                error=f"{type(exc).__name__}: {exc}",
+                terminal=True,
+            )
+            raise wrapped from exc
+        except Exception as exc:
+            await asyncio.to_thread(
+                media_storage.atlas_media_mark_upload_error,
+                upload_id,
+                error=f"{type(exc).__name__}: {exc}",
+                terminal=False,
+            )
+            raise
+
+    job_worker.register("atlas.media.finalize.v1", run_media_finalize_job)
 
     async def reconcile_knowledge_index(*, force_reset: bool = False) -> None:
         sources = await asyncio.to_thread(storage.atlas_indexable_knowledge_sources)
@@ -758,13 +1153,13 @@ def register_atlas_web_routes(
                 if rebuild_all
                 else [item for item in sources if item.get("status") != "indexed"]
             )
-            for source in targets:
-                try:
-                    await index_source(source)
-                except Exception as exc:
-                    await mark_index_error(source, exc)
-                    if isinstance(exc, AtlasAIError) and exc.retryable:
-                        raise
+        generation = (
+            f"rebuild:{time.time_ns()}"
+            if rebuild_all
+            else None
+        )
+        for source in targets:
+            await queue_knowledge_index(source, generation=generation)
 
     def queue_index_reconciliation(*, force_reset: bool = False) -> None:
         nonlocal rebuild_task
@@ -787,23 +1182,143 @@ def register_atlas_web_routes(
         indexing_tasks.add(rebuild_task)
         rebuild_task.add_done_callback(indexing_tasks.discard)
 
-    def queue_knowledge_index(source: dict[str, Any]) -> None:
-        async def index_in_background() -> None:
-            try:
-                async with index_lock:
-                    await index_source(source)
-            except AtlasAIError as exc:
-                await mark_index_error(source, exc)
-                if exc.code == "qdrant_index_corrupted":
-                    queue_index_reconciliation(force_reset=True)
-            except Exception as exc:
-                await mark_index_error(source, exc)
+    async def queue_knowledge_index(
+        source: dict[str, Any],
+        *,
+        generation: str | None = None,
+    ) -> dict[str, Any]:
+        fingerprint = hashlib.sha256(
+            str(
+                generation
+                or f"{source.get('checksum') or ''}:{source.get('updated_at') or ''}"
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(source["organization_id"]),
+            int(source.get("created_by_id") or 0),
+            job_type="atlas.knowledge.index.v1",
+            dedupe_key=f"source:{int(source['id'])}:{fingerprint}",
+            payload={"source_id": int(source["id"])},
+            subject_type="knowledge_source",
+            subject_id=int(source["id"]),
+            max_attempts=6,
+        )
+        job_worker.wake()
+        return queued
 
-        task = asyncio.create_task(index_in_background(), name=f"atlas-index-{int(source['id'])}")
-        indexing_tasks.add(task)
-        task.add_done_callback(indexing_tasks.discard)
+    async def queue_media_finalize(upload: dict[str, Any]) -> dict[str, Any]:
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(upload["organization_id"]),
+            int(upload["user_id"]),
+            job_type="atlas.media.finalize.v1",
+            dedupe_key=f"upload:{str(upload['upload_id'])}",
+            payload={"upload_id": str(upload["upload_id"])},
+            subject_type="media_asset",
+            subject_id=int(upload["asset_id"]),
+            max_attempts=5,
+        )
+        job_worker.wake()
+        return queued
 
-    def queue_forum_listing_import(
+    async def run_forum_listing_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        source_url = str(payload.get("source_url") or "").strip()
+        organization_id = int(job["organization_id"])
+        actor_user_id = int(job.get("created_by_id") or 0)
+        feed_key = str(payload.get("feed_key") or "")
+        if forum_sync_runner is None:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        try:
+            await report({"percent": 5, "stage": "opening_forum"})
+            batch = await forum_sync_runner.fetch_listing(source_url)
+            total = max(1, len(batch.snapshots))
+            created = 0
+            changed = 0
+            queued = 0
+            for position, snapshot in enumerate(batch.snapshots, start=1):
+                result = await asyncio.to_thread(
+                    storage.atlas_upsert_synced_knowledge,
+                    organization_id,
+                    title=snapshot.title,
+                    content=snapshot.content,
+                    source_url=snapshot.url,
+                    server_code=str(payload.get("server_code") or "phoenix-15"),
+                    faction_code=str(payload.get("faction_code") or "lspd"),
+                    visibility_scope=str(payload.get("visibility_scope") or "server"),
+                    feed_key=feed_key,
+                    metadata={
+                        "author": snapshot.author,
+                        "source_updated_at": snapshot.source_updated_at,
+                        "import_mode": "authenticated_forum_listing",
+                        "listing_url": source_url,
+                        "requested_by_id": actor_user_id,
+                        "knowledge_domain": payload.get("knowledge_domain"),
+                        "corpus_kind": payload.get("corpus_kind"),
+                    },
+                )
+                created += int(bool(result["created"]))
+                changed += int(bool(result["changed"]))
+                source = result["source"]
+                if result["changed"] or source.get("status") != "indexed":
+                    await queue_knowledge_index(source)
+                    queued += 1
+                await report(
+                    {
+                        "percent": min(90, 10 + round(position / total * 80)),
+                        "stage": "reading_topics",
+                        "processed": position,
+                        "total": len(batch.snapshots),
+                    }
+                )
+            details = {
+                "created": created,
+                "changed": changed,
+                "queued": queued,
+                "skipped": len(batch.skipped_threads),
+                "inventory_complete": batch.inventory_complete,
+            }
+            await asyncio.to_thread(
+                storage.atlas_record_event,
+                organization_id,
+                actor_user_id,
+                "forum_listing_imported",
+                f"Atlas прочитал раздел форума: {len(batch.snapshots)} тем",
+                target_type="forum_listing",
+                target_id=source_url,
+                details=details,
+            )
+            await atlas_log(
+                "раздел форума прочитан",
+                (
+                    f"Тем: **{len(batch.snapshots)}** · новых: **{created}** · "
+                    f"обновлено: **{changed}** · пропущено: **{len(batch.skipped_threads)}**"
+                ),
+                level="info",
+                dedupe_key=f"atlas-forum-listing-ok:{feed_key}",
+            )
+            return {"topics": len(batch.snapshots), **details}
+        except Exception as exc:
+            await atlas_log(
+                "не удалось прочитать раздел форума",
+                (
+                    f"Ссылка: `{source_url[:800]}`\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
+                    "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
+                ),
+                level="warning",
+                exception=exc,
+                dedupe_key=f"atlas-forum-listing-error:{feed_key}",
+            )
+            raise
+
+    job_worker.register("atlas.forum.listing.v1", run_forum_listing_job)
+
+    async def queue_forum_listing_import(
         *,
         source_url: str,
         organization_id: int,
@@ -813,89 +1328,36 @@ def register_atlas_web_routes(
         visibility_scope: str,
         knowledge_domain: str | None,
         corpus_kind: str | None,
-    ) -> None:
-        """Read large forum sections asynchronously and index every topic."""
-
+        request_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a full forum-section import so restarts cannot lose it."""
         feed_key = "manual-" + hashlib.sha256(
             source_url.strip().casefold().encode("utf-8")
         ).hexdigest()[:20]
-
-        async def import_in_background() -> None:
-            try:
-                if forum_sync_runner is None:
-                    raise AtlasForumSyncError("atlas_forum_sync_disabled")
-                batch = await forum_sync_runner.fetch_listing(source_url)
-                created = 0
-                changed = 0
-                for snapshot in batch.snapshots:
-                    result = await asyncio.to_thread(
-                        storage.atlas_upsert_synced_knowledge,
-                        int(organization_id),
-                        title=snapshot.title,
-                        content=snapshot.content,
-                        source_url=snapshot.url,
-                        server_code=server_code,
-                        faction_code=faction_code,
-                        visibility_scope=visibility_scope,
-                        feed_key=feed_key,
-                        metadata={
-                            "author": snapshot.author,
-                            "source_updated_at": snapshot.source_updated_at,
-                            "import_mode": "authenticated_forum_listing",
-                            "listing_url": source_url,
-                            "requested_by_id": int(actor_user_id),
-                            "knowledge_domain": knowledge_domain,
-                            "corpus_kind": corpus_kind,
-                        },
-                    )
-                    created += int(bool(result["created"]))
-                    changed += int(bool(result["changed"]))
-                    source = result["source"]
-                    if result["changed"] or source.get("status") != "indexed":
-                        queue_knowledge_index(source)
-                await asyncio.to_thread(
-                    storage.atlas_record_event,
-                    int(organization_id),
-                    int(actor_user_id),
-                    "forum_listing_imported",
-                    f"Atlas прочитал раздел форума: {len(batch.snapshots)} тем",
-                    target_type="forum_listing",
-                    target_id=source_url,
-                    details={
-                        "created": created,
-                        "changed": changed,
-                        "skipped": len(batch.skipped_threads),
-                        "inventory_complete": batch.inventory_complete,
-                    },
-                )
-                await atlas_log(
-                    "раздел форума прочитан",
-                    (
-                        f"Тем: **{len(batch.snapshots)}** · новых: **{created}** · "
-                        f"обновлено: **{changed}** · пропущено: **{len(batch.skipped_threads)}**"
-                    ),
-                    level="info",
-                    dedupe_key=f"atlas-forum-listing-ok:{feed_key}",
-                )
-            except Exception as exc:
-                await atlas_log(
-                    "не удалось прочитать раздел форума",
-                    (
-                        f"Ссылка: `{source_url[:800]}`\n"
-                        f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
-                        "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
-                    ),
-                    level="warning",
-                    exception=exc,
-                    dedupe_key=f"atlas-forum-listing-error:{feed_key}",
-                )
-
-        task = asyncio.create_task(
-            import_in_background(),
-            name=f"atlas-forum-listing-{feed_key}",
+        request_fingerprint = hashlib.sha256(
+            str(request_key or f"{actor_user_id}:{time.time_ns()}").encode("utf-8")
+        ).hexdigest()[:20]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(organization_id),
+            int(actor_user_id),
+            job_type="atlas.forum.listing.v1",
+            dedupe_key=f"{feed_key}:{request_fingerprint}",
+            payload={
+                "source_url": source_url,
+                "feed_key": feed_key,
+                "server_code": server_code,
+                "faction_code": faction_code,
+                "visibility_scope": visibility_scope,
+                "knowledge_domain": knowledge_domain,
+                "corpus_kind": corpus_kind,
+            },
+            subject_type="forum_listing",
+            subject_id=source_url,
+            max_attempts=4,
         )
-        indexing_tasks.add(task)
-        task.add_done_callback(indexing_tasks.discard)
+        job_worker.wake()
+        return queued
 
     forum_sync_runner = AtlasForumSyncRunner(
         bot,
@@ -905,6 +1367,12 @@ def register_atlas_web_routes(
 
     async def start_index_reconciliation(_: web.Application) -> None:
         queue_index_reconciliation()
+
+    async def start_atlas_jobs(_: web.Application) -> None:
+        # Let startup reconciliation acquire the index lock before old jobs resume.
+        await asyncio.sleep(0)
+        job_worker.start()
+        job_worker.wake()
 
     async def start_forum_sync(_: web.Application) -> None:
         nonlocal forum_sync_task
@@ -921,6 +1389,9 @@ def register_atlas_web_routes(
         if indexing_tasks:
             await asyncio.gather(*tuple(indexing_tasks), return_exceptions=True)
 
+    async def stop_atlas_jobs(_: web.Application) -> None:
+        await job_worker.close()
+
     async def stop_forum_sync(_: web.Application) -> None:
         if forum_sync_runner is not None:
             await forum_sync_runner.close()
@@ -929,9 +1400,11 @@ def register_atlas_web_routes(
             await asyncio.gather(forum_sync_task, return_exceptions=True)
 
     app.on_startup.append(start_index_reconciliation)
+    app.on_startup.append(start_atlas_jobs)
     app.on_startup.append(start_forum_sync)
     app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
+    app.on_cleanup.append(stop_atlas_jobs)
 
     async def knowledge(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -990,11 +1463,460 @@ def register_atlas_web_routes(
                 status=400,
             )
 
-        queue_knowledge_index(source)
+        queued_job = await queue_knowledge_index(source)
         return web.json_response(
-            {"source": source, "queued": True, "message": "Материал принят. Atlas готовит его для поиска."},
+            {
+                "source": source,
+                "job": queued_job,
+                "queued": True,
+                "message": "Материал принят. Atlas готовит его для поиска.",
+            },
             status=202,
         )
+
+    async def jobs(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        raw_job_id = str(request.match_info.get("job_id") or "").strip()
+        if raw_job_id:
+            try:
+                item = await asyncio.to_thread(job_storage.atlas_job_get, int(raw_job_id))
+            except (TypeError, ValueError):
+                item = None
+            if item is None or int(item["organization_id"]) != organization_id:
+                raise web.HTTPNotFound(
+                    text='{"error":"atlas_job_not_found"}',
+                    content_type="application/json",
+                )
+            return web.json_response({"job": item})
+        try:
+            limit = max(1, min(100, int(request.query.get("limit") or 30)))
+            items = await asyncio.to_thread(
+                job_storage.atlas_jobs,
+                organization_id,
+                status=str(request.query.get("status") or "") or None,
+                limit=limit,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"items": items})
+
+    async def global_search(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        raw_kinds = [item.strip() for item in str(request.query.get("kinds") or "").split(",") if item.strip()]
+        try:
+            result = await asyncio.to_thread(
+                search_storage.atlas_global_search,
+                int(dashboard["organization"]["id"]),
+                int(selected.user_id),
+                query=str(request.query.get("q") or ""),
+                server_code=str(request.query.get("server_code") or "phoenix-15"),
+                faction_code=str(request.query.get("faction_code") or "lspd"),
+                kinds=raw_kinds or None,
+                limit=int(request.query.get("limit") or 40),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Введите не менее двух символов."}, status=400)
+        return web.json_response(result)
+
+    def public_media_asset(item: dict[str, Any]) -> dict[str, Any]:
+        hidden = {"storage_key", "last_error"}
+        payload = {key: value for key, value in item.items() if key not in hidden}
+        payload["content_url"] = (
+            f"/api/atlas/media/{int(item['id'])}/content"
+            if str(item.get("status")) == "ready"
+            else None
+        )
+        if item.get("last_error"):
+            payload["error"] = "Файл пока не готов. Atlas сохранит возможность повторить обработку."
+        return payload
+
+    def public_media_upload(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: item.get(key)
+            for key in (
+                "upload_id", "asset_id", "status", "asset_status", "expected_size",
+                "received_size", "expires_at", "title", "original_filename",
+            )
+        }
+
+    async def media_library(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        items, quota = await asyncio.gather(
+            asyncio.to_thread(
+                media_storage.atlas_media_assets,
+                organization_id,
+                int(selected.user_id),
+                status=str(request.query.get("status") or "") or None,
+                limit=max(1, min(120, int(request.query.get("limit") or 60))),
+            ),
+            asyncio.to_thread(media_storage.atlas_media_quota, organization_id),
+        )
+        return web.json_response(
+            {
+                "items": [public_media_asset(item) for item in items],
+                "quota": {**quota, "limit_bytes": media_config.quota_bytes},
+                "upload": {
+                    "max_asset_bytes": media_config.max_asset_bytes,
+                    "chunk_bytes": media_config.max_chunk_bytes,
+                },
+            }
+        )
+
+    async def media_upload_start(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        dashboard = await user_dashboard(request, selected)
+        try:
+            upload = await asyncio.to_thread(
+                media_storage.atlas_media_begin_upload,
+                int(dashboard["organization"]["id"]),
+                int(selected.user_id),
+                title=str(payload.get("title") or ""),
+                filename=str(payload.get("filename") or ""),
+                size_bytes=int(payload.get("size_bytes") or 0),
+                declared_mime_type=str(payload.get("mime_type") or "") or None,
+                media_kind=str(payload.get("media_kind") or "file"),
+                visibility_scope=str(payload.get("visibility_scope") or "private"),
+                source_kind=str(payload.get("source_kind") or "upload"),
+                source_device_id=str(payload.get("source_device_id") or "") or None,
+                captured_at=str(payload.get("captured_at") or "") or None,
+                retention_policy=str(payload.get("retention_policy") or "manual"),
+                expected_sha256=str(payload.get("sha256") or "") or None,
+                client_request_id=str(request.headers.get("X-Idempotency-Key") or ""),
+                max_asset_bytes=media_config.max_asset_bytes,
+                quota_bytes=media_config.quota_bytes,
+            )
+        except (TypeError, ValueError) as exc:
+            messages = {
+                "atlas_media_size_invalid": "Файл пустой или превышает допустимый размер.",
+                "atlas_media_quota_exceeded": "В рабочем пространстве недостаточно места.",
+                "atlas_media_upload_limit": "Сначала завершите уже начатые загрузки.",
+            }
+            return web.json_response(
+                {"error": str(exc), "message": messages.get(str(exc), "Не удалось начать загрузку.")},
+                status=400,
+            )
+        return web.json_response(
+            {
+                "upload": public_media_upload(upload),
+                "upload_url": f"/api/atlas/media/uploads/{str(upload['upload_id'])}",
+                "chunk_bytes": media_config.max_chunk_bytes,
+            },
+            status=201,
+        )
+
+    async def media_upload_chunk(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not csrf_matches(request, selected):
+            return web.json_response({"error": "csrf_failed"}, status=403)
+        dashboard = await user_dashboard(request, selected)
+        upload = await asyncio.to_thread(
+            media_storage.atlas_media_upload_for_user,
+            str(request.match_info.get("upload_id") or ""),
+            int(dashboard["organization"]["id"]),
+            int(selected.user_id),
+        )
+        if upload is None:
+            raise web.HTTPNotFound(
+                text='{"error":"atlas_media_upload_missing"}',
+                content_type="application/json",
+            )
+        if int(upload["received_size"]) == int(upload["expected_size"]):
+            job = await queue_media_finalize(upload)
+            return web.json_response(
+                {"upload": public_media_upload(upload), "job": job, "queued": True},
+                status=202,
+                headers={"Upload-Offset": str(upload["received_size"])},
+            )
+        if str(upload["status"]) != "open":
+            return web.json_response(
+                {"error": "atlas_media_upload_closed", "message": "Эта загрузка уже закрыта."},
+                status=409,
+            )
+        try:
+            offset = int(request.headers.get("Upload-Offset") or -1)
+        except (TypeError, ValueError):
+            offset = -1
+        if offset != int(upload["received_size"]):
+            return web.json_response(
+                {
+                    "error": "atlas_media_upload_offset_conflict",
+                    "offset": int(upload["received_size"]),
+                },
+                status=409,
+                headers={"Upload-Offset": str(upload["received_size"])},
+            )
+        if request.content_length is not None and int(request.content_length) > media_config.max_chunk_bytes:
+            return web.json_response({"error": "atlas_media_chunk_too_large"}, status=413)
+        chunk = await request.read()
+        if not chunk or len(chunk) > media_config.max_chunk_bytes:
+            return web.json_response({"error": "atlas_media_chunk_invalid"}, status=413)
+        if offset + len(chunk) > int(upload["expected_size"]):
+            return web.json_response({"error": "atlas_media_upload_size_conflict"}, status=409)
+        try:
+            received = await asyncio.to_thread(
+                media_blobs.append_chunk,
+                str(upload["temp_storage_key"]),
+                offset=offset,
+                data=chunk,
+            )
+            upload = await asyncio.to_thread(
+                media_storage.atlas_media_record_upload_progress,
+                str(upload["upload_id"]),
+                expected_offset=offset,
+                received_size=received,
+            )
+        except (AtlasMediaError, ValueError) as exc:
+            code = getattr(exc, "code", str(exc))
+            return web.json_response(
+                {"error": code, "message": str(exc), "offset": int(upload["received_size"])},
+                status=409,
+                headers={"Upload-Offset": str(upload["received_size"])},
+            )
+        response_payload: dict[str, Any] = {"upload": public_media_upload(upload)}
+        status = 200
+        if int(upload["received_size"]) == int(upload["expected_size"]):
+            response_payload.update({"job": await queue_media_finalize(upload), "queued": True})
+            status = 202
+        return web.json_response(
+            response_payload,
+            status=status,
+            headers={"Upload-Offset": str(upload["received_size"])},
+        )
+
+    async def media_content(request: web.Request) -> web.StreamResponse:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        try:
+            asset_id = int(request.match_info.get("asset_id") or 0)
+        except (TypeError, ValueError):
+            asset_id = 0
+        asset = await asyncio.to_thread(
+            media_storage.atlas_media_asset,
+            int(dashboard["organization"]["id"]),
+            int(selected.user_id),
+            asset_id,
+        )
+        if asset is None or str(asset.get("status")) != "ready" or not asset.get("storage_key"):
+            raise web.HTTPNotFound()
+        path = media_blobs.path(str(asset["storage_key"]))
+        if not path.is_file():
+            raise web.HTTPServiceUnavailable(
+                text='{"error":"atlas_media_blob_unavailable"}',
+                content_type="application/json",
+            )
+        response = web.FileResponse(path)
+        response.content_type = str(asset.get("mime_type") or "application/octet-stream")
+        disposition = "inline" if str(asset.get("media_kind")) in {"video", "audio", "image"} else "attachment"
+        response.headers["Content-Disposition"] = (
+            f"{disposition}; filename*=UTF-8''{quote(str(asset['original_filename']))}"
+        )
+        response.headers["Cache-Control"] = "private, max-age=60"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    async def media_segments(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            asset_id = int(request.match_info.get("asset_id") or 0)
+            if request.method == "GET":
+                items = await asyncio.to_thread(
+                    media_storage.atlas_media_segments,
+                    organization_id,
+                    int(selected.user_id),
+                    asset_id,
+                )
+                return web.json_response({"items": items})
+            payload = await body(request, selected)
+            item = await asyncio.to_thread(
+                media_storage.atlas_media_create_segment,
+                organization_id,
+                int(selected.user_id),
+                asset_id,
+                title=str(payload.get("title") or ""),
+                start_ms=int(payload.get("start_ms") or 0),
+                end_ms=int(payload.get("end_ms") or 0),
+                segment_kind=str(payload.get("segment_kind") or "clip"),
+                metadata=dict(payload.get("metadata") or {}),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Фрагмент не создан."}, status=400)
+        return web.json_response({"segment": item}, status=201)
+
+    async def cases(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        if request.method == "GET":
+            try:
+                items = await asyncio.to_thread(
+                    case_storage.atlas_cases,
+                    organization_id,
+                    int(selected.user_id),
+                    status=str(request.query.get("status") or "") or None,
+                    limit=max(1, min(120, int(request.query.get("limit") or 60))),
+                )
+            except (TypeError, ValueError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response({"items": items})
+        payload = await body(request, selected)
+        try:
+            item = await asyncio.to_thread(
+                case_storage.atlas_case_create,
+                organization_id,
+                int(selected.user_id),
+                title=str(payload.get("title") or ""),
+                case_kind=str(payload.get("case_kind") or "investigation"),
+                priority=str(payload.get("priority") or "routine"),
+                visibility_scope=str(payload.get("visibility_scope") or "workspace"),
+                objective=str(payload.get("objective") or ""),
+                executive_summary=str(payload.get("executive_summary") or ""),
+                hypothesis=str(payload.get("hypothesis") or ""),
+                assigned_to_id=int(payload.get("assigned_to_id") or 0) or None,
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Дело не создано."}, status=400)
+        return web.json_response({"case": item}, status=201)
+
+    async def case_detail(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            case_id = int(request.match_info.get("case_id") or 0)
+            if request.method == "GET":
+                detail = await asyncio.to_thread(
+                    case_storage.atlas_case_detail,
+                    organization_id,
+                    int(selected.user_id),
+                    case_id,
+                )
+                return web.json_response(detail)
+            payload = await body(request, selected)
+            item = await asyncio.to_thread(
+                case_storage.atlas_case_set_status,
+                organization_id,
+                int(selected.user_id),
+                case_id,
+                status=str(payload.get("status") or ""),
+                expected_version=int(payload.get("expected_version") or 0),
+            )
+        except (TypeError, ValueError) as exc:
+            status = 409 if "version_conflict" in str(exc) else 400
+            return web.json_response({"error": str(exc), "message": "Состояние дела не изменено."}, status=status)
+        return web.json_response({"case": item})
+
+    async def case_claims(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            case_id = int(request.match_info.get("case_id") or 0)
+            raw_claim_id = str(request.match_info.get("claim_id") or "").strip()
+            payload = await body(request, selected)
+            if raw_claim_id:
+                item = await asyncio.to_thread(
+                    case_storage.atlas_case_update_claim,
+                    organization_id,
+                    int(selected.user_id),
+                    case_id,
+                    int(raw_claim_id),
+                    claim_status=str(payload.get("claim_status") or ""),
+                    rationale=str(payload.get("rationale") or ""),
+                    expected_version=int(payload.get("expected_version") or 0),
+                )
+                return web.json_response({"claim": item})
+            item = await asyncio.to_thread(
+                case_storage.atlas_case_add_claim,
+                organization_id,
+                int(selected.user_id),
+                case_id,
+                statement=str(payload.get("statement") or ""),
+                importance=str(payload.get("importance") or "material"),
+                rationale=str(payload.get("rationale") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            status = 409 if "version_conflict" in str(exc) else 400
+            return web.json_response({"error": str(exc), "message": "Утверждение не сохранено."}, status=status)
+        return web.json_response({"claim": item}, status=201)
+
+    async def case_evidence(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        try:
+            case_id = int(request.match_info.get("case_id") or 0)
+            raw_evidence_id = str(request.match_info.get("evidence_id") or "").strip()
+            payload = await body(request, selected)
+            if raw_evidence_id:
+                item = await asyncio.to_thread(
+                    case_storage.atlas_case_review_evidence,
+                    organization_id,
+                    int(selected.user_id),
+                    case_id,
+                    int(raw_evidence_id),
+                    verification_status=str(payload.get("verification_status") or ""),
+                    admissibility=str(payload.get("admissibility") or ""),
+                    expected_version=int(payload.get("expected_version") or 0),
+                )
+                return web.json_response({"evidence": item})
+            item = await asyncio.to_thread(
+                case_storage.atlas_case_add_evidence,
+                organization_id,
+                int(selected.user_id),
+                case_id,
+                source_type=str(payload.get("source_type") or ""),
+                source_id=payload.get("source_id"),
+                title=str(payload.get("title") or ""),
+                summary=str(payload.get("summary") or ""),
+                relevance=str(payload.get("relevance") or ""),
+                claim_id=int(payload.get("claim_id") or 0) or None,
+                locator=dict(payload.get("locator") or {}),
+                provenance=dict(payload.get("provenance") or {}),
+            )
+        except (TypeError, ValueError) as exc:
+            status = 409 if "version_conflict" in str(exc) else 400
+            return web.json_response({"error": str(exc), "message": "Доказательство не сохранено."}, status=status)
+        return web.json_response({"evidence": item}, status=201)
+
+    async def case_findings(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        dashboard = await user_dashboard(request, selected)
+        payload = await body(request, selected)
+        try:
+            item = await asyncio.to_thread(
+                case_storage.atlas_case_record_finding,
+                int(dashboard["organization"]["id"]),
+                int(selected.user_id),
+                int(request.match_info.get("case_id") or 0),
+                analysis_type=str(payload.get("analysis_type") or "readiness"),
+                title=str(payload.get("title") or ""),
+                summary=str(payload.get("summary") or ""),
+                result=dict(payload.get("result") or {}),
+                status=str(payload.get("status") or "draft"),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "message": "Вывод не сохранён."}, status=400)
+        return web.json_response({"finding": item}, status=201)
 
     async def knowledge_upload(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -1060,9 +1982,14 @@ def register_atlas_web_routes(
                 {"error": getattr(exc, "code", str(exc)), "message": str(exc)},
                 status=400,
             )
-        queue_knowledge_index(source)
+        queued_job = await queue_knowledge_index(source)
         return web.json_response(
-            {"source": source, "queued": True, "message": "Файл загружен. Atlas готовит его для поиска."},
+            {
+                "source": source,
+                "job": queued_job,
+                "queued": True,
+                "message": "Файл загружен. Atlas готовит его для поиска.",
+            },
             status=202,
         )
 
@@ -1119,7 +2046,7 @@ def register_atlas_web_routes(
                     {"error": str(exc), "message": "Проверьте сервер, организацию и доступ материала."},
                     status=400,
                 )
-            queue_forum_listing_import(
+            queued_job = await queue_forum_listing_import(
                 source_url=source_url,
                 organization_id=int(dashboard["organization"]["id"]),
                 actor_user_id=int(selected.user_id),
@@ -1128,9 +2055,11 @@ def register_atlas_web_routes(
                 visibility_scope=visibility_scope,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
             )
             return web.json_response(
                 {
+                    "job": queued_job,
                     "queued": True,
                     "bulk": True,
                     "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
@@ -1197,11 +2126,12 @@ def register_atlas_web_routes(
                 },
                 status=400,
             )
-        queue_knowledge_index(source)
+        queued_job = await queue_knowledge_index(source)
         taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
         return web.json_response(
             {
                 "source": source,
+                "job": queued_job,
                 "taxonomy": taxonomy,
                 "queued": True,
                 "message": "Тема прочитана, классифицирована и добавлена в библиотеку.",
@@ -1353,6 +2283,34 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/threads/{thread_id}", threads)
     app.router.add_get("/api/atlas/documents", documents)
     app.router.add_post("/api/atlas/documents", documents)
+    app.router.add_get("/api/atlas/documents/{document_id}", document_detail)
+    app.router.add_patch("/api/atlas/documents/{document_id}", document_detail)
+    app.router.add_post("/api/atlas/documents/{document_id}/comments", document_comments)
+    app.router.add_patch("/api/atlas/documents/{document_id}/comments/{comment_id}", document_comments)
+    app.router.add_put("/api/atlas/documents/{document_id}/approvals", document_approvals)
+    app.router.add_patch("/api/atlas/documents/{document_id}/approvals/{approval_id}", document_approvals)
+    app.router.add_get("/api/atlas/timeline", timeline)
+    app.router.add_post("/api/atlas/timeline", timeline)
+    app.router.add_patch("/api/atlas/timeline/{event_id}", timeline_item)
+    app.router.add_post("/api/atlas/entity-links", entity_links)
+    app.router.add_get("/api/atlas/jobs", jobs)
+    app.router.add_get("/api/atlas/jobs/{job_id}", jobs)
+    app.router.add_get("/api/atlas/search", global_search)
+    app.router.add_get("/api/atlas/media", media_library)
+    app.router.add_post("/api/atlas/media/uploads", media_upload_start)
+    app.router.add_put("/api/atlas/media/uploads/{upload_id}", media_upload_chunk)
+    app.router.add_get("/api/atlas/media/{asset_id}/content", media_content)
+    app.router.add_get("/api/atlas/media/{asset_id}/segments", media_segments)
+    app.router.add_post("/api/atlas/media/{asset_id}/segments", media_segments)
+    app.router.add_get("/api/atlas/cases", cases)
+    app.router.add_post("/api/atlas/cases", cases)
+    app.router.add_get("/api/atlas/cases/{case_id}", case_detail)
+    app.router.add_patch("/api/atlas/cases/{case_id}", case_detail)
+    app.router.add_post("/api/atlas/cases/{case_id}/claims", case_claims)
+    app.router.add_patch("/api/atlas/cases/{case_id}/claims/{claim_id}", case_claims)
+    app.router.add_post("/api/atlas/cases/{case_id}/evidence", case_evidence)
+    app.router.add_patch("/api/atlas/cases/{case_id}/evidence/{evidence_id}", case_evidence)
+    app.router.add_post("/api/atlas/cases/{case_id}/findings", case_findings)
     app.router.add_get("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge/upload", knowledge_upload)

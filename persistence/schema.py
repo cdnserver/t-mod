@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -523,6 +524,79 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_documents_workspace
             ON atlas_documents(organization_id, status, updated_at DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_document_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                document_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                fields_json TEXT NOT NULL DEFAULT '{}',
+                rendered_text TEXT NOT NULL DEFAULT '',
+                change_summary TEXT NOT NULL DEFAULT '',
+                checksum_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(document_id, revision),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES atlas_documents(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_document_revisions
+            ON atlas_document_revisions(document_id, revision DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_document_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                document_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                author_user_id INTEGER NOT NULL,
+                parent_comment_id INTEGER,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'resolved')),
+                resolved_by_id INTEGER,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES atlas_documents(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(parent_comment_id) REFERENCES atlas_document_comments(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_document_comments
+            ON atlas_document_comments(document_id, status, created_at);
+
+            CREATE TABLE IF NOT EXISTS atlas_document_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                document_id INTEGER NOT NULL,
+                step_order INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                assigned_user_id INTEGER,
+                required_role TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'approved', 'rejected', 'skipped')),
+                decided_by_id INTEGER,
+                decision_note TEXT NOT NULL DEFAULT '',
+                due_at TEXT,
+                decided_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(document_id, step_order),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES atlas_documents(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_document_approvals_queue
+            ON atlas_document_approvals(organization_id, status, assigned_user_id, due_at);
+
             CREATE TABLE IF NOT EXISTS atlas_ai_threads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
@@ -611,6 +685,383 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_atlas_audit_timeline
             ON atlas_audit_events(organization_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_timeline_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                actor_user_id INTEGER NOT NULL,
+                event_kind TEXT NOT NULL DEFAULT 'activity'
+                    CHECK(event_kind IN (
+                        'incident', 'activity', 'decision', 'document',
+                        'communication', 'note', 'system'
+                    )),
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'active', 'resolved', 'archived')),
+                importance TEXT NOT NULL DEFAULT 'routine'
+                    CHECK(importance IN ('routine', 'important', 'critical')),
+                occurred_at TEXT NOT NULL,
+                source_type TEXT,
+                source_id TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                dedupe_key TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(organization_id, dedupe_key),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_timeline_chronology
+            ON atlas_timeline_events(organization_id, occurred_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_timeline_attention
+            ON atlas_timeline_events(organization_id, status, importance, occurred_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_entity_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(
+                    organization_id, source_type, source_id,
+                    relation, target_type, target_id
+                ),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_entity_links_source
+            ON atlas_entity_links(organization_id, source_type, source_id);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_entity_links_target
+            ON atlas_entity_links(organization_id, target_type, target_id);
+
+            CREATE TABLE IF NOT EXISTS atlas_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                job_type TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                subject_type TEXT,
+                subject_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN (
+                        'pending', 'running', 'retry',
+                        'succeeded', 'failed', 'cancelled'
+                    )),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                progress_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 5,
+                available_at TEXT NOT NULL,
+                lease_owner TEXT,
+                lease_token TEXT,
+                lease_until TEXT,
+                last_error TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(organization_id, job_type, dedupe_key),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_jobs_ready
+            ON atlas_jobs(status, available_at, lease_until, id);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_jobs_workspace
+            ON atlas_jobs(organization_id, status, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_jobs_subject
+            ON atlas_jobs(organization_id, subject_type, subject_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_media_blobs (
+                checksum_sha256 TEXT PRIMARY KEY,
+                storage_key TEXT NOT NULL UNIQUE,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+                mime_type TEXT NOT NULL,
+                scan_status TEXT NOT NULL DEFAULT 'not_configured'
+                    CHECK(scan_status IN ('not_configured', 'clean', 'rejected')),
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_media_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                owner_user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                media_kind TEXT NOT NULL DEFAULT 'file'
+                    CHECK(media_kind IN ('file', 'video', 'audio', 'image')),
+                status TEXT NOT NULL DEFAULT 'uploading'
+                    CHECK(status IN (
+                        'uploading', 'processing', 'ready', 'failed',
+                        'archived', 'deleted'
+                    )),
+                visibility_scope TEXT NOT NULL DEFAULT 'private'
+                    CHECK(visibility_scope IN ('private', 'workspace')),
+                source_kind TEXT NOT NULL DEFAULT 'upload'
+                    CHECK(source_kind IN ('upload', 'desktop_capture', 'rollback', 'import')),
+                original_filename TEXT NOT NULL,
+                declared_mime_type TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+                blob_checksum TEXT,
+                duration_ms INTEGER,
+                width INTEGER,
+                height INTEGER,
+                captured_at TEXT,
+                source_device_id TEXT,
+                retention_policy TEXT NOT NULL DEFAULT 'manual'
+                    CHECK(retention_policy IN ('manual', '30d', '90d', 'permanent')),
+                retain_until TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                last_error TEXT,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ready_at TEXT,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(blob_checksum) REFERENCES atlas_media_blobs(checksum_sha256)
+                    ON DELETE RESTRICT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_media_library
+            ON atlas_media_assets(organization_id, status, created_at DESC, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_media_owner
+            ON atlas_media_assets(organization_id, owner_user_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_media_uploads (
+                upload_id TEXT PRIMARY KEY,
+                organization_id INTEGER NOT NULL,
+                asset_id INTEGER NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                client_request_id TEXT NOT NULL,
+                temp_storage_key TEXT NOT NULL UNIQUE,
+                expected_size INTEGER NOT NULL CHECK(expected_size > 0),
+                received_size INTEGER NOT NULL DEFAULT 0 CHECK(received_size >= 0),
+                expected_sha256 TEXT,
+                computed_sha256 TEXT,
+                final_storage_key TEXT,
+                detected_mime_type TEXT,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'finalizing', 'completed', 'failed', 'expired')),
+                expires_at TEXT NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                UNIQUE(organization_id, user_id, client_request_id),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(asset_id) REFERENCES atlas_media_assets(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_media_uploads_expiry
+            ON atlas_media_uploads(status, expires_at, upload_id);
+
+            CREATE TABLE IF NOT EXISTS atlas_media_renditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id INTEGER NOT NULL,
+                rendition_kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'processing', 'ready', 'failed')),
+                blob_checksum TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                width INTEGER,
+                height INTEGER,
+                duration_ms INTEGER,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(asset_id, rendition_kind),
+                FOREIGN KEY(asset_id) REFERENCES atlas_media_assets(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(blob_checksum) REFERENCES atlas_media_blobs(checksum_sha256)
+                    ON DELETE RESTRICT
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_media_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                asset_id INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
+                end_ms INTEGER NOT NULL CHECK(end_ms > start_ms),
+                segment_kind TEXT NOT NULL DEFAULT 'clip'
+                    CHECK(segment_kind IN ('clip', 'evidence', 'highlight')),
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(asset_id, start_ms, end_ms, segment_kind),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(asset_id) REFERENCES atlas_media_assets(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_media_segments_asset
+            ON atlas_media_segments(asset_id, start_ms, end_ms);
+
+            CREATE TABLE IF NOT EXISTS atlas_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                case_number INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                assigned_to_id INTEGER,
+                title TEXT NOT NULL,
+                case_kind TEXT NOT NULL DEFAULT 'investigation'
+                    CHECK(case_kind IN ('incident', 'investigation', 'legal', 'request')),
+                status TEXT NOT NULL DEFAULT 'intake'
+                    CHECK(status IN (
+                        'intake', 'investigation', 'review', 'ready',
+                        'closed', 'archived'
+                    )),
+                priority TEXT NOT NULL DEFAULT 'routine'
+                    CHECK(priority IN ('routine', 'high', 'critical')),
+                visibility_scope TEXT NOT NULL DEFAULT 'workspace'
+                    CHECK(visibility_scope IN ('private', 'workspace')),
+                objective TEXT NOT NULL DEFAULT '',
+                executive_summary TEXT NOT NULL DEFAULT '',
+                hypothesis TEXT NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1,
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(organization_id, case_number),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_cases_workspace
+            ON atlas_cases(organization_id, status, priority, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_case_participants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                participant_role TEXT NOT NULL DEFAULT 'other'
+                    CHECK(participant_role IN (
+                        'subject', 'reporter', 'investigator', 'witness', 'counsel', 'other'
+                    )),
+                identity_type TEXT NOT NULL DEFAULT 'external'
+                    CHECK(identity_type IN ('atlas_user', 'discord_user', 'character', 'external')),
+                identity_id TEXT,
+                display_name TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(case_id, participant_role, identity_type, identity_id, display_name),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(case_id) REFERENCES atlas_cases(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_case_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                statement TEXT NOT NULL,
+                claim_status TEXT NOT NULL DEFAULT 'unverified'
+                    CHECK(claim_status IN (
+                        'unverified', 'supported', 'contradicted', 'accepted', 'rejected'
+                    )),
+                importance TEXT NOT NULL DEFAULT 'material'
+                    CHECK(importance IN ('context', 'material', 'critical')),
+                rationale TEXT NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(case_id) REFERENCES atlas_cases(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_case_claims_case
+            ON atlas_case_claims(case_id, claim_status, importance, id);
+
+            CREATE TABLE IF NOT EXISTS atlas_case_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                claim_id INTEGER,
+                added_by_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL
+                    CHECK(source_type IN (
+                        'media_asset', 'media_segment', 'document',
+                        'knowledge_source', 'timeline_event', 'url', 'note'
+                    )),
+                source_id TEXT,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                relevance TEXT NOT NULL DEFAULT '',
+                admissibility TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(admissibility IN ('pending', 'admissible', 'questioned', 'excluded')),
+                verification_status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(verification_status IN ('pending', 'verified', 'rejected')),
+                locator_json TEXT NOT NULL DEFAULT '{}',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                dedupe_key TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(case_id, dedupe_key),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(case_id) REFERENCES atlas_cases(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(claim_id) REFERENCES atlas_case_claims(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_case_evidence_case
+            ON atlas_case_evidence(case_id, verification_status, admissibility, id);
+
+            CREATE TABLE IF NOT EXISTS atlas_case_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                case_id INTEGER NOT NULL,
+                created_by_id INTEGER NOT NULL,
+                analysis_type TEXT NOT NULL
+                    CHECK(analysis_type IN ('investigator', 'contradiction', 'readiness', 'brief')),
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK(status IN ('draft', 'final', 'superseded')),
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                source_version INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(case_id) REFERENCES atlas_cases(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_case_findings_case
+            ON atlas_case_findings(case_id, analysis_type, status, id DESC);
 
             CREATE TABLE IF NOT EXISTS game_matches (
                 id TEXT PRIMARY KEY,
@@ -2317,6 +2768,13 @@ def init_db() -> None:
             "agent_id",
             "TEXT NOT NULL DEFAULT 'atlas-tvr-a'",
         )
+        _add_column_if_missing(
+            con,
+            "atlas_timeline_events",
+            "version",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        _add_column_if_missing(con, "atlas_timeline_events", "resolved_at", "TEXT")
         if atlas_scope_missing:
             # Existing material remains private. Marking it pending replaces
             # old Qdrant payloads with the new access-scope token on startup.
@@ -2731,6 +3189,49 @@ def init_db() -> None:
                 ) VALUES(?, ?, ?, ?, ?, ?)
                 """,
                 (code, name, short_name, short_name, catalog_now, catalog_now),
+            )
+
+        # Existing Atlas drafts predate immutable revision snapshots. Backfill
+        # exactly one baseline without changing their visible revision number.
+        legacy_documents = con.execute(
+            """
+            SELECT d.* FROM atlas_documents d
+            WHERE NOT EXISTS(
+                SELECT 1 FROM atlas_document_revisions r WHERE r.document_id = d.id
+            )
+            """
+        ).fetchall()
+        for document in legacy_documents:
+            try:
+                fields = json.loads(str(document["fields_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                fields = {}
+            canonical = json.dumps(
+                {
+                    "title": str(document["title"]),
+                    "fields": fields if isinstance(fields, dict) else {},
+                    "rendered_text": str(document["rendered_text"] or ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            con.execute(
+                """
+                INSERT INTO atlas_document_revisions(
+                    organization_id, document_id, revision, created_by_id,
+                    title, fields_json, rendered_text, change_summary,
+                    checksum_sha256, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'Исходная редакция', ?, ?)
+                """,
+                (
+                    int(document["organization_id"]), int(document["id"]),
+                    int(document["revision"] or 1), int(document["author_user_id"]),
+                    str(document["title"]), str(document["fields_json"] or "{}"),
+                    str(document["rendered_text"] or ""),
+                    hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    str(document["created_at"] or catalog_now),
+                ),
             )
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)

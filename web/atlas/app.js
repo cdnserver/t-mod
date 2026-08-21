@@ -25,10 +25,17 @@ const appState = {
   organizationId: storedAtlasSpace(),
   chatFocus: storedChatFocus(),
   chatHistoryOpen: false,
+  jobWatchers: new Set(),
+  caseDetail: null,
+  caseItemMode: "claim",
+  documentDetail: null,
 };
 const screenMeta = {
   home: ["ATLAS", "Командный центр"],
   ai: ["УМНЫЙ ПОМОЩНИК", "Atlas AI"],
+  memory: ["ATLAS CONTINUITY", "Память и события"],
+  media: ["ATLAS MEDIA CORE", "Медиасеть"],
+  cases: ["ATLAS CASE & EVIDENCE", "Дела и доказательства"],
   documents: ["РАБОТА С ДОКУМЕНТАМИ", "Документы"],
   knowledge: ["БИБЛИОТЕКА ATLAS", "База знаний"],
   forum: ["РАБОТА С ФОРУМОМ", "Форум и памятки"],
@@ -158,7 +165,7 @@ async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (appState.organizationId) headers["X-Atlas-Space-ID"] = String(appState.organizationId);
   if (options.body) {
-    if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
+    if (!(options.body instanceof FormData) && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
     headers["X-CSRF-Token"] = appState.data?.viewer?.csrf_token || "";
     headers["X-Idempotency-Key"] = options.idempotencyKey || requestId();
   }
@@ -274,6 +281,8 @@ function switchScreen(screen, updateHash = true) {
     applyScreen();
   }
   if (changed) window.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
+  if (selected === "media") void loadMediaLibrary().catch((error) => showToast(error.message, true));
+  if (selected === "cases") void loadCases().catch((error) => showToast(error.message, true));
 }
 
 function bindWorkspaceMotion() {
@@ -319,7 +328,110 @@ function documentCard(document) {
   );
   const state = element("small", "", new Date(document.updated_at).toLocaleDateString("ru-RU"));
   card.append(icon, copy, state);
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.addEventListener("click", () => void openDocumentDetail(document.id));
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openDocumentDetail(document.id); }
+  });
   return card;
+}
+
+const documentStatusLabels = { draft: "Черновик", review: "На проверке", approved: "Одобрено", published: "Опубликовано", archived: "Архив" };
+
+function documentProcessItem(kind, title, note, status = "") {
+  const item = element("article", `document-process-item ${kind} ${status}`);
+  const mark = element("i", "", kind === "revision" ? "r" : kind === "comment" ? "“" : "✓");
+  const copy = element("span");
+  copy.append(element("b", "", title), element("small", "", note));
+  item.append(mark, copy);
+  return item;
+}
+
+function renderDocumentDetail(detail) {
+  appState.documentDetail = detail;
+  const selected = detail.document || {};
+  const header = byId("document-detail-header");
+  header.querySelector("span").textContent = `ATLAS DOCUMENT · ${String(selected.status || "draft").toUpperCase()}`;
+  header.querySelector("h2").textContent = selected.title || "Документ Atlas";
+  header.querySelector("p").textContent = `Редакция ${selected.revision || 1} · открытых комментариев: ${detail.open_comments || 0}`;
+  header.querySelector(".document-state-seal strong").textContent = documentStatusLabels[selected.status] || selected.status;
+  header.querySelector(".document-state-seal").className = `document-state-seal ${selected.status || "draft"}`;
+  const form = byId("document-edit-form");
+  form.elements.title.value = selected.title || "";
+  form.elements.rendered_text.value = selected.rendered_text || "";
+  form.elements.change_summary.value = "";
+  [...form.elements].forEach((control) => { if (control.name) control.disabled = ["published", "archived"].includes(selected.status); });
+
+  const revisions = byId("document-revision-list");
+  clear(revisions);
+  (detail.revisions || []).forEach((item) => revisions.append(documentProcessItem("revision", `Редакция ${item.revision}`, `${item.change_summary || "Изменение"} · ${readableTime(item.created_at)}`)));
+  if (!detail.revisions?.length) revisions.append(element("div", "empty", "История появится после сохранения."));
+
+  const comments = byId("document-comment-list");
+  clear(comments);
+  (detail.comments || []).forEach((item) => {
+    const row = documentProcessItem("comment", item.author_name || `Участник ${item.author_user_id}`, `к редакции ${item.revision} · ${item.body}`, item.status);
+    if (item.status === "open") {
+      const resolve = element("button", "", "Закрыть");
+      resolve.type = "button";
+      resolve.addEventListener("click", async () => {
+        resolve.disabled = true;
+        try {
+          await api(`/api/atlas/documents/${selected.id}/comments/${item.id}`, { method: "PATCH", body: "{}" });
+          await refreshOpenDocument();
+        } catch (error) { showToast(error.message || "Комментарий не закрыт.", true); }
+        finally { resolve.disabled = false; }
+      });
+      row.append(resolve);
+    }
+    comments.append(row);
+  });
+  if (!detail.comments?.length) comments.append(element("div", "empty", "Комментариев к документу нет."));
+
+  const approvals = byId("document-approval-list");
+  clear(approvals);
+  (detail.approvals || []).forEach((item) => {
+    const row = documentProcessItem("approval", `${item.step_order}. ${item.title}`, `${item.assigned_name || item.required_role || `Участник ${item.assigned_user_id}`} · ${({ pending: "ожидает", approved: "одобрено", rejected: "отклонено", skipped: "пропущено" })[item.status] || item.status}`, item.status);
+    if (item.status === "pending") {
+      const actions = element("div", "document-approval-actions");
+      const decide = async (decision, button) => {
+        button.disabled = true;
+        try {
+          await api(`/api/atlas/documents/${selected.id}/approvals/${item.id}`, { method: "PATCH", body: JSON.stringify({ decision }) });
+          await refreshOpenDocument();
+        } catch (error) { showToast(error.message || "Решение не сохранено.", true); }
+        finally { button.disabled = false; }
+      };
+      const approve = element("button", "", "Одобрить"); approve.type = "button";
+      const reject = element("button", "danger", "Отклонить"); reject.type = "button";
+      approve.addEventListener("click", () => void decide("approved", approve));
+      reject.addEventListener("click", () => void decide("rejected", reject));
+      actions.append(approve, reject); row.append(actions);
+    }
+    approvals.append(row);
+  });
+  if (!detail.approvals?.length) approvals.append(element("div", "empty", "Маршрут ещё не назначен."));
+
+  const next = byId("document-next-state");
+  const transition = { draft: ["review", "Передать на проверку"], review: ["approved", "Подтвердить документ"], approved: ["published", "Опубликовать"] }[selected.status];
+  next.hidden = !transition;
+  next.dataset.status = transition?.[0] || "";
+  next.textContent = transition?.[1] || "Готово";
+}
+
+async function refreshOpenDocument() {
+  const documentId = Number(appState.documentDetail?.document?.id || 0);
+  if (!documentId) return;
+  renderDocumentDetail(await api(`/api/atlas/documents/${documentId}`, { timeout: 15000 }));
+}
+
+async function openDocumentDetail(documentId) {
+  const dialog = byId("document-detail-dialog");
+  openDialog(dialog);
+  byId("document-detail-header").querySelector("h2").textContent = "Загрузка документа…";
+  try { renderDocumentDetail(await api(`/api/atlas/documents/${Number(documentId)}`, { timeout: 15000 })); }
+  catch (error) { closeDialog(dialog); showToast(error.message || "Документ не открылся.", true); }
 }
 
 function renderOnboarding(membership) {
@@ -514,6 +626,78 @@ function renderForumSync(value) {
   button.firstChild.textContent = state === "running" ? "Проверка уже выполняется " : "Проверить обновления сейчас ";
 }
 
+const timelineKindLabels = {
+  incident: "Инцидент",
+  activity: "Действие",
+  decision: "Решение",
+  document: "Документ",
+  communication: "Коммуникация",
+  note: "Заметка",
+  system: "Система",
+};
+const timelineStatusLabels = { open: "Открыто", active: "В работе", resolved: "Завершено", archived: "Архив" };
+
+function timelineCard(item, index) {
+  const card = element("article", `memory-event ${item.importance || "routine"}`);
+  card.style.setProperty("--event-delay", `${Math.min(index, 10) * 35}ms`);
+  const rail = element("span", "memory-event-rail");
+  rail.append(element("i"), element("b", "", String(index + 1).padStart(2, "0")));
+  const copy = element("div", "memory-event-copy");
+  const meta = element("div", "memory-event-meta");
+  meta.append(
+    element("span", `kind ${item.event_kind || "activity"}`, timelineKindLabels[item.event_kind] || "Событие"),
+    element("span", `status ${item.status || "open"}`, timelineStatusLabels[item.status] || item.status || "Открыто"),
+    element("time", "", readableTime(item.occurred_at, "Время не указано")),
+  );
+  const title = element("h3", "", item.title || "Событие Atlas");
+  const summary = element("p", "", item.summary || "Контекст будет дополнен позднее.");
+  const footer = element("footer");
+  const action = element(
+    "button",
+    "memory-event-action",
+    item.status === "resolved" ? "Вернуть в работу" : "Завершить",
+  );
+  action.type = "button";
+  action.addEventListener("click", async () => {
+    action.disabled = true;
+    try {
+      await api(`/api/atlas/timeline/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status: item.status === "resolved" ? "active" : "resolved",
+          expected_version: item.version || 1,
+        }),
+      });
+      await reload();
+      switchScreen("memory");
+      showToast(item.status === "resolved" ? "Событие возвращено в работу." : "Событие завершено.");
+    } catch (error) {
+      action.disabled = false;
+      showToast(error.message || "Состояние события не изменено.", true);
+    }
+  });
+  footer.append(
+    element("span", "", item.actor_display_name || `Участник ${item.actor_user_id || "Atlas"}`),
+    element("small", "", item.source_type ? `Источник: ${item.source_type} · ${item.source_id}` : "Сохранено напрямую в Atlas Memory"),
+    action,
+  );
+  copy.append(meta, title, summary, footer);
+  card.append(rail, copy);
+  return card;
+}
+
+function renderTimeline(items, summary = {}) {
+  const selected = Array.isArray(items) ? items : [];
+  const root = byId("memory-timeline");
+  clear(root);
+  selected.forEach((item, index) => root.append(timelineCard(item, index)));
+  if (!selected.length) root.append(element("div", "empty memory-empty", "История начнётся с первого события."));
+  byId("memory-total").textContent = String(summary.total || 0);
+  byId("memory-active").textContent = String(summary.active || 0);
+  byId("memory-attention").textContent = String(summary.attention || 0);
+  byId("memory-resolved").textContent = String(summary.resolved || 0);
+}
+
 function render(data) {
   appState.data = data;
   renderCatalog(data);
@@ -540,6 +724,8 @@ function render(data) {
   byId("metric-knowledge").textContent = String(counts.knowledge || 0);
   byId("metric-members").textContent = String(counts.members || 0);
   byId("metric-threads").textContent = String(counts.threads || 0);
+  byId("metric-events").textContent = String(counts.events || 0);
+  renderTimeline(data.timeline || [], data.timeline_summary || {});
   renderKnowledgeSources(data.knowledge_sources || []);
   renderForumSync(data.forum_sync);
   renderThreads(data.threads || []);
@@ -576,6 +762,10 @@ function render(data) {
   documents.forEach((item) => documentList.append(documentCard(item)));
   if (!documents.length) documentList.append(element("div", "empty", "Создайте первый документ из шаблона."));
   byId("document-count").textContent = String(documents.length);
+  byId("document-total").textContent = String(documents.length);
+  byId("document-draft-count").textContent = String(documents.filter((item) => item.status === "draft").length);
+  byId("document-review-count").textContent = String(documents.filter((item) => item.status === "review").length);
+  byId("document-approved-count").textContent = String(documents.filter((item) => ["approved", "published"].includes(item.status)).length);
 
   const knowledgeEditor = byId("knowledge-editor");
   knowledgeEditor.classList.toggle("locked", !viewer.administrator);
@@ -843,6 +1033,15 @@ function openDocumentDialog(template = null) {
   openDialog(byId("document-dialog"));
 }
 
+function openMemoryDialog() {
+  const field = byId("memory-event-form").elements.occurred_at;
+  if (!field.value) {
+    const localNow = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+    field.value = localNow.toISOString().slice(0, 16);
+  }
+  openDialog(byId("memory-event-dialog"));
+}
+
 async function reload() {
   const data = await api("/api/atlas/bootstrap");
   if (data.preview) appState.data = data;
@@ -906,11 +1105,380 @@ async function loadKnowledgeSources() {
   renderKnowledgeSources(appState.data.knowledge_sources);
 }
 
+function formatBytes(value) {
+  let size = Math.max(0, Number(value || 0));
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function mediaStatusLabel(status) {
+  return ({ ready: "Готов", uploading: "Загрузка", processing: "Обработка", failed: "Нужна проверка", archived: "Архив" })[status] || status || "Подготовка";
+}
+
+function mediaAssetCard(item) {
+  const card = element("article", `media-asset-card ${item.status || "uploading"}`);
+  const visual = element("div", "media-asset-visual");
+  const symbol = item.media_kind === "video" ? "▶" : item.media_kind === "audio" ? "♪" : item.media_kind === "image" ? "▧" : "◇";
+  visual.append(element("i", "", symbol), element("small", "", String(item.media_kind || "file").toUpperCase()));
+  const copy = element("div", "media-asset-copy");
+  const meta = element("div", "media-asset-meta");
+  meta.append(
+    element("span", `media-state ${item.status || ""}`, mediaStatusLabel(item.status)),
+    element("span", "", item.visibility_scope === "workspace" ? "Пространство" : "Личный"),
+    element("span", "", formatBytes(item.size_bytes)),
+  );
+  copy.append(meta, element("h3", "", item.title || item.original_filename), element("p", "", item.original_filename || "Материал Atlas"));
+  const footer = element("footer");
+  footer.append(element("time", "", readableTime(item.created_at, "только что")));
+  if (item.content_url) {
+    const open = element("a", "", item.media_kind === "file" ? "Скачать ↗" : "Открыть ↗");
+    open.href = item.content_url;
+    open.target = "_blank";
+    open.rel = "noreferrer noopener";
+    footer.append(open);
+  } else footer.append(element("span", "", item.error || "Atlas продолжит обработку в фоне"));
+  copy.append(footer);
+  card.append(visual, copy);
+  return card;
+}
+
+function renderMediaLibrary(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const quota = payload?.quota || {};
+  const list = byId("media-library-list");
+  clear(list);
+  items.forEach((item) => list.append(mediaAssetCard(item)));
+  if (!items.length) list.append(element("div", "empty", "Первый материал появится здесь после загрузки."));
+  byId("media-count").textContent = String(items.length);
+  byId("media-ready").textContent = String(items.filter((item) => item.status === "ready").length);
+  byId("media-processing").textContent = String(items.filter((item) => ["uploading", "processing"].includes(item.status)).length);
+  byId("media-quota").textContent = formatBytes(quota.used_bytes || 0);
+  byId("media-quota-note").textContent = `из ${formatBytes(quota.limit_bytes || 0)}`;
+  appState.data.media = payload;
+}
+
+async function loadMediaLibrary() {
+  const result = await api("/api/atlas/media", { timeout: 15000 });
+  renderMediaLibrary(result);
+  return result;
+}
+
+function paintMediaProgress(percent, title = "Загрузка материала") {
+  const panel = byId("media-upload-progress");
+  panel.hidden = false;
+  const bounded = Math.max(0, Math.min(100, Math.round(Number(percent || 0))));
+  panel.style.setProperty("--upload-progress", `${bounded}%`);
+  panel.querySelector("b").textContent = title;
+  panel.querySelector("small").textContent = `${bounded}%`;
+}
+
+async function followMediaJob(job) {
+  if (!Number(job?.id)) return;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, attempt < 10 ? 500 : 1500));
+    const result = await api(`/api/atlas/jobs/${Number(job.id)}`, { timeout: 10000 });
+    const current = result.job || {};
+    if (["pending", "running", "retry"].includes(current.status)) {
+      paintMediaProgress(Math.max(94, Number(current.progress?.percent || 0)), "Atlas проверяет и сохраняет файл");
+      continue;
+    }
+    await loadMediaLibrary();
+    if (current.status === "succeeded") {
+      paintMediaProgress(100, "Материал готов");
+      showToast("Материал сохранён в медиасети Atlas.");
+    } else {
+      showToast("Материал сохранён, но не прошёл обработку. Состояние можно повторить из журнала задач.", true);
+    }
+    setTimeout(() => { byId("media-upload-progress").hidden = true; }, 1800);
+    return;
+  }
+}
+
+async function uploadMediaFile(file, values) {
+  const started = await api("/api/atlas/media/uploads", {
+    method: "POST",
+    body: JSON.stringify({
+      title: String(values.title || "") || file.name,
+      filename: file.name,
+      size_bytes: file.size,
+      mime_type: file.type || "application/octet-stream",
+      visibility_scope: values.visibility_scope || "private",
+      retention_policy: values.retention_policy || "manual",
+      media_kind: file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : file.type.startsWith("image/") ? "image" : "file",
+    }),
+    timeout: 15000,
+  });
+  const chunkSize = Math.max(256 * 1024, Number(started.chunk_bytes || 4 * 1024 * 1024));
+  let offset = Number(started.upload?.received_size || 0);
+  let finalResult = null;
+  while (offset < file.size) {
+    const chunk = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+    finalResult = await api(started.upload_url, {
+      method: "PUT",
+      body: chunk,
+      headers: { "Content-Type": "application/octet-stream", "Upload-Offset": String(offset) },
+      timeout: 45000,
+    });
+    offset = Number(finalResult.upload?.received_size || offset + chunk.byteLength);
+    paintMediaProgress((offset / file.size) * 92, "Передаём материал в Atlas");
+  }
+  return finalResult;
+}
+
+const caseStatusLabels = {
+  intake: "Приём", investigation: "Расследование", review: "Проверка",
+  ready: "Готово", closed: "Закрыто", archived: "Архив",
+};
+const caseKindLabels = { incident: "Инцидент", investigation: "Расследование", legal: "Правовой материал", request: "Обращение" };
+const casePriorityLabels = { routine: "Обычный", high: "Высокий", critical: "Критический" };
+const evidenceTypeLabels = { note: "Заметка", timeline_event: "Событие", media_asset: "Материал", media_segment: "Фрагмент", document: "Документ", knowledge_source: "Источник", url: "Ссылка" };
+
+function caseReadiness(item) {
+  return item?.readiness || { score: 0, state: "not_ready", unsupported_claim_ids: [], critical_gap_ids: [], pending_evidence_ids: [] };
+}
+
+function caseCard(item) {
+  const readiness = caseReadiness(item);
+  const card = element("button", `case-card ${item.priority || "routine"}`);
+  card.type = "button";
+  card.dataset.caseId = String(item.id);
+  const index = element("div", "case-card-index");
+  index.append(element("small", "", `ДЕЛО ${String(item.case_number || item.id).padStart(3, "0")}`), element("strong", "", `${Number(readiness.score || 0)}%`));
+  const copy = element("div", "case-card-copy");
+  const meta = element("div", "case-card-meta");
+  meta.append(
+    element("span", `case-status ${item.status || "intake"}`, caseStatusLabels[item.status] || item.status),
+    element("span", "", caseKindLabels[item.case_kind] || item.case_kind),
+    element("span", "", item.visibility_scope === "private" ? "Личное" : "Пространство"),
+  );
+  copy.append(meta, element("h3", "", item.title || "Без названия"), element("p", "", item.objective || item.executive_summary || "Цель проверки пока не описана."));
+  const footer = element("footer");
+  footer.append(
+    element("span", "", `${Number(item.claim_count || readiness.claims || 0)} утвержд. · ${Number(item.evidence_count || readiness.evidence || 0)} доказ.`),
+    element("time", "", readableTime(item.updated_at, "только что")),
+  );
+  copy.append(footer);
+  const gauge = element("div", `case-card-gauge ${readiness.state || "not_ready"}`);
+  gauge.style.setProperty("--case-score", `${Math.max(0, Math.min(100, Number(readiness.score || 0)))}%`);
+  gauge.append(element("i"), element("small", "", readiness.state === "ready" ? "готово" : "проверка"));
+  card.append(index, copy, gauge);
+  card.addEventListener("click", () => void openCaseDetail(item.id));
+  return card;
+}
+
+function renderCases(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const list = byId("case-list");
+  clear(list);
+  items.forEach((item) => list.append(caseCard(item)));
+  if (!items.length) list.append(element("div", "empty", "Откройте первое дело, чтобы начать проверку фактов."));
+  byId("case-open-count").textContent = String(items.filter((item) => !["closed", "archived"].includes(item.status)).length);
+  byId("case-ready-count").textContent = String(items.filter((item) => caseReadiness(item).state === "ready").length);
+  byId("case-claim-count").textContent = String(items.reduce((sum, item) => sum + Number(item.claim_count || item.readiness?.claims || 0), 0));
+  byId("case-evidence-count").textContent = String(items.reduce((sum, item) => sum + Number(item.evidence_count || item.readiness?.evidence || 0), 0));
+  appState.data.cases = payload;
+}
+
+async function loadCases() {
+  const status = byId("case-status-filter")?.value || "";
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  const result = await api(`/api/atlas/cases${query}`, { timeout: 15000 });
+  renderCases(result);
+  return result;
+}
+
+function readinessGap(text, tone = "") {
+  const node = element("span", tone);
+  node.append(element("i"), document.createTextNode(text));
+  return node;
+}
+
+function claimRow(item) {
+  const row = element("article", `case-detail-item claim ${item.claim_status || "unverified"}`);
+  const header = element("header");
+  header.append(element("span", "", ({ context: "Контекст", material: "Существенное", critical: "Критическое" })[item.importance] || item.importance), element("small", "", ({ unverified: "Не проверено", supported: "Подтверждено", contradicted: "Есть противоречие", accepted: "Принято", rejected: "Отклонено" })[item.claim_status] || item.claim_status));
+  row.append(header, element("p", "", item.statement));
+  if (item.rationale) row.append(element("small", "case-item-note", item.rationale));
+  if (item.claim_status === "unverified") {
+    const footer = element("footer");
+    footer.append(element("span", "", "Решение проверяющего"));
+    const actions = element("div", "case-item-actions");
+    const review = async (claimStatus, button) => {
+      button.disabled = true;
+      try {
+        await api(`/api/atlas/cases/${appState.caseDetail.case.id}/claims/${item.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ claim_status: claimStatus, expected_version: item.version }),
+        });
+        await refreshOpenCase();
+        await loadCases();
+      } catch (error) { showToast(error.message || "Оценка утверждения не сохранена.", true); }
+      finally { button.disabled = false; }
+    };
+    const supported = element("button", "", "Подтверждено");
+    const contradicted = element("button", "danger", "Противоречие");
+    [supported, contradicted].forEach((button) => { button.type = "button"; });
+    supported.addEventListener("click", () => void review("supported", supported));
+    contradicted.addEventListener("click", () => void review("contradicted", contradicted));
+    actions.append(supported, contradicted);
+    footer.append(actions);
+    row.append(footer);
+  }
+  return row;
+}
+
+function evidenceRow(item) {
+  const row = element("article", `case-detail-item evidence ${item.verification_status || "pending"}`);
+  const header = element("header");
+  header.append(element("span", "", evidenceTypeLabels[item.source_type] || item.source_type), element("small", "", item.verification_status === "verified" ? "Проверено" : item.verification_status === "rejected" ? "Отклонено" : "Ждёт проверки"));
+  row.append(header, element("h4", "", item.title), element("p", "", item.relevance || item.summary || "Описание связи пока не добавлено."));
+  const meta = element("footer");
+  meta.append(element("span", "", item.source_id ? `источник #${item.source_id}` : "зафиксировано вручную"), element("span", "", item.admissibility === "admissible" ? "допустимо" : item.admissibility === "excluded" ? "исключено" : "оценка не завершена"));
+  if (item.verification_status === "pending") {
+    const approve = element("button", "", "Подтвердить");
+    approve.type = "button";
+    approve.addEventListener("click", async () => {
+      approve.disabled = true;
+      try {
+        await api(`/api/atlas/cases/${appState.caseDetail.case.id}/evidence/${item.id}`, { method: "PATCH", body: JSON.stringify({ verification_status: "verified", admissibility: "admissible", expected_version: item.version }) });
+        await refreshOpenCase();
+        await loadCases();
+      } catch (error) { showToast(error.message || "Проверка не сохранена.", true); }
+      finally { approve.disabled = false; }
+    });
+    meta.append(approve);
+  }
+  row.append(meta);
+  return row;
+}
+
+function renderCaseDetail(detail) {
+  appState.caseDetail = detail;
+  const selected = detail.case || {};
+  const readiness = caseReadiness(detail);
+  const header = byId("case-detail-header");
+  header.querySelector("span").textContent = `ДЕЛО ${String(selected.case_number || selected.id).padStart(3, "0")} · ${casePriorityLabels[selected.priority] || selected.priority}`;
+  header.querySelector("h2").textContent = selected.title || "Дело Atlas";
+  header.querySelector("p").textContent = selected.objective || "Цель проверки пока не описана.";
+  header.querySelector(".case-readiness-orb strong").textContent = String(Number(readiness.score || 0));
+  header.querySelector(".case-readiness-orb").style.setProperty("--case-score", `${Number(readiness.score || 0)}%`);
+  const gaps = byId("case-readiness-gaps");
+  clear(gaps);
+  gaps.append(readinessGap(`${caseStatusLabels[selected.status] || selected.status} · версия ${selected.version}`, "identity"));
+  if (!readiness.claims) gaps.append(readinessGap("Нет проверяемых утверждений", "warning"));
+  if (readiness.critical_gap_ids?.length) gaps.append(readinessGap(`Критических пробелов: ${readiness.critical_gap_ids.length}`, "danger"));
+  if (readiness.unsupported_claim_ids?.length) gaps.append(readinessGap(`Без подтверждения: ${readiness.unsupported_claim_ids.length}`, "warning"));
+  if (readiness.pending_evidence_ids?.length) gaps.append(readinessGap(`Ждут проверки: ${readiness.pending_evidence_ids.length}`, "warning"));
+  if (readiness.state === "ready") gaps.append(readinessGap("Материалы достаточны для следующего этапа", "success"));
+  const claims = byId("case-claims");
+  clear(claims); (detail.claims || []).forEach((item) => claims.append(claimRow(item)));
+  if (!detail.claims?.length) claims.append(element("div", "empty", "Сформулируйте первое проверяемое утверждение."));
+  const evidence = byId("case-evidence");
+  clear(evidence); (detail.evidence || []).forEach((item) => evidence.append(evidenceRow(item)));
+  if (!detail.evidence?.length) evidence.append(element("div", "empty", "Привяжите первоисточник или зафиксируйте свидетельство."));
+  const claimSelect = byId("case-evidence-claim");
+  clear(claimSelect); claimSelect.append(new Option("К делу в целом", ""));
+  (detail.claims || []).forEach((item) => claimSelect.append(new Option(item.statement.slice(0, 80), String(item.id))));
+}
+
+async function refreshOpenCase() {
+  const caseId = Number(appState.caseDetail?.case?.id || 0);
+  if (!caseId) return;
+  renderCaseDetail(await api(`/api/atlas/cases/${caseId}`, { timeout: 15000 }));
+}
+
+async function openCaseDetail(caseId) {
+  const dialog = byId("case-detail-dialog");
+  openDialog(dialog);
+  byId("case-detail-header").querySelector("h2").textContent = "Загрузка дела…";
+  try { renderCaseDetail(await api(`/api/atlas/cases/${Number(caseId)}`, { timeout: 15000 })); }
+  catch (error) { closeDialog(dialog); showToast(error.message || "Дело не открылось.", true); }
+}
+
+function openCaseItem(mode) {
+  appState.caseItemMode = mode;
+  const claimMode = mode === "claim";
+  const form = byId("case-item-form");
+  form.reset();
+  byId("case-claim-fields").hidden = !claimMode;
+  byId("case-evidence-fields").hidden = claimMode;
+  form.elements.statement.required = claimMode;
+  form.elements.evidence_title.required = !claimMode;
+  byId("case-item-kicker").textContent = claimMode ? "ATLAS CASE · НОВОЕ ПОЛОЖЕНИЕ" : "ATLAS EVIDENCE · ПЕРВОИСТОЧНИК";
+  byId("case-item-title").textContent = claimMode ? "Добавить утверждение" : "Привязать доказательство";
+  byId("case-item-description").textContent = claimMode ? "Сформулируйте одно положение, которое можно подтвердить или опровергнуть." : "Укажите существующий объект Atlas, HTTPS-ссылку или сохраните самостоятельную заметку.";
+  openDialog(byId("case-item-dialog"));
+}
+
+async function followAtlasJob(job) {
+  const jobId = Number(job?.id || 0);
+  if (!jobId || appState.jobWatchers.has(jobId)) return;
+  appState.jobWatchers.add(jobId);
+  try {
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, attempt < 8 ? 750 : 2000));
+      const result = await api(`/api/atlas/jobs/${jobId}`, { timeout: 10000 });
+      const current = result.job || {};
+      if (["pending", "running", "retry"].includes(current.status)) continue;
+      await loadKnowledgeSources();
+      if (current.status === "failed") {
+        showToast("Atlas сохранил материал, но поиск пока недоступен. Задача будет видна администраторам.", true);
+      }
+      return;
+    }
+  } catch (_error) {
+    // The source remains durable on the server; a temporary browser outage is harmless.
+  } finally {
+    appState.jobWatchers.delete(jobId);
+  }
+}
+
 async function loadForumSync() {
   const result = await api("/api/atlas/forum-sync");
   appState.data.forum_sync = result.status || {};
   renderForumSync(appState.data.forum_sync);
   return appState.data.forum_sync;
+}
+
+const searchKindLabels = { case: "ДЕЛО", document: "ДОКУМЕНТ", timeline_event: "СОБЫТИЕ", media_asset: "МЕДИА", knowledge_source: "ЗНАНИЯ" };
+
+function openGlobalSearch() {
+  openDialog(byId("atlas-search-dialog"));
+  requestAnimationFrame(() => byId("atlas-search-query").focus());
+}
+
+function renderGlobalSearch(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const root = byId("atlas-search-results");
+  clear(root);
+  items.forEach((item) => {
+    const result = element("button", "atlas-search-result");
+    result.type = "button";
+    const mark = element("i", "", ({ case: "▣", document: "◇", timeline_event: "◌", media_asset: "▶", knowledge_source: "§" })[item.kind] || "·");
+    const copy = element("span");
+    copy.append(element("small", "", `${searchKindLabels[item.kind] || item.kind} · ${item.eyebrow || "ATLAS"}`), element("b", "", item.title), element("p", "", item.snippet || "Открыть объект Atlas"));
+    result.append(mark, copy, element("em", "", "→"));
+    result.addEventListener("click", async () => {
+      closeDialog(byId("atlas-search-dialog"));
+      switchScreen(item.screen || "home");
+      if (item.kind === "case") await openCaseDetail(item.id);
+      else if (item.kind === "document") await openDocumentDetail(item.id);
+    });
+    root.append(result);
+  });
+  if (!items.length) root.append(element("div", "empty", payload?.query ? "Совпадений в доступном пространстве нет." : "Введите запрос для поиска."));
+  const groups = Object.entries(payload?.counts || {}).map(([kind, count]) => `${searchKindLabels[kind] || kind}: ${count}`);
+  byId("atlas-search-summary").textContent = items.length ? `Найдено ${payload.total || items.length} · ${groups.join(" · ")}` : "Atlas проверил все доступные разделы.";
+}
+
+async function runGlobalSearch(query) {
+  const value = String(query || "").trim();
+  if (value.length < 2) { renderGlobalSearch({ items: [], query: "" }); return; }
+  byId("atlas-search-summary").textContent = "Собираем результаты из модулей Atlas…";
+  const params = new URLSearchParams({ q: value, server_code: appState.serverCode, faction_code: appState.factionCode });
+  renderGlobalSearch(await api(`/api/atlas/search?${params}`, { timeout: 15000 }));
 }
 
 async function updateScope() {
@@ -975,7 +1543,7 @@ function bind() {
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => closeDialog(button.closest("dialog")));
   });
-  [byId("onboarding-dialog"), byId("document-dialog")].forEach((dialog) => {
+  [byId("onboarding-dialog"), byId("document-dialog"), byId("document-detail-dialog"), byId("memory-event-dialog"), byId("case-dialog"), byId("case-detail-dialog"), byId("case-item-dialog"), byId("atlas-search-dialog")].forEach((dialog) => {
     dialog.addEventListener("click", (event) => { if (event.target === dialog) closeDialog(dialog); });
   });
   byId("continue-onboarding").addEventListener("click", () => openDialog(byId("onboarding-dialog")));
@@ -1036,20 +1604,197 @@ function bind() {
     });
   });
   byId("new-document").addEventListener("click", () => openDocumentDialog());
+  byId("new-memory-event").addEventListener("click", openMemoryDialog);
+  document.querySelectorAll("[data-create-memory]").forEach((node) => node.addEventListener("click", openMemoryDialog));
+  byId("memory-event-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const selectedTime = values.occurred_at ? new Date(String(values.occurred_at)) : null;
+    try {
+      await api("/api/atlas/timeline", {
+        method: "POST",
+        body: JSON.stringify({
+          ...values,
+          occurred_at: selectedTime && !Number.isNaN(selectedTime.getTime()) ? selectedTime.toISOString() : null,
+        }),
+      });
+      closeDialog(byId("memory-event-dialog"));
+      form.reset();
+      await reload();
+      switchScreen("memory");
+      showToast("Событие сохранено в Atlas Memory.");
+    } catch (error) { showToast(error.message || "Событие не сохранено.", true); }
+  });
+  byId("media-upload-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const file = byId("media-file").files?.[0];
+    if (!file) { showToast("Выберите файл для медиасети.", true); return; }
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    paintMediaProgress(1, "Подготавливаем защищённую загрузку");
+    try {
+      const result = await uploadMediaFile(file, values);
+      form.reset();
+      await loadMediaLibrary();
+      if (result?.job) void followMediaJob(result.job);
+      else showToast("Файл передан Atlas. Обработка продолжится в фоне.");
+    } catch (error) {
+      byId("media-upload-progress").hidden = true;
+      showToast(error.message || "Материал не загружен.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  byId("refresh-media").addEventListener("click", async () => {
+    try { await loadMediaLibrary(); showToast("Медиатека обновлена."); }
+    catch (error) { showToast(error.message || "Не удалось обновить медиатеку.", true); }
+  });
+  byId("new-case").addEventListener("click", () => openDialog(byId("case-dialog")));
+  byId("case-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      const result = await api("/api/atlas/cases", { method: "POST", body: JSON.stringify(values) });
+      closeDialog(byId("case-dialog"));
+      form.reset();
+      await loadCases();
+      await openCaseDetail(result.case.id);
+      showToast("Дело открыто. Теперь добавьте проверяемые утверждения.");
+    } catch (error) { showToast(error.message || "Дело не создано.", true); }
+    finally { button.disabled = false; }
+  });
+  byId("refresh-cases").addEventListener("click", async () => {
+    try { await loadCases(); showToast("Реестр дел обновлён."); }
+    catch (error) { showToast(error.message || "Реестр не обновился.", true); }
+  });
+  byId("case-status-filter").addEventListener("change", () => void loadCases().catch((error) => showToast(error.message, true)));
+  byId("case-add-claim").addEventListener("click", () => openCaseItem("claim"));
+  byId("case-add-evidence").addEventListener("click", () => openCaseItem("evidence"));
+  byId("case-item-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const caseId = Number(appState.caseDetail?.case?.id || 0);
+    if (!caseId) { showToast("Сначала откройте дело.", true); return; }
+    const button = byId("case-item-submit");
+    button.disabled = true;
+    try {
+      if (appState.caseItemMode === "claim") {
+        await api(`/api/atlas/cases/${caseId}/claims`, { method: "POST", body: JSON.stringify({ statement: values.statement, importance: values.importance }) });
+        showToast("Утверждение добавлено в проверку.");
+      } else {
+        await api(`/api/atlas/cases/${caseId}/evidence`, {
+          method: "POST",
+          body: JSON.stringify({
+            source_type: values.source_type,
+            source_id: values.source_type === "note" ? null : values.source_id,
+            title: values.evidence_title,
+            claim_id: values.claim_id || null,
+            relevance: values.relevance || "",
+          }),
+        });
+        showToast("Доказательство привязано с сохранением происхождения.");
+      }
+      closeDialog(byId("case-item-dialog"));
+      await refreshOpenCase();
+      await loadCases();
+    } catch (error) { showToast(error.message || "Изменение не сохранено.", true); }
+    finally { button.disabled = false; }
+  });
   byId("document-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
     try {
-      await api("/api/atlas/documents", {
+      const result = await api("/api/atlas/documents", {
         method: "POST",
         body: JSON.stringify({ title: values.title, template_id: values.template_id || null, fields: { content: values.content || "" }, rendered_text: values.content || "" }),
       });
       closeDialog(byId("document-dialog"));
       form.reset();
       await reload();
+      await openDocumentDetail(result.document.id);
       showToast("Черновик документа создан.");
     } catch (error) { showToast(error.message, true); }
+  });
+  byId("document-edit-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const selected = appState.documentDetail?.document;
+    if (!selected) return;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      await api(`/api/atlas/documents/${selected.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          operation: "revise",
+          title: values.title,
+          fields: { ...(selected.fields || {}), content: values.rendered_text || "" },
+          rendered_text: values.rendered_text || "",
+          change_summary: values.change_summary || "Обновлён документ",
+          expected_revision: selected.revision,
+        }),
+      });
+      await refreshOpenDocument();
+      await reload();
+      showToast("Новая редакция сохранена; предыдущая осталась в истории.");
+    } catch (error) { showToast(error.message || "Редакция не сохранена.", true); }
+    finally { button.disabled = false; }
+  });
+  byId("document-next-state").addEventListener("click", async (event) => {
+    const selected = appState.documentDetail?.document;
+    const status = event.currentTarget.dataset.status;
+    if (!selected || !status) return;
+    event.currentTarget.disabled = true;
+    try {
+      await api(`/api/atlas/documents/${selected.id}`, { method: "PATCH", body: JSON.stringify({ operation: "transition", status, expected_revision: selected.revision }) });
+      await refreshOpenDocument();
+      await reload();
+      showToast(`Документ: ${documentStatusLabels[status] || status}.`);
+    } catch (error) { showToast(error.message || "Переход не выполнен.", true); }
+    finally { event.currentTarget.disabled = false; }
+  });
+  byId("document-comment-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const selected = appState.documentDetail?.document;
+    if (!selected) return;
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      await api(`/api/atlas/documents/${selected.id}/comments`, { method: "POST", body: JSON.stringify({ body: values.body, revision: selected.revision }) });
+      form.reset();
+      await refreshOpenDocument();
+      showToast("Комментарий привязан к текущей редакции.");
+    } catch (error) { showToast(error.message || "Комментарий не сохранён.", true); }
+  });
+  byId("document-approval-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const selected = appState.documentDetail?.document;
+    if (!selected) return;
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      await api(`/api/atlas/documents/${selected.id}/approvals`, { method: "PUT", body: JSON.stringify({ steps: [{ title: values.title, assigned_user_id: values.assigned_user_id }] }) });
+      await refreshOpenDocument();
+      showToast("Маршрут согласования назначен.");
+    } catch (error) { showToast(error.message || "Маршрут не сохранён.", true); }
+  });
+  document.querySelectorAll("[data-document-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.documentTab;
+      document.querySelectorAll("[data-document-tab]").forEach((item) => item.classList.toggle("active", item === button));
+      byId("document-approval-pane").hidden = tab !== "approval";
+      byId("document-comments-pane").hidden = tab !== "comments";
+      byId("document-revisions-pane").hidden = tab !== "revisions";
+    });
   });
   byId("knowledge-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1066,6 +1811,7 @@ function bind() {
       });
       form.reset();
       await loadKnowledgeSources();
+      void followAtlasJob(result.job);
       showToast(result.message || "Источник принят и индексируется в фоне.");
     } catch (error) { showToast(error.message, true); }
     finally { button.disabled = false; button.textContent = "Добавить в библиотеку →"; }
@@ -1083,6 +1829,7 @@ function bind() {
       const result = await api("/api/atlas/knowledge/upload", { method: "POST", body: values, timeout: 30000 });
       form.reset();
       await loadKnowledgeSources();
+      void followAtlasJob(result.job);
       showToast(result.message || "Файл принят в библиотеку.");
     } catch (error) { showToast(error.message, true); }
     finally { button.disabled = false; button.textContent = "Загрузить в библиотеку →"; }
@@ -1103,6 +1850,7 @@ function bind() {
       form.reset();
       if (result.browser_url) byId("forum-browser-link").href = result.browser_url;
       await loadKnowledgeSources();
+      void followAtlasJob(result.job);
       showToast(result.message || "Форум принят на индексирование.");
     } catch (error) {
       if (error.payload?.browser_url) byId("forum-browser-link").href = error.payload.browser_url;
@@ -1136,10 +1884,16 @@ function bind() {
       renderForumSync(appState.data?.forum_sync || {});
     }
   });
-  byId("global-search").addEventListener("click", () => {
-    switchScreen("ai");
-    byId("atlas-question").focus();
-    showToast("Глобальный поиск будет расширен; сейчас используйте Atlas AI.");
+  byId("global-search").addEventListener("click", openGlobalSearch);
+  byId("atlas-search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runGlobalSearch(byId("atlas-search-query").value).catch((error) => showToast(error.message || "Поиск временно недоступен.", true));
+  });
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openGlobalSearch();
+    }
   });
   window.addEventListener("hashchange", () => switchScreen(location.hash.replace(/^#\//, ""), false));
 }

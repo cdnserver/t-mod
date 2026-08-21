@@ -224,7 +224,8 @@ class Handler(BaseHTTPRequestHandler):
             if path.endswith("/contract"):
                 return self.json({"case_number": number, "defaults": detail(number)["contract"]["defaults"]})
             return self.json(detail(number))
-        self.send_response(404); self.end_headers()
+        self.send_response(404)
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
         self.write_action()

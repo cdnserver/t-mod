@@ -3,6 +3,7 @@ import type {
   BootstrapResult,
   DesktopLoginCredentials,
   DesktopLoginResult,
+  DesktopLockReason,
   DesktopState,
   DesktopShellPreferences,
   DesktopUpdateState,
@@ -27,6 +28,8 @@ const api: TModDesktopApi = {
   copyCurrentLink: () => ipcRenderer.invoke("desktop:copy-current-link") as Promise<boolean>,
   openCurrentLink: () => ipcRenderer.invoke("desktop:open-current-link") as Promise<boolean>,
   openLogin: () => ipcRenderer.invoke("desktop:open-login") as Promise<DesktopState>,
+  lock: () => ipcRenderer.invoke("desktop:lock") as Promise<boolean>,
+  unlock: () => ipcRenderer.invoke("desktop:unlock") as Promise<boolean>,
   minimize: () => ipcRenderer.invoke("desktop:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("desktop:maximize"),
   close: () => ipcRenderer.invoke("desktop:close"),
@@ -49,6 +52,12 @@ const api: TModDesktopApi = {
     const handler = () => listener();
     ipcRenderer.on("desktop:command-palette", handler);
     return () => ipcRenderer.removeListener("desktop:command-palette", handler);
+  },
+  onLockRequested: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, reason: DesktopLockReason) =>
+      listener(reason);
+    ipcRenderer.on("desktop:lock-requested", handler);
+    return () => ipcRenderer.removeListener("desktop:lock-requested", handler);
   },
   onUpdate: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) =>

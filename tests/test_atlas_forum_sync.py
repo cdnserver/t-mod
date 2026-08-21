@@ -453,6 +453,9 @@ class AtlasForumRepositoryTests(unittest.TestCase):
         )
         self.assertTrue(renamed["changed"])
         self.assertEqual(renamed["source"]["title"], "Закон — новая редакция заголовка")
+        timeline = atlas_repository.atlas_timeline_events(int(feed["organization_id"]))
+        self.assertEqual(len(timeline), 3)
+        self.assertTrue(all(item["source_type"] == "knowledge_source" for item in timeline))
 
         atlas_repository.atlas_mark_forum_sources_seen(
             int(feed["organization_id"]),

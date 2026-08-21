@@ -12,7 +12,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from modules.atlas_forum_sync import (
     AtlasForumBrowser,

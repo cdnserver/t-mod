@@ -19,6 +19,31 @@ from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 _ROLES = frozenset({"owner", "administrator", "editor", "member", "viewer"})
 _CATALOG_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+_TIMELINE_KINDS = frozenset(
+    {"incident", "activity", "decision", "document", "communication", "note", "system"}
+)
+_TIMELINE_STATUSES = frozenset({"open", "active", "resolved", "archived"})
+_TIMELINE_IMPORTANCE = frozenset({"routine", "important", "critical"})
+_ENTITY_RELATIONS = frozenset(
+    {
+        "related_to", "supports", "contradicts", "caused_by", "produced",
+        "mentions", "responds_to", "belongs_to",
+    }
+)
+_ENTITY_TABLES = {
+    "organization": ("atlas_organizations", "id"),
+    "document": ("atlas_documents", "id"),
+    "timeline_event": ("atlas_timeline_events", "id"),
+    "knowledge_source": ("atlas_knowledge_sources", "id"),
+    "ai_thread": ("atlas_ai_threads", "id"),
+    "forum_feed": ("atlas_forum_feeds", "id"),
+    "media_asset": ("atlas_media_assets", "id"),
+    "media_segment": ("atlas_media_segments", "id"),
+    "case": ("atlas_cases", "id"),
+    "case_claim": ("atlas_case_claims", "id"),
+    "case_evidence": ("atlas_case_evidence", "id"),
+}
+_UNSET = object()
 
 
 def _json(value: Any) -> str:
@@ -36,6 +61,100 @@ def _decoded(value: Any, fallback: Any) -> Any:
 def _slug(value: str, user_id: int) -> str:
     selected = _SLUG_RE.sub("-", str(value or "").strip().lower()).strip("-")
     return (selected[:36] or f"space-{int(user_id)}")
+
+
+def _timeline_time(value: str | None) -> str:
+    selected = str(value or "").strip()
+    if not selected:
+        return utc_now_iso()
+    try:
+        parsed = datetime.fromisoformat(selected.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("atlas_timeline_time_invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _entity_identity(value: str | int) -> str:
+    selected = str(value or "").strip()
+    if not selected or not selected.isdigit() or int(selected) <= 0:
+        raise ValueError("atlas_entity_id_invalid")
+    return str(int(selected))
+
+
+def _atlas_entity_exists(
+    con: Any,
+    organization_id: int,
+    entity_type: str,
+    entity_id: str | int,
+    *,
+    actor_user_id: int | None = None,
+) -> bool:
+    clean_type = str(entity_type or "").strip().lower()
+    table = _ENTITY_TABLES.get(clean_type)
+    if table is None:
+        raise ValueError("atlas_entity_type_invalid")
+    clean_id = _entity_identity(entity_id)
+    if clean_type == "organization":
+        row = con.execute(
+            "SELECT 1 FROM atlas_organizations WHERE id = ? AND id = ?",
+            (int(clean_id), int(organization_id)),
+        ).fetchone()
+    elif clean_type == "ai_thread" and actor_user_id is not None:
+        row = con.execute(
+            """
+            SELECT 1 FROM atlas_ai_threads
+            WHERE id = ? AND organization_id = ? AND user_id = ?
+            """,
+            (int(clean_id), int(organization_id), int(actor_user_id)),
+        ).fetchone()
+    elif clean_type == "media_asset" and actor_user_id is not None:
+        row = con.execute(
+            """
+            SELECT 1 FROM atlas_media_assets
+            WHERE id = ? AND organization_id = ? AND status != 'deleted'
+              AND (visibility_scope = 'workspace' OR owner_user_id = ?)
+            """,
+            (int(clean_id), int(organization_id), int(actor_user_id)),
+        ).fetchone()
+    elif clean_type == "media_segment" and actor_user_id is not None:
+        row = con.execute(
+            """
+            SELECT 1 FROM atlas_media_segments s
+            JOIN atlas_media_assets a ON a.id = s.asset_id
+            WHERE s.id = ? AND s.organization_id = ? AND a.status != 'deleted'
+              AND (a.visibility_scope = 'workspace' OR a.owner_user_id = ?)
+            """,
+            (int(clean_id), int(organization_id), int(actor_user_id)),
+        ).fetchone()
+    elif clean_type == "case" and actor_user_id is not None:
+        row = con.execute(
+            """
+            SELECT 1 FROM atlas_cases
+            WHERE id = ? AND organization_id = ?
+              AND (visibility_scope = 'workspace' OR created_by_id = ? OR assigned_to_id = ?)
+            """,
+            (int(clean_id), int(organization_id), int(actor_user_id), int(actor_user_id)),
+        ).fetchone()
+    elif clean_type in {"case_claim", "case_evidence"} and actor_user_id is not None:
+        child_table = "atlas_case_claims" if clean_type == "case_claim" else "atlas_case_evidence"
+        row = con.execute(
+            f"""
+            SELECT 1 FROM {child_table} child
+            JOIN atlas_cases c ON c.id = child.case_id
+            WHERE child.id = ? AND child.organization_id = ?
+              AND (c.visibility_scope = 'workspace' OR c.created_by_id = ? OR c.assigned_to_id = ?)
+            """,
+            (int(clean_id), int(organization_id), int(actor_user_id), int(actor_user_id)),
+        ).fetchone()
+    else:
+        table_name, id_column = table
+        row = con.execute(
+            f"SELECT 1 FROM {table_name} WHERE {id_column} = ? AND organization_id = ?",
+            (int(clean_id), int(organization_id)),
+        ).fetchone()
+    return row is not None
 
 
 def _knowledge_checksum(
@@ -591,6 +710,29 @@ def atlas_create_document(
             ),
         )
         document_id = int(cursor.lastrowid)
+        revision_checksum = hashlib.sha256(
+            _json(
+                {
+                    "title": clean_title,
+                    "fields": clean_fields,
+                    "rendered_text": str(rendered_text or "")[:100000],
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        con.execute(
+            """
+            INSERT INTO atlas_document_revisions(
+                organization_id, document_id, revision, created_by_id,
+                title, fields_json, rendered_text, change_summary,
+                checksum_sha256, created_at
+            ) VALUES(?, ?, 1, ?, ?, ?, ?, 'Первый черновик', ?, ?)
+            """,
+            (
+                int(organization_id), document_id, int(user_id), clean_title,
+                _json(clean_fields), str(rendered_text or "")[:100000],
+                revision_checksum, now,
+            ),
+        )
         con.execute(
             """
             INSERT INTO atlas_audit_events(
@@ -599,6 +741,22 @@ def atlas_create_document(
             ) VALUES(?, ?, 'document_created', 'document', ?, ?, ?)
             """,
             (int(organization_id), int(user_id), str(document_id), f"Создан документ «{clean_title}»", now),
+        )
+        con.execute(
+            """
+            INSERT INTO atlas_timeline_events(
+                organization_id, actor_user_id, event_kind, title, summary,
+                status, importance, occurred_at, source_type, source_id,
+                dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, 'document', ?, ?, 'active', 'routine', ?,
+                     'document', ?, ?, ?, ?)
+            ON CONFLICT(organization_id, dedupe_key) DO NOTHING
+            """,
+            (
+                int(organization_id), int(user_id), f"Создан документ «{clean_title}»",
+                "Черновик появился в рабочем пространстве Atlas.", now,
+                str(document_id), f"document-created:{document_id}", now, now,
+            ),
         )
         row = con.execute("SELECT * FROM atlas_documents WHERE id = ?", (document_id,)).fetchone()
         con.commit()
@@ -713,6 +871,22 @@ def atlas_add_knowledge(
                 now,
             ),
         )
+        con.execute(
+            """
+            INSERT INTO atlas_timeline_events(
+                organization_id, actor_user_id, event_kind, title, summary,
+                status, importance, occurred_at, source_type, source_id,
+                dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, 'system', ?, ?, 'active', 'routine', ?,
+                     'knowledge_source', ?, ?, ?, ?)
+            ON CONFLICT(organization_id, dedupe_key) DO NOTHING
+            """,
+            (
+                int(organization_id), int(user_id), f"Добавлен источник «{clean_title}»",
+                "Материал поставлен на индексацию и станет частью разрешённой памяти Atlas.",
+                now, str(row["id"]), f"knowledge-created:{int(row['id'])}", now, now,
+            ),
+        )
         con.commit()
     return _row(row)
 
@@ -769,6 +943,17 @@ def atlas_knowledge_sources(
             tuple(params),
         ).fetchall()
     return [_row(row) for row in rows]
+
+
+def atlas_knowledge_source(source_id: int) -> dict[str, Any] | None:
+    """Return one canonical source, including its text, for background work."""
+
+    with connect_readonly() as con:
+        row = con.execute(
+            "SELECT * FROM atlas_knowledge_sources WHERE id = ?",
+            (int(source_id),),
+        ).fetchone()
+    return _row(row) if row is not None else None
 
 
 def atlas_searchable_knowledge_sources(
@@ -1186,6 +1371,30 @@ def atlas_upsert_synced_knowledge(
                     now,
                 ),
             )
+            revision = int(merged_metadata.get("revision") or 1)
+            con.execute(
+                """
+                INSERT INTO atlas_timeline_events(
+                    organization_id, actor_user_id, event_kind, title, summary,
+                    status, importance, occurred_at, source_type, source_id,
+                    metadata_json, dedupe_key, created_at, updated_at
+                ) VALUES(?, 0, 'system', ?, ?, 'resolved', 'routine', ?,
+                         'knowledge_source', ?, ?, ?, ?, ?)
+                ON CONFLICT(organization_id, dedupe_key) DO NOTHING
+                """,
+                (
+                    int(organization_id),
+                    ("Получен материал форума" if created else "Обновлён материал форума")
+                    + f" «{clean_title}»",
+                    "Atlas сохранил новую проверяемую редакцию источника.",
+                    now,
+                    str(source_id),
+                    _json({"source_url": clean_url, "revision": revision}),
+                    f"forum-source:{source_id}:revision:{revision}",
+                    now,
+                    now,
+                ),
+            )
         row = con.execute(
             "SELECT * FROM atlas_knowledge_sources WHERE id = ?",
             (source_id,),
@@ -1433,6 +1642,414 @@ def atlas_record_event(
         return int(cursor.lastrowid)
 
 
+def atlas_create_timeline_event(
+    organization_id: int,
+    actor_user_id: int,
+    *,
+    title: str,
+    summary: str = "",
+    event_kind: str = "activity",
+    status: str = "open",
+    importance: str = "routine",
+    occurred_at: str | None = None,
+    source_type: str | None = None,
+    source_id: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    dedupe_key: str | None = None,
+) -> dict[str, Any]:
+    """Persist one user-visible moment in the workspace continuity timeline."""
+
+    clean_title = " ".join(str(title or "").split())[:180]
+    clean_summary = str(summary or "").strip()[:12_000]
+    clean_kind = str(event_kind or "activity").strip().lower()
+    clean_status = str(status or "open").strip().lower()
+    clean_importance = str(importance or "routine").strip().lower()
+    if len(clean_title) < 2:
+        raise ValueError("atlas_timeline_title_required")
+    if clean_kind not in _TIMELINE_KINDS:
+        raise ValueError("atlas_timeline_kind_invalid")
+    if clean_status not in _TIMELINE_STATUSES:
+        raise ValueError("atlas_timeline_status_invalid")
+    if clean_importance not in _TIMELINE_IMPORTANCE:
+        raise ValueError("atlas_timeline_importance_invalid")
+    clean_source_type = str(source_type or "").strip().lower()[:80] or None
+    clean_source_id = _entity_identity(source_id) if source_id is not None else None
+    if bool(clean_source_type) != bool(clean_source_id):
+        raise ValueError("atlas_timeline_source_incomplete")
+    clean_dedupe = str(dedupe_key or "").strip()[:160] or None
+    moment = _timeline_time(occurred_at)
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        membership = con.execute(
+            """
+            SELECT role FROM atlas_memberships
+            WHERE organization_id = ? AND user_id = ? AND status = 'active'
+            """,
+            (int(organization_id), int(actor_user_id)),
+        ).fetchone()
+        if membership is None or str(membership["role"]) == "viewer":
+            raise ValueError("atlas_timeline_forbidden")
+        if clean_source_type and not _atlas_entity_exists(
+            con,
+            int(organization_id),
+            clean_source_type,
+            clean_source_id or "",
+            actor_user_id=int(actor_user_id),
+        ):
+            raise ValueError("atlas_timeline_source_not_found")
+        con.execute(
+            """
+            INSERT INTO atlas_timeline_events(
+                organization_id, actor_user_id, event_kind, title, summary,
+                status, importance, occurred_at, source_type, source_id,
+                metadata_json, dedupe_key, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(organization_id, dedupe_key) DO NOTHING
+            """,
+            (
+                int(organization_id), int(actor_user_id), clean_kind, clean_title,
+                clean_summary, clean_status, clean_importance, moment,
+                clean_source_type, clean_source_id, _json(dict(metadata or {})),
+                clean_dedupe, now, now,
+            ),
+        )
+        if clean_dedupe:
+            row = con.execute(
+                """
+                SELECT * FROM atlas_timeline_events
+                WHERE organization_id = ? AND dedupe_key = ?
+                """,
+                (int(organization_id), clean_dedupe),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM atlas_timeline_events WHERE id = last_insert_rowid()"
+            ).fetchone()
+        con.commit()
+    if row is None:
+        raise ValueError("atlas_timeline_create_failed")
+    return _row(row)
+
+
+def atlas_update_timeline_event(
+    organization_id: int,
+    actor_user_id: int,
+    event_id: int,
+    *,
+    title: Any = _UNSET,
+    summary: Any = _UNSET,
+    status: Any = _UNSET,
+    importance: Any = _UNSET,
+    expected_version: int | None = None,
+) -> dict[str, Any]:
+    """Update a timeline moment with optimistic concurrency protection."""
+
+    assignments: list[str] = []
+    params: list[Any] = []
+    if title is not _UNSET:
+        clean_title = " ".join(str(title or "").split())[:180]
+        if len(clean_title) < 2:
+            raise ValueError("atlas_timeline_title_required")
+        assignments.append("title = ?")
+        params.append(clean_title)
+    if summary is not _UNSET:
+        assignments.append("summary = ?")
+        params.append(str(summary or "").strip()[:12_000])
+    clean_status: str | None = None
+    if status is not _UNSET:
+        clean_status = str(status or "").strip().lower()
+        if clean_status not in _TIMELINE_STATUSES:
+            raise ValueError("atlas_timeline_status_invalid")
+        assignments.append("status = ?")
+        params.append(clean_status)
+    if importance is not _UNSET:
+        clean_importance = str(importance or "").strip().lower()
+        if clean_importance not in _TIMELINE_IMPORTANCE:
+            raise ValueError("atlas_timeline_importance_invalid")
+        assignments.append("importance = ?")
+        params.append(clean_importance)
+
+    with _db_lock, connect() as con:
+        membership = con.execute(
+            """
+            SELECT role FROM atlas_memberships
+            WHERE organization_id = ? AND user_id = ? AND status = 'active'
+            """,
+            (int(organization_id), int(actor_user_id)),
+        ).fetchone()
+        if membership is None or str(membership["role"]) == "viewer":
+            raise ValueError("atlas_timeline_forbidden")
+        current = con.execute(
+            "SELECT * FROM atlas_timeline_events WHERE id = ? AND organization_id = ?",
+            (int(event_id), int(organization_id)),
+        ).fetchone()
+        if current is None:
+            raise ValueError("atlas_timeline_not_found")
+        current_version = int(current["version"] or 1)
+        if expected_version is not None and int(expected_version) != current_version:
+            raise ValueError("atlas_timeline_version_conflict")
+        if not assignments:
+            return _row(current)
+        now = utc_now_iso()
+        if clean_status == "resolved":
+            assignments.append("resolved_at = COALESCE(resolved_at, ?)")
+            params.append(now)
+        elif clean_status is not None:
+            assignments.append("resolved_at = NULL")
+        assignments.extend(("version = version + 1", "updated_at = ?"))
+        params.append(now)
+        params.extend((int(event_id), int(organization_id), current_version))
+        cursor = con.execute(
+            f"""
+            UPDATE atlas_timeline_events
+            SET {', '.join(assignments)}
+            WHERE id = ? AND organization_id = ? AND version = ?
+            """,
+            tuple(params),
+        )
+        if int(cursor.rowcount or 0) != 1:
+            raise ValueError("atlas_timeline_version_conflict")
+        row = con.execute(
+            "SELECT * FROM atlas_timeline_events WHERE id = ?",
+            (int(event_id),),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
+def atlas_timeline_page(
+    organization_id: int,
+    *,
+    actor_user_id: int | None = None,
+    status: str | None = None,
+    limit: int = 80,
+    cursor: str | int | None = None,
+) -> dict[str, Any]:
+    selected_status = str(status or "").strip().lower()
+    if selected_status and selected_status not in _TIMELINE_STATUSES:
+        raise ValueError("atlas_timeline_status_invalid")
+    selected_limit = max(1, min(100, int(limit)))
+    params: list[Any] = [int(organization_id)]
+    status_filter = ""
+    if selected_status:
+        status_filter = "AND e.status = ?"
+        params.append(selected_status)
+    privacy_filter = ""
+    if actor_user_id is not None:
+        privacy_filter = """
+        AND (
+          COALESCE(e.source_type, '') NOT IN ('case', 'media_asset')
+          OR (e.source_type = 'case' AND EXISTS(
+            SELECT 1 FROM atlas_cases c
+            WHERE c.id = CAST(e.source_id AS INTEGER)
+              AND c.organization_id = e.organization_id
+              AND (c.visibility_scope = 'workspace' OR c.created_by_id = ? OR c.assigned_to_id = ?)
+          ))
+          OR (e.source_type = 'media_asset' AND EXISTS(
+            SELECT 1 FROM atlas_media_assets a
+            WHERE a.id = CAST(e.source_id AS INTEGER)
+              AND a.organization_id = e.organization_id
+              AND (a.visibility_scope = 'workspace' OR a.owner_user_id = ?)
+          ))
+        )
+        """
+        params.extend((int(actor_user_id), int(actor_user_id), int(actor_user_id)))
+    cursor_filter = ""
+    with connect_readonly() as con:
+        if cursor is not None and str(cursor).strip():
+            cursor_id = _entity_identity(cursor)
+            cursor_row = con.execute(
+                """
+                SELECT occurred_at, id FROM atlas_timeline_events
+                WHERE organization_id = ? AND id = ?
+                """,
+                (int(organization_id), int(cursor_id)),
+            ).fetchone()
+            if cursor_row is None:
+                raise ValueError("atlas_timeline_cursor_invalid")
+            cursor_filter = "AND (e.occurred_at < ? OR (e.occurred_at = ? AND e.id < ?))"
+            params.extend(
+                (str(cursor_row["occurred_at"]), str(cursor_row["occurred_at"]), int(cursor_id))
+            )
+        params.append(selected_limit + 1)
+        rows = con.execute(
+            f"""
+            SELECT e.*, m.display_name AS actor_display_name
+            FROM atlas_timeline_events e
+            LEFT JOIN atlas_memberships m
+              ON m.organization_id = e.organization_id
+             AND m.user_id = e.actor_user_id
+            WHERE e.organization_id = ? {status_filter} {privacy_filter} {cursor_filter}
+            ORDER BY e.occurred_at DESC, e.id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    has_more = len(rows) > selected_limit
+    items = [_row(row) for row in rows[:selected_limit]]
+    return {
+        "items": items,
+        "next_cursor": str(items[-1]["id"]) if has_more and items else None,
+    }
+
+
+def atlas_timeline_events(
+    organization_id: int,
+    *,
+    actor_user_id: int | None = None,
+    status: str | None = None,
+    limit: int = 80,
+    cursor: str | int | None = None,
+) -> list[dict[str, Any]]:
+    return atlas_timeline_page(
+        organization_id,
+        actor_user_id=actor_user_id,
+        status=status,
+        limit=limit,
+        cursor=cursor,
+    )["items"]
+
+
+def atlas_timeline_summary(organization_id: int, *, actor_user_id: int | None = None) -> dict[str, int]:
+    privacy_filter = ""
+    params: list[Any] = [int(organization_id)]
+    if actor_user_id is not None:
+        privacy_filter = """
+        AND (
+          COALESCE(e.source_type, '') NOT IN ('case', 'media_asset')
+          OR (e.source_type = 'case' AND EXISTS(
+            SELECT 1 FROM atlas_cases c
+            WHERE c.id = CAST(e.source_id AS INTEGER)
+              AND c.organization_id = e.organization_id
+              AND (c.visibility_scope = 'workspace' OR c.created_by_id = ? OR c.assigned_to_id = ?)
+          ))
+          OR (e.source_type = 'media_asset' AND EXISTS(
+            SELECT 1 FROM atlas_media_assets a
+            WHERE a.id = CAST(e.source_id AS INTEGER)
+              AND a.organization_id = e.organization_id
+              AND (a.visibility_scope = 'workspace' OR a.owner_user_id = ?)
+          ))
+        )
+        """
+        params.extend((int(actor_user_id), int(actor_user_id), int(actor_user_id)))
+    with connect_readonly() as con:
+        row = con.execute(
+            f"""
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status IN ('open', 'active') THEN 1 ELSE 0 END) AS active,
+              SUM(CASE WHEN status IN ('open', 'active')
+                        AND importance IN ('important', 'critical') THEN 1 ELSE 0 END) AS attention,
+              SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved
+            FROM atlas_timeline_events e WHERE e.organization_id = ? {privacy_filter}
+            """,
+            tuple(params),
+        ).fetchone()
+    return {key: int(value or 0) for key, value in dict(row).items()}
+
+
+def atlas_link_entities(
+    organization_id: int,
+    actor_user_id: int,
+    *,
+    source_type: str,
+    source_id: str | int,
+    relation: str,
+    target_type: str,
+    target_id: str | int,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_source_type = str(source_type or "").strip().lower()[:80]
+    clean_source_id = _entity_identity(source_id)
+    clean_target_type = str(target_type or "").strip().lower()[:80]
+    clean_target_id = _entity_identity(target_id)
+    clean_relation = str(relation or "").strip().lower()
+    if not all((clean_source_type, clean_source_id, clean_target_type, clean_target_id)):
+        raise ValueError("atlas_entity_link_invalid")
+    if clean_relation not in _ENTITY_RELATIONS:
+        raise ValueError("atlas_entity_relation_invalid")
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        membership = con.execute(
+            """
+            SELECT role FROM atlas_memberships
+            WHERE organization_id = ? AND user_id = ? AND status = 'active'
+            """,
+            (int(organization_id), int(actor_user_id)),
+        ).fetchone()
+        if membership is None or str(membership["role"]) == "viewer":
+            raise ValueError("atlas_entity_link_forbidden")
+        if not _atlas_entity_exists(
+            con,
+            int(organization_id),
+            clean_source_type,
+            clean_source_id,
+            actor_user_id=int(actor_user_id),
+        ):
+            raise ValueError("atlas_entity_source_not_found")
+        if not _atlas_entity_exists(
+            con,
+            int(organization_id),
+            clean_target_type,
+            clean_target_id,
+            actor_user_id=int(actor_user_id),
+        ):
+            raise ValueError("atlas_entity_target_not_found")
+        con.execute(
+            """
+            INSERT INTO atlas_entity_links(
+                organization_id, source_type, source_id, relation,
+                target_type, target_id, created_by_id, metadata_json, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(
+                organization_id, source_type, source_id,
+                relation, target_type, target_id
+            ) DO UPDATE SET metadata_json = excluded.metadata_json
+            """,
+            (
+                int(organization_id), clean_source_type, clean_source_id,
+                clean_relation, clean_target_type, clean_target_id,
+                int(actor_user_id), _json(dict(metadata or {})), now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT * FROM atlas_entity_links
+            WHERE organization_id = ? AND source_type = ? AND source_id = ?
+              AND relation = ? AND target_type = ? AND target_id = ?
+            """,
+            (
+                int(organization_id), clean_source_type, clean_source_id,
+                clean_relation, clean_target_type, clean_target_id,
+            ),
+        ).fetchone()
+        con.commit()
+    return _row(row)
+
+
+def atlas_entity_links(
+    organization_id: int,
+    entity_type: str,
+    entity_id: str | int,
+) -> list[dict[str, Any]]:
+    clean_type = str(entity_type or "").strip().lower()[:80]
+    if clean_type not in _ENTITY_TABLES:
+        raise ValueError("atlas_entity_type_invalid")
+    clean_id = _entity_identity(entity_id)
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_entity_links
+            WHERE organization_id = ?
+              AND ((source_type = ? AND source_id = ?)
+                OR (target_type = ? AND target_id = ?))
+            ORDER BY id DESC
+            """,
+            (int(organization_id), clean_type, clean_id, clean_type, clean_id),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
 def atlas_threads(
     organization_id: int,
     user_id: int,
@@ -1596,18 +2213,28 @@ def atlas_dashboard(
               (SELECT COUNT(*) FROM atlas_documents WHERE organization_id = ?) AS documents,
               (SELECT COUNT(*) FROM atlas_knowledge_sources WHERE organization_id = ? AND status = 'indexed') AS knowledge,
               (SELECT COUNT(*) FROM atlas_memberships WHERE organization_id = ? AND status = 'active') AS members,
-              (SELECT COUNT(*) FROM atlas_ai_threads WHERE organization_id = ? AND status = 'active') AS threads
+              (SELECT COUNT(*) FROM atlas_ai_threads WHERE organization_id = ? AND status = 'active') AS threads,
+              (SELECT COUNT(*) FROM atlas_timeline_events WHERE organization_id = ?) AS events
             """,
-            (organization_id, organization_id, organization_id, organization_id),
+            (
+                organization_id, organization_id, organization_id,
+                organization_id, organization_id,
+            ),
         ).fetchone()
+    timeline = atlas_timeline_events(organization_id, actor_user_id=user_id, limit=80)
+    timeline_summary = atlas_timeline_summary(organization_id, actor_user_id=user_id)
+    safe_counts = dict(counts)
+    safe_counts["events"] = int(timeline_summary["total"])
     return {
         "organization": selected,
         "membership": membership,
         "spaces": spaces,
-        "counts": dict(counts),
+        "counts": safe_counts,
         "templates": atlas_templates(organization_id),
         "documents": atlas_documents(organization_id, limit=12),
         "threads": atlas_threads(organization_id, user_id, limit=60),
+        "timeline": timeline,
+        "timeline_summary": timeline_summary,
         "knowledge_sources": atlas_knowledge_sources(organization_id, limit=40),
         "catalog": atlas_catalog(),
     }

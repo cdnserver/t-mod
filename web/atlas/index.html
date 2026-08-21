@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260809-atlas-focus-v4">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260822-global-search-v1">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -92,6 +92,9 @@
         <nav class="atlas-nav" aria-label="Навигация Atlas">
           <button class="active" type="button" data-screen="home"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20h-5v-6H9v6H4z"/></svg></i><span>Командный центр</span></button>
           <button type="button" data-screen="ai"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></i><span>Atlas AI</span><b>NEW</b></button>
+          <button type="button" data-screen="memory"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5v14M5 8h6l3-3h5M5 13h5l3 3h6M5 18h8"/><circle cx="19" cy="5" r="1.5"/><circle cx="19" cy="16" r="1.5"/></svg></i><span>Память и события</span><b>CORE</b></button>
+          <button type="button" data-screen="media"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="m9 10 6 3-6 3z"/><circle cx="18" cy="8" r="1"/></svg></i><span>Медиасеть</span><b>NEW</b></button>
+          <button type="button" data-screen="cases"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v13H5zM8 7V4h8v3"/><path d="M8 12h8M8 16h5"/></svg></i><span>Дела и доказательства</span><b>CORE</b></button>
           <button type="button" data-screen="documents"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4M9 12h7M9 16h7"/></svg></i><span>Документы</span></button>
           <button type="button" data-screen="knowledge"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H11v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H13v18h3.5A3.5 3.5 0 0 1 20 23z"/></svg></i><span>База знаний</span></button>
           <button type="button" data-screen="forum"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/><path d="M18 13v7H4V6h7"/></svg></i><span>Форум и памятки</span></button>
@@ -129,7 +132,7 @@
                 <p>Единая среда знаний, документов и процессов для государственных структур Majestic RP и независимых проектов.</p>
                 <div class="hero-actions">
                   <button type="button" class="primary" data-jump="ai">Спросить Atlas <span>→</span></button>
-                  <button type="button" class="secondary" data-jump="documents">Создать документ</button>
+                  <button type="button" class="secondary" data-jump="memory" data-create-memory>Зафиксировать событие</button>
                 </div>
               </div>
               <div class="atlas-core" aria-hidden="true">
@@ -145,6 +148,7 @@
               <article><span>Источники знаний</span><strong id="metric-knowledge">0</strong><small>готово к поиску</small></article>
               <article><span>Участники</span><strong id="metric-members">1</strong><small>с активным доступом</small></article>
               <article><span>Диалоги Atlas</span><strong id="metric-threads">0</strong><small>защищённые сессии</small></article>
+              <article><span>События памяти</span><strong id="metric-events">0</strong><small>связанных моментов</small></article>
             </div>
 
             <article id="onboarding-card" class="onboarding-card">
@@ -167,6 +171,8 @@
               <article class="module-card docs" data-jump="documents"><span class="module-index">02</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4M9 12h7M9 16h7"/></svg></i><h3>Документооборот</h3><p>Шаблоны, версии, согласование и единый стандарт для каждой структуры.</p><b>Открыть студию <span>→</span></b></article>
               <article class="module-card knowledge" data-jump="knowledge"><span class="module-index">03</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H11v18H7.5A3.5 3.5 0 0 0 4 23zM20 5.5A3.5 3.5 0 0 0 16.5 2H13v18h3.5A3.5 3.5 0 0 1 20 23z"/></svg></i><h3>База знаний</h3><p>Регламенты, материалы форума, памятки и документы в одной проверенной библиотеке.</p><b>Управлять знаниями <span>→</span></b></article>
               <article class="module-card forum" data-jump="forum"><span class="module-index">04</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/><path d="M18 13v7H4V6h7"/></svg></i><h3>Работа с форумом</h3><p>Живая законодательная база, история редакций и безопасное обновление источников.</p><b>Открыть контур <span>→</span></b></article>
+              <article class="module-card memory" data-jump="memory"><span class="module-index">05</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5v14M5 8h6l3-3h5M5 13h5l3 3h6M5 18h8"/><circle cx="19" cy="5" r="1.5"/><circle cx="19" cy="16" r="1.5"/></svg></i><h3>Atlas Memory</h3><p>События не исчезают: Atlas сохраняет момент, источник и его место в общей истории пространства.</p><b>Открыть временную линию <span>→</span></b></article>
+              <article class="module-card media" data-jump="media"><span class="module-index">06</span><i class="module-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="m9 10 6 3-6 3z"/><circle cx="18" cy="8" r="1"/></svg></i><h3>Медиасеть</h3><p>Откаты и файлы становятся частью истории: с приватностью, проверкой и связями вместо папки с непонятными именами.</p><b>Открыть медиатеку <span>→</span></b></article>
             </div>
           </section>
 
@@ -198,8 +204,68 @@
           </section>
 
           <section id="screen-documents" class="screen">
-            <div class="section-intro row"><div><span>DOCUMENT STUDIO</span><h2>Документы и шаблоны</h2><p>Единый стандарт создания документов с готовностью к согласованию и публикации.</p></div><button id="new-document" class="primary" type="button">+ Новый документ</button></div>
+            <div class="section-intro row document-heading"><div><span>ATLAS DOCUMENT STUDIO</span><h2>Документы и процессы</h2><p>Черновик не затирается: каждая редакция получает контрольную сумму, комментарии привязаны к версии, а публикация проходит явный маршрут согласования.</p></div><button id="new-document" class="primary" type="button">Новый документ <span>＋</span></button></div>
+            <div class="document-overview"><article><small>ВСЕГО</small><strong id="document-total">0</strong><span>в пространстве</span></article><article><small>ЧЕРНОВИКИ</small><strong id="document-draft-count">0</strong><span>можно редактировать</span></article><article><small>НА ПРОВЕРКЕ</small><strong id="document-review-count">0</strong><span>ждут решения</span></article><article><small>ГОТОВО</small><strong id="document-approved-count">0</strong><span>одобрено или опубликовано</span></article></div>
             <div class="studio-grid"><article class="template-catalog"><header><span>БИБЛИОТЕКА ШАБЛОНОВ</span><strong id="template-count">0</strong></header><div id="template-list" class="template-list"></div></article><article class="recent-documents"><header><span>ПОСЛЕДНИЕ ДОКУМЕНТЫ</span><strong id="document-count">0</strong></header><div id="document-list" class="document-list"></div></article></div>
+            <div class="document-flow"><span><i>01</i><b>Черновик</b><small>структурные поля и текст</small></span><em></em><span><i>02</i><b>Проверка</b><small>комментарии к редакции</small></span><em></em><span><i>03</i><b>Согласование</b><small>решения по порядку</small></span><em></em><span><i>04</i><b>Публикация</b><small>только подтверждённая версия</small></span></div>
+          </section>
+
+          <section id="screen-memory" class="screen">
+            <div class="section-intro row memory-heading"><div><span>ATLAS CONTINUITY CORE</span><h2>Память пространства</h2><p>Живая история событий, решений и документов. Позже здесь соединятся откаты, доказательства, дела и процессы — без повторного сбора контекста.</p></div><button id="new-memory-event" class="primary" type="button">+ Зафиксировать событие</button></div>
+            <div class="memory-overview">
+              <article><small>ВСЕГО МОМЕНТОВ</small><strong id="memory-total">0</strong><span>в истории пространства</span></article>
+              <article><small>В РАБОТЕ</small><strong id="memory-active">0</strong><span>открытых и активных</span></article>
+              <article class="attention"><small>ТРЕБУЮТ ВНИМАНИЯ</small><strong id="memory-attention">0</strong><span>важных событий</span></article>
+              <article><small>ЗАВЕРШЕНО</small><strong id="memory-resolved">0</strong><span>с сохранённым результатом</span></article>
+            </div>
+            <div class="memory-layout">
+              <article class="memory-stream-panel">
+                <header><div><span>ATLAS TIMELINE</span><h3>Хронология пространства</h3></div><small><i></i>цифровая непрерывность активна</small></header>
+                <div id="memory-timeline" class="memory-timeline"><div class="empty">История начнётся с первого события.</div></div>
+              </article>
+              <aside class="continuity-map">
+                <span>КАК РАБОТАЕТ ПАМЯТЬ</span><h3>Один контекст.<br>Много продолжений.</h3>
+                <div class="continuity-chain"><i>01</i><b>Событие</b><span></span><i>02</i><b>Материал</b><span></span><i>03</i><b>Дело</b><span></span><i>04</i><b>Решение</b></div>
+                <p>Каждый следующий объект сможет ссылаться на предыдущий. История останется проверяемой и доступной только участникам выбранного пространства.</p>
+                <blockquote>Событие превращается в данные. Данные — в контекст. Контекст — в действие.</blockquote>
+              </aside>
+            </div>
+          </section>
+
+          <section id="screen-media" class="screen">
+            <div class="section-intro row media-heading"><div><span>ATLAS MEDIA CORE</span><h2>Медиасеть пространства</h2><p>Безопасное место для откатов, записей и рабочих файлов. Каждый материал получает происхождение, контрольную сумму и место в истории Atlas.</p></div><span class="media-core-state"><i></i><b>Content-addressed storage</b><small>файл не теряется при перезапуске</small></span></div>
+            <div class="media-overview">
+              <article><small>МАТЕРИАЛОВ</small><strong id="media-count">0</strong><span>доступно вам</span></article>
+              <article><small>ГОТОВО</small><strong id="media-ready">0</strong><span>прошли обработку</span></article>
+              <article><small>ОБРАБАТЫВАЕТСЯ</small><strong id="media-processing">0</strong><span>можно закрыть страницу</span></article>
+              <article><small>ХРАНИЛИЩЕ</small><strong id="media-quota">0 Б</strong><span id="media-quota-note">безопасный контур</span></article>
+            </div>
+            <div class="media-layout">
+              <article class="media-uploader">
+                <header><span>НОВЫЙ МАТЕРИАЛ</span><h3>Сохранить в Atlas</h3><p>Загрузка возобновляется по частям, затем Atlas проверяет файл и переносит его в постоянное хранилище.</p></header>
+                <form id="media-upload-form">
+                  <label class="media-drop"><input id="media-file" name="file" type="file" required><span><i>＋</i><b>Выберите видео, аудио, изображение или документ</b><small>крупные файлы отправляются безопасными фрагментами</small></span></label>
+                  <label>Название<input name="title" maxlength="180" placeholder="Например: конфликт у центрального штаба"></label>
+                  <div class="media-form-row"><label>Доступ<select name="visibility_scope"><option value="private">Только мне</option><option value="workspace">Всему пространству</option></select></label><label>Хранение<select name="retention_policy"><option value="manual">Пока не удалю</option><option value="30d">30 дней</option><option value="90d">90 дней</option><option value="permanent">Постоянно</option></select></label></div>
+                  <div id="media-upload-progress" class="media-upload-progress" hidden><span><i></i></span><div><b>Подготовка загрузки</b><small>0%</small></div></div>
+                  <button type="submit">Сохранить материал <span>→</span></button>
+                </form>
+              </article>
+              <aside class="media-principles">
+                <span>ЧТО СОХРАНЯЕТ ATLAS</span><h3>Не просто файл.<br>Проверяемый объект.</h3>
+                <ol><li><i>01</i><span><b>Происхождение</b><small>кто, когда и откуда сохранил</small></span></li><li><i>02</i><span><b>Целостность</b><small>checksum защищает от тихой подмены</small></span></li><li><i>03</i><span><b>Приватность</b><small>личный или общий контур</small></span></li><li><i>04</i><span><b>Связи</b><small>событие, дело и доказательство без копий</small></span></li></ol>
+              </aside>
+            </div>
+            <article class="media-library"><header><div><span>ВАША МЕДИАТЕКА</span><h3>Материалы и откаты</h3></div><button id="refresh-media" type="button">Обновить</button></header><div id="media-library-list" class="media-library-list"><div class="empty">Первый материал появится здесь после загрузки.</div></div></article>
+          </section>
+
+          <section id="screen-cases" class="screen">
+            <div class="section-intro row cases-heading"><div><span>ATLAS CASE &amp; EVIDENCE</span><h2>Дела и доказательства</h2><p>Факты, утверждения и материалы соединяются в проверяемую картину. Atlas показывает пробелы и не даст выдать предположение за готовый вывод.</p></div><button id="new-case" class="primary" type="button">Открыть дело <span>＋</span></button></div>
+            <div class="case-overview"><article><small>ОТКРЫТО</small><strong id="case-open-count">0</strong><span>активных дел</span></article><article><small>ГОТОВО</small><strong id="case-ready-count">0</strong><span>прошли проверку</span></article><article><small>УТВЕРЖДЕНИЯ</small><strong id="case-claim-count">0</strong><span>требуют доказательств</span></article><article><small>ДОКАЗАТЕЛЬСТВА</small><strong id="case-evidence-count">0</strong><span>сохранено с происхождением</span></article></div>
+            <div class="case-workspace">
+              <article class="case-board"><header><div><span>РЕЕСТР ПРОСТРАНСТВА</span><h3>Текущие дела</h3></div><div><select id="case-status-filter" aria-label="Фильтр дел"><option value="">Все состояния</option><option value="intake">Приём</option><option value="investigation">Расследование</option><option value="review">Проверка</option><option value="ready">Готово</option><option value="closed">Закрыто</option></select><button id="refresh-cases" type="button">Обновить</button></div></header><div id="case-list" class="case-list"><div class="empty">Откройте первое дело, чтобы начать проверку фактов.</div></div></article>
+              <aside class="case-method"><span>МЕТОД ATLAS</span><h3>От сигнала<br>к обоснованному выводу.</h3><ol><li><i>01</i><div><b>Сформулируйте утверждения</b><small>одно проверяемое положение — одна карточка</small></div></li><li><i>02</i><div><b>Привяжите первоисточники</b><small>откат, событие, документ, ссылка или заметка</small></div></li><li><i>03</i><div><b>Проверьте допустимость</b><small>Atlas сохраняет происхождение и точный фрагмент</small></div></li><li><i>04</i><div><b>Закройте пробелы</b><small>готовность считается по реальным подтверждениям</small></div></li></ol><blockquote>Ни один вывод не сильнее доказательств, на которых он построен.</blockquote></aside>
+            </div>
           </section>
 
           <section id="screen-knowledge" class="screen">
@@ -272,10 +338,34 @@
     </dialog>
 
     <dialog id="document-dialog" class="atlas-dialog">
-      <form id="document-form" method="dialog"><button class="dialog-close" type="button" data-close>×</button><span>DOCUMENT STUDIO</span><h2>Новый документ</h2><p>На первом этапе Atlas создаст защищённый черновик. Редактор полей расширим следующим пакетом.</p><label>Название<input name="title" maxlength="180" required placeholder="Рапорт от 08.08.2026"></label><label>Шаблон<select id="document-template" name="template_id"></select></label><label>Содержание<textarea name="content" rows="8" placeholder="Основной текст или исходные данные документа"></textarea></label><button class="primary" type="submit">Создать черновик</button></form>
+      <form id="document-form" method="dialog"><button class="dialog-close" type="button" data-close>×</button><span>ATLAS DOCUMENT STUDIO</span><h2>Новый документ</h2><p>Atlas сохранит исходный черновик как первую неизменяемую редакцию. Дальше документ можно обсуждать и согласовывать.</p><label>Название<input name="title" maxlength="180" required placeholder="Рапорт от 08.08.2026"></label><label>Шаблон<select id="document-template" name="template_id"></select></label><label>Содержание<textarea name="content" rows="8" placeholder="Основной текст или исходные данные документа"></textarea></label><button class="primary" type="submit">Создать защищённый черновик</button></form>
+    </dialog>
+
+    <dialog id="document-detail-dialog" class="document-detail-dialog">
+      <div class="document-detail-shell"><button class="dialog-close" type="button" data-close>×</button><header id="document-detail-header"><div><span>ATLAS DOCUMENT</span><h2>Загрузка документа…</h2><p>Редакция 1</p></div><div class="document-state-seal"><i>◇</i><strong>Черновик</strong></div></header><div class="document-detail-grid"><section class="document-editor-panel"><form id="document-edit-form"><label>Название<input name="title" maxlength="180" required></label><label>Текст документа<textarea name="rendered_text" rows="15" maxlength="100000"></textarea></label><label>Что изменилось<input name="change_summary" maxlength="1000" placeholder="Кратко опишите правку"></label><div class="document-editor-actions"><button type="submit">Сохранить новую редакцию</button><button id="document-next-state" type="button">Передать на проверку</button></div></form></section><aside class="document-process-panel"><div class="document-process-tabs"><button class="active" type="button" data-document-tab="approval">Согласование</button><button type="button" data-document-tab="comments">Комментарии</button><button type="button" data-document-tab="revisions">Версии</button></div><div id="document-approval-pane" class="document-process-pane"><div id="document-approval-list" class="document-process-list"></div><form id="document-approval-form"><input name="assigned_user_id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord ID согласующего" required><input name="title" maxlength="120" value="Проверка ответственным" required><button type="submit">Назначить маршрут</button></form></div><div id="document-comments-pane" class="document-process-pane" hidden><div id="document-comment-list" class="document-process-list"></div><form id="document-comment-form"><textarea name="body" rows="3" maxlength="12000" placeholder="Комментарий к текущей редакции" required></textarea><button type="submit">Добавить комментарий</button></form></div><div id="document-revisions-pane" class="document-process-pane" hidden><div id="document-revision-list" class="document-process-list"></div></div></aside></div></div>
+    </dialog>
+
+    <dialog id="memory-event-dialog" class="atlas-dialog memory-event-dialog">
+      <form id="memory-event-form" method="dialog"><button class="dialog-close" type="button" data-close>×</button><span>ATLAS MEMORY · НОВЫЙ МОМЕНТ</span><h2>Зафиксировать событие</h2><p>Сохраните то, к чему Atlas должен уметь вернуться позднее. Событие останется внутри выбранного пространства.</p><label>Название<input name="title" minlength="2" maxlength="180" required placeholder="Например: конфликт у штаба"></label><div class="dialog-fields"><label>Тип<select name="event_kind"><option value="incident">Инцидент</option><option value="activity">Действие</option><option value="decision">Решение</option><option value="communication">Коммуникация</option><option value="note">Заметка</option></select></label><label>Важность<select name="importance"><option value="routine">Обычное</option><option value="important">Важное</option><option value="critical">Критическое</option></select></label><label>Состояние<select name="status"><option value="open">Открыто</option><option value="active">В работе</option><option value="resolved">Завершено</option></select></label><label>Когда произошло<input name="occurred_at" type="datetime-local"></label></div><label>Что произошло<textarea name="summary" rows="6" maxlength="12000" placeholder="Факты, участники, место и то, что потребуется сделать дальше…"></textarea></label><button class="primary" type="submit">Сохранить в памяти <span>→</span></button></form>
+    </dialog>
+
+    <dialog id="case-dialog" class="atlas-dialog case-dialog">
+      <form id="case-form" method="dialog"><button class="dialog-close" type="button" data-close>×</button><span>ATLAS CASE · НОВОЕ ДЕЛО</span><h2>Зафиксировать предмет проверки</h2><p>Сначала обозначьте вопрос и границы работы. Доказательства и выводы появятся внутри карточки дела.</p><label>Название дела<input name="title" minlength="3" maxlength="180" required placeholder="Например: обстоятельства конфликта у штаба"></label><div class="dialog-fields"><label>Тип<select name="case_kind"><option value="investigation">Расследование</option><option value="incident">Инцидент</option><option value="legal">Правовой материал</option><option value="request">Обращение</option></select></label><label>Приоритет<select name="priority"><option value="routine">Обычный</option><option value="high">Высокий</option><option value="critical">Критический</option></select></label><label>Доступ<select name="visibility_scope"><option value="workspace">Пространство</option><option value="private">Только мне</option></select></label></div><label>Цель проверки<textarea name="objective" rows="4" maxlength="12000" placeholder="Что именно должно быть установлено?"></textarea></label><label>Рабочая гипотеза<textarea name="hypothesis" rows="3" maxlength="12000" placeholder="Необязательно. Atlas будет считать это гипотезой, а не фактом."></textarea></label><button class="primary" type="submit">Открыть дело <span>→</span></button></form>
+    </dialog>
+
+    <dialog id="case-detail-dialog" class="case-detail-dialog">
+      <div class="case-detail-shell"><button class="dialog-close" type="button" data-close>×</button><header id="case-detail-header"><div><span>ATLAS CASE</span><h2>Загрузка дела…</h2><p></p></div><div class="case-readiness-orb"><strong>0</strong><small>ГОТОВНОСТЬ</small></div></header><div id="case-readiness-gaps" class="case-readiness-gaps"></div><div class="case-detail-grid"><section><header><div><span>ПРОВЕРЯЕМЫЕ ПОЛОЖЕНИЯ</span><h3>Утверждения</h3></div><button id="case-add-claim" type="button">Добавить</button></header><div id="case-claims" class="case-detail-list"></div></section><section><header><div><span>ПЕРВОИСТОЧНИКИ</span><h3>Доказательства</h3></div><button id="case-add-evidence" type="button">Привязать</button></header><div id="case-evidence" class="case-detail-list"></div></section></div></div>
+    </dialog>
+
+    <dialog id="case-item-dialog" class="atlas-dialog case-item-dialog">
+      <form id="case-item-form" method="dialog"><button class="dialog-close" type="button" data-close>×</button><span id="case-item-kicker">ATLAS CASE</span><h2 id="case-item-title">Добавить утверждение</h2><p id="case-item-description">Сформулируйте одно положение, которое можно подтвердить или опровергнуть.</p><div id="case-claim-fields"><label>Утверждение<textarea name="statement" rows="5" maxlength="12000" placeholder="Кто, что, где и когда сделал?" required></textarea></label><label>Значимость<select name="importance"><option value="context">Контекст</option><option value="material" selected>Существенное</option><option value="critical">Критическое</option></select></label></div><div id="case-evidence-fields" hidden><label>Тип источника<select name="source_type"><option value="note">Заметка / свидетельство</option><option value="timeline_event">Событие Atlas Memory</option><option value="media_asset">Файл из Медиасети</option><option value="media_segment">Фрагмент записи</option><option value="document">Документ Atlas</option><option value="knowledge_source">Источник знаний</option><option value="url">Внешняя HTTPS-ссылка</option></select></label><label>Номер или ссылка<input name="source_id" maxlength="2000" placeholder="ID объекта; для заметки оставьте пустым"></label><label>Название доказательства<input name="evidence_title" maxlength="180" placeholder="Например: видеозапись с нагрудной камеры"></label><label>К какому утверждению<select id="case-evidence-claim" name="claim_id"><option value="">К делу в целом</option></select></label><label>Почему это важно<textarea name="relevance" rows="4" maxlength="12000" placeholder="Что именно подтверждает или опровергает материал?"></textarea></label></div><button id="case-item-submit" class="primary" type="submit">Сохранить <span>→</span></button></form>
+    </dialog>
+
+    <dialog id="atlas-search-dialog" class="atlas-search-dialog">
+      <div class="atlas-search-shell"><button class="dialog-close" type="button" data-close>×</button><header><span>ATLAS GLOBAL SEARCH</span><h2>Найти во всём пространстве</h2><p>Дела, документы, события, медиа и разрешённые знания — без смешивания личных контуров.</p></header><form id="atlas-search-form"><span>⌕</span><input id="atlas-search-query" name="query" minlength="2" maxlength="180" autocomplete="off" placeholder="Введите название, факт или фрагмент текста…" required><button type="submit">Найти</button></form><div id="atlas-search-summary" class="atlas-search-summary">Начните ввод, чтобы собрать связанную картину.</div><div id="atlas-search-results" class="atlas-search-results"></div></div>
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js?v=20260809-atlas-focus-v4" defer></script>
+    <script src="/atlas/assets/app.js?v=20260822-global-search-v1" defer></script>
   </body>
 </html>

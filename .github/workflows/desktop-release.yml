@@ -37,7 +37,7 @@ jobs:
             files: |
               desktop/release/*.exe
               desktop/release/*.exe.blockmap
-              desktop/release/latest.yml
+              desktop/release/*.yml
           - name: macOS universal
             os: macos-latest
             command: electron-builder --mac dmg zip --universal --publish never
@@ -46,7 +46,7 @@ jobs:
               desktop/release/*.dmg
               desktop/release/*.zip
               desktop/release/*.blockmap
-              desktop/release/latest-mac.yml
+              desktop/release/*.yml
           - name: Linux x64
             os: ubuntu-latest
             command: electron-builder --linux AppImage --x64 --publish never
@@ -54,7 +54,7 @@ jobs:
             files: |
               desktop/release/*.AppImage
               desktop/release/*.AppImage.blockmap
-              desktop/release/latest-linux.yml
+              desktop/release/*.yml
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
@@ -129,13 +129,17 @@ jobs:
           test -n "$GH_TOKEN" || { echo "DESKTOP_RELEASE_TOKEN is missing"; exit 1; }
           version="${RELEASE_TAG#desktop-v}"
           target_tag="v${version}"
+          release_flags=(--latest)
+          if [[ "$version" == *-dev.* ]]; then
+            release_flags=(--prerelease)
+          fi
           if gh release view "$target_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$target_tag" release/* --repo "$RELEASE_REPOSITORY" --clobber
-            gh release edit "$target_tag" --repo "$RELEASE_REPOSITORY" --latest
+            gh release edit "$target_tag" --repo "$RELEASE_REPOSITORY" "${release_flags[@]}"
           else
             gh release create "$target_tag" release/* \
               --repo "$RELEASE_REPOSITORY" \
               --title "T-Mod Desktop ${version}" \
               --notes "Установщики T-Mod Desktop ${version}. Приложение получает дальнейшие обновления автоматически." \
-              --latest
+              "${release_flags[@]}"
           fi

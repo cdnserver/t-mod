@@ -134,6 +134,9 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(membership["onboarding_step"], 4)
         self.assertEqual(membership["profile"]["agency"], "SGL")
         self.assertEqual(document["title"], "Рапорт №1")
+        timeline = atlas_repository.atlas_timeline_events(organization_id)
+        self.assertEqual(timeline[0]["event_kind"], "document")
+        self.assertEqual(timeline[0]["source_id"], str(document["id"]))
         snapshot = atlas_repository.atlas_admin_snapshot(77)
         self.assertEqual(snapshot["totals"]["documents"], 1)
         self.assertEqual(snapshot["recent_events"][0]["event_type"], "document_created")
@@ -144,6 +147,162 @@ class AtlasRepositoryTests(unittest.TestCase):
                 title="Документ с чужим шаблоном",
                 template_id=999999,
                 fields={},
+            )
+
+    def test_continuity_timeline_is_idempotent_and_space_isolated(self) -> None:
+        own = atlas_repository.atlas_dashboard(77, 42, "Первый")
+        foreign = atlas_repository.atlas_dashboard(88, 84, "Второй")
+        organization_id = int(own["organization"]["id"])
+        first = atlas_repository.atlas_create_timeline_event(
+            organization_id,
+            42,
+            title="Конфликт у штаба",
+            summary="Сохранён исходный контекст события.",
+            event_kind="incident",
+            importance="important",
+            dedupe_key="incident:headquarters:1",
+        )
+        repeated = atlas_repository.atlas_create_timeline_event(
+            organization_id,
+            42,
+            title="Повторная отправка",
+            dedupe_key="incident:headquarters:1",
+        )
+
+        self.assertEqual(first["id"], repeated["id"])
+        self.assertEqual(atlas_repository.atlas_timeline_summary(organization_id)["attention"], 1)
+        self.assertEqual(len(atlas_repository.atlas_timeline_events(organization_id)), 1)
+        self.assertEqual(
+            atlas_repository.atlas_timeline_events(int(foreign["organization"]["id"])),
+            [],
+        )
+        with self.assertRaisesRegex(ValueError, "atlas_timeline_forbidden"):
+            atlas_repository.atlas_create_timeline_event(
+                organization_id,
+                999,
+                title="Чужое событие",
+            )
+
+    def test_continuity_graph_links_existing_entities_without_duplicates(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        event = atlas_repository.atlas_create_timeline_event(
+            organization_id,
+            42,
+            title="Материал получен",
+            event_kind="activity",
+        )
+        document = atlas_repository.atlas_create_document(
+            organization_id,
+            42,
+            title="Сводка события",
+            template_id=None,
+            fields={},
+        )
+        first = atlas_repository.atlas_link_entities(
+            organization_id,
+            42,
+            source_type="timeline_event",
+            source_id=event["id"],
+            relation="produced",
+            target_type="document",
+            target_id=document["id"],
+        )
+        repeated = atlas_repository.atlas_link_entities(
+            organization_id,
+            42,
+            source_type="timeline_event",
+            source_id=event["id"],
+            relation="produced",
+            target_type="document",
+            target_id=document["id"],
+        )
+
+        self.assertEqual(first["id"], repeated["id"])
+        links = atlas_repository.atlas_entity_links(
+            organization_id, "document", document["id"]
+        )
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["source_id"], str(event["id"]))
+
+        with self.assertRaisesRegex(ValueError, "atlas_entity_target_not_found"):
+            atlas_repository.atlas_link_entities(
+                organization_id,
+                42,
+                source_type="timeline_event",
+                source_id=event["id"],
+                relation="produced",
+                target_type="document",
+                target_id=999999,
+            )
+        with self.assertRaisesRegex(ValueError, "atlas_entity_type_invalid"):
+            atlas_repository.atlas_link_entities(
+                organization_id,
+                42,
+                source_type="invented",
+                source_id=event["id"],
+                relation="related_to",
+                target_type="document",
+                target_id=document["id"],
+            )
+
+    def test_timeline_update_uses_versions_and_page_cursor(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        created = [
+            atlas_repository.atlas_create_timeline_event(
+                organization_id,
+                42,
+                title=f"Событие {index}",
+                occurred_at="2026-08-22T12:00:00+00:00",
+            )
+            for index in range(3)
+        ]
+
+        first_page = atlas_repository.atlas_timeline_page(organization_id, limit=2)
+        second_page = atlas_repository.atlas_timeline_page(
+            organization_id,
+            limit=2,
+            cursor=first_page["next_cursor"],
+        )
+        self.assertEqual([item["id"] for item in first_page["items"]], [created[2]["id"], created[1]["id"]])
+        self.assertEqual([item["id"] for item in second_page["items"]], [created[0]["id"]])
+        self.assertIsNone(second_page["next_cursor"])
+
+        resolved = atlas_repository.atlas_update_timeline_event(
+            organization_id,
+            42,
+            int(created[0]["id"]),
+            status="resolved",
+            summary="Результат сохранён.",
+            expected_version=1,
+        )
+        self.assertEqual(resolved["version"], 2)
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertIsNotNone(resolved["resolved_at"])
+        with self.assertRaisesRegex(ValueError, "atlas_timeline_version_conflict"):
+            atlas_repository.atlas_update_timeline_event(
+                organization_id,
+                42,
+                int(created[0]["id"]),
+                status="active",
+                expected_version=1,
+            )
+
+        foreign = atlas_repository.atlas_dashboard(88, 84, "Чужой")
+        with self.assertRaisesRegex(ValueError, "atlas_timeline_source_not_found"):
+            atlas_repository.atlas_create_timeline_event(
+                organization_id,
+                42,
+                title="Чужой источник",
+                source_type="document",
+                source_id=atlas_repository.atlas_create_document(
+                    int(foreign["organization"]["id"]),
+                    84,
+                    title="Чужой документ",
+                    template_id=None,
+                    fields={},
+                )["id"],
             )
 
     def test_admin_snapshot_does_not_mix_guilds(self) -> None:
@@ -190,6 +349,10 @@ class AtlasRepositoryTests(unittest.TestCase):
         rebuild_sources = atlas_repository.atlas_indexable_knowledge_sources()
         self.assertEqual([item["id"] for item in rebuild_sources], [first["id"]])
         self.assertEqual(rebuild_sources[0]["content_text"], first["content_text"])
+        timeline = atlas_repository.atlas_timeline_events(organization_id)
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["source_type"], "knowledge_source")
+        self.assertEqual(timeline[0]["source_id"], str(first["id"]))
 
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -1598,6 +1761,81 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("documents", payload)
         self.assertEqual(forbidden.status, 403)
 
+    async def test_admin_can_create_and_read_continuity_timeline(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-timeline-web-test.db"
+        storage.init_db()
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        try:
+            async with TestClient(TestServer(app)) as client:
+                headers = {
+                    "X-CSRF-Token": "admin-csrf",
+                    "X-Idempotency-Key": "timeline-event-1",
+                }
+                created = await client.post(
+                    "/api/atlas/timeline",
+                    json={
+                        "title": "Ситуация у штаба",
+                        "event_kind": "incident",
+                        "importance": "critical",
+                        "summary": "Контекст сохранён для дальнейшего дела.",
+                    },
+                    headers=headers,
+                )
+                repeated = await client.post(
+                    "/api/atlas/timeline",
+                    json={"title": "Не должно дублироваться"},
+                    headers=headers,
+                )
+                listed = await client.get("/api/atlas/timeline")
+                payload = await listed.json()
+
+                patched = await client.patch(
+                    f"/api/atlas/timeline/{payload['items'][0]['id']}",
+                    json={"status": "resolved", "expected_version": 1},
+                    headers={"X-CSRF-Token": "admin-csrf"},
+                )
+                patched_payload = await patched.json()
+
+            self.assertEqual(created.status, 201)
+            self.assertEqual(repeated.status, 201)
+            self.assertEqual(payload["summary"]["attention"], 1)
+            self.assertEqual(len(payload["items"]), 1)
+            self.assertEqual(payload["items"][0]["title"], "Ситуация у штаба")
+            self.assertIsNone(payload["next_cursor"])
+            self.assertEqual(patched.status, 200)
+            self.assertEqual(patched_payload["event"]["status"], "resolved")
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
     async def test_admin_can_upload_scoped_knowledge_file(self) -> None:
         old_data_dir = storage.DATA_DIR
         old_database_file = storage.DATABASE_FILE
@@ -1946,7 +2184,10 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "modules.atlas_web.atlas_reset_collection", reset
             ), patch("modules.atlas_web.atlas_index_source", index):
                 async with TestClient(TestServer(app)):
-                    await asyncio.sleep(0.05)
+                    for _ in range(50):
+                        if index.await_count:
+                            break
+                        await asyncio.sleep(0.02)
 
             reset.assert_awaited_once()
             index.assert_awaited_once()
