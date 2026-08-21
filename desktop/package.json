@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -53,6 +53,7 @@
     "asar": true,
     "compression": "maximum",
     "win": {
+      "icon": "resources/icon.ico",
       "target": "nsis",
       "artifactName": "T-Mod-Setup.${ext}"
     },

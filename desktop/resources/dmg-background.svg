@@ -3,9 +3,9 @@
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop stop-color="#151a2b"/><stop offset=".55" stop-color="#0b0e17"/><stop offset="1" stop-color="#06080d"/>
     </linearGradient>
-    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#f2f5ff"/><stop offset=".46" stop-color="#a5b1fa"/><stop offset="1" stop-color="#6272cf"/>
-    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#a9b8f4"/></linearGradient>
+    <linearGradient id="right" x1="1" y1="0" x2="0" y2="1"><stop stop-color="#657dcc"/><stop offset="1" stop-color="#b7c4f8"/></linearGradient>
+    <linearGradient id="stem" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#eef2ff"/><stop offset="1" stop-color="#748bdd"/></linearGradient>
     <linearGradient id="horizon" x1="0" y1="0" x2="1" y2="0">
       <stop stop-color="#8c9bfa" stop-opacity="0"/><stop offset=".5" stop-color="#e3e8ff" stop-opacity=".5"/><stop offset="1" stop-color="#8c9bfa" stop-opacity="0"/>
     </linearGradient>
@@ -13,9 +13,10 @@
   <rect width="600" height="420" fill="url(#bg)"/>
   <path d="M0 32L600 0v80L0 114z" fill="#91a0ff" fill-opacity=".04"/>
   <path d="M0 160l600-77v68L0 228z" fill="#91a0ff" fill-opacity=".025"/>
-  <rect x="269" y="34" width="62" height="116" rx="19" fill="#0a0e18" stroke="#aab6ff" stroke-opacity=".3"/>
-  <rect x="274" y="39" width="52" height="106" rx="15" fill="url(#glass)"/>
-  <path d="M283 65h34v9h-12v48h-10V74h-12z" fill="#111729"/>
+  <path d="M285 76h30v69l-15 14-15-14z" fill="url(#stem)"/>
+  <path d="m233 67 60-13v26l-60 11z" fill="url(#left)"/>
+  <path d="m307 54 60 13v24l-60-11z" fill="url(#right)"/>
+  <rect x="295" y="164" width="10" height="10" rx="3" fill="#65d5bd"/>
   <path d="M170 156h260" stroke="url(#horizon)" stroke-width="2"/>
   <path d="M215 160h170" stroke="#f1f4ff" stroke-opacity=".1"/>
   <text x="300" y="199" text-anchor="middle" fill="#f2f4fd" font-family="Arial,sans-serif" font-size="24" font-weight="700">T-Mod</text>

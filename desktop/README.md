@@ -51,7 +51,7 @@ pnpm dist
 
 1. Изменить `version` в `desktop/package.json` и обновить lock-файл.
 2. Закоммитить изменения в `main`.
-3. Создать и отправить тег той же версии, например `desktop-v0.3.2`.
+3. Создать и отправить тег той же версии, например `desktop-v0.3.3`.
 4. GitHub Actions проверит код, отдельно соберёт Windows, macOS и Linux и опубликует файлы в открытом репозитории `cdnserver/t-mod-releases`.
 
 Для публикации в приватном репозитории исходного кода нужен Actions secret `DESKTOP_RELEASE_TOKEN` с правом записи релизов в `cdnserver/t-mod-releases`. Windows-сборка без коммерческого сертификата устанавливается и обновляется, но SmartScreen может показать предупреждение о неизвестном издателе. Для распространения macOS без системных предупреждений потребуется Apple Developer signing и notarization.

@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.2");
+    expect(manifest.version).toBe("0.3.3");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -65,7 +65,10 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("function LaunchSequence");
     expect(renderer).toContain("function playLaunchSound");
     expect(renderer).toContain("launchVisible && <LaunchSequence");
+    expect(renderer).toContain("launch-foldmark");
+    expect(renderer).toContain("fold-left");
     expect(styles).toContain(".launch-sequence");
+    expect(styles).toContain("@keyframes launch-fold-left-in");
     expect(styles).toContain("@keyframes launch-sequence-out");
     expect(renderer).not.toContain("launch-orbit");
     expect(styles).not.toContain(".launch-orbit");
@@ -103,5 +106,22 @@ describe("desktop release contract", () => {
     const masterMark = readFileSync(resolve(workspaceRoot, "brand/tmod/mark.svg"), "utf8");
     const desktopMark = readFileSync(resolve(root, "resources/icon.svg"), "utf8");
     expect(desktopMark).toBe(masterMark);
+  });
+
+  it("keeps Atlas cartographic and SGL institutional", () => {
+    const atlas = readFileSync(resolve(workspaceRoot, "brand/services/atlas.svg"), "utf8");
+    const sgl = readFileSync(resolve(workspaceRoot, "brand/services/sgl.svg"), "utf8");
+    expect(atlas).toContain('<circle cx="58" cy="70" r="34"');
+    expect(atlas).toContain('m98 17 3.5 8.5');
+    expect(sgl).toContain('m24 49 40-24 40 24H24Z');
+    expect(sgl).toContain('M36 55v43');
+  });
+
+  it("uses a dedicated transparent multi-resolution Windows icon", () => {
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    const iconPath = resolve(root, "resources/icon.ico");
+    expect(manifest.build.win.icon).toBe("resources/icon.ico");
+    expect(existsSync(iconPath)).toBe(true);
+    expect([...readFileSync(iconPath).subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   });
 });

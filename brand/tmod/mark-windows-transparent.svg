@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="left" x1="92" y1="132" x2="248" y2="226" gradientUnits="userSpaceOnUse"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#a9b8f4"/></linearGradient>
+    <linearGradient id="right" x1="420" y1="132" x2="265" y2="226" gradientUnits="userSpaceOnUse"><stop stop-color="#657dcc"/><stop offset="1" stop-color="#b7c4f8"/></linearGradient>
+    <linearGradient id="stem" x1="226" y1="194" x2="286" y2="393" gradientUnits="userSpaceOnUse"><stop stop-color="#eef2ff"/><stop offset="1" stop-color="#748bdd"/></linearGradient>
+  </defs>
+  <path d="M226 188h60v178l-30 27-30-27z" fill="url(#stem)" stroke="#26345f" stroke-opacity=".42" stroke-width="5"/>
+  <path d="m92 164 152-32v66L92 224z" fill="url(#left)" stroke="#26345f" stroke-opacity=".32" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m268 132 152 32v60l-152-26z" fill="url(#right)" stroke="#26345f" stroke-opacity=".36" stroke-width="5" stroke-linejoin="round"/>
+  <rect x="249" y="414" width="14" height="14" rx="4" fill="#65d5bd" stroke="#183e3a" stroke-opacity=".5" stroke-width="2"/>
+</svg>
