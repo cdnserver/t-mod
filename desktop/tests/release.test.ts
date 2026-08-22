@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.5-dev.4");
+    expect(manifest.version).toBe("0.3.5-dev.5");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -71,26 +71,37 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("VaultScreen");
     expect(renderer).toContain("event.repeat || unlocking");
     expect(renderer).not.toContain("onPointerDown={onUnlock}");
+    expect(renderer).toContain("onMinimize={() => void browserApi()?.minimize()}");
+    expect(renderer).toContain("PREFERRED_NAME_KEY");
+    expect(renderer).toContain("bootstrap.data?.viewer.name || rememberedName");
     expect(renderer).toContain("idleLockMinutes: 10");
     expect(renderer).toContain('updateChannel: "beta"');
     const cinematics = readFileSync(resolve(root, "src/renderer/cinematics.css"), "utf8");
-    expect(cinematics).toContain(".vault-stage");
+    const cinematicRenderer = readFileSync(resolve(root, "src/renderer/cinematics.tsx"), "utf8");
+    expect(cinematics).toContain(".cosmic-lock");
+    expect(cinematics).toContain(".lock-minimize");
+    expect(cinematics).toContain(".cosmic-clock");
+    expect(cinematics).toContain("font-variant-numeric:tabular-nums");
+    expect(cinematicRenderer).toContain('String(now.getMinutes()).padStart(2, "0")');
+    expect(cinematics).toContain(".lock-celestial");
     expect(styles).toContain(".update-channel-setting");
   });
 
   it("shows the branded launch sequence and allows its local audio signature", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
-    const styles = readFileSync(resolve(root, "src/renderer/styles.css"), "utf8");
     expect(main).toContain('appendSwitch("autoplay-policy", "no-user-gesture-required")');
+    expect(main).toContain("screen.getPrimaryDisplay()");
+    expect(main).toContain("workArea.width * .96");
+    expect(main).toContain("workArea.height * .94");
     const cinematics = readFileSync(resolve(root, "src/renderer/cinematics.css"), "utf8");
     expect(renderer).toContain("CinematicLaunch");
     expect(renderer).toContain("playIgnitionSound");
     expect(renderer).toContain("launchVisible && <CinematicLaunch");
-    expect(cinematics).toContain(".ignition-monolith");
-    expect(cinematics).toContain("@keyframes ignition-monolith-in");
-    expect(cinematics).toContain("@keyframes ignition-exit");
-    expect(cinematics).not.toContain("launch-orbit");
+    expect(cinematics).toContain(".cinema-meteors");
+    expect(cinematics).toContain("@keyframes meteor-primary");
+    expect(cinematics).toContain("@keyframes cinema-stage-out");
+    expect(cinematics).not.toContain("feTurbulence");
   });
 
   it("ships one complete vector identity for every desktop contour", () => {

@@ -37,6 +37,7 @@ type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "maximize" | "close" | "settings" | "menu" | "link" | "external";
 
 const PREFERENCES_KEY = "tmod-desktop-preferences-v1";
+const PREFERRED_NAME_KEY = "tmod-desktop-preferred-name-v1";
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   sidebarCollapsed: false,
   compactMode: false,
@@ -338,6 +339,9 @@ export function App() {
   const cinematicParams = new URLSearchParams(globalThis.location.search);
   const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
+  const cinematicPreviewName = cinematicQaEnabled
+    ? String(cinematicParams.get("name") || "").trim()
+    : "";
   const bridgeAvailable = Boolean(browserApi());
   const [bootstrap, setBootstrap] = useState<BootstrapResult>({
     authenticated: false,
@@ -356,6 +360,13 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
+  const [rememberedName, setRememberedName] = useState(() => {
+    try {
+      return String(localStorage.getItem(PREFERRED_NAME_KEY) || "").trim();
+    } catch {
+      return "";
+    }
+  });
   const [toast, setToast] = useState<string>();
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
@@ -447,6 +458,17 @@ export function App() {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
     void browserApi()?.applyPreferences(preferences);
   }, [preferences]);
+
+  useEffect(() => {
+    const preferredName = String(bootstrap.data?.viewer.name || "").trim();
+    if (!preferredName) return;
+    setRememberedName(preferredName);
+    try {
+      localStorage.setItem(PREFERRED_NAME_KEY, preferredName);
+    } catch {
+      // The current session still keeps the preferred name in memory.
+    }
+  }, [bootstrap.data?.viewer.name]);
 
   useEffect(() => {
     if (!toast) return;
@@ -580,7 +602,7 @@ export function App() {
 
   const notifications = bootstrap.data?.notifications.items || [];
   const unread = bootstrap.data?.notifications.unread || 0;
-  const userName = bootstrap.data?.viewer.name || "T-Mod";
+  const userName = cinematicPreviewName || bootstrap.data?.viewer.name || rememberedName || "T-Mod";
   const connectionState = bootstrap.online
     ? "online"
     : bootstrap.authenticated
@@ -796,8 +818,16 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
-      {locked && <VaultScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} unlocking={unlocking}/>}
-      {launchVisible && <CinematicLaunch reduced={preferences.reduceMotion}/>}
+      {locked && (
+        <VaultScreen
+          name={userName}
+          reason={lockReason}
+          reduced={preferences.reduceMotion}
+          unlocking={unlocking}
+          onMinimize={() => void browserApi()?.minimize()}
+        />
+      )}
+      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion}/>}
     </div>
   );
 }

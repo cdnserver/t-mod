@@ -6,6 +6,7 @@ import {
   ipcMain,
   nativeTheme,
   powerMonitor,
+  screen,
   session,
   shell,
   WebContentsView,
@@ -710,11 +711,16 @@ function registerIpc(): void {
 
 async function createWindow(): Promise<void> {
   log.info("Creating T-Mod desktop window");
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = Math.min(workArea.width, Math.max(960, Math.round(workArea.width * .96)));
+  const height = Math.min(workArea.height, Math.max(640, Math.round(workArea.height * .94)));
   mainWindow = new BrowserWindow({
-    width: 1480,
-    height: 940,
-    minWidth: 1080,
-    minHeight: 700,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height,
+    minWidth: 960,
+    minHeight: 640,
     show: false,
     frame: false,
     backgroundColor: "#07090f",
