@@ -83,6 +83,19 @@ jobs:
         shell: bash
         run: node -e "const p=require('./desktop/package.json'); const expected='desktop-v'+p.version; if(process.env.RELEASE_TAG!==expected){console.error('Expected tag '+expected+', got '+process.env.RELEASE_TAG); process.exit(1)}"
 
+      - name: Configure update channel
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'desktop/package.json';
+          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const channel = pkg.version.includes('-dev.') ? 'dev' : 'latest';
+          pkg.build.publish = pkg.build.publish.map((provider) => ({ ...provider, channel }));
+          fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+          console.log(`Update channel: ${channel}`);
+          NODE
+
       - name: Install desktop dependencies
         working-directory: desktop
         run: pnpm install --frozen-lockfile

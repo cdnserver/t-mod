@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.5-dev.1");
+    expect(manifest.version).toBe("0.3.5-dev.2");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",

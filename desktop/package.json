@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.3.5-dev.1",
+  "version": "0.3.5-dev.2",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -37,6 +37,7 @@
     "vitest": "4.1.10"
   },
   "build": {
+    "generateUpdatesFilesForAllChannels": true,
     "appId": "lat.tvr.tmod.desktop",
     "productName": "T-Mod",
     "artifactName": "T-Mod-${version}-${os}-${arch}.${ext}",
