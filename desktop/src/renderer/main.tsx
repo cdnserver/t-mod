@@ -8,6 +8,7 @@ import "@fontsource/unbounded/500.css";
 import "@fontsource/unbounded/600.css";
 import { App } from "./App";
 import "./styles.css";
+import "./cinematics.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

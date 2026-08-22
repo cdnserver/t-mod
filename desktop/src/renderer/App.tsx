@@ -25,6 +25,12 @@ import {
   serviceById,
   services,
 } from "../shared/services";
+import {
+  CinematicLaunch,
+  VaultScreen,
+  playIgnitionSound,
+  playVaultSound,
+} from "./cinematics";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
@@ -326,6 +332,12 @@ function LockScreen({
 }
 
 export function App() {
+  const cinematicQaEnabled = import.meta.env.DEV
+    || globalThis.location.hostname === "127.0.0.1"
+    || globalThis.location.hostname === "localhost";
+  const cinematicParams = new URLSearchParams(globalThis.location.search);
+  const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
+  const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const bridgeAvailable = Boolean(browserApi());
   const [bootstrap, setBootstrap] = useState<BootstrapResult>({
     authenticated: false,
@@ -351,8 +363,8 @@ export function App() {
     channel: "beta",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
-  const [launchVisible, setLaunchVisible] = useState(true);
-  const [locked, setLocked] = useState(false);
+  const [launchVisible, setLaunchVisible] = useState(cinematicQa !== "lock");
+  const [locked, setLocked] = useState(cinematicQa === "lock");
   const [unlocking, setUnlocking] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -362,10 +374,11 @@ export function App() {
   const unlockTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    const stopSound = playLaunchSound();
+    const stopSound = playIgnitionSound();
+    if (cinematicHold) return stopSound;
     const timer = window.setTimeout(
       () => setLaunchVisible(false),
-      preferences.reduceMotion ? 1_650 : 6_850,
+      preferences.reduceMotion ? 1_420 : 8_200,
     );
     return () => {
       window.clearTimeout(timer);
@@ -468,7 +481,7 @@ export function App() {
     void api.unlock().then((ok) => {
       if (ok !== false) {
         setUnlocking(true);
-        playLockSound("unlock", preferences.lockSound);
+        playVaultSound("unlock", preferences.lockSound);
         unlockTimer.current = window.setTimeout(() => {
           setLocked(false);
           setUnlocking(false);
@@ -496,7 +509,7 @@ export function App() {
 
   useEffect(() => {
     if (!locked) return;
-    const stopSound = playLockSound("lock", preferences.lockSound);
+    const stopSound = playVaultSound("lock", preferences.lockSound);
     const release = (event: KeyboardEvent) => {
       if (event.repeat || unlocking) return;
       event.preventDefault();
@@ -783,8 +796,8 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
-      {locked && <LockScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} unlocking={unlocking}/>}
-      {launchVisible && <LaunchSequence reduced={preferences.reduceMotion}/>}
+      {locked && <VaultScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} unlocking={unlocking}/>}
+      {launchVisible && <CinematicLaunch reduced={preferences.reduceMotion}/>}
     </div>
   );
 }
