@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from persistence.atlas_document_fields import normalize_document_schema, prepare_document_content
+
 from modules.atlas_catalog import (
     atlas_catalog as _base_atlas_catalog,
     atlas_normalize_knowledge_scope,
@@ -575,7 +577,12 @@ def atlas_seed_templates() -> None:
             "Служебная записка",
             "Внутренние документы",
             "Краткое официальное обращение внутри структуры.",
-            {"fields": ["recipient", "subject", "body", "author"]},
+            {"fields": [
+                {"key": "recipient", "label": "Кому", "placeholder": "Должность, подразделение или имя"},
+                {"key": "subject", "label": "Тема", "placeholder": "Краткий предмет обращения"},
+                {"key": "body", "label": "Содержание", "type": "textarea", "placeholder": "Факты, предложение и ожидаемое действие"},
+                {"key": "author", "label": "Автор", "placeholder": "Имя и должность"},
+            ]},
             "Кому: {{recipient}}\nТема: {{subject}}\n\n{{body}}\n\n{{author}}",
         ),
         (
@@ -583,7 +590,13 @@ def atlas_seed_templates() -> None:
             "Рапорт о происшествии",
             "Рапорты",
             "Единый формат фиксации события и принятых мер.",
-            {"fields": ["date", "location", "participants", "facts", "actions"]},
+            {"fields": [
+                {"key": "date", "label": "Дата события", "type": "date"},
+                {"key": "location", "label": "Место", "placeholder": "Где произошло событие"},
+                {"key": "participants", "label": "Участники", "type": "textarea", "placeholder": "Имена, должности и идентификаторы"},
+                {"key": "facts", "label": "Установленные обстоятельства", "type": "textarea"},
+                {"key": "actions", "label": "Принятые меры", "type": "textarea"},
+            ]},
             "Дата: {{date}}\nМесто: {{location}}\nУчастники: {{participants}}\n\nОбстоятельства:\n{{facts}}\n\nПринятые меры:\n{{actions}}",
         ),
         (
@@ -591,7 +604,12 @@ def atlas_seed_templates() -> None:
             "Публикация для форума",
             "Форум",
             "Структурированная публикация с проверкой фактов и вложений.",
-            {"fields": ["title", "summary", "content", "attachments"]},
+            {"fields": [
+                {"key": "title", "label": "Заголовок публикации"},
+                {"key": "summary", "label": "Краткое введение", "type": "textarea"},
+                {"key": "content", "label": "Основной текст", "type": "textarea"},
+                {"key": "attachments", "label": "Вложения", "type": "textarea", "required": False, "placeholder": "Ссылки или перечень приложений"},
+            ]},
             "[CENTER][B]{{title}}[/B][/CENTER]\n\n{{summary}}\n\n{{content}}\n\nВложения: {{attachments}}",
         ),
     )
@@ -622,6 +640,15 @@ def atlas_seed_templates() -> None:
                     code,
                 ),
             )
+            con.execute(
+                """
+                UPDATE atlas_document_templates
+                SET name = ?, category = ?, description = ?, schema_json = ?,
+                    template_text = ?, updated_at = ?
+                WHERE organization_id IS NULL AND code = ? AND version = 1
+                """,
+                (name, category, description, _json(schema), body, now, code),
+            )
         con.commit()
 
 
@@ -635,7 +662,10 @@ def atlas_templates(organization_id: int) -> list[dict[str, Any]]:
             """,
             (int(organization_id),),
         ).fetchall()
-    return [_row(row) for row in rows]
+    items = [_row(row) for row in rows]
+    for item in items:
+        item["schema"] = normalize_document_schema(item.get("schema"))
+    return items
 
 
 def atlas_documents(organization_id: int, *, limit: int = 30) -> list[dict[str, Any]]:
@@ -665,10 +695,8 @@ def atlas_create_document(
     clean_title = str(title or "").strip()[:180]
     if not clean_title:
         raise ValueError("atlas_document_title_required")
-    clean_fields = {
-        str(key)[:80]: str(value).strip()[:12000]
-        for key, value in dict(fields or {}).items()
-    }
+    clean_fields: dict[str, str]
+    clean_text = str(rendered_text or "")[:100000]
     now = utc_now_iso()
     with _db_lock, connect() as con:
         membership = con.execute(
@@ -683,7 +711,7 @@ def atlas_create_document(
         if template_id:
             template = con.execute(
                 """
-                SELECT id FROM atlas_document_templates
+                SELECT id, schema_json, template_text FROM atlas_document_templates
                 WHERE id = ? AND status = 'active'
                   AND (organization_id IS NULL OR organization_id = ?)
                 """,
@@ -691,6 +719,16 @@ def atlas_create_document(
             ).fetchone()
             if template is None:
                 raise ValueError("atlas_document_template_forbidden")
+            clean_fields, clean_text = prepare_document_content(
+                _decoded(template["schema_json"], {}),
+                str(template["template_text"] or ""),
+                fields,
+                fallback_text=clean_text,
+            )
+        else:
+            clean_fields, clean_text = prepare_document_content(
+                {}, "", fields, fallback_text=clean_text
+            )
         cursor = con.execute(
             """
             INSERT INTO atlas_documents(
@@ -704,7 +742,7 @@ def atlas_create_document(
                 int(user_id),
                 clean_title,
                 _json(clean_fields),
-                str(rendered_text or "")[:100000],
+                clean_text,
                 now,
                 now,
             ),
@@ -715,7 +753,7 @@ def atlas_create_document(
                 {
                     "title": clean_title,
                     "fields": clean_fields,
-                    "rendered_text": str(rendered_text or "")[:100000],
+                    "rendered_text": clean_text,
                 }
             ).encode("utf-8")
         ).hexdigest()
@@ -729,7 +767,7 @@ def atlas_create_document(
             """,
             (
                 int(organization_id), document_id, int(user_id), clean_title,
-                _json(clean_fields), str(rendered_text or "")[:100000],
+                _json(clean_fields), clean_text,
                 revision_checksum, now,
             ),
         )

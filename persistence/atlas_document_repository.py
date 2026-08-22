@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any
 
+from persistence.atlas_document_fields import normalize_document_schema, prepare_document_content
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
@@ -74,6 +75,12 @@ def atlas_document_detail(
     with connect_readonly() as con:
         _membership(con, int(organization_id), int(user_id))
         document = _document(con, int(organization_id), int(document_id))
+        template = None
+        if document["template_id"]:
+            template = con.execute(
+                "SELECT * FROM atlas_document_templates WHERE id = ?",
+                (int(document["template_id"]),),
+            ).fetchone()
         revisions = con.execute(
             """
             SELECT * FROM atlas_document_revisions
@@ -104,6 +111,7 @@ def atlas_document_detail(
     approval_state = "complete" if approvals and all(str(row["status"]) in {"approved", "skipped"} for row in approvals) else "attention" if any(str(row["status"]) == "rejected" for row in approvals) else "pending"
     return {
         "document": _row(document),
+        "template": ({**_row(template), "schema": normalize_document_schema(_row(template).get("schema"))} if template is not None else None),
         "revisions": [_row(row) for row in revisions],
         "comments": [_row(row) for row in comments],
         "approvals": [_row(row) for row in approvals],
@@ -124,7 +132,7 @@ def atlas_document_revise(
     expected_revision: int,
 ) -> dict[str, Any]:
     clean_title = str(title or "").strip()[:180]
-    clean_fields = {str(key)[:80]: str(value).strip()[:12000] for key, value in dict(fields or {}).items()}
+    clean_fields: dict[str, str]
     clean_text = str(rendered_text or "")[:100000]
     if not clean_title:
         raise ValueError("atlas_document_title_required")
@@ -139,6 +147,24 @@ def atlas_document_revise(
             raise ValueError("atlas_document_revision_conflict")
         if str(document["status"]) in {"published", "archived"}:
             raise ValueError("atlas_document_locked")
+        if document["template_id"]:
+            template = con.execute(
+                "SELECT schema_json, template_text FROM atlas_document_templates WHERE id = ?",
+                (int(document["template_id"]),),
+            ).fetchone()
+            if template is None:
+                raise ValueError("atlas_document_template_forbidden")
+            clean_fields, clean_text = prepare_document_content(
+                _decoded(template["schema_json"]),
+                str(template["template_text"] or ""),
+                fields,
+                fallback_text=clean_text,
+                allow_legacy_content=True,
+            )
+        else:
+            clean_fields, clean_text = prepare_document_content(
+                {}, "", fields, fallback_text=clean_text
+            )
         next_revision = int(document["revision"]) + 1
         checksum = _checksum(clean_title, clean_fields, clean_text)
         con.execute(

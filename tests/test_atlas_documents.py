@@ -136,6 +136,56 @@ class AtlasDocumentWorkflowTests(unittest.TestCase):
                 expected_revision=1,
             )
 
+    def test_structured_template_validates_and_renders_each_revision(self) -> None:
+        template = next(
+            item for item in atlas_repository.atlas_templates(self.organization_id)
+            if item["code"] == "official-memo"
+        )
+        self.assertEqual(template["schema"]["fields"][0]["key"], "recipient")
+        with self.assertRaisesRegex(ValueError, "atlas_document_fields_required:subject,body,author"):
+            atlas_repository.atlas_create_document(
+                self.organization_id,
+                42,
+                title="Служебная записка",
+                template_id=int(template["id"]),
+                fields={"recipient": "Начальнику отдела"},
+            )
+
+        document = atlas_repository.atlas_create_document(
+            self.organization_id,
+            42,
+            title="Служебная записка",
+            template_id=int(template["id"]),
+            fields={
+                "recipient": "Начальнику отдела",
+                "subject": "Проверка материалов",
+                "body": "Прошу проверить приложенные материалы.",
+                "author": "И. Тестов",
+                "ignored": "не должно попасть в документ",
+            },
+            rendered_text="этот текст не должен подменить шаблон",
+        )
+        self.assertIn("Кому: Начальнику отдела", document["rendered_text"])
+        self.assertNotIn("подменить шаблон", document["rendered_text"])
+        self.assertNotIn("ignored", document["fields"])
+
+        detail = atlas_document_repository.atlas_document_detail(
+            self.organization_id, 42, int(document["id"])
+        )
+        self.assertEqual(detail["template"]["code"], "official-memo")
+        revised = atlas_document_repository.atlas_document_revise(
+            self.organization_id,
+            42,
+            int(document["id"]),
+            title=document["title"],
+            fields={**document["fields"], "subject": "Обновлённая проверка"},
+            rendered_text="произвольная подмена",
+            change_summary="Уточнена тема",
+            expected_revision=1,
+        )
+        self.assertIn("Тема: Обновлённая проверка", revised["rendered_text"])
+        self.assertNotIn("произвольная подмена", revised["rendered_text"])
+
 
 class AtlasDocumentWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_document_detail_and_comment_api(self) -> None:

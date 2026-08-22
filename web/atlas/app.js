@@ -348,6 +348,91 @@ function documentProcessItem(kind, title, note, status = "") {
   return item;
 }
 
+function documentTemplateById(templateId) {
+  return (appState.data?.templates || []).find((item) => Number(item.id) === Number(templateId)) || null;
+}
+
+function documentSchemaFields(template) {
+  return Array.isArray(template?.schema?.fields) ? template.schema.fields : [];
+}
+
+function renderStructuredDocumentFields(container, template, values = {}, locked = false) {
+  clear(container);
+  documentSchemaFields(template).forEach((field) => {
+    const label = element("label");
+    const caption = element("span", "document-field-caption", field.label || field.key);
+    if (field.required) caption.append(element("i", "", "обязательно"));
+    let control;
+    if (field.type === "textarea") {
+      control = document.createElement("textarea");
+      control.rows = 4;
+    } else if (field.type === "select") {
+      control = document.createElement("select");
+      control.append(new Option("Выберите значение", ""));
+      (field.options || []).forEach((option) => control.append(new Option(option, option)));
+    } else {
+      control = document.createElement("input");
+      control.type = ["date", "number"].includes(field.type) ? field.type : "text";
+    }
+    control.name = `field__${field.key}`;
+    control.value = values?.[field.key] || "";
+    control.placeholder = field.placeholder || "";
+    control.required = Boolean(field.required);
+    control.disabled = locked;
+    label.append(caption, control);
+    container.append(label);
+  });
+  container.hidden = !container.childElementCount;
+}
+
+function collectDocumentFields(form) {
+  const fields = {};
+  for (const [name, value] of new FormData(form)) {
+    if (name.startsWith("field__")) fields[name.slice(7)] = value;
+  }
+  return fields;
+}
+
+function approvalRouteRow(item = {}, position = 1) {
+  const row = element("div", "document-route-row");
+  row.dataset.routeStep = "1";
+  row.append(element("i", "", String(position).padStart(2, "0")));
+  const inputs = element("div", "document-route-inputs");
+  const title = document.createElement("input");
+  title.name = "route_title";
+  title.maxLength = 120;
+  title.required = true;
+  title.placeholder = "Название этапа";
+  title.value = item.title || "Проверка ответственным";
+  const target = document.createElement("input");
+  target.name = "route_user";
+  target.inputMode = "numeric";
+  target.pattern = "[0-9]+";
+  target.placeholder = "Discord ID — либо выберите роль";
+  target.value = item.assigned_user_id || "";
+  const role = document.createElement("select");
+  role.name = "route_role";
+  [["", "Без роли"], ["member", "Любой участник"], ["editor", "Редактор"], ["administrator", "Администратор"], ["owner", "Владелец"]].forEach(([value, label]) => role.append(new Option(label, value)));
+  role.value = item.required_role || "";
+  inputs.append(title, target, role);
+  const remove = element("button", "document-route-remove", "×");
+  remove.type = "button";
+  remove.title = "Удалить этап";
+  remove.addEventListener("click", () => { row.remove(); renumberApprovalRoute(); });
+  row.append(inputs, remove);
+  return row;
+}
+
+function renumberApprovalRoute() {
+  [...byId("document-route-builder").children].forEach((row, index) => { row.querySelector("i").textContent = String(index + 1).padStart(2, "0"); });
+}
+
+function renderApprovalRouteBuilder(items = []) {
+  const builder = byId("document-route-builder");
+  clear(builder);
+  (items.length ? items : [{}]).forEach((item, index) => builder.append(approvalRouteRow(item, index + 1)));
+}
+
 function renderDocumentDetail(detail) {
   appState.documentDetail = detail;
   const selected = detail.document || {};
@@ -360,6 +445,9 @@ function renderDocumentDetail(detail) {
   const form = byId("document-edit-form");
   form.elements.title.value = selected.title || "";
   form.elements.rendered_text.value = selected.rendered_text || "";
+  renderStructuredDocumentFields(byId("document-edit-fields"), detail.template, selected.fields || {}, ["published", "archived"].includes(selected.status));
+  form.elements.rendered_text.readOnly = Boolean(detail.template);
+  byId("document-rendered-label").firstChild.textContent = detail.template ? "Собранный текст · обновится после сохранения" : "Текст документа";
   form.elements.change_summary.value = "";
   [...form.elements].forEach((control) => { if (control.name) control.disabled = ["published", "archived"].includes(selected.status); });
 
@@ -412,6 +500,7 @@ function renderDocumentDetail(detail) {
     approvals.append(row);
   });
   if (!detail.approvals?.length) approvals.append(element("div", "empty", "Маршрут ещё не назначен."));
+  renderApprovalRouteBuilder(detail.approvals || []);
 
   const next = byId("document-next-state");
   const transition = { draft: ["review", "Передать на проверку"], review: ["approved", "Подтвердить документ"], approved: ["published", "Опубликовать"] }[selected.status];
@@ -1030,6 +1119,8 @@ async function sendQuestion(question) {
 function openDocumentDialog(template = null) {
   appState.selectedTemplate = template;
   byId("document-template").value = template ? String(template.id) : "";
+  renderStructuredDocumentFields(byId("document-template-fields"), template);
+  byId("document-freeform-label").hidden = Boolean(template);
   openDialog(byId("document-dialog"));
 }
 
@@ -1714,7 +1805,7 @@ function bind() {
     try {
       const result = await api("/api/atlas/documents", {
         method: "POST",
-        body: JSON.stringify({ title: values.title, template_id: values.template_id || null, fields: { content: values.content || "" }, rendered_text: values.content || "" }),
+        body: JSON.stringify({ title: values.title, template_id: values.template_id || null, fields: values.template_id ? collectDocumentFields(form) : { content: values.content || "" }, rendered_text: values.content || "" }),
       });
       closeDialog(byId("document-dialog"));
       form.reset();
@@ -1737,7 +1828,7 @@ function bind() {
         body: JSON.stringify({
           operation: "revise",
           title: values.title,
-          fields: { ...(selected.fields || {}), content: values.rendered_text || "" },
+          fields: appState.documentDetail?.template ? collectDocumentFields(form) : { ...(selected.fields || {}), content: values.rendered_text || "" },
           rendered_text: values.rendered_text || "",
           change_summary: values.change_summary || "Обновлён документ",
           expected_revision: selected.revision,
@@ -1780,12 +1871,27 @@ function bind() {
     const form = event.currentTarget;
     const selected = appState.documentDetail?.document;
     if (!selected) return;
-    const values = Object.fromEntries(new FormData(form));
+    const steps = [...byId("document-route-builder").querySelectorAll("[data-route-step]")].map((row) => ({
+      title: row.querySelector("[name='route_title']").value,
+      assigned_user_id: row.querySelector("[name='route_user']").value || null,
+      required_role: row.querySelector("[name='route_role']").value || null,
+    }));
     try {
-      await api(`/api/atlas/documents/${selected.id}/approvals`, { method: "PUT", body: JSON.stringify({ steps: [{ title: values.title, assigned_user_id: values.assigned_user_id }] }) });
+      await api(`/api/atlas/documents/${selected.id}/approvals`, { method: "PUT", body: JSON.stringify({ steps }) });
       await refreshOpenDocument();
       showToast("Маршрут согласования назначен.");
     } catch (error) { showToast(error.message || "Маршрут не сохранён.", true); }
+  });
+  byId("document-route-add").addEventListener("click", () => {
+    const builder = byId("document-route-builder");
+    if (builder.children.length >= 12) return showToast("В маршруте может быть не больше 12 этапов.", true);
+    builder.append(approvalRouteRow({}, builder.children.length + 1));
+  });
+  byId("document-template").addEventListener("change", (event) => {
+    const template = documentTemplateById(event.currentTarget.value);
+    appState.selectedTemplate = template;
+    renderStructuredDocumentFields(byId("document-template-fields"), template);
+    byId("document-freeform-label").hidden = Boolean(template);
   });
   document.querySelectorAll("[data-document-tab]").forEach((button) => {
     button.addEventListener("click", () => {

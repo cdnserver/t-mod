@@ -1184,6 +1184,14 @@ body:has(.atlas-app:not([hidden])) {
 #document-edit-form label { display:grid; gap:7px; color:#747895; font-size:8px; font-weight:700; }
 #document-edit-form input,#document-edit-form textarea,.document-process-pane input,.document-process-pane textarea { width:100%; padding:12px; border:1px solid rgba(143,136,220,.11); border-radius:11px; outline:0; color:#d6d8e7; background:#071522; font:inherit; resize:vertical; }
 #document-edit-form textarea { min-height:300px; line-height:1.65; }
+#document-edit-form textarea[readonly] { color:#aeb9cc; background:rgba(4,13,22,.78); cursor:default; }
+.document-structured-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; padding:14px; border:1px solid rgba(141,134,220,.09); border-radius:14px; background:rgba(76,66,166,.035); }
+.document-structured-fields[hidden] { display:none; }
+.document-structured-fields label { display:grid; align-content:start; gap:7px; color:#747895; font-size:8px; font-weight:700; }
+.document-structured-fields label:has(textarea) { grid-column:1/-1; }
+.document-structured-fields input,.document-structured-fields textarea,.document-structured-fields select { width:100%; padding:12px; border:1px solid rgba(143,136,220,.11); border-radius:11px; outline:0; color:#d6d8e7; background:#071522; font:inherit; resize:vertical; }
+.document-field-caption { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.document-field-caption i { color:#655f92; font:600 6px/1 "Unbounded",sans-serif; font-style:normal; text-transform:uppercase; letter-spacing:.08em; }
 #document-edit-form input:focus,#document-edit-form textarea:focus,.document-process-pane input:focus,.document-process-pane textarea:focus { border-color:rgba(155,146,239,.35); box-shadow:0 0 0 3px rgba(112,96,213,.07); }
 .document-editor-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .document-editor-actions button,.document-process-pane form button { min-height:39px; padding:0 13px; border:1px solid rgba(149,141,230,.17); border-radius:10px; color:#c6c2ec; background:linear-gradient(135deg,rgba(81,69,177,.18),rgba(40,93,129,.1)); font:700 7px/1 "Unbounded",sans-serif; cursor:pointer; }
@@ -1201,9 +1209,18 @@ body:has(.atlas-app:not([hidden])) {
 .document-process-item > button,.document-approval-actions button { padding:7px 9px; border:1px solid rgba(145,138,224,.13); border-radius:8px; color:#8d8ab0; background:rgba(72,61,152,.06); font-size:7px; cursor:pointer; }
 .document-approval-actions { display:flex; gap:5px; }.document-approval-actions .danger { color:#d58794; border-color:rgba(215,105,122,.14); }
 .document-process-pane form { display:grid; gap:8px; margin-top:12px; padding-top:12px; border-top:1px solid rgba(143,136,220,.07); }
+.document-route-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.document-route-heading > span { display:grid; gap:3px; }.document-route-heading b { color:#a9a9c2; font-size:8px; }.document-route-heading small { color:#555d78; font-size:7px; }
+.document-route-heading #document-route-add { min-height:30px; }
+.document-route-builder { display:grid; gap:7px; }
+.document-route-row { display:grid; grid-template-columns:27px minmax(0,1fr) 26px; align-items:center; gap:7px; padding:8px; border:1px solid rgba(141,134,220,.08); border-radius:11px; background:rgba(7,19,32,.65); }
+.document-route-row > i { display:grid; place-items:center; width:26px; height:26px; border-radius:8px; color:#7e79bb; background:rgba(90,76,185,.09); font:700 6px/1 "Unbounded",sans-serif; font-style:normal; }
+.document-route-inputs { display:grid; grid-template-columns:1.15fr 1fr .85fr; gap:5px; }
+.document-process-pane .document-route-inputs input,.document-process-pane .document-route-inputs select { min-width:0; padding:8px; font-size:7px; }
+.document-process-pane .document-route-remove { min-height:26px; padding:0; color:#9e6672; background:transparent; }
 
 @media (max-width:1040px) { .document-overview { grid-template-columns:repeat(2,minmax(0,1fr)); }.document-detail-grid { grid-template-columns:1fr; }.document-editor-panel,.document-process-panel { min-height:0; }.document-flow { grid-template-columns:repeat(4,1fr); }.document-flow em { display:none; } }
-@media (max-width:620px) { .document-overview { grid-template-columns:1fr; }.document-flow { grid-template-columns:1fr; }.document-detail-shell { padding:18px; }#document-detail-header { grid-template-columns:1fr; }.document-state-seal { width:86px; height:86px; }.document-editor-panel { padding:17px; }.document-editor-actions { flex-direction:column; }.document-editor-actions button { width:100%; } }
+@media (max-width:620px) { .document-overview { grid-template-columns:1fr; }.document-flow { grid-template-columns:1fr; }.document-detail-shell { padding:18px; }#document-detail-header { grid-template-columns:1fr; }.document-state-seal { width:86px; height:86px; }.document-editor-panel { padding:17px; }.document-editor-actions { flex-direction:column; }.document-editor-actions button { width:100%; }.document-structured-fields { grid-template-columns:1fr; }.document-structured-fields label:has(textarea) { grid-column:auto; }.document-route-inputs { grid-template-columns:1fr; } }
 
 /* Atlas Global Search ------------------------------------------------ */
 .atlas-search-dialog { width:min(860px,calc(100vw - 28px)); max-height:min(760px,calc(100vh - 28px)); padding:0; overflow:auto; border:1px solid rgba(119,204,235,.17); border-radius:25px; color:#e6f1f5; background:#07131d; box-shadow:0 45px 140px rgba(0,0,0,.76); }

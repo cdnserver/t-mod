@@ -123,12 +123,21 @@ class AtlasRepositoryTests(unittest.TestCase):
             step=4,
             profile={"agency": "SGL", "position": "Адвокат"},
         )
+        report_template = next(
+            item for item in dashboard["templates"] if item["code"] == "incident-report"
+        )
         document = atlas_repository.atlas_create_document(
             organization_id,
             42,
             title="Рапорт №1",
-            template_id=int(dashboard["templates"][0]["id"]),
-            fields={"facts": "Проверено"},
+            template_id=int(report_template["id"]),
+            fields={
+                "date": "2026-08-22",
+                "location": "Phoenix",
+                "participants": "Пользователь",
+                "facts": "Проверено",
+                "actions": "Материал сохранён",
+            },
         )
 
         self.assertEqual(membership["onboarding_step"], 4)
