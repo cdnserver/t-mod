@@ -37,7 +37,8 @@ jobs:
             files: |
               desktop/release/*.exe
               desktop/release/*.exe.blockmap
-              desktop/release/*.yml
+              desktop/release/latest*.yml
+              desktop/release/dev*.yml
           - name: macOS universal
             os: macos-latest
             command: electron-builder --mac dmg zip --universal --publish never
@@ -46,7 +47,8 @@ jobs:
               desktop/release/*.dmg
               desktop/release/*.zip
               desktop/release/*.blockmap
-              desktop/release/*.yml
+              desktop/release/latest*.yml
+              desktop/release/dev*.yml
           - name: Linux x64
             os: ubuntu-latest
             command: electron-builder --linux AppImage --x64 --publish never
@@ -54,7 +56,8 @@ jobs:
             files: |
               desktop/release/*.AppImage
               desktop/release/*.AppImage.blockmap
-              desktop/release/*.yml
+              desktop/release/latest*.yml
+              desktop/release/dev*.yml
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:

@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.4");
+    expect(manifest.version).toBe("0.3.5-dev.1");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -69,6 +69,8 @@ describe("desktop release contract", () => {
     expect(main).toContain('autoUpdater.channel = shellPreferences.updateChannel === "dev" ? "dev" : "latest"');
     expect(preload).toContain('ipcRenderer.on("desktop:lock-requested"');
     expect(renderer).toContain("function LockScreen");
+    expect(renderer).toContain("event.repeat || unlocking");
+    expect(renderer).not.toContain("onPointerDown={onUnlock}");
     expect(renderer).toContain("idleLockMinutes: 10");
     expect(renderer).toContain('updateChannel: "beta"');
     expect(styles).toContain(".lock-screen");

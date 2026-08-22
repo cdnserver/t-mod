@@ -120,10 +120,16 @@ function playLaunchSound(): () => void {
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(0.066, now + 0.38);
-  master.gain.setValueAtTime(0.066, now + 3.15);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + 4.38);
-  master.connect(context.destination);
+  master.gain.exponentialRampToValueAtTime(0.105, now + 0.48);
+  master.gain.setValueAtTime(0.105, now + 4.72);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 6.28);
+  const compressor = context.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-22, now);
+  compressor.knee.setValueAtTime(18, now);
+  compressor.ratio.setValueAtTime(5, now);
+  compressor.attack.setValueAtTime(0.018, now);
+  compressor.release.setValueAtTime(0.32, now);
+  master.connect(compressor).connect(context.destination);
 
   const tone = (
     frequency: number,
@@ -150,27 +156,28 @@ function playLaunchSound(): () => void {
 
   // Spatial notes follow the glass mark as it comes forward from depth.
   // A low foundation and restrained shimmer keep the signature cinematic.
-  tone(55, 0, 4.12, 0.31, "sine");
-  tone(110, 0.08, 3.76, 0.15, "sine");
-  tone(164.81, 0.42, 2.62, 0.075, "triangle", -0.46);
-  tone(220, 0.68, 2.42, 0.065, "triangle", 0.46);
-  tone(329.63, 1.02, 2.18, 0.052, "sine");
-  tone(659.25, 2.38, 1.18, 0.025, "sine", -0.18);
-  tone(987.77, 2.52, 0.92, 0.016, "sine", 0.22);
+  tone(41.2, 0, 5.78, 0.34, "sine");
+  tone(82.41, 0.08, 5.26, 0.18, "sine");
+  tone(123.47, 0.54, 4.38, 0.09, "triangle", -0.5);
+  tone(164.81, 0.82, 4.04, 0.085, "triangle", 0.5);
+  tone(246.94, 1.28, 3.5, 0.068, "sine");
+  tone(329.63, 2.18, 2.78, 0.052, "sine", -0.24);
+  tone(493.88, 3.22, 1.88, 0.039, "sine", 0.26);
+  tone(987.77, 4.58, 1.12, 0.024, "sine");
 
   const sub = context.createOscillator();
   const subGain = context.createGain();
   sub.type = "sine";
-  sub.frequency.setValueAtTime(58, now);
-  sub.frequency.exponentialRampToValueAtTime(42, now + 3.7);
+  sub.frequency.setValueAtTime(54, now);
+  sub.frequency.exponentialRampToValueAtTime(36, now + 5.45);
   subGain.gain.setValueAtTime(0.0001, now);
-  subGain.gain.exponentialRampToValueAtTime(0.14, now + 0.28);
-  subGain.gain.exponentialRampToValueAtTime(0.0001, now + 3.82);
+  subGain.gain.exponentialRampToValueAtTime(0.2, now + 0.38);
+  subGain.gain.exponentialRampToValueAtTime(0.0001, now + 5.62);
   sub.connect(subGain).connect(master);
   sub.start(now);
-  sub.stop(now + 3.9);
+  sub.stop(now + 5.7);
 
-  const noiseLength = Math.floor(context.sampleRate * 2.1);
+  const noiseLength = Math.floor(context.sampleRate * 3.4);
   const noiseBuffer = context.createBuffer(1, noiseLength, context.sampleRate);
   const noise = noiseBuffer.getChannelData(0);
   for (let index = 0; index < noise.length; index += 1) {
@@ -182,16 +189,16 @@ function playLaunchSound(): () => void {
   noiseSource.buffer = noiseBuffer;
   noiseFilter.type = "lowpass";
   noiseFilter.frequency.setValueAtTime(180, now);
-  noiseFilter.frequency.exponentialRampToValueAtTime(1_500, now + 2.05);
+  noiseFilter.frequency.exponentialRampToValueAtTime(2_100, now + 3.25);
   noiseGain.gain.setValueAtTime(0.0001, now);
-  noiseGain.gain.exponentialRampToValueAtTime(0.014, now + 0.72);
-  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 2.1);
+  noiseGain.gain.exponentialRampToValueAtTime(0.024, now + 0.92);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 3.4);
   noiseSource.connect(noiseFilter).connect(noiseGain).connect(master);
   noiseSource.start(now);
-  noiseSource.stop(now + 2.1);
+  noiseSource.stop(now + 3.4);
 
   void context.resume().catch(() => undefined);
-  const closeTimer = window.setTimeout(() => void context.close(), 4_750);
+  const closeTimer = window.setTimeout(() => void context.close(), 6_650);
   return () => {
     window.clearTimeout(closeTimer);
     if (context.state !== "closed") void context.close();
@@ -224,8 +231,9 @@ function LaunchSequence({ reduced }: { reduced: boolean }) {
         <i className="launch-cube-reflection"/>
       </div>
       <div className="launch-copy">
-        <h1 aria-label="T-Mod"><span>T</span><span>‑</span><span>M</span><span>O</span><span>D</span></h1>
+        <h1 aria-label="T-Mod"><span>T‑MOD</span></h1>
         <p>ЕДИНАЯ ЭКОСИСТЕМА</p>
+        <small><i/> SYSTEM CORE READY</small>
       </div>
       <div className="launch-cinematic-release" aria-hidden="true"><i/><b/><em/></div>
     </section>
@@ -238,24 +246,38 @@ function playLockSound(kind: "lock" | "unlock", enabled: boolean): () => void {
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(kind === "lock" ? 0.052 : 0.044, now + 0.06);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "lock" ? 1.35 : 0.82));
-  master.connect(context.destination);
-  const notes = kind === "lock" ? [220, 164.81, 110] : [220, 329.63, 493.88];
+  master.gain.exponentialRampToValueAtTime(kind === "lock" ? 0.085 : 0.095, now + 0.08);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "lock" ? 2.08 : 1.72));
+  const compressor = context.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-20, now);
+  compressor.ratio.setValueAtTime(4, now);
+  master.connect(compressor).connect(context.destination);
+  const notes = kind === "lock" ? [246.94, 164.81, 82.41] : [164.81, 246.94, 329.63, 659.25];
   notes.forEach((frequency, index) => {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
+    const offset = index * (kind === "lock" ? 0.16 : 0.12);
     oscillator.type = index === 0 ? "sine" : "triangle";
-    oscillator.frequency.setValueAtTime(frequency, now + index * 0.09);
-    gain.gain.setValueAtTime(0.0001, now + index * 0.09);
-    gain.gain.exponentialRampToValueAtTime(0.22 / (index + 1), now + 0.1 + index * 0.09);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.65 + index * 0.12);
+    oscillator.frequency.setValueAtTime(frequency, now + offset);
+    gain.gain.setValueAtTime(0.0001, now + offset);
+    gain.gain.exponentialRampToValueAtTime(0.2 / Math.sqrt(index + 1), now + 0.12 + offset);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === "lock" ? 1.48 : 1.05) + offset);
     oscillator.connect(gain).connect(master);
-    oscillator.start(now + index * 0.09);
-    oscillator.stop(now + 0.78 + index * 0.12);
+    oscillator.start(now + offset);
+    oscillator.stop(now + (kind === "lock" ? 1.62 : 1.18) + offset);
   });
+  const impact = context.createOscillator();
+  const impactGain = context.createGain();
+  impact.type = "sine";
+  impact.frequency.setValueAtTime(kind === "lock" ? 72 : 96, now);
+  impact.frequency.exponentialRampToValueAtTime(kind === "lock" ? 38 : 148, now + 0.7);
+  impactGain.gain.setValueAtTime(kind === "lock" ? 0.25 : 0.16, now);
+  impactGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+  impact.connect(impactGain).connect(master);
+  impact.start(now);
+  impact.stop(now + 1.15);
   void context.resume().catch(() => undefined);
-  const timer = window.setTimeout(() => void context.close(), 1_550);
+  const timer = window.setTimeout(() => void context.close(), 2_350);
   return () => {
     window.clearTimeout(timer);
     if (context.state !== "closed") void context.close();
@@ -266,12 +288,12 @@ function LockScreen({
   name,
   reason,
   reduced,
-  onUnlock,
+  unlocking,
 }: {
   name: string;
   reason: DesktopLockReason;
   reduced: boolean;
-  onUnlock: () => void;
+  unlocking: boolean;
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -282,24 +304,23 @@ function LockScreen({
   const date = new Intl.DateTimeFormat("ru", { weekday: "long", day: "numeric", month: "long" }).format(now);
   return (
     <section
-      className={`lock-screen ${reduced ? "reduced" : ""}`}
+      className={`lock-screen ${reduced ? "reduced" : ""} ${unlocking ? "unlocking" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label="T-Mod заблокирован"
-      onPointerDown={onUnlock}
     >
-      <div className="lock-atmosphere" aria-hidden="true"><i/><i/><i/><b/><em/></div>
-      <div className="lock-grid" aria-hidden="true"/>
-      <header className="lock-header"><span className="lock-mini-mark">T</span><strong>T‑MOD</strong><small>{reason === "idle" ? "РЕЖИМ ПОКОЯ" : "ЗАЩИЩЕНО"}</small></header>
+      <div className="lock-aurora" aria-hidden="true"><i/><i/><i/></div>
+      <div className="lock-stars" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/></div>
+      <div className="lock-horizon" aria-hidden="true"><i/><b/><em/></div>
+      <header className="lock-header"><span className="lock-mini-mark"><Icon name="shield"/></span><strong>T‑MOD</strong><small>{reason === "idle" ? "СЕАНС ПРИОСТАНОВЛЕН" : "КОНТУР ЗАБЛОКИРОВАН"}</small></header>
       <div className="lock-time"><strong>{time}</strong><span>{date}</span></div>
-      <div className="lock-core" aria-hidden="true"><i/><span>T</span><b/></div>
-      <div className="lock-welcome">
-        <p>С возвращением, {name}</p>
-        <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onUnlock(); }}>
-          <span>Нажмите любую клавишу</span><i>или коснитесь экрана</i><b>›</b>
-        </button>
+      <div className="lock-focus">
+        <small>{unlocking ? "ВОССТАНАВЛИВАЕМ СЕАНС" : `С ВОЗВРАЩЕНИЕМ, ${name.toUpperCase()}`}</small>
+        <h1>T‑MOD</h1>
+        <p>{unlocking ? "Контур открыт" : "Нажмите любую клавишу, чтобы продолжить"}</p>
+        <div className="lock-keyboard-prompt" aria-hidden="true"><kbd>{unlocking ? "✓" : "ANY KEY"}</kbd><i/><span>{unlocking ? "ДОСТУП ПОДТВЕРЖДЁН" : "ТОЛЬКО КЛАВИАТУРА"}</span></div>
       </div>
-      <footer><span><i/> Контур защищён локально</span><small>T‑Mod Desktop</small></footer>
+      <footer><span><i/> Локальная защита активна</span><small>{time} · T‑Mod Desktop</small></footer>
     </section>
   );
 }
@@ -332,17 +353,19 @@ export function App() {
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const [launchVisible, setLaunchVisible] = useState(true);
   const [locked, setLocked] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
   const hasLoadedBootstrap = useRef(false);
   const unlockInFlight = useRef(false);
+  const unlockTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const stopSound = playLaunchSound();
     const timer = window.setTimeout(
       () => setLaunchVisible(false),
-      preferences.reduceMotion ? 1_650 : 4_950,
+      preferences.reduceMotion ? 1_650 : 6_850,
     );
     return () => {
       window.clearTimeout(timer);
@@ -423,13 +446,16 @@ export function App() {
     if (!api) return;
     const unsubscribeUpdate = api.onUpdate(setUpdateState);
     const unsubscribeLock = api.onLockRequested((reason) => {
+      if (unlockTimer.current) window.clearTimeout(unlockTimer.current);
       setPaletteOpen(false);
       setNotificationsOpen(false);
       setSettingsOpen(false);
       setLockReason(reason);
+      setUnlocking(false);
       setLocked(true);
     });
     return () => {
+      if (unlockTimer.current) window.clearTimeout(unlockTimer.current);
       unsubscribeUpdate();
       unsubscribeLock();
     };
@@ -441,13 +467,18 @@ export function App() {
     unlockInFlight.current = true;
     void api.unlock().then((ok) => {
       if (ok !== false) {
-        setLocked(false);
+        setUnlocking(true);
         playLockSound("unlock", preferences.lockSound);
+        unlockTimer.current = window.setTimeout(() => {
+          setLocked(false);
+          setUnlocking(false);
+          unlockTimer.current = undefined;
+        }, preferences.reduceMotion ? 80 : 920);
       }
     }).finally(() => {
       unlockInFlight.current = false;
     });
-  }, [locked, preferences.lockSound]);
+  }, [locked, preferences.lockSound, preferences.reduceMotion]);
 
   const lockNow = useCallback(() => {
     setPaletteOpen(false);
@@ -455,7 +486,9 @@ export function App() {
     setSettingsOpen(false);
     void browserApi()?.lock().then((ok) => {
       if (ok) {
+        if (unlockTimer.current) window.clearTimeout(unlockTimer.current);
         setLockReason("manual");
+        setUnlocking(false);
         setLocked(true);
       }
     });
@@ -465,6 +498,7 @@ export function App() {
     if (!locked) return;
     const stopSound = playLockSound("lock", preferences.lockSound);
     const release = (event: KeyboardEvent) => {
+      if (event.repeat || unlocking) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       unlock();
@@ -474,7 +508,7 @@ export function App() {
       stopSound();
       window.removeEventListener("keydown", release, true);
     };
-  }, [locked, preferences.lockSound, unlock]);
+  }, [locked, preferences.lockSound, unlock, unlocking]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -749,7 +783,7 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
-      {locked && <LockScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} onUnlock={unlock}/>}
+      {locked && <LockScreen name={userName} reason={lockReason} reduced={preferences.reduceMotion} unlocking={unlocking}/>}
       {launchVisible && <LaunchSequence reduced={preferences.reduceMotion}/>}
     </div>
   );
@@ -939,8 +973,8 @@ function SettingsDrawer({
       </section>
       <section><p className="settings-label">Экран блокировки</p>
         <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
-        <SettingToggle label="Звук блокировки" hint="Тихий системный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
-        <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Вернуться можно любой клавишей</small></span><b>›</b></button>
+        <SettingToggle label="Звук блокировки" hint="Кинематографичный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
+        <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
       </section>
       <section><p className="settings-label">Обновления</p>
         <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>

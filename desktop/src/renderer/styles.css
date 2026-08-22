@@ -204,6 +204,28 @@ button { color: inherit; }
 .launch-sequence.reduced .launch-glass-cube { animation:none }
 .launch-sequence.reduced .launch-cinematic-release { display:none }
 
+/* Cinematic pass 2: a slower reveal with one indivisible T‑MOD wordmark. */
+.launch-sequence { animation:launch-sequence-out 1.05s cubic-bezier(.7,0,.88,.18) 5.78s forwards; }
+.launch-sequence::before { animation-duration:6.78s; }
+.launch-cinema-depth i { animation-duration:6.5s; }
+.launch-volumetric i { animation-duration:6.25s; }
+.launch-cube-rig { animation:launch-cube-arrive 2.18s cubic-bezier(.12,.84,.16,1) .48s forwards; }
+.launch-glass-cube { animation:launch-cube-breathe 3.25s ease-in-out 2.62s both; }
+.launch-glass-cube .glass-core { animation-delay:1.22s; animation-duration:1.4s; }
+.launch-glass-cube .glass-front::before { animation-delay:1.5s; animation-duration:1.72s; }
+.launch-glass-cube .glass-scan { animation-delay:1.02s; animation-duration:1.9s; }
+.launch-glass-cube span { animation-delay:1.65s; animation-duration:1.12s; }
+.launch-glass-cube > b { animation-delay:2.42s,3.2s; }
+.launch-copy h1 { display:flex; align-items:baseline; justify-content:center; overflow:visible; letter-spacing:-.075em; }
+.launch-copy h1 > span { opacity:0; transform:translateY(82%) scaleY(.82); filter:blur(9px); animation:launch-wordmark-in 1.18s cubic-bezier(.16,1,.3,1) 2.36s forwards; }
+.launch-copy p { animation-delay:3.18s; animation-duration:.92s; }
+.launch-copy > small { display:flex; align-items:center; justify-content:center; gap:8px; margin-top:12px; color:#485368; font:700 6px/1 "Unbounded"; letter-spacing:.19em; opacity:0; animation:launch-soft-in .8s ease 3.72s forwards; }
+.launch-copy > small i { width:5px; height:5px; border-radius:50%; background:#70cfbd; box-shadow:0 0 12px rgba(112,207,189,.8); }
+.launch-cinematic-release i { animation-delay:4.92s; animation-duration:1.18s; }
+.launch-cinematic-release b { animation-delay:4.92s; animation-duration:1.18s; }
+.launch-cinematic-release em { animation-delay:4.98s; animation-duration:1.15s; }
+@keyframes launch-wordmark-in { 0%{opacity:0;transform:translateY(82%) scaleY(.82);filter:blur(9px)} 58%{opacity:1;transform:translateY(-4%) scaleY(1.02);filter:blur(0)} 100%{opacity:1;transform:none;filter:blur(0)} }
+
 /* Session lock and release channels */
 .channel-badge { min-width:42px; height:25px; padding:0 8px; border:1px solid rgba(145,162,224,.18); border-radius:7px; color:#8d99c7; background:rgba(113,133,202,.07); font-size:7px; font-weight:800; letter-spacing:.15em; cursor:pointer; }.channel-badge:hover { color:#e7ebff; border-color:rgba(151,169,235,.34); background:rgba(113,133,202,.14); }.channel-badge.dev { color:#d0a5ff; border-color:rgba(190,125,255,.26); background:rgba(159,83,228,.1); box-shadow:0 0 18px rgba(165,91,239,.08); }
 .lock-delay-setting { cursor:default; }.lock-delay-setting:hover { border-radius:0; background:transparent; }.lock-delay-setting > div { display:flex; gap:3px; padding:3px; border:1px solid rgba(255,255,255,.07); border-radius:9px; background:rgba(255,255,255,.025); }.lock-delay-setting button { min-width:34px; height:26px; padding:0 6px; border:0; border-radius:6px; color:#636b7b; background:transparent; cursor:pointer; font-size:8px; }.lock-delay-setting button.active { color:#f0f3ff; background:rgba(126,146,220,.18); box-shadow:inset 0 0 0 1px rgba(153,170,232,.14); }
@@ -221,3 +243,39 @@ button { color: inherit; }
 .lock-screen > footer { position:absolute; z-index:3; right:40px; bottom:28px; left:40px; display:flex; align-items:center; justify-content:space-between; color:#535b6c; font-size:8px; letter-spacing:.06em; opacity:0; animation:lock-copy-in .7s ease .9s forwards; }.lock-screen > footer span { display:flex; align-items:center; gap:8px; }.lock-screen > footer i { width:5px; height:5px; border-radius:50%; background:#69cdb9; box-shadow:0 0 10px rgba(105,205,185,.75); }.lock-screen > footer small { color:#454d5e; font-size:7px; text-transform:uppercase; letter-spacing:.17em; }
 @keyframes lock-screen-in { from{opacity:0;filter:blur(11px);transform:scale(1.025)} to{opacity:1;filter:blur(0);transform:scale(1)} }@keyframes lock-atmosphere-turn { to{transform:rotate(360deg)} }@keyframes lock-grid-breathe { to{opacity:.17;transform:perspective(480px) rotateX(66deg) scale(1.42) translateY(-8px)} }@keyframes lock-shaft { to{opacity:.2;transform:rotate(17deg) translate3d(60px,-18px,0)} }@keyframes lock-halo { 50%{opacity:.55;transform:translate(-50%,-50%) scale(1.035)} }@keyframes lock-halo-spin { to{transform:translate(-50%,-50%) rotate(360deg)} }@keyframes lock-copy-in { to{opacity:1;transform:none} }@keyframes lock-core-arrive { 60%{opacity:1;transform:translate(-50%,-50%) scale(1.035) rotateX(-2deg)} to{opacity:1;transform:translate(-50%,-50%) scale(1) rotateX(0)} }@keyframes lock-core-float { 50%{transform:translate(-50%,calc(-50% - 5px)) rotateX(-.6deg) rotateY(1deg)} }@keyframes lock-core-ring { 50%{opacity:.35;transform:scale(1.035)} }@keyframes lock-glass-pass { 0%,55%{transform:translateX(-140%)} 82%,100%{transform:translateX(140%)} }@keyframes lock-indicator { 50%{opacity:.55;box-shadow:0 0 7px #72d6c2,0 0 17px rgba(114,214,194,.45)} }@keyframes lock-welcome-in { to{opacity:1;transform:none} }
 .lock-screen.reduced *,.lock-screen.reduced *::before,.lock-screen.reduced *::after { animation-duration:.01ms!important; animation-iteration-count:1!important; }
+
+/* Session lock pass 2: quiet horizon, no rotating cube, keyboard-only release. */
+.lock-screen { cursor:default; background:radial-gradient(ellipse at 50% 53%,rgba(81,105,173,.12),transparent 24%),radial-gradient(ellipse at 50% 102%,rgba(69,184,168,.075),transparent 38%),linear-gradient(158deg,#010205,#080b14 48%,#020409); animation:lock-screen-v2-in 1.15s cubic-bezier(.16,1,.3,1) both; }
+.lock-screen::before { inset:-22%; background:radial-gradient(ellipse at 24% 18%,rgba(91,115,190,.09),transparent 28%),radial-gradient(ellipse at 78% 30%,rgba(70,157,158,.05),transparent 31%); animation:lock-nebula-drift 18s ease-in-out infinite alternate; }
+.lock-screen.unlocking { pointer-events:none; animation:lock-screen-release .92s cubic-bezier(.7,0,.84,.16) forwards; }
+.lock-aurora { position:absolute; inset:-25%; pointer-events:none; filter:blur(55px); opacity:.52; transform:rotate(-8deg); }
+.lock-aurora i { position:absolute; top:5%; bottom:5%; width:22%; border-radius:50%; transform:skewX(-12deg); animation:lock-aurora-drift 12s ease-in-out infinite alternate; }
+.lock-aurora i:nth-child(1){left:17%;background:linear-gradient(transparent,rgba(93,121,202,.17),transparent)}
+.lock-aurora i:nth-child(2){left:43%;width:15%;background:linear-gradient(transparent,rgba(218,228,255,.09),transparent);animation-delay:-4s}
+.lock-aurora i:nth-child(3){right:15%;background:linear-gradient(transparent,rgba(63,188,168,.09),transparent);animation-delay:-8s}
+.lock-stars { position:absolute; inset:0; pointer-events:none; }
+.lock-stars i { position:absolute; width:2px; height:2px; border-radius:50%; background:#dce5ff; box-shadow:0 0 9px rgba(197,211,252,.62); opacity:.18; animation:lock-star-pulse 4s ease-in-out infinite; }
+.lock-stars i:nth-child(1){top:19%;left:18%}.lock-stars i:nth-child(2){top:33%;left:31%;animation-delay:-1s}.lock-stars i:nth-child(3){top:21%;right:27%;animation-delay:-2s}.lock-stars i:nth-child(4){top:44%;right:15%;animation-delay:-3s}.lock-stars i:nth-child(5){bottom:24%;left:23%;animation-delay:-1.7s}.lock-stars i:nth-child(6){bottom:31%;right:32%;animation-delay:-2.6s}.lock-stars i:nth-child(7){top:13%;left:54%;animation-delay:-.6s}.lock-stars i:nth-child(8){bottom:17%;right:11%;animation-delay:-3.4s}
+.lock-horizon { position:absolute; top:53%; right:0; left:0; height:1px; pointer-events:none; }
+.lock-horizon > i { position:absolute; top:0; left:50%; width:min(930px,78vw); height:1px; background:linear-gradient(90deg,transparent,rgba(118,145,221,.26),rgba(235,241,255,.86),rgba(78,185,167,.2),transparent); box-shadow:0 0 26px rgba(157,179,238,.23); transform:translateX(-50%) scaleX(.02); animation:lock-horizon-open 1.55s cubic-bezier(.16,1,.3,1) .18s forwards; }
+.lock-horizon > b,.lock-horizon > em { position:absolute; left:50%; width:min(760px,68vw); height:180px; filter:blur(25px); opacity:0; transform:translateX(-50%) scaleX(.25); animation:lock-horizon-glow 2s ease .35s forwards; }
+.lock-horizon > b { bottom:0; background:radial-gradient(ellipse at 50% 100%,rgba(116,142,216,.15),transparent 67%); }.lock-horizon > em { top:0; background:radial-gradient(ellipse at 50% 0,rgba(62,160,150,.08),transparent 68%); }
+.lock-header { top:36px; left:43px; animation-delay:.62s; }
+.lock-mini-mark { border-radius:10px; background:rgba(122,145,211,.07); }.lock-mini-mark .icon { width:16px; color:#9ba9d2; }
+.lock-header small { color:#59647b; }
+.lock-time { top:34px; right:43px; animation-delay:.68s; }.lock-time strong { font-size:22px; }.lock-time span { color:#596275; }
+.lock-focus { position:absolute; z-index:4; top:51%; right:24px; left:24px; display:flex; flex-direction:column; align-items:center; text-align:center; transform:translateY(-50%); }
+.lock-focus > small { color:#68758e; font:700 7px/1 "Unbounded"; letter-spacing:.2em; opacity:0; transform:translateY(10px); animation:lock-focus-in .9s cubic-bezier(.16,1,.3,1) .55s forwards; }
+.lock-focus h1 { margin:21px 0 13px; color:#f4f7ff; font:520 clamp(58px,8.4vw,122px)/.9 "Unbounded"; letter-spacing:-.085em; text-shadow:0 20px 70px rgba(0,0,0,.52),0 0 42px rgba(174,194,246,.12); opacity:0; filter:blur(12px); transform:scale(.9); animation:lock-title-in 1.18s cubic-bezier(.16,1,.3,1) .3s forwards; }
+.lock-focus > p { margin:0; color:#7e899e; font-size:11px; opacity:0; animation:lock-focus-in .85s ease .92s forwards; }
+.lock-keyboard-prompt { display:grid; grid-template-columns:auto 44px auto; align-items:center; gap:10px; margin-top:26px; opacity:0; animation:lock-focus-in .85s ease 1.1s forwards; }
+.lock-keyboard-prompt kbd { min-width:72px; height:27px; padding:0 10px; border:1px solid rgba(168,186,237,.18); border-radius:8px; display:grid; place-items:center; color:#aebae0; background:linear-gradient(180deg,rgba(145,165,224,.09),rgba(255,255,255,.02)); box-shadow:inset 0 1px rgba(255,255,255,.09),0 10px 30px rgba(0,0,0,.25); font:700 6px/1 "Unbounded"; letter-spacing:.12em; animation:lock-key-breathe 2.4s ease-in-out infinite; }
+.lock-keyboard-prompt > i { width:44px; height:1px; background:linear-gradient(90deg,rgba(137,159,222,.26),transparent); }
+.lock-keyboard-prompt > span { color:#4f5a70; font:700 6px/1 "Unbounded"; letter-spacing:.16em; }
+.lock-screen > footer { animation-delay:1.16s; }
+.lock-screen.unlocking .lock-focus h1 { animation:lock-title-release .76s cubic-bezier(.4,0,.2,1) forwards; }
+.lock-screen.unlocking .lock-horizon > i { animation:lock-release-line .75s cubic-bezier(.4,0,.2,1) forwards; }
+.lock-screen.unlocking .lock-keyboard-prompt kbd { color:#8fe3d0; border-color:rgba(102,213,189,.32); box-shadow:0 0 32px rgba(82,207,181,.18); }
+@keyframes lock-screen-v2-in { from{opacity:0;filter:blur(13px) brightness(.45);transform:scale(1.035)} to{opacity:1;filter:blur(0) brightness(1);transform:none} }
+@keyframes lock-screen-release { 0%{opacity:1;filter:brightness(1);clip-path:inset(0)} 35%{filter:brightness(1.24)} 100%{opacity:0;filter:brightness(1.5) blur(5px);clip-path:inset(49.94% 0);transform:scale(1.015)} }
+@keyframes lock-nebula-drift { to{transform:translate3d(2.5%,-1.5%,0) scale(1.04)} }@keyframes lock-aurora-drift { to{opacity:.72;transform:translate3d(38px,-18px,0) skewX(-7deg)} }@keyframes lock-star-pulse { 50%{opacity:.72;transform:scale(1.5)} }@keyframes lock-horizon-open { to{transform:translateX(-50%) scaleX(1)} }@keyframes lock-horizon-glow { 40%{opacity:1;transform:translateX(-50%) scaleX(1)} 100%{opacity:.45;transform:translateX(-50%) scaleX(1)} }@keyframes lock-focus-in { to{opacity:1;transform:none} }@keyframes lock-title-in { 58%{opacity:1;filter:blur(0);transform:scale(1.025)} to{opacity:1;filter:blur(0);transform:none} }@keyframes lock-key-breathe { 50%{border-color:rgba(180,198,247,.32);color:#dce3fb;transform:translateY(-1px);box-shadow:inset 0 1px rgba(255,255,255,.12),0 14px 34px rgba(0,0,0,.3),0 0 22px rgba(125,153,226,.08)} }@keyframes lock-title-release { to{letter-spacing:.04em;opacity:0;filter:blur(12px);transform:scale(1.12)} }@keyframes lock-release-line { 45%{opacity:1;box-shadow:0 0 55px rgba(218,229,255,.65);transform:translateX(-50%) scaleX(1.16)} to{opacity:0;transform:translateX(-50%) scaleX(1.4)} }
