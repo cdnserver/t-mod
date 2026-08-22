@@ -112,22 +112,39 @@ function tone(
   oscillator.stop(starts + duration + .08);
 }
 
-function starFall(context: AudioContext, destination: AudioNode, offset: number) {
+function warmBloom(
+  context: AudioContext,
+  destination: AudioNode,
+  offset: number,
+  duration = 2.4,
+  level = .055,
+) {
   const starts = context.currentTime + offset;
-  const oscillator = context.createOscillator();
+  const length = Math.floor(context.sampleRate * duration);
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let index = 0; index < length; index += 1) {
+    const position = index / length;
+    data[index] = (Math.random() * 2 - 1) * Math.sin(Math.PI * position);
+  }
+  const source = context.createBufferSource();
   const gain = context.createGain();
   const filter = context.createBiquadFilter();
-  oscillator.type = "sine";
-  oscillator.frequency.setValueAtTime(1_760, starts);
-  oscillator.frequency.exponentialRampToValueAtTime(440, starts + 1.4);
+  const stereo = context.createStereoPanner();
+  source.buffer = buffer;
   filter.type = "lowpass";
-  filter.frequency.value = 3_400;
+  filter.Q.value = .35;
+  filter.frequency.setValueAtTime(180, starts);
+  filter.frequency.exponentialRampToValueAtTime(760, starts + duration * .42);
+  filter.frequency.exponentialRampToValueAtTime(220, starts + duration);
+  stereo.pan.setValueAtTime(-.28, starts);
+  stereo.pan.linearRampToValueAtTime(.28, starts + duration);
   gain.gain.setValueAtTime(.0001, starts);
-  gain.gain.exponentialRampToValueAtTime(.17, starts + .08);
-  gain.gain.exponentialRampToValueAtTime(.0001, starts + 1.5);
-  oscillator.connect(filter).connect(gain).connect(destination);
-  oscillator.start(starts);
-  oscillator.stop(starts + 1.55);
+  gain.gain.exponentialRampToValueAtTime(level, starts + duration * .3);
+  gain.gain.exponentialRampToValueAtTime(.0001, starts + duration);
+  source.connect(filter).connect(gain).connect(stereo).connect(destination);
+  source.start(starts);
+  source.stop(starts + duration);
 }
 
 function closeLater(context: AudioContext, milliseconds: number): StopSound {
@@ -144,7 +161,7 @@ function closeLater(context: AudioContext, milliseconds: number): StopSound {
 export function playIgnitionSound(): StopSound {
   const context = audioContext();
   if (!context) return () => undefined;
-  const bus = cinematicBus(context, .31);
+  const bus = cinematicBus(context, .24);
   const now = context.currentTime;
   const shape = context.createGain();
   shape.gain.setValueAtTime(.0001, now);
@@ -156,12 +173,12 @@ export function playIgnitionSound(): StopSound {
   tone(context, shape, 41.2, 0, 7.2, .38);
   tone(context, shape, 82.41, .15, 6.8, .19);
   tone(context, shape, 123.47, .72, 5.8, .08, "triangle", -.35);
-  starFall(context, shape, .58);
-  tone(context, shape, 329.63, 1.82, 3.8, .075, "sine", -.5);
-  tone(context, shape, 493.88, 2.02, 3.5, .06, "sine", .5);
-  tone(context, shape, 659.25, 3.72, 2.8, .075, "sine", -.2);
-  tone(context, shape, 987.77, 3.9, 2.55, .045, "sine", .25);
-  tone(context, shape, 1_318.51, 5.35, 1.7, .035, "sine");
+  warmBloom(context, shape, .42, 3.15, .065);
+  tone(context, shape, 164.81, 1.62, 4.2, .085, "sine", -.45);
+  tone(context, shape, 220, 1.88, 3.9, .068, "sine", .45);
+  tone(context, shape, 293.66, 3.48, 2.9, .06, "sine", -.2);
+  tone(context, shape, 369.99, 3.72, 2.6, .045, "sine", .22);
+  tone(context, shape, 440, 5.18, 1.85, .028, "sine");
   return closeLater(context, 8_100);
 }
 
@@ -179,7 +196,7 @@ export function playVaultSound(kind: "lock" | "unlock", enabled: boolean): StopS
   notes.forEach((frequency, index) => {
     tone(context, shape, frequency, index * .14, 1.7, .2 / Math.sqrt(index + 1), index > 1 ? "triangle" : "sine", (index - 1.5) * .22);
   });
-  if (kind === "unlock") starFall(context, shape, .18);
+  warmBloom(context, shape, .04, kind === "lock" ? 1.7 : 1.35, kind === "lock" ? .03 : .038);
   return closeLater(context, 2_750);
 }
 

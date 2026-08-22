@@ -37,8 +37,8 @@ type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "maximize" | "close" | "settings" | "menu" | "link" | "external";
 
 const PREFERENCES_KEY = "tmod-desktop-preferences-v1";
-const PREFERRED_NAME_KEY = "tmod-desktop-preferred-name-v1";
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  preferredName: "",
   sidebarCollapsed: false,
   compactMode: false,
   reduceMotion: false,
@@ -54,6 +54,7 @@ function loadPreferences(): DesktopShellPreferences {
     const stored = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || "{}") as Partial<DesktopShellPreferences>;
     const zoom = Number(stored.serviceZoom);
     return {
+      preferredName: typeof stored.preferredName === "string" ? stored.preferredName.slice(0, 24) : "",
       sidebarCollapsed: stored.sidebarCollapsed === true,
       compactMode: stored.compactMode === true,
       reduceMotion: stored.reduceMotion === true,
@@ -360,13 +361,6 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
-  const [rememberedName, setRememberedName] = useState(() => {
-    try {
-      return String(localStorage.getItem(PREFERRED_NAME_KEY) || "").trim();
-    } catch {
-      return "";
-    }
-  });
   const [toast, setToast] = useState<string>();
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
@@ -458,17 +452,6 @@ export function App() {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
     void browserApi()?.applyPreferences(preferences);
   }, [preferences]);
-
-  useEffect(() => {
-    const preferredName = String(bootstrap.data?.viewer.name || "").trim();
-    if (!preferredName) return;
-    setRememberedName(preferredName);
-    try {
-      localStorage.setItem(PREFERRED_NAME_KEY, preferredName);
-    } catch {
-      // The current session still keeps the preferred name in memory.
-    }
-  }, [bootstrap.data?.viewer.name]);
 
   useEffect(() => {
     if (!toast) return;
@@ -602,7 +585,10 @@ export function App() {
 
   const notifications = bootstrap.data?.notifications.items || [];
   const unread = bootstrap.data?.notifications.unread || 0;
-  const userName = cinematicPreviewName || bootstrap.data?.viewer.name || rememberedName || "T-Mod";
+  const userName = cinematicPreviewName
+    || preferences.preferredName.trim()
+    || bootstrap.data?.viewer.name
+    || "T-Mod";
   const connectionState = bootstrap.online
     ? "online"
     : bootstrap.authenticated
@@ -1008,6 +994,12 @@ function SettingsDrawer({
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
     <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     <div className="settings-scroll">
+      <section><p className="settings-label">Обращение</p>
+        <label className="preferred-name-setting">
+          <span><strong>Как вас называть</strong><small>Это имя используется во всей оболочке T‑Mod на этом устройстве</small></span>
+          <div><input value={preferences.preferredName} maxLength={24} autoComplete="off" spellCheck={false} placeholder="Например, Иван" onChange={(event) => onChange({ ...preferences, preferredName: event.target.value })}/><small>{preferences.preferredName.length}/24</small></div>
+        </label>
+      </section>
       <section><p className="settings-label">Интерфейс</p>
         <SettingToggle label="Компактный режим" hint="Больше информации на одном экране" active={preferences.compactMode} onClick={() => toggle("compactMode")}/>
         <SettingToggle label="Спокойные анимации" hint="Минимум движения и эффектов" active={preferences.reduceMotion} onClick={() => toggle("reduceMotion")}/>

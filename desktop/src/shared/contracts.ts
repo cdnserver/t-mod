@@ -59,6 +59,7 @@ export interface BootstrapResult {
 }
 
 export interface DesktopShellPreferences {
+  preferredName: string;
   sidebarCollapsed: boolean;
   compactMode: boolean;
   reduceMotion: boolean;

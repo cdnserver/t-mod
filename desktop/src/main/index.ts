@@ -61,6 +61,7 @@ const BOOTSTRAP_TIMEOUT_MS = 12_000;
 const SERVICE_RETRY_DELAYS = [700, 1_800, 4_000] as const;
 const RETRYABLE_NETWORK_ERRORS = new Set([-2, -7, -21, -101, -102, -105, -106, -118, -324]);
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  preferredName: "",
   sidebarCollapsed: false,
   compactMode: false,
   reduceMotion: false,
@@ -261,7 +262,11 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     : {};
   const zoom = Number(candidate.serviceZoom);
   const idleLockMinutes = Number(candidate.idleLockMinutes);
+  const preferredName = typeof candidate.preferredName === "string"
+    ? candidate.preferredName.trim().slice(0, 24)
+    : "";
   return {
+    preferredName,
     sidebarCollapsed: candidate.sidebarCollapsed === true,
     compactMode: candidate.compactMode === true,
     reduceMotion: candidate.reduceMotion === true,

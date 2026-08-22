@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.5-dev.5");
+    expect(manifest.version).toBe("0.3.5-dev.6");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -72,8 +72,9 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("event.repeat || unlocking");
     expect(renderer).not.toContain("onPointerDown={onUnlock}");
     expect(renderer).toContain("onMinimize={() => void browserApi()?.minimize()}");
-    expect(renderer).toContain("PREFERRED_NAME_KEY");
-    expect(renderer).toContain("bootstrap.data?.viewer.name || rememberedName");
+    expect(renderer).toContain('preferredName: ""');
+    expect(renderer).toContain("preferences.preferredName.trim()");
+    expect(renderer).toContain("Как вас называть");
     expect(renderer).toContain("idleLockMinutes: 10");
     expect(renderer).toContain('updateChannel: "beta"');
     const cinematics = readFileSync(resolve(root, "src/renderer/cinematics.css"), "utf8");
@@ -84,6 +85,7 @@ describe("desktop release contract", () => {
     expect(cinematics).toContain("font-variant-numeric:tabular-nums");
     expect(cinematicRenderer).toContain('String(now.getMinutes()).padStart(2, "0")');
     expect(cinematics).toContain(".lock-celestial");
+    expect(styles).toContain(".preferred-name-setting");
     expect(styles).toContain(".update-channel-setting");
   });
 
@@ -99,9 +101,13 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("playIgnitionSound");
     expect(renderer).toContain("launchVisible && <CinematicLaunch");
     expect(cinematics).toContain(".cinema-meteors");
+    expect(cinematics).toContain("clip-path:polygon(50% 0,59% 38%,100% 50%");
     expect(cinematics).toContain("@keyframes meteor-primary");
     expect(cinematics).toContain("@keyframes cinema-stage-out");
     expect(cinematics).not.toContain("feTurbulence");
+    const cinematicRenderer = readFileSync(resolve(root, "src/renderer/cinematics.tsx"), "utf8");
+    expect(cinematicRenderer).toContain("function warmBloom(");
+    expect(cinematicRenderer).not.toContain("function starFall(");
   });
 
   it("ships one complete vector identity for every desktop contour", () => {
