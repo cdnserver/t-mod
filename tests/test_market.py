@@ -563,6 +563,37 @@ class MarketStorageTests(unittest.TestCase):
         self.assertEqual(storage.market_pending_alert_notifications(), [])
         self.assertEqual(storage.market_get_alert(100, "RU15", 39)["status"], "triggered")
 
+    def test_global_ban_suppresses_personal_market_dm(self) -> None:
+        first_source = "2026-07-15T02:12:11.960Z"
+        second_source = "2026-07-16T02:12:11.960Z"
+        self.save(first_source, [item(39, "Железная руда", 100, total_count=20)])
+        storage.market_upsert_alert(
+            discord_user_id=100,
+            user_display="Tester",
+            guild_id=200,
+            server_id="RU15",
+            category="items",
+            item_id=39,
+            target_price=100,
+            min_quantity=10,
+            current_source_updated_at=first_source,
+        )
+        self.save(second_source, [item(39, "Железная руда", 90, total_count=20)])
+        storage.market_evaluate_alerts("RU15", second_source)
+
+        class NoDmBot:
+            def get_user(self, _user_id):
+                raise AssertionError("DM must not be requested for a globally banned identity")
+
+        with patch(
+            "modules.market.global_ban_storage.is_globally_banned",
+            return_value=True,
+        ):
+            asyncio.run(dispatch_market_alerts(NoDmBot()))
+
+        self.assertEqual(storage.market_pending_alert_notifications(), [])
+        self.assertEqual(storage.market_get_alert(100, "RU15", 39)["status"], "notifying")
+
 
 if __name__ == "__main__":
     unittest.main()
