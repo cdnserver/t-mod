@@ -10,6 +10,7 @@ const REFRESH_INTERVALS = Object.freeze({
   communications: 30000,
   atlas: 30000,
   minecraft: 30000,
+  security: 30000,
   system: 30000,
   audit: 45000,
   treasury: 45000,
@@ -36,6 +37,7 @@ const sectionMeta = {
   media: ["MEDIA CONTROL", "Музыка и голос"],
   profile: ["PERSONAL SPACE", "Мой профиль"],
   discord: ["DISCORD INTELLIGENCE", "Discord-аудит"],
+  security: ["IDENTITY SECURITY", "Глобальные блокировки"],
   system: ["SYSTEM CONTROL", "Технический контур"],
   atlas: ["ATLAS CONTROL", "T-Mod Atlas"],
   minecraft: ["MINECRAFT NODE", "Игровой сервер"],
@@ -171,6 +173,7 @@ const appState = {
   detailRoute: null,
   openingRoute: false,
   craftRecipes: [],
+  globalBans: [],
   operation: null,
   scheduleDirty: false,
   scheduleStartsAt: null,
@@ -3311,10 +3314,8 @@ function renderSystem(data) {
   const workspaces = data.bill_workspaces || [];
   const sessions = data.consensus_sessions || [];
   byId("section-access-card").hidden = data.viewer?.administrator !== true;
-  byId("global-ban-card").hidden = data.viewer?.administrator !== true;
   if (data.viewer?.administrator === true) {
     void loadSectionAccess();
-    void loadGlobalBans();
   }
   const openStatuses = new Set(["pending", "processing", "retry"]);
   const open = statusRows
@@ -3514,49 +3515,80 @@ async function loadSectionAccess({ reportError = true } = {}) {
   }
 }
 
-async function loadGlobalBans() {
+function renderGlobalBans() {
+  const records = appState.globalBans;
+  const query = String(byId("global-ban-search")?.value || "").trim().toLowerCase();
+  const filter = String(byId("global-ban-filter")?.value || "active");
+  const visible = records.filter((item) => {
+    if (filter === "active" && item.active !== true) return false;
+    if (filter === "pending" && (item.active !== true || item.discord_state === "banned")) return false;
+    if (!query) return true;
+    return [item.user_id, item.user_id_text, item.member_name, item.reason]
+      .some((value) => String(value || "").toLowerCase().includes(query));
+  });
+  replaceChildren(
+    "global-ban-list",
+    visible.length
+      ? visible.slice(0, 100).map((item) => {
+          // Discord snowflakes exceed JavaScript's safe integer range. The API
+          // deliberately supplies the exact decimal representation separately.
+          const userId = item.user_id_text || String(item.user_id || "");
+          const synchronized = item.discord_state === "banned" || item.discord_state === "unbanned";
+          const stateLabel = item.active
+            ? synchronized ? "Discord и веб закрыты" : "Веб закрыт · Discord в очереди"
+            : "Решение снято";
+          const state = node("div", { className: "global-ban-state" }, [
+            node("span", {
+              className: synchronized ? "ok" : "pending",
+              text: stateLabel,
+              title: item.discord_error || stateLabel,
+            }),
+          ]);
+          if (item.active) {
+            const revoke = node("button", { className: "global-unban", type: "button", text: "Снять блокировку" });
+            revoke.addEventListener("click", () => {
+              const form = byId("global-unban-form");
+              form.dataset.userId = userId;
+              byId("global-unban-title").textContent = `Снять блокировку · ${item.member_name || userId}`;
+              byId("global-unban-reason").value = "";
+              byId("global-unban-dialog").showModal();
+            });
+            state.append(revoke);
+          }
+          return node("article", { className: `global-ban-record${item.active ? "" : " revoked"}` }, [
+            node("span", { className: "global-ban-record-mark", text: item.active ? "⦸" : "◇" }),
+            node("div", { className: "global-ban-record-copy" }, [
+              node("strong", { text: item.member_name || `Discord ${userId}` }),
+              node("small", { text: `${userId} · ${item.active ? "выдан" : "снят"} ${formatDate(item.updated_at)}` }),
+              node("p", { text: item.reason || "Причина не указана" }),
+            ]),
+            state,
+          ]);
+        })
+      : [node("div", { className: "empty-state", text: query || filter !== "all" ? "Подходящих решений нет." : "Глобальных блокировок не было." })],
+  );
+}
+
+async function loadGlobalBans(silent = false, reportError = true) {
+  if (!silent) setLoading(true);
   try {
     const data = await fetchJSON("/api/admin/security/bans");
-    const records = Array.isArray(data.records) ? data.records : [];
-    const active = records.filter((item) => item.active === true);
+    if (!showApplication(data)) return data;
+    byId("global-ban-card").hidden = data.viewer?.administrator !== true;
+    appState.globalBans = Array.isArray(data.records) ? data.records : [];
+    const active = appState.globalBans.filter((item) => item.active === true);
+    const synchronized = active.filter((item) => item.discord_state === "banned");
     setText("global-ban-count", `${active.length} активных`);
-    replaceChildren(
-      "global-ban-list",
-      records.length
-        ? records.slice(0, 30).map((item) => {
-            const state = node("div", { className: "global-ban-state" }, [
-              node("span", {
-                className: item.discord_state === "banned" || item.discord_state === "unbanned" ? "ok" : "",
-                text: item.active
-                  ? item.discord_state === "banned" ? "Discord закрыт" : "Веб закрыт · Discord требует проверки"
-                  : "Снято",
-              }),
-            ]);
-            if (item.active) {
-              const revoke = node("button", { className: "global-unban", type: "button", text: "Снять блокировку" });
-              revoke.addEventListener("click", () => {
-                const form = byId("global-unban-form");
-                form.dataset.userId = item.user_id_text || String(item.user_id);
-                byId("global-unban-title").textContent = `Снять блокировку · ${item.member_name || item.user_id}`;
-                byId("global-unban-reason").value = "";
-                byId("global-unban-dialog").showModal();
-              });
-              state.append(revoke);
-            }
-            return node("article", { className: `global-ban-record${item.active ? "" : " revoked"}` }, [
-              node("span", { className: "global-ban-record-mark", text: item.active ? "⦸" : "◇" }),
-              node("div", { className: "global-ban-record-copy" }, [
-                node("strong", { text: item.member_name || `Discord ${item.user_id}` }),
-                node("small", { text: `${item.user_id} · ${item.active ? "выдан" : "снят"} ${formatDate(item.updated_at)}` }),
-                node("p", { text: item.reason || "Причина не указана" }),
-              ]),
-              state,
-            ]);
-          })
-        : [node("div", { className: "empty-state", text: "Глобальных блокировок не было." })],
-    );
+    setText("global-ban-active", formatNumber(active.length));
+    setText("global-ban-synced", formatNumber(synchronized.length));
+    setText("global-ban-pending", formatNumber(active.length - synchronized.length));
+    renderGlobalBans();
+    return data;
   } catch (error) {
-    handleError(error);
+    if (reportError) handleError(error);
+    return null;
+  } finally {
+    if (!silent) setLoading(false);
   }
 }
 
@@ -3814,6 +3846,7 @@ async function loadCurrentSection() {
   if (appState.section === "media") await loadMedia();
   if (appState.section === "profile") await loadProfile();
   if (appState.section === "discord") await loadDiscord();
+  if (appState.section === "security") await loadGlobalBans();
   if (appState.section === "system") await loadSystem();
   if (appState.section === "atlas") await loadAtlas();
   if (appState.section === "minecraft") {
@@ -4004,6 +4037,7 @@ function bindEvents() {
   });
   byId("global-ban-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
     const values = formValues("global-ban-form");
     const approved = window.TModReactor?.confirm
       ? await window.TModReactor.confirm({
@@ -4014,8 +4048,11 @@ function bindEvents() {
         })
       : globalThis.confirm("Глобально заблокировать пользователя?");
     if (!approved) return;
-    const button = event.currentTarget.querySelector("button[type=submit]");
+    const button = form.querySelector("button[type=submit]");
+    const buttonLabel = button.querySelector("span");
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (buttonLabel) buttonLabel.textContent = "Фиксируем решение…";
     try {
       const result = await postJSON("/api/admin/security/bans", {
         action: "issue",
@@ -4023,10 +4060,12 @@ function bindEvents() {
         reason: values.reason,
         confirmed: true,
       });
-      showToast(result.message || "Глобальная блокировка включена.", result.record?.discord_state === "failed", {
-        title: "Контур заблокирован",
+      const discordPending = result.record?.discord_state !== "banned";
+      showToast(result.message || "Глобальная блокировка включена.", false, {
+        title: discordPending ? "Веб-доступ уже закрыт" : "Контур заблокирован",
         icon: "⦸",
-        sound: "warning",
+        tone: discordPending ? "update" : "warning",
+        sound: discordPending ? "update" : "warning",
       });
       if (result.warning) {
         showToast(result.warning, false, {
@@ -4035,10 +4074,32 @@ function bindEvents() {
           tone: "update",
         });
       }
-      event.currentTarget.reset();
-      await loadGlobalBans();
-    } catch (error) { handleError(error); }
-    finally { button.disabled = false; }
+      form.reset();
+      await loadGlobalBans(true);
+    } catch (error) {
+      // A network timeout can happen after the durable block was committed.
+      // Re-read the authoritative registry before telling the administrator it failed.
+      const snapshot = await loadGlobalBans(true, false);
+      const committed = snapshot?.records?.some((item) =>
+        item.active === true
+          && String(item.user_id_text || item.user_id) === String(values.user_id),
+      );
+      if (committed) {
+        form.reset();
+        showToast("Ответ сервера прервался, но проверка подтвердила активную блокировку.", false, {
+          title: "Решение сохранено",
+          icon: "✓",
+          tone: "update",
+          sound: "success",
+        });
+      } else {
+        handleError(error);
+      }
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      if (buttonLabel) buttonLabel.textContent = "Заблокировать везде";
+    }
   });
   byId("global-unban-close").addEventListener("click", () => byId("global-unban-dialog").close());
   byId("global-unban-cancel").addEventListener("click", () => byId("global-unban-dialog").close());
@@ -4125,6 +4186,8 @@ function bindEvents() {
   document.querySelectorAll("[data-go]").forEach((button) => {
     button.addEventListener("click", () => switchSection(button.dataset.go));
   });
+  byId("global-ban-search").addEventListener("input", renderGlobalBans);
+  byId("global-ban-filter").addEventListener("change", renderGlobalBans);
   byId("refresh-button").addEventListener("click", () =>
     refreshCurrentSection(false, true),
   );

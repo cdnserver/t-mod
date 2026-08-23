@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260822-global-search-v1">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260824-overlay-settings-v1">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -92,6 +92,7 @@
         <nav class="atlas-nav" aria-label="Навигация Atlas">
           <button class="active" type="button" data-screen="home"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20h-5v-6H9v6H4z"/></svg></i><span>Командный центр</span></button>
           <button type="button" data-screen="ai"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></i><span>Atlas AI</span><b>NEW</b></button>
+          <button id="desktop-overlay-settings" class="desktop-overlay-settings" type="button" hidden><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.1h-4v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3v-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></i><span>Настройки Overlay</span><b>DESKTOP</b></button>
           <button type="button" data-screen="memory"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5v14M5 8h6l3-3h5M5 13h5l3 3h6M5 18h8"/><circle cx="19" cy="5" r="1.5"/><circle cx="19" cy="16" r="1.5"/></svg></i><span>Память и события</span><b>CORE</b></button>
           <button type="button" data-screen="media"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="m9 10 6 3-6 3z"/><circle cx="18" cy="8" r="1"/></svg></i><span>Медиасеть</span><b>NEW</b></button>
           <button type="button" data-screen="cases"><i class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v13H5zM8 7V4h8v3"/><path d="M8 12h8M8 16h5"/></svg></i><span>Дела и доказательства</span><b>CORE</b></button>
@@ -366,6 +367,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js?v=20260822-global-search-v1" defer></script>
+    <script src="/atlas/assets/app.js?v=20260824-overlay-settings-v1" defer></script>
   </body>
 </html>

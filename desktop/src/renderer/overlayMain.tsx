@@ -6,12 +6,10 @@ import "@fontsource/manrope/600.css";
 import "@fontsource/manrope/700.css";
 import "@fontsource/unbounded/500.css";
 import "@fontsource/unbounded/600.css";
-import { App } from "./App";
-import "./styles.css";
-import "./cinematics.css";
+import { AtlasOverlay } from "./overlay/AtlasOverlay";
 
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("overlay-root")!).render(
   <StrictMode>
-    <App />
+    <AtlasOverlay />
   </StrictMode>,
 );

@@ -24,6 +24,7 @@ from modules.atlas_ai import (
     _bounded_dialog_messages,
     _cross_chat_context,
     _chunks,
+    _compact_overlay_answer,
     _recent_user_dialog_context,
     atlas_ai_config,
     atlas_answer,
@@ -1878,12 +1879,25 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         aristotle.assert_not_awaited()
         self.assertEqual(search.await_args.kwargs["limit"], 7)
         payload = request.await_args.kwargs["payload"]
-        self.assertLessEqual(payload["max_tokens"], 700)
+        self.assertLessEqual(payload["max_tokens"], 280)
         self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
+        self.assertIn("35–70 слов", payload["messages"][0]["content"])
         self.assertIsInstance(payload["messages"][-1]["content"], list)
         self.assertEqual(result["latency_mode"], "overlay")
         self.assertTrue(result["screen_context_used"])
         self.assertEqual(result["depth"], "quick")
+
+    def test_overlay_answer_hard_bound_prefers_complete_sentence(self) -> None:
+        long_answer = (
+            "Сначала остановитесь и уточните основание задержания [1]. "
+            + "Это второстепенная подробность, которую оверлей не обязан озвучивать. " * 30
+        )
+        compact = _compact_overlay_answer(long_answer)
+
+        self.assertLessEqual(len(compact), 901)
+        self.assertLessEqual(len(compact.split()), 86)
+        self.assertTrue(compact.startswith("Сначала остановитесь"))
+        self.assertTrue(compact.endswith("…"))
 
 
 class AtlasKnowledgeFileTests(unittest.TestCase):

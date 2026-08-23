@@ -91,6 +91,9 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertEqual(sorted(references - ids), [])
         self.assertTrue((ATLAS_WEB / "style.css").is_file())
         self.assertTrue((ATLAS_WEB / "favicon.svg").is_file())
+        self.assertRegex(html, r'id="desktop-overlay-settings"[^>]*\bhidden\b')
+        self.assertIn("TModDesktop", source)
+        self.assertIn("https://tvr.lat/desktop/atlas-overlay-settings", source)
 
     def test_sgl_case_os_redesign_contract(self) -> None:
         html = (SGL_WEB / "index.html").read_text(encoding="utf-8")

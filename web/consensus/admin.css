@@ -3842,6 +3842,40 @@ tbody tr {
   }
 }
 
+/* Identity Security is an explicit Reactor surface, not a hidden system tool. */
+.security-nav { position: relative; }
+.security-nav .nav-icon { color: #ff768c; }
+.security-nav::after { position: absolute; right: 10px; width: 5px; height: 5px; border-radius: 50%; content: ""; background: #c9304e; box-shadow: 0 0 12px rgba(255, 67, 98, .55); opacity: .68; }
+.security-screen { position: relative; }
+.security-screen::before { position: absolute; z-index: -1; inset: -120px -80px auto 18%; height: 430px; border-radius: 50%; content: ""; pointer-events: none; background: radial-gradient(ellipse, rgba(133, 14, 40, .14), transparent 68%); filter: blur(18px); }
+.security-intro { align-items: center; }
+.security-live { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid rgba(105, 224, 184, .14); border-radius: 999px; color: #88cdb8; background: rgba(42, 116, 91, .07); font-size: 11px; font-weight: 750; letter-spacing: .08em; }
+.security-live i { width: 6px; height: 6px; border-radius: 50%; background: #6de0b9; box-shadow: 0 0 13px rgba(109, 224, 185, .68); animation: notificationPulse 1.8s ease-in-out infinite; }
+.security-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.security-kpis article { position: relative; display: grid; gap: 5px; min-height: 118px; padding: 20px; overflow: hidden; border: 1px solid rgba(255, 93, 119, .1); border-radius: 18px; background: linear-gradient(145deg, rgba(36, 8, 15, .68), rgba(8, 12, 16, .86)); box-shadow: 0 22px 55px rgba(0, 0, 0, .14); }
+.security-kpis article::after { position: absolute; right: -35px; bottom: -50px; width: 130px; height: 130px; border-radius: 50%; content: ""; background: radial-gradient(circle, rgba(220, 40, 72, .13), transparent 68%); }
+.security-kpis small { color: #9b7e86; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.security-kpis strong { color: #fff0f3; font: 600 31px/1.1 "Unbounded", sans-serif; }
+.security-kpis span { color: #75666b; font-size: 11px; }
+.security-screen .global-ban-card { margin-top: 0; box-shadow: 0 35px 100px rgba(0, 0, 0, .22); }
+.global-ban-toolbar { position: relative; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(180px, .3fr); gap: 12px; margin: 0 25px 16px; padding: 14px; border: 1px solid rgba(255, 255, 255, .06); border-radius: 14px; background: rgba(3, 6, 9, .42); }
+.global-ban-toolbar label { display: grid; gap: 6px; }
+.global-ban-toolbar label > span { color: #8c777e; font-size: 11px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.global-ban-toolbar input, .global-ban-toolbar select { width: 100%; min-height: 41px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, .09); border-radius: 10px; outline: 0; color: #efe5e8; background: #070a0e; }
+.global-ban-toolbar input:focus, .global-ban-toolbar select:focus { border-color: rgba(255, 91, 116, .35); box-shadow: 0 0 0 3px rgba(255, 65, 95, .05); }
+.global-ban-state span.pending { color: #efc27e; background: rgba(170, 105, 29, .12); }
+.hard-ban-perimeter { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 25px 16px; overflow: hidden; border: 1px solid rgba(255, 85, 110, .12); border-radius: 14px; background: rgba(255, 255, 255, .04); }
+.hard-ban-perimeter span { min-height: 54px; display: flex; align-items: center; gap: 9px; padding: 11px 12px; color: #a99198; background: rgba(6, 8, 11, .88); font-size: 11px; font-weight: 700; line-height: 1.35; }
+.hard-ban-perimeter b { color: #ff667e; font: 600 10px/1 "Unbounded", sans-serif; }
+
+@media (max-width: 780px) {
+  .security-kpis { grid-template-columns: 1fr; }
+  .global-ban-toolbar { grid-template-columns: 1fr; margin-inline: 16px; }
+  .security-live { width: max-content; }
+  .security-intro { align-items: flex-start; }
+  .hard-ban-perimeter { grid-template-columns: 1fr 1fr; margin-inline: 16px; }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .auth-gate[data-state="checking"] .gate-orbit {
     animation: gateOrbit 2.8s linear infinite;

@@ -24,8 +24,39 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  prepare-release:
+    name: Prepare public release
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
+      RELEASE_REPOSITORY: cdnserver/t-mod-releases
+    steps:
+      - name: Create release shell
+        shell: bash
+        run: |
+          test -n "$GH_TOKEN" || { echo "DESKTOP_RELEASE_TOKEN is missing"; exit 1; }
+          version="${RELEASE_TAG#desktop-v}"
+          target_tag="v${version}"
+          release_flags=(--latest)
+          if [[ "$version" == *-dev.* ]]; then
+            release_flags=(--prerelease)
+          fi
+          if gh release view "$target_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$target_tag" --repo "$RELEASE_REPOSITORY" "${release_flags[@]}"
+          else
+            gh release create "$target_tag" \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "T-Mod Desktop ${version}" \
+              --notes "Установщики T-Mod Desktop ${version}. Приложение получает дальнейшие обновления автоматически." \
+              "${release_flags[@]}"
+          fi
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare-release
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -112,50 +143,21 @@ jobs:
         working-directory: desktop
         run: pnpm exec ${{ matrix.command }}
 
-      - name: Upload installers
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.files }}
-          if-no-files-found: error
-          retention-days: 14
-
-  publish:
-    name: Publish public download
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
-      RELEASE_REPOSITORY: cdnserver/t-mod-releases
-
-    steps:
-      - name: Download installers
-        uses: actions/download-artifact@v4
-        with:
-          path: release
-          merge-multiple: true
-
-      - name: Publish GitHub Release
+      - name: Publish platform installers
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
+          RELEASE_REPOSITORY: cdnserver/t-mod-releases
         run: |
           test -n "$GH_TOKEN" || { echo "DESKTOP_RELEASE_TOKEN is missing"; exit 1; }
           version="${RELEASE_TAG#desktop-v}"
           target_tag="v${version}"
-          release_flags=(--latest)
-          if [[ "$version" == *-dev.* ]]; then
-            release_flags=(--prerelease)
-          fi
-          if gh release view "$target_tag" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$target_tag" release/* --repo "$RELEASE_REPOSITORY" --clobber
-            gh release edit "$target_tag" --repo "$RELEASE_REPOSITORY" "${release_flags[@]}"
-          else
-            gh release create "$target_tag" release/* \
-              --repo "$RELEASE_REPOSITORY" \
-              --title "T-Mod Desktop ${version}" \
-              --notes "Установщики T-Mod Desktop ${version}. Приложение получает дальнейшие обновления автоматически." \
-              "${release_flags[@]}"
-          fi
+          shopt -s nullglob
+          case "${{ runner.os }}" in
+            Windows) files=(desktop/release/*.exe desktop/release/*.exe.blockmap desktop/release/latest*.yml desktop/release/dev*.yml) ;;
+            macOS) files=(desktop/release/*.dmg desktop/release/*.zip desktop/release/*.blockmap desktop/release/latest*.yml desktop/release/dev*.yml) ;;
+            Linux) files=(desktop/release/*.AppImage desktop/release/*.AppImage.blockmap desktop/release/latest*.yml desktop/release/dev*.yml) ;;
+          esac
+          ((${#files[@]})) || { echo "No installer files were produced"; exit 1; }
+          gh release upload "$target_tag" "${files[@]}" --repo "$RELEASE_REPOSITORY" --clobber

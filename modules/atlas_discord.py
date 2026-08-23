@@ -15,6 +15,7 @@ from discord.ext import commands
 from modules.atlas_ai import AtlasAIError, atlas_answer
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as atlas_storage
+from persistence import global_ban_repository as global_ban_storage
 from persistence import profile_repository as profile_storage
 from persistence import web_auth_repository as auth_storage
 
@@ -42,6 +43,12 @@ def _chunks(value: str, limit: int = 3900) -> list[str]:
 
 
 async def _atlas_access(guild_id: int, user: discord.abc.User) -> bool:
+    if await asyncio.to_thread(
+        global_ban_storage.is_globally_banned,
+        int(guild_id),
+        int(user.id),
+    ):
+        return False
     if isinstance(user, discord.Member) and user.guild_permissions.administrator:
         return True
     grants = await asyncio.to_thread(

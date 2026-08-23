@@ -1,0 +1,30 @@
+.ban-enforcement {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 13px;
+  color: #a99ba0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.ban-enforcement i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff536d;
+  box-shadow: 0 0 14px #ff3858;
+  animation: blink 1.2s steps(2) infinite;
+}
+
+@media (max-width: 560px) {
+  .ban-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -28,12 +28,14 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
 
 _FONT_CANDIDATES = (
+    "C:/Windows/Fonts/arial.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
 )
 _BOLD_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/arialbd.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
