@@ -6,7 +6,9 @@ import type {
   AtlasOverlayConfig,
   AtlasOverlayEvent,
   AtlasOverlayPttPhase,
+  AtlasOverlaySpeechResult,
   AtlasOverlaySubmitResult,
+  AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
 
 const MAX_CAPTURE_BYTES = 12 * 1024 * 1024;
@@ -30,6 +32,9 @@ const api: AtlasOverlayApi = {
     ipcRenderer.invoke("atlas-overlay:get-catalog") as Promise<AtlasOverlayCatalog>,
   saveConfig: (patch) =>
     ipcRenderer.invoke("atlas-overlay:save-config", patch) as Promise<AtlasOverlayConfig>,
+  getVoices: () => ipcRenderer.invoke("atlas-overlay:get-voices") as Promise<AtlasOverlayVoiceCatalog>,
+  previewVoice: (voice) =>
+    ipcRenderer.invoke("atlas-overlay:preview-voice", String(voice || "").slice(0, 80)) as Promise<AtlasOverlaySpeechResult>,
   submitAudio: (input) =>
     ipcRenderer.invoke(
       "atlas-overlay:submit-audio",

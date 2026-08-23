@@ -12,6 +12,7 @@ export type AtlasOverlayStage = (typeof atlasOverlayStages)[number];
 
 export type AtlasOverlayAnchor = "top-right" | "right" | "bottom-right";
 export type AtlasOverlayResponseMode = "quick" | "balanced";
+export type AtlasOverlaySpeechProvider = "ai" | "system";
 export type AtlasOverlayPttPhase = "down" | "up" | "cancel";
 
 export interface AtlasOverlayCharacter {
@@ -61,33 +62,49 @@ export interface AtlasOverlayBootstrapProjection {
 
 export interface AtlasOverlayConfig {
   enabled: boolean;
+  showGameStatus: boolean;
+  captureInRecordings: boolean;
   hotkey: string;
   serverCode: string;
   factionCode: string;
   characterId: string | null;
   characterName: string;
   speakAnswers: boolean;
+  speechProvider: AtlasOverlaySpeechProvider;
+  speechVoice: string;
   speechRate: number;
   speechVolume: number;
+  microphoneId: string;
   responseMode: AtlasOverlayResponseMode;
   anchor: AtlasOverlayAnchor;
   opacity: number;
+  scale: number;
+  positionX: number;
+  positionY: number;
   screenContextEnabled: boolean;
 }
 
 export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   enabled: false,
+  showGameStatus: true,
+  captureInRecordings: true,
   hotkey: "Control+Shift+A",
   serverCode: "phoenix-15",
   factionCode: "lspd",
   characterId: null,
   characterName: "",
   speakAnswers: true,
+  speechProvider: "ai",
+  speechVoice: "",
   speechRate: 1.08,
   speechVolume: 0.86,
+  microphoneId: "",
   responseMode: "quick",
   anchor: "right",
   opacity: 0.94,
+  scale: 0.88,
+  positionX: 1,
+  positionY: 0.5,
   screenContextEnabled: false,
 };
 
@@ -100,6 +117,8 @@ export interface AtlasOverlayCitation {
 
 export type AtlasOverlayEvent =
   | { type: "show" | "hide" | "idle" }
+  | { type: "config"; config: AtlasOverlayConfig }
+  | { type: "speech"; audio?: ArrayBuffer; mimeType?: string; fallbackText?: string }
   | {
       type: "progress";
       stage: "transcribing" | "searching" | "reasoning";
@@ -127,10 +146,33 @@ export interface AtlasOverlaySubmitResult {
   error?: string;
 }
 
+export interface AtlasOverlayVoice {
+  id: string;
+  name: string;
+  description: string;
+  provider: "ai" | "system";
+}
+
+export interface AtlasOverlayVoiceCatalog {
+  configured: boolean;
+  provider: "ai" | "system";
+  defaultVoice: string;
+  voices: AtlasOverlayVoice[];
+}
+
+export interface AtlasOverlaySpeechResult {
+  audio?: ArrayBuffer;
+  mimeType?: string;
+  fallback: boolean;
+  error?: string;
+}
+
 export interface AtlasOverlayApi {
   getConfig(): Promise<AtlasOverlayConfig>;
   getCatalog(): Promise<AtlasOverlayCatalog>;
   saveConfig(patch: Partial<AtlasOverlayConfig>): Promise<AtlasOverlayConfig>;
+  getVoices(): Promise<AtlasOverlayVoiceCatalog>;
+  previewVoice(voice?: string): Promise<AtlasOverlaySpeechResult>;
   submitAudio(input: AtlasOverlayAudioInput): Promise<AtlasOverlaySubmitResult>;
   submitText(question: string): Promise<AtlasOverlaySubmitResult>;
   cancel(): Promise<void>;
@@ -186,6 +228,10 @@ export function reduceAtlasOverlayState(
         ...initialAtlasOverlayState,
         visible: state.visible,
       };
+    case "config":
+      return state;
+    case "speech":
+      return state;
     case "ptt":
       if (event.phase === "down") {
         return {
@@ -287,8 +333,17 @@ export function normalizeAtlasOverlayConfig(
   const speechRate = Number(source.speechRate);
   const speechVolume = Number(source.speechVolume);
   const opacity = Number(source.opacity);
+  const scale = Number(source.scale);
+  const anchor = ["top-right", "right", "bottom-right"].includes(String(source.anchor))
+    ? source.anchor as AtlasOverlayAnchor
+    : "right";
+  const fallbackPositionY = anchor === "top-right" ? 0 : anchor === "bottom-right" ? 1 : 0.5;
+  const positionX = Number(source.positionX);
+  const positionY = Number(source.positionY);
   return {
     enabled: source.enabled === true,
+    showGameStatus: source.showGameStatus !== false,
+    captureInRecordings: source.captureInRecordings !== false,
     hotkey: isValidAtlasOverlayHotkey(source.hotkey)
       ? source.hotkey
       : DEFAULT_ATLAS_OVERLAY_CONFIG.hotkey,
@@ -301,15 +356,21 @@ export function normalizeAtlasOverlayConfig(
     characterId: source.characterId ? String(source.characterId).slice(0, 96) : null,
     characterName: String(source.characterName || "").trim().slice(0, 96),
     speakAnswers: source.speakAnswers !== false,
+    speechProvider: source.speechProvider === "system" ? "system" : "ai",
+    speechVoice: String(source.speechVoice || "").trim().slice(0, 160),
     speechRate: Number.isFinite(speechRate) ? Math.max(0.75, Math.min(1.45, speechRate)) : 1.08,
     speechVolume: Number.isFinite(speechVolume)
       ? Math.max(0, Math.min(1, speechVolume))
       : 0.86,
+    microphoneId: String(source.microphoneId || "").trim().slice(0, 256),
     responseMode: source.responseMode === "balanced" ? "balanced" : "quick",
-    anchor: ["top-right", "right", "bottom-right"].includes(String(source.anchor))
-      ? source.anchor as AtlasOverlayAnchor
-      : "right",
+    anchor,
     opacity: Number.isFinite(opacity) ? Math.max(0.68, Math.min(1, opacity)) : 0.94,
+    scale: Number.isFinite(scale) ? Math.max(0.72, Math.min(1.18, scale)) : 0.88,
+    positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(1, positionX)) : 1,
+    positionY: Number.isFinite(positionY)
+      ? Math.max(0, Math.min(1, positionY))
+      : fallbackPositionY,
     screenContextEnabled: source.screenContextEnabled === true,
   };
 }

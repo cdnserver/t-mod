@@ -68,12 +68,22 @@ describe("Atlas Overlay hotkey contract", () => {
       speechRate: 99,
       speechVolume: -2,
       opacity: 0.1,
+      scale: 4,
+      positionX: -3,
+      positionY: 6,
+      speechProvider: "system",
+      captureInRecordings: false,
       screenContextEnabled: false,
     });
     expect(config.hotkey).toBe("Control+Shift+A");
     expect(config.speechRate).toBe(1.45);
     expect(config.speechVolume).toBe(0);
     expect(config.opacity).toBe(0.68);
+    expect(config.scale).toBe(1.18);
+    expect(config.positionX).toBe(0);
+    expect(config.positionY).toBe(1);
+    expect(config.speechProvider).toBe("system");
+    expect(config.captureInRecordings).toBe(false);
     expect(config.screenContextEnabled).toBe(false);
   });
 });

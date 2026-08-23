@@ -56,6 +56,7 @@ const LOGIN_URL = "https://tvr.lat/login?next=/reactor";
 const AUTH_LOGIN_URL = "https://tvr.lat/auth/login?client=desktop";
 const LOGOUT_URL = "https://tvr.lat/logout";
 const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
+const ATLAS_OVERLAY_SETTINGS_URL = "https://tvr.lat/desktop/atlas-overlay-settings";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
 const BOOTSTRAP_ATTEMPTS = 4;
 const BOOTSTRAP_TIMEOUT_MS = 12_000;
@@ -375,11 +376,19 @@ function syncServiceVisibility(): void {
   );
 }
 
+function isAtlasOverlaySettingsUrl(value: string): boolean {
+  return value === ATLAS_OVERLAY_SETTINGS_URL;
+}
+
 function secureContents(contents: WebContents, options: { local: boolean }): void {
   const { local } = options;
   contents.on("will-attach-webview", (event) => event.preventDefault());
   contents.setWindowOpenHandler(({ url }) => {
     if (local) return { action: "deny" };
+    if (isAtlasOverlaySettingsUrl(url)) {
+      mainWindow?.webContents.send("desktop:open-atlas-overlay-settings");
+      return { action: "deny" };
+    }
     if (isTrustedTModUrl(url)) {
       void contents.loadURL(url);
     } else if (/^https:\/\/(?:discord\.com|support\.discord\.com)\//i.test(url)) {
@@ -739,6 +748,12 @@ function registerIpc(): void {
   ipcMain.handle("atlas-overlay:get-catalog", (event) =>
     trustedOverlayOrShell(event) ? atlasOverlay?.getCatalog() : undefined,
   );
+  ipcMain.handle("atlas-overlay:get-voices", (event) =>
+    trustedOverlayOrShell(event) ? atlasOverlay?.getVoices() : undefined,
+  );
+  ipcMain.handle("atlas-overlay:preview-voice", (event, voice: unknown) =>
+    trustedOverlayOrShell(event) ? atlasOverlay?.previewVoice(String(voice || "")) : undefined,
+  );
   ipcMain.handle("atlas-overlay:save-config", (event, patch: unknown) => {
     if (!trustedOverlayOrShell(event) || !atlasOverlay || !patch || typeof patch !== "object") {
       return undefined;
@@ -825,7 +840,12 @@ async function createWindow(): Promise<void> {
   });
   const localSession = session.defaultSession;
   localSession.setPermissionCheckHandler((webContents, permission) =>
-    permission === "media" && Boolean(webContents && atlasOverlay?.ownsSender(webContents.id)),
+    permission === "media" && Boolean(
+      webContents && (
+        atlasOverlay?.ownsSender(webContents.id) ||
+        mainWindow?.webContents.id === webContents.id
+      ),
+    ),
   );
   localSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const mediaTypes = "mediaTypes" in details && Array.isArray(details.mediaTypes)
@@ -837,7 +857,10 @@ async function createWindow(): Promise<void> {
     callback(
       permission === "media" &&
       microphoneOnly &&
-      Boolean(atlasOverlay?.ownsSender(webContents.id)),
+      Boolean(
+        atlasOverlay?.ownsSender(webContents.id) ||
+        mainWindow?.webContents.id === webContents.id
+      ),
     );
   });
   try {

@@ -20,16 +20,18 @@ export class IncrementalRussianSpeech {
   private enabled = true;
   private rate = 1.08;
   private volume = 0.86;
+  private voiceName = "";
   private readonly synthesis: SpeechSynthesis | undefined;
 
   constructor(synthesis = globalThis.speechSynthesis) {
     this.synthesis = synthesis;
   }
 
-  configure(options: { enabled: boolean; rate: number; volume: number }): void {
+  configure(options: { enabled: boolean; rate: number; volume: number; voiceName?: string }): void {
     this.enabled = options.enabled;
     this.rate = Math.max(0.75, Math.min(1.45, options.rate));
     this.volume = Math.max(0, Math.min(1, options.volume));
+    this.voiceName = String(options.voiceName || "");
     if (!this.enabled) this.cancel();
   }
 
@@ -48,6 +50,14 @@ export class IncrementalRussianSpeech {
     this.synthesis?.cancel();
   }
 
+  speakNow(value: string): void {
+    if (!this.synthesis) return;
+    const phrase = sanitizeOverlaySpeech(value).slice(0, 1_200);
+    if (!phrase) return;
+    this.synthesis.cancel();
+    this.synthesis.speak(this.createUtterance(phrase));
+  }
+
   private flushSentences(force: boolean): void {
     let boundary = 0;
     for (const match of this.buffer.matchAll(SENTENCE_BOUNDARY)) {
@@ -62,13 +72,19 @@ export class IncrementalRussianSpeech {
     const phrase = sanitizeOverlaySpeech(this.buffer.slice(0, boundary));
     this.buffer = this.buffer.slice(boundary);
     if (!phrase) return;
-    const utterance = new SpeechSynthesisUtterance(phrase.slice(0, 1_200));
+    this.synthesis?.speak(this.createUtterance(phrase.slice(0, 1_200)));
+  }
+
+  private createUtterance(phrase: string): SpeechSynthesisUtterance {
+    const utterance = new SpeechSynthesisUtterance(phrase);
     utterance.lang = "ru-RU";
     utterance.rate = this.rate;
     utterance.pitch = 0.96;
     utterance.volume = this.volume;
     const voices = this.synthesis?.getVoices() || [];
-    utterance.voice = voices.find((voice) => /^ru(?:-|_)/i.test(voice.lang)) || null;
-    this.synthesis?.speak(utterance);
+    utterance.voice = voices.find((voice) =>
+      voice.voiceURI === this.voiceName || voice.name === this.voiceName,
+    ) || voices.find((voice) => /^ru(?:-|_)/i.test(voice.lang)) || null;
+    return utterance;
   }
 }

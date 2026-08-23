@@ -48,6 +48,7 @@ from modules.atlas_media import (
     atlas_media_kind_for_mime,
     atlas_media_scan,
 )
+from modules.atlas_tts import AtlasTTSResult, AtlasTTSService
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
@@ -71,6 +72,7 @@ _ATLAS_OVERLAY_PCM_MAX_BYTES = 48_000 * 2 * 2 * 25
 _ATLAS_OVERLAY_AUDIO_MAX_SECONDS = 25
 _ATLAS_OVERLAY_SCREEN_MAX_BYTES = 2 * 1024 * 1024
 _ATLAS_OVERLAY_CHAT_MAX_BYTES = 3 * 1024 * 1024
+_ATLAS_OVERLAY_TTS_REQUEST_MAX_BYTES = 16 * 1024
 _ATLAS_OVERLAY_AUDIO_TYPES = {
     "audio/webm",
     "audio/ogg",
@@ -173,6 +175,7 @@ def register_atlas_web_routes(
 ) -> None:
     rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=30))
     voice_rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+    tts_rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=40))
     receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
     indexing_tasks: set[asyncio.Task[None]] = set()
     index_lock = asyncio.Lock()
@@ -187,6 +190,7 @@ def register_atlas_web_routes(
     media_config = AtlasMediaConfig.from_env()
     media_blobs = AtlasLocalBlobStore(media_config.root)
     overlay_transcriber = OpenRouterTranscriber()
+    overlay_tts = AtlasTTSService()
     # A small bounded pool keeps simultaneous field requests responsive while
     # preventing a voice burst from exhausting worker threads/OpenRouter.
     overlay_transcription_slots = asyncio.Semaphore(3)
@@ -377,10 +381,14 @@ def register_atlas_web_routes(
                     "context": "/api/atlas/overlay/context",
                     "transcribe": "/api/atlas/overlay/transcribe",
                     "stream": "/api/atlas/chat/stream",
+                    "tts_voices": "/api/atlas/overlay/tts/voices",
+                    "tts_preview": "/api/atlas/overlay/tts/preview",
+                    "tts_synthesize": "/api/atlas/overlay/tts/synthesize",
                 },
                 "capabilities": {
                     "push_to_talk": True,
                     "spoken_reply": True,
+                    "ai_voice": "system_fallback",
                     # Capture is opt-in in the character binding. The transport
                     # intentionally remains disabled until the desktop main
                     # process can redact and validate a single captured frame.
@@ -503,6 +511,110 @@ def register_atlas_web_routes(
                 "duration_ms": round(len(pcm) / (48_000 * 2 * 2) * 1000),
             }
         )
+
+    def check_tts_rate(user_id: int, *, preview: bool = False) -> None:
+        now = time.monotonic()
+        bucket = tts_rates[int(user_id)]
+        while bucket and now - bucket[0] > 60:
+            bucket.popleft()
+        limit = 8 if preview else 20
+        if len(bucket) >= limit:
+            raise web.HTTPTooManyRequests(
+                text=json.dumps(
+                    {
+                        "error": "atlas_tts_rate_limited",
+                        "message": (
+                            "Слишком много запросов озвучивания. "
+                            "Системный голос остаётся доступен."
+                        ),
+                        "fallback": "system",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+                headers={"Retry-After": "60"},
+            )
+        bucket.append(now)
+
+    def tts_response(result: AtlasTTSResult) -> web.Response:
+        common_headers = {
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Atlas-TTS-Provider": result.provider,
+            "X-Atlas-TTS-Voice": result.voice,
+        }
+        if result.fallback or result.audio is None:
+            return web.Response(
+                status=204,
+                headers={
+                    **common_headers,
+                    "X-Atlas-TTS-Fallback": "system",
+                    "X-Atlas-TTS-Fallback-Reason": (
+                        result.reason or "provider_unavailable"
+                    ),
+                },
+            )
+        common_headers["X-Atlas-TTS-Cache"] = (
+            "hit" if result.cache_hit else "miss"
+        )
+        if result.generation_id:
+            common_headers["X-Atlas-TTS-Generation"] = result.generation_id
+        return web.Response(
+            body=result.audio,
+            content_type=result.content_type,
+            headers=common_headers,
+        )
+
+    async def overlay_tts_voices(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        response = web.json_response(overlay_tts.voices_payload())
+        response.headers["Cache-Control"] = "private, max-age=60"
+        return response
+
+    async def overlay_tts_preview(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        if (
+            request.content_length is not None
+            and request.content_length > _ATLAS_OVERLAY_TTS_REQUEST_MAX_BYTES
+        ):
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=_ATLAS_OVERLAY_TTS_REQUEST_MAX_BYTES,
+                actual_size=request.content_length,
+            )
+        payload = await body(request, selected)
+        check_tts_rate(selected.user_id, preview=True)
+        try:
+            result = await overlay_tts.preview(
+                str(payload.get("voice") or "") or None
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return tts_response(result)
+
+    async def overlay_tts_synthesize(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        if (
+            request.content_length is not None
+            and request.content_length > _ATLAS_OVERLAY_TTS_REQUEST_MAX_BYTES
+        ):
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=_ATLAS_OVERLAY_TTS_REQUEST_MAX_BYTES,
+                actual_size=request.content_length,
+            )
+        payload = await body(request, selected)
+        check_tts_rate(selected.user_id)
+        try:
+            result = await overlay_tts.synthesize(
+                payload.get("text"),
+                voice=str(payload.get("voice") or "") or None,
+                speed=payload.get("speed", 1.0),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return tts_response(result)
 
     async def onboarding(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -1795,6 +1907,9 @@ def register_atlas_web_routes(
     async def stop_atlas_jobs(_: web.Application) -> None:
         await job_worker.close()
 
+    async def stop_overlay_tts(_: web.Application) -> None:
+        await overlay_tts.close()
+
     async def stop_forum_sync(_: web.Application) -> None:
         if forum_sync_runner is not None:
             await forum_sync_runner.close()
@@ -1808,6 +1923,7 @@ def register_atlas_web_routes(
     app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
     app.on_cleanup.append(stop_atlas_jobs)
+    app.on_cleanup.append(stop_overlay_tts)
 
     async def knowledge(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -2681,6 +2797,11 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/overlay/context", overlay_context_get)
     app.router.add_post("/api/atlas/overlay/context", overlay_context_set)
     app.router.add_post("/api/atlas/overlay/transcribe", overlay_transcribe)
+    app.router.add_get("/api/atlas/overlay/tts/voices", overlay_tts_voices)
+    app.router.add_post("/api/atlas/overlay/tts/preview", overlay_tts_preview)
+    app.router.add_post(
+        "/api/atlas/overlay/tts/synthesize", overlay_tts_synthesize
+    )
     app.router.add_post("/api/atlas/onboarding", onboarding)
     app.router.add_post("/api/atlas/chat", chat)
     app.router.add_post("/api/atlas/chat/stream", chat_stream)

@@ -19,6 +19,8 @@ import type {
   AtlasOverlayConfig,
   AtlasOverlayEvent,
   AtlasOverlaySubmitResult,
+  AtlasOverlaySpeechResult,
+  AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
 import {
   DEFAULT_ATLAS_OVERLAY_CONFIG,
@@ -33,11 +35,16 @@ import {
 const ATLAS_BOOTSTRAP_URL = "https://atlas.tvr.lat/api/atlas/bootstrap";
 const ATLAS_STREAM_URL = "https://atlas.tvr.lat/api/atlas/chat/stream";
 const ATLAS_TRANSCRIBE_URL = "https://atlas.tvr.lat/api/atlas/overlay/transcribe";
+const ATLAS_TTS_VOICES_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/voices";
+const ATLAS_TTS_PREVIEW_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/preview";
+const ATLAS_TTS_SYNTHESIZE_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/synthesize";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_AUDIO_DURATION_MS = 25_000;
 const MAX_SCREEN_CONTEXT_BYTES = 1_200_000;
 const OVERLAY_WIDTH = 640;
 const OVERLAY_HEIGHT = 480;
+const GAME_WINDOW_PATTERN = /(?:grand theft auto(?:\s*v)?|gta\s*5|gta5|rage multiplayer|majestic)/i;
+const GAME_POLL_INTERVAL_MS = 4_000;
 
 interface AtlasBootstrapPayload {
   viewer?: { csrf_token?: string; atlas_access?: boolean };
@@ -129,6 +136,11 @@ export class AtlasOverlayController {
   private bindingDirty = true;
   private screenContext?: Promise<string | undefined>;
   private hideTimer?: ReturnType<typeof setTimeout>;
+  private gamePollTimer?: ReturnType<typeof setInterval>;
+  private gameDetected = false;
+  private gameDetectionFallback = false;
+  private responseVisibleUntil = 0;
+  private speechGeneration = 0;
 
   constructor(options: AtlasOverlayControllerOptions) {
     this.options = options;
@@ -148,13 +160,16 @@ export class AtlasOverlayController {
 
   api(): Pick<
     AtlasOverlayApi,
-    "getConfig" | "getCatalog" | "saveConfig" | "submitAudio" | "submitText" |
+    "getConfig" | "getCatalog" | "saveConfig" | "getVoices" | "previewVoice" |
+    "submitAudio" | "submitText" |
     "cancel" | "hide" | "openAtlas"
   > {
     return {
       getConfig: async () => this.getConfig(),
       getCatalog: async () => this.getCatalog(),
       saveConfig: async (patch) => this.saveConfig(patch),
+      getVoices: async () => this.getVoices(),
+      previewVoice: async (voice) => this.previewVoice(voice),
       submitAudio: async (input) => this.submitAudio(input),
       submitText: async (question) => this.submitText(question),
       cancel: async () => this.cancel(),
@@ -173,6 +188,48 @@ export class AtlasOverlayController {
       servers: this.catalog.servers.map((item) => ({ ...item })),
       factions: this.catalog.factions.map((item) => ({ ...item })),
     };
+  }
+
+  async getVoices(): Promise<AtlasOverlayVoiceCatalog> {
+    try {
+      const response = await this.options.networkSession().fetch(ATLAS_TTS_VOICES_URL, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) throw new Error(String(payload.error || `Atlas TTS ${response.status}`));
+      const rawVoices = Array.isArray(payload.voices) ? payload.voices : [];
+      return {
+        configured: payload.configured === true,
+        provider: payload.configured === true ? "ai" : "system",
+        defaultVoice: String(payload.default_voice || ""),
+        voices: rawVoices.slice(0, 24).map((item) => {
+          const voice = item && typeof item === "object" ? item as Record<string, unknown> : {};
+          return {
+            id: String(voice.id || "").slice(0, 80),
+            name: String(voice.name || voice.id || "Atlas").slice(0, 80),
+            description: String(voice.description || "AI-голос Atlas").slice(0, 160),
+            provider: "ai" as const,
+          };
+        }).filter((voice) => voice.id),
+      };
+    } catch (error) {
+      this.options.onLog?.("Atlas AI voice catalog unavailable; using system voices", error);
+      return { configured: false, provider: "system", defaultVoice: "", voices: [] };
+    }
+  }
+
+  async previewVoice(voice?: string): Promise<AtlasOverlaySpeechResult> {
+    try {
+      const csrf = await this.ensureAtlasSession();
+      return await this.requestSpeech(ATLAS_TTS_PREVIEW_URL, {
+        voice: String(voice || this.config.speechVoice || ""),
+      }, csrf);
+    } catch (error) {
+      return { fallback: true, error: safeError(error, "AI-голос временно недоступен.") };
+    }
   }
 
   ownsSender(webContentsId: number): boolean {
@@ -219,9 +276,11 @@ export class AtlasOverlayController {
     }
     if (!projection?.allowed) {
       this.cancel();
+      this.stopGameDetection();
       this.hide();
     } else if (this.config.enabled) {
       await this.ensureWindow();
+      this.syncGameDetection();
     }
   }
 
@@ -267,10 +326,22 @@ export class AtlasOverlayController {
       throw error;
     }
     if (previous.hotkey !== next.hotkey || previous.enabled !== next.enabled) this.bindPtt();
-    if (previous.anchor !== next.anchor) this.positionWindow();
-    this.emit({ type: "idle" });
-    if (next.enabled && this.projection?.allowed) await this.ensureWindow();
-    else this.hide();
+    if (
+      previous.anchor !== next.anchor ||
+      previous.positionX !== next.positionX ||
+      previous.positionY !== next.positionY
+    ) this.positionWindow();
+    if (previous.captureInRecordings !== next.captureInRecordings) {
+      this.window?.setContentProtection(!next.captureInRecordings);
+    }
+    this.emit({ type: "config", config: this.getConfig() });
+    if (next.enabled && this.projection?.allowed) {
+      await this.ensureWindow();
+      this.syncGameDetection();
+    } else {
+      this.stopGameDetection();
+      this.hide();
+    }
     return this.getConfig();
   }
 
@@ -305,20 +376,22 @@ export class AtlasOverlayController {
   }
 
   cancel(): void {
+    this.speechGeneration += 1;
     this.activeRequest?.abort();
     this.activeRequest = undefined;
     this.activeRequestId = undefined;
     this.screenContext = undefined;
     this.pendingPttUp = false;
+    this.responseVisibleUntil = 0;
     this.emitPtt("cancel");
-    this.emit({ type: "idle" });
+    this.settleOverlay();
   }
 
   hide(): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = undefined;
     this.emit({ type: "hide" });
-    this.window?.hide();
+    if (!this.config.captureInRecordings) this.window?.hide();
   }
 
   async openAtlas(): Promise<void> {
@@ -328,6 +401,7 @@ export class AtlasOverlayController {
   dispose(): void {
     this.cancel();
     this.unbindPtt();
+    this.stopGameDetection();
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = null;
@@ -355,6 +429,7 @@ export class AtlasOverlayController {
       return;
     }
     const overlayWindow = new BrowserWindow({
+      title: "T-Mod Atlas Overlay",
       width: OVERLAY_WIDTH,
       height: OVERLAY_HEIGHT,
       show: false,
@@ -375,15 +450,19 @@ export class AtlasOverlayController {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
+        backgroundThrottling: false,
       },
     });
     this.window = overlayWindow;
     this.windowReady = false;
     overlayWindow.setAlwaysOnTop(true, "screen-saver", 1);
     overlayWindow.setIgnoreMouseEvents(true, { forward: true });
-    overlayWindow.setContentProtection(true);
+    overlayWindow.setContentProtection(!this.config.captureInRecordings);
     overlayWindow.setFocusable(false);
     overlayWindow.setMenuBarVisibility(false);
+    if (process.platform === "darwin") {
+      overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    }
     overlayWindow.on("closed", () => {
       if (this.window === overlayWindow) {
         this.window = null;
@@ -403,7 +482,19 @@ export class AtlasOverlayController {
     this.windowLoad = load;
     try {
       await load;
-      if (this.window === overlayWindow && !overlayWindow.isDestroyed()) this.windowReady = true;
+      if (this.window === overlayWindow && !overlayWindow.isDestroyed()) {
+        this.windowReady = true;
+        this.emit({ type: "config", config: this.getConfig() });
+        if (this.config.captureInRecordings) {
+          // Keep one stable HWND alive for OBS Window Capture. Visibility is
+          // controlled by the transparent renderer instead of destroying the
+          // source every time the game or an answer disappears.
+          overlayWindow.showInactive();
+          overlayWindow.moveTop();
+          this.emit({ type: "hide" });
+        }
+        if (this.shouldKeepIdleVisible()) this.showIdle();
+      }
     } catch (error) {
       if (!overlayWindow.isDestroyed()) overlayWindow.destroy();
       throw error;
@@ -416,13 +507,11 @@ export class AtlasOverlayController {
     if (!this.window || this.window.isDestroyed()) return;
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     const area = display.workArea;
-    const margin = 24;
-    const x = area.x + area.width - OVERLAY_WIDTH - margin;
-    const y = this.config.anchor === "top-right"
-      ? area.y + margin
-      : this.config.anchor === "bottom-right"
-        ? area.y + area.height - OVERLAY_HEIGHT - margin
-        : area.y + Math.round((area.height - OVERLAY_HEIGHT) / 2);
+    const margin = 18;
+    const availableWidth = Math.max(0, area.width - OVERLAY_WIDTH - margin * 2);
+    const availableHeight = Math.max(0, area.height - OVERLAY_HEIGHT - margin * 2);
+    const x = area.x + margin + Math.round(availableWidth * this.config.positionX);
+    const y = area.y + margin + Math.round(availableHeight * this.config.positionY);
     this.window.setBounds({ x, y, width: OVERLAY_WIDTH, height: OVERLAY_HEIGHT }, false);
   }
 
@@ -435,6 +524,11 @@ export class AtlasOverlayController {
     this.window.showInactive();
     this.window.moveTop();
     this.emit({ type: "show" });
+  }
+
+  private showIdle(): void {
+    this.show();
+    this.emit({ type: "idle" });
   }
 
   private emit(event: AtlasOverlayEvent): void {
@@ -477,6 +571,7 @@ export class AtlasOverlayController {
   }
 
   private beginRequest(requestId: string): void {
+    this.speechGeneration += 1;
     this.activeRequest?.abort();
     this.activeRequest = new AbortController();
     this.activeRequestId = requestId;
@@ -613,6 +708,11 @@ export class AtlasOverlayController {
     });
     this.activeRequest = undefined;
     this.activeRequestId = undefined;
+    this.responseVisibleUntil = Date.now() + 18_000;
+    if (this.config.speakAnswers && this.config.speechProvider === "ai" && String(item.answer || "").trim()) {
+      const generation = this.speechGeneration;
+      void this.speakAnswer(String(item.answer || ""), generation);
+    }
     this.scheduleHide();
     return true;
   }
@@ -671,6 +771,72 @@ export class AtlasOverlayController {
     return this.csrfToken;
   }
 
+  private async requestSpeech(
+    url: string,
+    payload: Record<string, unknown>,
+    csrf: string,
+  ): Promise<AtlasOverlaySpeechResult> {
+    const response = await this.options.networkSession().fetch(url, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: {
+        Accept: "audio/mpeg, audio/*;q=.9, application/json;q=.5",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf,
+        "X-Idempotency-Key": `overlay-tts-${randomUUID()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 204 || response.headers.get("x-atlas-tts-fallback") === "system") {
+      return { fallback: true };
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      throw new Error(String(body.error || body.message || `Atlas TTS ${response.status}`));
+    }
+    const mimeType = String(response.headers.get("content-type") || "").split(";", 1)[0].trim();
+    if (!/^audio\//i.test(mimeType)) throw new Error("atlas_tts_audio_invalid");
+    const audio = await response.arrayBuffer();
+    if (audio.byteLength < 128 || audio.byteLength > 8 * 1024 * 1024) {
+      throw new Error("atlas_tts_audio_invalid");
+    }
+    return { audio, mimeType, fallback: false };
+  }
+
+  private async speakAnswer(text: string, generation: number): Promise<void> {
+    try {
+      const csrf = await this.ensureAtlasSession();
+      const result = await this.requestSpeech(ATLAS_TTS_SYNTHESIZE_URL, {
+        text,
+        voice: this.config.speechVoice || undefined,
+        speed: Math.max(0.8, Math.min(1.25, this.config.speechRate)),
+      }, csrf);
+      if (
+        generation !== this.speechGeneration ||
+        !this.config.speakAnswers ||
+        this.config.speechProvider !== "ai"
+      ) return;
+      this.emit(result.fallback
+        ? { type: "speech", fallbackText: text }
+        : {
+            type: "speech",
+            audio: result.audio,
+            mimeType: result.mimeType,
+            fallbackText: text,
+          });
+    } catch (error) {
+      this.options.onLog?.("Atlas AI voice unavailable; using local speech", error);
+      if (
+        generation === this.speechGeneration &&
+        this.config.speakAnswers &&
+        this.config.speechProvider === "ai"
+      ) {
+        this.emit({ type: "speech", fallbackText: text });
+      }
+    }
+  }
+
   private async captureScreenContext(): Promise<string | undefined> {
     try {
       const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
@@ -704,17 +870,85 @@ export class AtlasOverlayController {
     this.activeRequest = undefined;
     this.activeRequestId = undefined;
     this.csrfToken = /session|csrf|сесси|защитн/i.test(String(error)) ? "" : this.csrfToken;
+    this.responseVisibleUntil = Date.now() + 10_000;
     this.scheduleHide(12_000);
   }
 
   private scheduleHide(delay = 24_000): void {
     this.clearHideTimer();
-    this.hideTimer = setTimeout(() => this.hide(), delay);
+    this.hideTimer = setTimeout(() => {
+      this.hideTimer = undefined;
+      this.responseVisibleUntil = 0;
+      this.settleOverlay();
+    }, delay);
   }
 
   private clearHideTimer(): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = undefined;
+  }
+
+  private shouldKeepIdleVisible(): boolean {
+    return Boolean(
+      this.config.enabled &&
+      this.projection?.allowed &&
+      this.config.showGameStatus &&
+      (this.gameDetected || this.gameDetectionFallback),
+    );
+  }
+
+  private settleOverlay(): void {
+    if (this.shouldKeepIdleVisible()) this.showIdle();
+    else this.hide();
+  }
+
+  private syncGameDetection(): void {
+    this.stopGameDetection();
+    if (!this.config.enabled || !this.projection?.allowed || !this.config.showGameStatus) {
+      if (!this.activeRequestId && Date.now() >= this.responseVisibleUntil) this.hide();
+      return;
+    }
+    void this.detectGameWindow();
+    this.gamePollTimer = setInterval(() => void this.detectGameWindow(), GAME_POLL_INTERVAL_MS);
+  }
+
+  private stopGameDetection(): void {
+    if (this.gamePollTimer) clearInterval(this.gamePollTimer);
+    this.gamePollTimer = undefined;
+    this.gameDetected = false;
+    this.gameDetectionFallback = false;
+  }
+
+  private async detectGameWindow(): Promise<void> {
+    if (!this.config.enabled || !this.projection?.allowed || !this.config.showGameStatus) return;
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ["window"],
+        thumbnailSize: { width: 1, height: 1 },
+        fetchWindowIcons: false,
+      });
+      const detected = sources.some((source) => GAME_WINDOW_PATTERN.test(source.name));
+      const changed = detected !== this.gameDetected || this.gameDetectionFallback;
+      this.gameDetected = detected;
+      this.gameDetectionFallback = false;
+      if (!changed || this.activeRequestId || Date.now() < this.responseVisibleUntil) return;
+      if (detected) {
+        await this.ensureWindow();
+        this.showIdle();
+      } else {
+        this.hide();
+      }
+    } catch (error) {
+      if (!this.gameDetectionFallback) {
+        this.options.onLog?.("Atlas overlay game detection unavailable; using safe idle fallback", error);
+      }
+      this.gameDetected = false;
+      this.gameDetectionFallback = true;
+      if (!this.activeRequestId && Date.now() >= this.responseVisibleUntil) {
+        await this.ensureWindow();
+        this.showIdle();
+      }
+    }
   }
 
   private bindPtt(): void {

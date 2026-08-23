@@ -25,11 +25,11 @@ export class OverlayVoiceCapture {
   private finish: ((result: VoiceCaptureResult | null) => void) | undefined;
   private stopRequested = false;
 
-  async start(): Promise<void> {
+  async start(deviceId = ""): Promise<void> {
     this.cancel();
     const generation = this.generation;
     this.stopRequested = false;
-    this.startPromise = this.prepare(generation);
+    this.startPromise = this.prepare(generation, deviceId);
     await this.startPromise;
   }
 
@@ -72,7 +72,7 @@ export class OverlayVoiceCapture {
     this.resetRecorder();
   }
 
-  private async prepare(generation: number): Promise<void> {
+  private async prepare(generation: number, deviceId: string): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       throw new Error("Микрофон недоступен в этой версии системы.");
     }
@@ -82,6 +82,7 @@ export class OverlayVoiceCapture {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       },
       video: false,
     });

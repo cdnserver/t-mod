@@ -117,6 +117,12 @@ export function AtlasOverlay() {
           label: "Сверяю основания и исключения",
         });
       }
+      if (preview === "idle") {
+        return reduceAtlasOverlayState(
+          reduceAtlasOverlayState(initial, { type: "show" }),
+          { type: "idle" },
+        );
+      }
       const withQuestion = reduceAtlasOverlayState(initial, {
         type: "transcript",
         text: "Могу ли я проводить обыск без ордера?",
@@ -143,6 +149,15 @@ export function AtlasOverlay() {
   const capture = useMemo(() => new OverlayVoiceCapture(), []);
   const speech = useMemo(() => new IncrementalRussianSpeech(), []);
   const mounted = useRef(true);
+  const aiAudio = useRef<{ audio: HTMLAudioElement; url: string } | undefined>(undefined);
+
+  const stopAiAudio = () => {
+    const current = aiAudio.current;
+    if (!current) return;
+    current.audio.pause();
+    URL.revokeObjectURL(current.url);
+    aiAudio.current = undefined;
+  };
 
   useEffect(() => {
     mounted.current = true;
@@ -153,23 +168,51 @@ export function AtlasOverlay() {
       mounted.current = false;
       capture.cancel();
       speech.cancel();
+      stopAiAudio();
     };
   }, [api, capture, speech]);
 
   useEffect(() => {
     speech.configure({
-      enabled: config.speakAnswers,
+      enabled: config.speakAnswers && config.speechProvider === "system",
       rate: config.speechRate,
       volume: config.speechVolume,
+      voiceName: config.speechVoice,
     });
-  }, [config.speakAnswers, config.speechRate, config.speechVolume, speech]);
+  }, [config.speakAnswers, config.speechProvider, config.speechRate, config.speechVolume, config.speechVoice, speech]);
 
   useEffect(() => {
     if (!api) return undefined;
     const receive = (event: AtlasOverlayEvent) => {
-      if (event.type === "delta") speech.append(event.text);
+      if (event.type === "config") {
+        setConfig(event.config);
+        return;
+      }
+      if (event.type === "speech") {
+        if (event.audio && event.mimeType) {
+          stopAiAudio();
+          const url = URL.createObjectURL(new Blob([event.audio], { type: event.mimeType }));
+          const audio = new Audio(url);
+          audio.volume = config.speechVolume;
+          audio.onended = audio.onerror = () => {
+            if (aiAudio.current?.audio === audio) {
+              URL.revokeObjectURL(url);
+              aiAudio.current = undefined;
+            }
+          };
+          aiAudio.current = { audio, url };
+          void audio.play().catch(() => {
+            stopAiAudio();
+            if (event.fallbackText) speech.speakNow(event.fallbackText);
+          });
+        } else if (event.fallbackText) {
+          speech.speakNow(event.fallbackText);
+        }
+        return;
+      }
+      if (event.type === "delta" && config.speechProvider === "system") speech.append(event.text);
       else if (event.type === "done") {
-        speech.finish();
+        if (config.speechProvider === "system") speech.finish();
         playOverlayCue("ready");
       } else if (["hide", "idle", "error"].includes(event.type)) {
         speech.cancel();
@@ -178,7 +221,7 @@ export function AtlasOverlay() {
       dispatch(event);
     };
     return api.onEvent(receive);
-  }, [api, speech]);
+  }, [api, config.speechProvider, config.speechVolume, speech]);
 
   useEffect(() => {
     if (!api) return undefined;
@@ -186,9 +229,10 @@ export function AtlasOverlay() {
       dispatch({ type: "ptt", phase });
       if (phase === "down") {
         speech.cancel();
+        stopAiAudio();
         playOverlayCue("listen");
         try {
-          await capture.start();
+          await capture.start(config.microphoneId);
         } catch (error) {
           dispatch({ type: "error", message: captureError(error), retryable: true });
         }
@@ -220,17 +264,22 @@ export function AtlasOverlay() {
       }
     };
     return api.onPtt((phase) => void ptt(phase));
-  }, [api, capture, speech]);
+  }, [api, capture, config.microphoneId, speech]);
 
   const stageBusy = ["transcribing", "searching", "thinking"].includes(state.stage);
   const style = {
     "--overlay-opacity": config.opacity,
+    "--overlay-scale": config.scale,
   } as CSSProperties;
+  const horizontal = config.positionX < 0.34 ? "left" : config.positionX > 0.66 ? "right" : "center";
+  const vertical = config.positionY < 0.34 ? "top" : config.positionY > 0.66 ? "bottom" : "center";
 
   return (
     <main
       className={`atlas-overlay atlas-overlay--${config.anchor}${state.visible ? " is-visible" : ""}`}
       data-stage={state.stage}
+      data-horizontal={horizontal}
+      data-vertical={vertical}
       style={style}
     >
       <section className="atlas-overlay-card" aria-live="polite" aria-atomic="false">
@@ -272,7 +321,7 @@ export function AtlasOverlay() {
               <p className="atlas-overlay-copy">{state.answer}<span className="atlas-overlay-caret" /></p>
               {state.citations.length > 0 && (
                 <div className="atlas-overlay-sources">
-                  {state.citations.slice(0, 3).map((citation, index) => (
+                  {state.citations.slice(0, 2).map((citation, index) => (
                     <span key={`${citation.index || index}-${citation.title}`}>
                       {citation.index || index + 1}. {citation.title}
                     </span>

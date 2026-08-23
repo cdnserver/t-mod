@@ -9,6 +9,9 @@ function storedChatFocus() {
   try { return localStorage.getItem("tmod-atlas-chat-focus") === "1"; }
   catch (_error) { return false; }
 }
+function isTModDesktop() {
+  return /(?:^|\s)TModDesktop\/[\w.+-]+(?:\s|$)/i.test(navigator.userAgent || "");
+}
 const appState = {
   data: null,
   screen: "home",
@@ -41,6 +44,20 @@ const screenMeta = {
   forum: ["РАБОТА С ФОРУМОМ", "Форум и памятки"],
 };
 let toastTimer = null;
+
+function bindDesktopOverlaySettings() {
+  const button = byId("desktop-overlay-settings");
+  if (!button || !isTModDesktop()) return;
+  document.documentElement.classList.add("tmod-desktop-shell");
+  button.hidden = false;
+  button.addEventListener("click", () => {
+    window.open(
+      "https://tvr.lat/desktop/atlas-overlay-settings",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+}
 
 function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
@@ -2005,6 +2022,7 @@ function bind() {
 }
 
 async function bootstrap() {
+  bindDesktopOverlaySettings();
   bind();
   try {
     await reload();

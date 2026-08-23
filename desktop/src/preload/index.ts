@@ -17,7 +17,9 @@ import type {
   AtlasOverlayConfig,
   AtlasOverlayEvent,
   AtlasOverlayPttPhase,
+  AtlasOverlaySpeechResult,
   AtlasOverlaySubmitResult,
+  AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
 
 const api: TModDesktopApi = {
@@ -62,6 +64,11 @@ const api: TModDesktopApi = {
     ipcRenderer.on("desktop:command-palette", handler);
     return () => ipcRenderer.removeListener("desktop:command-palette", handler);
   },
+  onAtlasOverlaySettings: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("desktop:open-atlas-overlay-settings", handler);
+    return () => ipcRenderer.removeListener("desktop:open-atlas-overlay-settings", handler);
+  },
   onLockRequested: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, reason: DesktopLockReason) =>
       listener(reason);
@@ -83,6 +90,9 @@ const overlayApi: AtlasOverlayApi = {
   getCatalog: () => ipcRenderer.invoke("atlas-overlay:get-catalog") as Promise<AtlasOverlayCatalog>,
   saveConfig: (patch) =>
     ipcRenderer.invoke("atlas-overlay:save-config", patch) as Promise<AtlasOverlayConfig>,
+  getVoices: () => ipcRenderer.invoke("atlas-overlay:get-voices") as Promise<AtlasOverlayVoiceCatalog>,
+  previewVoice: (voice) =>
+    ipcRenderer.invoke("atlas-overlay:preview-voice", voice) as Promise<AtlasOverlaySpeechResult>,
   submitAudio: (input: AtlasOverlayAudioInput) =>
     ipcRenderer.invoke("atlas-overlay:submit-audio", input) as Promise<AtlasOverlaySubmitResult>,
   submitText: (question) =>
