@@ -29,6 +29,41 @@ _ATLAS_FACTIONS = (
         "label": "GOV",
         "enabled": True,
     },
+    {
+        "code": "lscsd",
+        "name": "Los Santos County Sheriff Department",
+        "short_name": "LSCSD",
+        "label": "LSCSD",
+        "enabled": True,
+    },
+    {
+        "code": "fib",
+        "name": "Federal Investigation Bureau",
+        "short_name": "FIB",
+        "label": "FIB",
+        "enabled": True,
+    },
+    {
+        "code": "sang",
+        "name": "San Andreas National Guard",
+        "short_name": "SANG",
+        "label": "SANG",
+        "enabled": True,
+    },
+    {
+        "code": "ems",
+        "name": "Emergency Medical Services",
+        "short_name": "EMS",
+        "label": "EMS",
+        "enabled": True,
+    },
+    {
+        "code": "wn",
+        "name": "Weazel News",
+        "short_name": "WN",
+        "label": "WN",
+        "enabled": True,
+    },
 )
 _ATLAS_KNOWLEDGE_SCOPES = (
     {

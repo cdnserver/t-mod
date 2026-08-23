@@ -2,7 +2,7 @@ name: T-Mod quality
 
 on:
   push:
-    branches: [main, "codex/**"]
+    branches: [main, dev, "codex/**"]
   pull_request:
 
 permissions:

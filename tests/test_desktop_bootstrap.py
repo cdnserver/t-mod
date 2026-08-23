@@ -12,6 +12,7 @@ from modules.consensus_web_auth import (
     ConsensusWebPrincipal,
     TModAccountIdentity,
 )
+from persistence import atlas_repository
 
 
 class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
@@ -66,6 +67,14 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_member_receives_service_manifest_and_notifications(self) -> None:
         principal = self.principal(administrator=True)
+        character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
+        atlas_repository.atlas_set_overlay_character(
+            77,
+            42,
+            character.id,
+            server_code="phoenix-15",
+            faction_code="gov",
+        )
         app = create_consensus_web_app(self.bot, guild_id=77)
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -83,6 +92,12 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(services["reactor"]["enabled"])
             self.assertTrue(services["admin"]["enabled"])
             self.assertIn("unread", payload["notifications"])
+            self.assertTrue(payload["atlas_overlay"]["allowed"])
+            self.assertEqual(
+                payload["atlas_overlay"]["selected_character"]["nickname"],
+                "Saul Goodman",
+            )
+            self.assertNotIn("csrf_token", payload["atlas_overlay"])
             self.assertEqual(response.headers["Cache-Control"], "private, no-store")
         finally:
             await client.close()

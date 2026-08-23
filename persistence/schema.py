@@ -404,6 +404,32 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_memberships_user
             ON atlas_memberships(guild_id, user_id, status);
 
+            CREATE TABLE IF NOT EXISTS atlas_character_bindings (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                server_code TEXT NOT NULL DEFAULT 'phoenix-15',
+                faction_code TEXT NOT NULL,
+                rank_name TEXT NOT NULL DEFAULT '',
+                is_selected INTEGER NOT NULL DEFAULT 0 CHECK(is_selected IN (0, 1)),
+                voice_reply_enabled INTEGER NOT NULL DEFAULT 1
+                    CHECK(voice_reply_enabled IN (0, 1)),
+                screen_context_enabled INTEGER NOT NULL DEFAULT 0
+                    CHECK(screen_context_enabled IN (0, 1)),
+                assignment_status TEXT NOT NULL DEFAULT 'self_reported'
+                    CHECK(assignment_status IN ('self_reported', 'verified', 'revoked')),
+                verified_by_id INTEGER,
+                verified_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id, character_id),
+                FOREIGN KEY(character_id) REFERENCES profile_characters(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_character_bindings_selected
+            ON atlas_character_bindings(guild_id, user_id, is_selected, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS atlas_knowledge_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,

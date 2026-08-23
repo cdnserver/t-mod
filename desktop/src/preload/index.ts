@@ -10,6 +10,15 @@ import type {
   ServiceId,
   TModDesktopApi,
 } from "../shared/contracts";
+import type {
+  AtlasOverlayApi,
+  AtlasOverlayAudioInput,
+  AtlasOverlayCatalog,
+  AtlasOverlayConfig,
+  AtlasOverlayEvent,
+  AtlasOverlayPttPhase,
+  AtlasOverlaySubmitResult,
+} from "../shared/atlas-overlay";
 
 const api: TModDesktopApi = {
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap") as Promise<BootstrapResult>,
@@ -68,3 +77,29 @@ const api: TModDesktopApi = {
 };
 
 contextBridge.exposeInMainWorld("tmodDesktop", api);
+
+const overlayApi: AtlasOverlayApi = {
+  getConfig: () => ipcRenderer.invoke("atlas-overlay:get-config") as Promise<AtlasOverlayConfig>,
+  getCatalog: () => ipcRenderer.invoke("atlas-overlay:get-catalog") as Promise<AtlasOverlayCatalog>,
+  saveConfig: (patch) =>
+    ipcRenderer.invoke("atlas-overlay:save-config", patch) as Promise<AtlasOverlayConfig>,
+  submitAudio: (input: AtlasOverlayAudioInput) =>
+    ipcRenderer.invoke("atlas-overlay:submit-audio", input) as Promise<AtlasOverlaySubmitResult>,
+  submitText: (question) =>
+    ipcRenderer.invoke("atlas-overlay:submit-text", String(question || "").slice(0, 4_000)) as Promise<AtlasOverlaySubmitResult>,
+  cancel: () => ipcRenderer.invoke("atlas-overlay:cancel"),
+  hide: () => ipcRenderer.invoke("atlas-overlay:hide"),
+  openAtlas: () => ipcRenderer.invoke("atlas-overlay:open-atlas"),
+  onEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: AtlasOverlayEvent) => listener(payload);
+    ipcRenderer.on("atlas-overlay:event", handler);
+    return () => ipcRenderer.removeListener("atlas-overlay:event", handler);
+  },
+  onPtt: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, phase: AtlasOverlayPttPhase) => listener(phase);
+    ipcRenderer.on("atlas-overlay:ptt", handler);
+    return () => ipcRenderer.removeListener("atlas-overlay:ptt", handler);
+  },
+};
+
+contextBridge.exposeInMainWorld("tmodAtlasOverlay", overlayApi);

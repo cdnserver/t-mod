@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.5-dev.6");
+    expect(manifest.version).toBe("0.3.5-dev.7");
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -101,13 +101,31 @@ describe("desktop release contract", () => {
     expect(renderer).toContain("playIgnitionSound");
     expect(renderer).toContain("launchVisible && <CinematicLaunch");
     expect(cinematics).toContain(".cinema-meteors");
-    expect(cinematics).toContain("clip-path:polygon(50% 0,59% 38%,100% 50%");
-    expect(cinematics).toContain("@keyframes meteor-primary");
+    expect(cinematics).toContain("@keyframes meteor-flight");
+    expect(cinematics).toContain("@keyframes star-twinkle");
+    expect(cinematics).toContain(".cosmic-signatures");
+    expect(cinematics).toContain(".cinema-focus");
+    expect(cinematics).toContain(".planet-terminator");
     expect(cinematics).toContain("@keyframes cinema-stage-out");
     expect(cinematics).not.toContain("feTurbulence");
     const cinematicRenderer = readFileSync(resolve(root, "src/renderer/cinematics.tsx"), "utf8");
+    expect(cinematicRenderer).toContain("function MeteorShower(");
+    expect(cinematicRenderer).toContain("function CosmicSignatures(");
+    expect(cinematicRenderer).toContain("Array.from({ length: 68 }");
     expect(cinematicRenderer).toContain("function warmBloom(");
     expect(cinematicRenderer).not.toContain("function starFall(");
+  });
+
+  it("keeps Atlas Overlay lifecycle failures isolated from the desktop shell", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
+    expect(main).toContain("applyAtlasOverlayBootstrapSafely");
+    expect(main).toContain("failed without blocking Desktop");
+    expect(main).toContain("Atlas overlay initialization failed without blocking Desktop");
+    expect(main).toContain("atlasOverlay = undefined;");
+    expect(controller).toContain('this.csrfToken = "";');
+    expect(controller).toContain("this.activeThreadId = undefined;");
+    expect(controller).toContain("this.clearHideTimer();");
   });
 
   it("ships one complete vector identity for every desktop contour", () => {

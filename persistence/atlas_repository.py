@@ -218,11 +218,36 @@ def atlas_catalog() -> dict[str, Any]:
     except Exception:  # startup compatibility before the catalog migration
         servers = []
         factions = []
+    def merged(
+        builtins: list[dict[str, Any]],
+        stored: list[Any],
+    ) -> list[dict[str, Any]]:
+        # A single administrator-created row must not make the rest of the
+        # official catalog disappear. Stored rows override built-ins by code;
+        # genuinely custom rows are appended and remain fully supported.
+        stored_by_code = {
+            str(item.get("code") or ""): item
+            for row in stored
+            if (item := _row(row)).get("code")
+        }
+        result: list[dict[str, Any]] = []
+        known: set[str] = set()
+        for item in builtins:
+            code = str(item.get("code") or "")
+            result.append({**item, **stored_by_code.get(code, {})})
+            known.add(code)
+        result.extend(
+            item
+            for code, item in stored_by_code.items()
+            if code not in known
+        )
+        return result
+
     return {
         **base,
         **atlas_taxonomy_catalog(),
-        "servers": [_row(row) for row in servers] or base["servers"],
-        "factions": [_row(row) for row in factions] or base["factions"],
+        "servers": merged(base["servers"], servers),
+        "factions": merged(base["factions"], factions),
     }
 
 
@@ -245,6 +270,167 @@ def atlas_normalize_scope(server_code: str, faction_code: str) -> tuple[str, str
     if selected_faction not in valid_factions:
         raise ValueError("atlas_faction_invalid")
     return selected_server, selected_faction
+
+
+def atlas_overlay_characters(guild_id: int, user_id: int) -> list[dict[str, Any]]:
+    """Return only characters owned by the authenticated T-Mod account.
+
+    Faction bindings are deliberately separate from the public profile: a user
+    can keep a profile character private while still using it locally in the
+    desktop overlay. Ownership is always proven by the database join.
+    """
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT pc.id, pc.nickname, pc.static_id, pc.position, pc.is_public,
+                   b.server_code, b.faction_code, b.rank_name, b.is_selected,
+                   b.voice_reply_enabled, b.screen_context_enabled,
+                   b.assignment_status, b.verified_at, b.updated_at AS binding_updated_at
+            FROM profile_characters pc
+            LEFT JOIN atlas_character_bindings b
+              ON b.guild_id = pc.guild_id
+             AND b.user_id = pc.user_id
+             AND b.character_id = pc.id
+            WHERE pc.guild_id = ? AND pc.user_id = ?
+            ORDER BY pc.position, pc.id
+            """,
+            (int(guild_id), int(user_id)),
+        ).fetchall()
+    catalog = atlas_catalog()
+    server_labels = {
+        str(item.get("code") or ""): str(item.get("label") or item.get("name") or "")
+        for item in catalog["servers"]
+    }
+    faction_labels = {
+        str(item.get("code") or ""): str(item.get("label") or item.get("name") or "")
+        for item in catalog["factions"]
+    }
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        bound = bool(item.get("server_code") and item.get("faction_code"))
+        result.append(
+            {
+                "id": int(item["id"]),
+                "nickname": str(item["nickname"]),
+                "static_id": str(item["static_id"]),
+                "position": int(item["position"]),
+                "profile_public": bool(item["is_public"]),
+                "identity_verified": True,
+                "bound": bound,
+                "selected": bool(item.get("is_selected")),
+                "server_code": str(item.get("server_code") or ""),
+                "server_label": server_labels.get(str(item.get("server_code") or ""), ""),
+                "faction_code": str(item.get("faction_code") or ""),
+                "faction_label": faction_labels.get(str(item.get("faction_code") or ""), ""),
+                "faction_name": faction_labels.get(str(item.get("faction_code") or ""), ""),
+                "rank": str(item.get("rank_name") or ""),
+                "voice_reply_enabled": bool(
+                    1 if item.get("voice_reply_enabled") is None else item["voice_reply_enabled"]
+                ),
+                "screen_context_enabled": bool(item.get("screen_context_enabled")),
+                "assignment_status": str(item.get("assignment_status") or "unbound"),
+                "verified_at": item.get("verified_at"),
+            }
+        )
+    return result
+
+
+def atlas_set_overlay_character(
+    guild_id: int,
+    user_id: int,
+    character_id: int,
+    *,
+    server_code: str,
+    faction_code: str,
+    rank: str | None = None,
+    voice_reply_enabled: bool = True,
+    screen_context_enabled: bool = False,
+) -> dict[str, Any]:
+    """Bind and select an owned character for the low-latency field mode."""
+
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_rank = None if rank is None else " ".join(str(rank or "").split())[:100]
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        owned = con.execute(
+            """
+            SELECT 1 FROM profile_characters
+            WHERE id = ? AND guild_id = ? AND user_id = ?
+            """,
+            (int(character_id), int(guild_id), int(user_id)),
+        ).fetchone()
+        if owned is None:
+            con.rollback()
+            raise ValueError("atlas_overlay_character_not_owned")
+        if clean_rank is None:
+            existing = con.execute(
+                """
+                SELECT rank_name FROM atlas_character_bindings
+                WHERE guild_id = ? AND user_id = ? AND character_id = ?
+                """,
+                (int(guild_id), int(user_id), int(character_id)),
+            ).fetchone()
+            clean_rank = str(existing["rank_name"] or "") if existing else ""
+        con.execute(
+            """
+            UPDATE atlas_character_bindings SET is_selected = 0, updated_at = ?
+            WHERE guild_id = ? AND user_id = ? AND is_selected = 1
+            """,
+            (now, int(guild_id), int(user_id)),
+        )
+        con.execute(
+            """
+            INSERT INTO atlas_character_bindings(
+                guild_id, user_id, character_id, server_code, faction_code,
+                rank_name, is_selected, voice_reply_enabled,
+                screen_context_enabled, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id, character_id) DO UPDATE SET
+                server_code = excluded.server_code,
+                faction_code = excluded.faction_code,
+                rank_name = excluded.rank_name,
+                is_selected = 1,
+                voice_reply_enabled = excluded.voice_reply_enabled,
+                screen_context_enabled = excluded.screen_context_enabled,
+                assignment_status = CASE
+                    WHEN atlas_character_bindings.assignment_status = 'verified'
+                    THEN 'verified' ELSE 'self_reported' END,
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(guild_id), int(user_id), int(character_id), clean_server,
+                clean_faction, clean_rank, int(bool(voice_reply_enabled)),
+                int(bool(screen_context_enabled)), now, now,
+            ),
+        )
+        con.commit()
+    return atlas_overlay_context(guild_id, user_id, character_id=character_id)
+
+
+def atlas_overlay_context(
+    guild_id: int,
+    user_id: int,
+    *,
+    character_id: int | None = None,
+) -> dict[str, Any]:
+    characters = atlas_overlay_characters(guild_id, user_id)
+    if character_id is not None:
+        selected = next(
+            (item for item in characters if int(item["id"]) == int(character_id)),
+            None,
+        )
+        if selected is None:
+            raise ValueError("atlas_overlay_character_not_owned")
+    else:
+        selected = next((item for item in characters if item["selected"]), None)
+    return {
+        "characters": characters,
+        "selected_character": selected,
+        "catalog": atlas_catalog(),
+    }
 
 
 def atlas_upsert_server(

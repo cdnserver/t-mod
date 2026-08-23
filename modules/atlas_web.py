@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import sqlite3
@@ -47,6 +49,7 @@ from modules.atlas_media import (
     atlas_media_scan,
 )
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
 from persistence import atlas_job_repository as job_storage
@@ -63,6 +66,103 @@ AuthenticatedRequest = Callable[
 ]
 
 
+_ATLAS_OVERLAY_AUDIO_MAX_BYTES = 6 * 1024 * 1024
+_ATLAS_OVERLAY_PCM_MAX_BYTES = 48_000 * 2 * 2 * 25
+_ATLAS_OVERLAY_AUDIO_MAX_SECONDS = 25
+_ATLAS_OVERLAY_SCREEN_MAX_BYTES = 2 * 1024 * 1024
+_ATLAS_OVERLAY_CHAT_MAX_BYTES = 3 * 1024 * 1024
+_ATLAS_OVERLAY_AUDIO_TYPES = {
+    "audio/webm",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "application/octet-stream",
+}
+
+
+async def _decode_overlay_audio(audio: bytes) -> bytes:
+    """Decode browser MediaRecorder output into Discord-compatible PCM.
+
+    ffmpeg reads and writes pipes only: voice clips never touch persistent
+    storage, which is important for a desktop push-to-talk feature.
+    """
+
+    if not audio or len(audio) > _ATLAS_OVERLAY_AUDIO_MAX_BYTES:
+        raise ValueError("atlas_overlay_audio_size_invalid")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-t",
+            str(_ATLAS_OVERLAY_AUDIO_MAX_SECONDS),
+            "-f",
+            "s16le",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("atlas_overlay_ffmpeg_unavailable") from exc
+    try:
+        pcm, stderr = await asyncio.wait_for(process.communicate(audio), timeout=12)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise TimeoutError("atlas_overlay_audio_decode_timeout") from exc
+    if process.returncode or not pcm:
+        message = stderr.decode("utf-8", errors="replace").strip()[:300]
+        raise ValueError(f"atlas_overlay_audio_invalid:{message}")
+    if len(pcm) > _ATLAS_OVERLAY_PCM_MAX_BYTES:
+        raise ValueError("atlas_overlay_audio_too_long")
+    return pcm
+
+
+def _validated_overlay_screen_context(value: Any) -> str:
+    """Validate a small in-memory gameplay frame before multimodal forwarding."""
+
+    selected = str(value or "").strip()
+    prefix, separator, encoded = selected.partition(",")
+    media = prefix.removeprefix("data:").split(";", 1)[0].lower()
+    if not separator or ";base64" not in prefix.lower() or media not in {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+    }:
+        raise ValueError("atlas_overlay_screen_format_invalid")
+    encoded_limit = ((_ATLAS_OVERLAY_SCREEN_MAX_BYTES + 2) // 3) * 4 + 8
+    if len(encoded) > encoded_limit:
+        raise ValueError("atlas_overlay_screen_size_invalid")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("atlas_overlay_screen_invalid") from exc
+    if not raw or len(raw) > _ATLAS_OVERLAY_SCREEN_MAX_BYTES:
+        raise ValueError("atlas_overlay_screen_size_invalid")
+    signature_ok = (
+        media == "image/png" and raw.startswith(b"\x89PNG\r\n\x1a\n")
+        or media == "image/jpeg" and raw.startswith(b"\xff\xd8\xff")
+        or media == "image/webp" and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"
+    )
+    if not signature_ok:
+        raise ValueError("atlas_overlay_screen_content_invalid")
+    return selected
+
+
 def register_atlas_web_routes(
     app: web.Application,
     bot: discord.Client,
@@ -72,6 +172,7 @@ def register_atlas_web_routes(
     authenticate: AuthenticatedRequest,
 ) -> None:
     rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=30))
+    voice_rates: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=40))
     receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
     indexing_tasks: set[asyncio.Task[None]] = set()
     index_lock = asyncio.Lock()
@@ -85,6 +186,10 @@ def register_atlas_web_routes(
     )
     media_config = AtlasMediaConfig.from_env()
     media_blobs = AtlasLocalBlobStore(media_config.root)
+    overlay_transcriber = OpenRouterTranscriber()
+    # A small bounded pool keeps simultaneous field requests responsive while
+    # preventing a voice burst from exhausting worker threads/OpenRouter.
+    overlay_transcription_slots = asyncio.Semaphore(3)
 
     async def atlas_index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(asset_dir / "index.html")
@@ -128,6 +233,14 @@ def register_atlas_web_routes(
                 content_type="application/json",
             )
         return payload
+
+    def reject_oversized_chat(request: web.Request) -> None:
+        length = request.content_length
+        if length is not None and length > _ATLAS_OVERLAY_CHAT_MAX_BYTES:
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=_ATLAS_OVERLAY_CHAT_MAX_BYTES,
+                actual_size=length,
+            )
 
     async def atlas_allowed(selected: ConsensusWebPrincipal) -> bool:
         if selected.administrator:
@@ -248,6 +361,149 @@ def register_atlas_web_routes(
         payload = await dashboard_for(request, selected)
         return web.json_response(payload)
 
+    async def overlay_context_get(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        context = await asyncio.to_thread(
+            storage.atlas_overlay_context,
+            int(guild_id),
+            int(selected.user_id),
+        )
+        response = web.json_response(
+            {
+                **context,
+                "allowed": True,
+                "endpoints": {
+                    "context": "/api/atlas/overlay/context",
+                    "transcribe": "/api/atlas/overlay/transcribe",
+                    "stream": "/api/atlas/chat/stream",
+                },
+                "capabilities": {
+                    "push_to_talk": True,
+                    "spoken_reply": True,
+                    # Capture is opt-in in the character binding. The transport
+                    # intentionally remains disabled until the desktop main
+                    # process can redact and validate a single captured frame.
+                    "screen_context": "consent_gated",
+                },
+            }
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    async def overlay_context_set(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        payload = await body(request, selected)
+        try:
+            character_id = int(payload.get("character_id") or 0)
+            context = await asyncio.to_thread(
+                storage.atlas_set_overlay_character,
+                int(guild_id),
+                int(selected.user_id),
+                character_id,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or ""),
+                rank=(
+                    str(payload.get("rank") or "")
+                    if "rank" in payload
+                    else None
+                ),
+                voice_reply_enabled=bool(payload.get("voice_reply_enabled", True)),
+                screen_context_enabled=bool(payload.get("screen_context_enabled", False)),
+            )
+        except (TypeError, ValueError) as exc:
+            code = str(exc) or "atlas_overlay_context_invalid"
+            return web.json_response(
+                {"error": code, "message": "Проверьте персонажа, сервер и организацию."},
+                status=400 if code != "atlas_overlay_character_not_owned" else 403,
+            )
+        return web.json_response({"ok": True, **context})
+
+    async def overlay_transcribe(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not csrf_matches(request, selected):
+            return web.json_response(
+                {"error": "csrf_failed", "message": "Защитная сессия устарела."},
+                status=403,
+            )
+        check_voice_rate(selected.user_id)
+        try:
+            if request.content_type.startswith("multipart/"):
+                if (
+                    request.content_length is not None
+                    and request.content_length > _ATLAS_OVERLAY_AUDIO_MAX_BYTES + 128 * 1024
+                ):
+                    raise ValueError("atlas_overlay_audio_size_invalid")
+                reader = await request.multipart()
+                audio = bytearray()
+                while part := await reader.next():
+                    if str(part.name or "") != "audio":
+                        await part.release()
+                        continue
+                    while chunk := await part.read_chunk(size=64 * 1024):
+                        audio.extend(chunk)
+                        if len(audio) > _ATLAS_OVERLAY_AUDIO_MAX_BYTES:
+                            raise ValueError("atlas_overlay_audio_size_invalid")
+                    break
+            elif request.content_type in _ATLAS_OVERLAY_AUDIO_TYPES:
+                if (
+                    request.content_length is not None
+                    and request.content_length > _ATLAS_OVERLAY_AUDIO_MAX_BYTES
+                ):
+                    raise ValueError("atlas_overlay_audio_size_invalid")
+                audio = bytearray()
+                while chunk := await request.content.read(64 * 1024):
+                    audio.extend(chunk)
+                    if len(audio) > _ATLAS_OVERLAY_AUDIO_MAX_BYTES:
+                        raise ValueError("atlas_overlay_audio_size_invalid")
+            else:
+                return web.json_response(
+                    {"error": "atlas_overlay_audio_format_invalid"},
+                    status=400,
+                )
+            pcm = await _decode_overlay_audio(bytes(audio))
+            if not overlay_transcriber.configured:
+                return web.json_response(
+                    {
+                        "error": "atlas_overlay_stt_not_configured",
+                        "message": "Распознавание речи ещё не настроено.",
+                    },
+                    status=503,
+                )
+            async with overlay_transcription_slots:
+                transcript = await asyncio.wait_for(
+                    asyncio.to_thread(overlay_transcriber.transcribe_pcm, pcm),
+                    timeout=30,
+                )
+        except MusicProviderError as exc:
+            return web.json_response(
+                {"error": "atlas_overlay_stt_failed", "message": str(exc)[:300]},
+                status=503,
+            )
+        except (ValueError, RuntimeError, TimeoutError, asyncio.TimeoutError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc).split(":", 1)[0] or "atlas_overlay_audio_invalid",
+                    "message": "Не удалось распознать голосовую команду. Повторите короче и ближе к микрофону.",
+                },
+                status=400,
+            )
+        clean = " ".join(str(transcript or "").split())[:4000]
+        if not clean:
+            return web.json_response(
+                {"error": "atlas_overlay_speech_not_detected", "message": "Речь не распознана."},
+                status=422,
+            )
+        return web.json_response(
+            {
+                "text": clean,
+                "transcript": clean,
+                "duration_ms": round(len(pcm) / (48_000 * 2 * 2) * 1000),
+            }
+        )
+
     async def onboarding(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas(selected)
@@ -301,6 +557,31 @@ def register_atlas_web_routes(
             )
         bucket.append(now)
 
+    def check_voice_rate(user_id: int) -> None:
+        now = time.monotonic()
+        bucket = voice_rates[int(user_id)]
+        while bucket and now - bucket[0] > 60:
+            bucket.popleft()
+        if len(bucket) >= 24:
+            raise web.HTTPTooManyRequests(
+                text='{"error":"atlas_overlay_voice_rate_limited","message":"Слишком много голосовых запросов."}',
+                content_type="application/json",
+            )
+        bucket.append(now)
+
+    def screen_context_for(
+        payload: dict[str, Any],
+        character: dict[str, Any] | None,
+    ) -> str | None:
+        raw = payload.get("screen_context")
+        if not raw or character is None:
+            return None
+        if not bool(character.get("screen_context_enabled")):
+            # Explicit consent is stored with the selected character. A stale
+            # desktop client may keep sending frames; ignore them safely.
+            return None
+        return _validated_overlay_screen_context(raw)
+
     def cached_receipt(user_id: int, request: web.Request) -> tuple[str, dict[str, Any] | None]:
         key = str(request.headers.get("X-Idempotency-Key") or "").strip()[:100]
         if not key:
@@ -346,6 +627,7 @@ def register_atlas_web_routes(
     async def chat(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas(selected)
+        reject_oversized_chat(request)
         payload = await body(request, selected)
         receipt_key, cached = cached_receipt(selected.user_id, request)
         if cached is not None:
@@ -357,11 +639,54 @@ def register_atlas_web_routes(
                 {"error": "question_required", "message": "Введите вопрос для Atlas."},
                 status=400,
             )
+        latency_mode = (
+            "overlay"
+            if str(payload.get("latency_mode") or "").strip().lower() == "overlay"
+            else "standard"
+        )
+        question = question[:4000] if latency_mode == "overlay" else question[:8000]
+        overlay_character: dict[str, Any] | None = None
+        if latency_mode == "overlay":
+            try:
+                requested_character_id = int(payload.get("character_id") or 0) or None
+                overlay = await asyncio.to_thread(
+                    storage.atlas_overlay_context,
+                    int(guild_id),
+                    int(selected.user_id),
+                    character_id=requested_character_id,
+                )
+            except (TypeError, ValueError) as exc:
+                return web.json_response(
+                    {"error": str(exc) or "atlas_overlay_character_invalid"},
+                    status=403,
+                )
+            candidate = overlay.get("selected_character")
+            if not isinstance(candidate, dict) or not bool(candidate.get("bound")):
+                return web.json_response(
+                    {
+                        "error": "atlas_overlay_character_required",
+                        "message": "Сначала выберите персонажа и его организацию в Atlas Overlay.",
+                    },
+                    status=409,
+                )
+            overlay_character = candidate
+        try:
+            screen_context = screen_context_for(payload, overlay_character)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,
-                str(payload.get("server_code") or "phoenix-15"),
-                str(payload.get("faction_code") or "lspd"),
+                str(
+                    overlay_character.get("server_code")
+                    if overlay_character is not None
+                    else payload.get("server_code") or "phoenix-15"
+                ),
+                str(
+                    overlay_character.get("faction_code")
+                    if overlay_character is not None
+                    else payload.get("faction_code") or "lspd"
+                ),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
@@ -388,13 +713,28 @@ def register_atlas_web_routes(
                     {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
                     status=404,
                 )
-        memory = await asyncio.to_thread(
-            storage.atlas_recent_chat_memory,
-            organization_id,
-            int(selected.user_id),
-            exclude_thread_id=thread_id,
-            agent_id=agent_id,
+        memory = (
+            []
+            if latency_mode == "overlay"
+            else await asyncio.to_thread(
+                storage.atlas_recent_chat_memory,
+                organization_id,
+                int(selected.user_id),
+                exclude_thread_id=thread_id,
+                agent_id=agent_id,
+            )
         )
+        user_profile = dict(dashboard["membership"].get("profile") or {})
+        if overlay_character is not None:
+            user_profile.update(
+                {
+                    "nickname": str(overlay_character.get("nickname") or ""),
+                    "static_id": str(overlay_character.get("static_id") or ""),
+                    "rank": str(overlay_character.get("rank") or ""),
+                    "direction": str(overlay_character.get("faction_label") or ""),
+                    "identity_verified": True,
+                }
+            )
         try:
             answer = await atlas_answer(
                 organization_id,
@@ -405,7 +745,9 @@ def register_atlas_web_routes(
                 memory=memory,
                 response_mode=str(payload.get("response_mode") or "balanced"),
                 model_id=agent_id,
-                user_profile=dict(dashboard["membership"].get("profile") or {}),
+                user_profile=user_profile,
+                latency_mode=latency_mode,
+                screen_context=screen_context,
             )
         except AtlasAIError as exc:
             if exc.code in {
@@ -492,6 +834,7 @@ def register_atlas_web_routes(
     async def chat_stream(request: web.Request) -> web.StreamResponse | web.Response:
         selected = await principal(request)
         await require_atlas(selected)
+        reject_oversized_chat(request)
         payload = await body(request, selected)
         receipt_key, cached = cached_receipt(selected.user_id, request)
         if cached is not None:
@@ -520,11 +863,54 @@ def register_atlas_web_routes(
                 {"error": "question_required", "message": "Введите вопрос для Atlas."},
                 status=400,
             )
+        latency_mode = (
+            "overlay"
+            if str(payload.get("latency_mode") or "").strip().lower() == "overlay"
+            else "standard"
+        )
+        question = question[:4000] if latency_mode == "overlay" else question[:8000]
+        overlay_character: dict[str, Any] | None = None
+        if latency_mode == "overlay":
+            try:
+                requested_character_id = int(payload.get("character_id") or 0) or None
+                overlay = await asyncio.to_thread(
+                    storage.atlas_overlay_context,
+                    int(guild_id),
+                    int(selected.user_id),
+                    character_id=requested_character_id,
+                )
+            except (TypeError, ValueError) as exc:
+                return web.json_response(
+                    {"error": str(exc) or "atlas_overlay_character_invalid"},
+                    status=403,
+                )
+            candidate = overlay.get("selected_character")
+            if not isinstance(candidate, dict) or not bool(candidate.get("bound")):
+                return web.json_response(
+                    {
+                        "error": "atlas_overlay_character_required",
+                        "message": "Сначала выберите персонажа и его организацию в Atlas Overlay.",
+                    },
+                    status=409,
+                )
+            overlay_character = candidate
+        try:
+            screen_context = screen_context_for(payload, overlay_character)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         try:
             server_code, faction_code = await asyncio.to_thread(
                 storage.atlas_normalize_scope,
-                str(payload.get("server_code") or "phoenix-15"),
-                str(payload.get("faction_code") or "lspd"),
+                str(
+                    overlay_character.get("server_code")
+                    if overlay_character is not None
+                    else payload.get("server_code") or "phoenix-15"
+                ),
+                str(
+                    overlay_character.get("faction_code")
+                    if overlay_character is not None
+                    else payload.get("faction_code") or "lspd"
+                ),
             )
         except ValueError as exc:
             return web.json_response(
@@ -554,12 +940,16 @@ def register_atlas_web_routes(
                     {"error": "atlas_thread_not_found", "message": "Выбранный диалог недоступен."},
                     status=404,
                 )
-        memory = await asyncio.to_thread(
-            storage.atlas_recent_chat_memory,
-            organization_id,
-            int(selected.user_id),
-            exclude_thread_id=thread_id,
-            agent_id=agent_id,
+        memory = (
+            []
+            if latency_mode == "overlay"
+            else await asyncio.to_thread(
+                storage.atlas_recent_chat_memory,
+                organization_id,
+                int(selected.user_id),
+                exclude_thread_id=thread_id,
+                agent_id=agent_id,
+            )
         )
         response = web.StreamResponse(
             status=200,
@@ -584,6 +974,17 @@ def register_atlas_web_routes(
 
         await emit({"type": "start", "thread_id": thread_id})
         try:
+            user_profile = dict(dashboard["membership"].get("profile") or {})
+            if overlay_character is not None:
+                user_profile.update(
+                    {
+                        "nickname": str(overlay_character.get("nickname") or ""),
+                        "static_id": str(overlay_character.get("static_id") or ""),
+                        "rank": str(overlay_character.get("rank") or ""),
+                        "direction": str(overlay_character.get("faction_label") or ""),
+                        "identity_verified": True,
+                    }
+                )
             answer = await atlas_answer_stream(
                 organization_id,
                 question,
@@ -595,7 +996,9 @@ def register_atlas_web_routes(
                 memory=memory,
                 response_mode=str(payload.get("response_mode") or "balanced"),
                 model_id=agent_id,
-                user_profile=dict(dashboard["membership"].get("profile") or {}),
+                user_profile=user_profile,
+                latency_mode=latency_mode,
+                screen_context=screen_context,
             )
             if thread_id is None:
                 thread_id = await asyncio.to_thread(
@@ -624,7 +1027,7 @@ def register_atlas_web_routes(
                 target_type="ai_thread",
                 target_id=thread_id,
                 details={
-                    "source": "web-stream",
+                    "source": "desktop-overlay" if latency_mode == "overlay" else "web-stream",
                     "model": answer["model"],
                     "latency_ms": answer["latency_ms"],
                 },
@@ -2275,6 +2678,9 @@ def register_atlas_web_routes(
     app.router.add_get("/atlas/", atlas_index)
     app.router.add_get("/atlas/assets/{name}", atlas_asset)
     app.router.add_get("/api/atlas/bootstrap", bootstrap)
+    app.router.add_get("/api/atlas/overlay/context", overlay_context_get)
+    app.router.add_post("/api/atlas/overlay/context", overlay_context_set)
+    app.router.add_post("/api/atlas/overlay/transcribe", overlay_transcribe)
     app.router.add_post("/api/atlas/onboarding", onboarding)
     app.router.add_post("/api/atlas/chat", chat)
     app.router.add_post("/api/atlas/chat/stream", chat_stream)

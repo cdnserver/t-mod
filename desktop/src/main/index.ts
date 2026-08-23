@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import log from "electron-log/main";
 import electronUpdater from "electron-updater";
+import { AtlasOverlayController } from "./atlas-overlay-controller";
 import {
   isServiceId,
   isTrustedTModUrl,
@@ -89,6 +90,7 @@ let shellPreferences = { ...DEFAULT_PREFERENCES };
 let serviceRetryAttempt = 0;
 let serviceRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let lastMainFrameHttpStatus = 0;
+let atlasOverlay: AtlasOverlayController | undefined;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
@@ -463,6 +465,18 @@ function bootstrapUnavailable(error: string): BootstrapResult {
   return { authenticated: false, online: false, error: "network_unavailable" };
 }
 
+async function applyAtlasOverlayBootstrapSafely(
+  projection: DesktopBootstrap["atlas_overlay"],
+): Promise<void> {
+  try {
+    await atlasOverlay?.applyBootstrap(projection);
+  } catch (error) {
+    // Atlas Overlay is optional. A local transparent-window/helper failure
+    // cannot be allowed to masquerade as a network outage for all of Desktop.
+    log.warn("Atlas overlay bootstrap failed without blocking Desktop", error);
+  }
+}
+
 async function performBootstrap(): Promise<BootstrapResult> {
   let lastError = "network_unavailable";
   for (let attempt = 0; attempt < BOOTSTRAP_ATTEMPTS; attempt += 1) {
@@ -482,6 +496,7 @@ async function performBootstrap(): Promise<BootstrapResult> {
       if (response.status === 401) {
         lastSuccessfulBootstrap = undefined;
         clearServiceManifest();
+        await applyAtlasOverlayBootstrapSafely(undefined);
         return { authenticated: false, online: true, error: "login_required" };
       }
       if (
@@ -509,6 +524,7 @@ async function performBootstrap(): Promise<BootstrapResult> {
           error: "desktop_protocol_invalid",
         };
       }
+      await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
       lastSuccessfulBootstrap = data;
       lastSuccessfulBootstrapAt = new Date().toISOString();
       return {
@@ -605,6 +621,7 @@ async function logout(): Promise<boolean> {
     return false;
   }
   clearServiceManifest();
+  await applyAtlasOverlayBootstrapSafely(undefined);
   lastSuccessfulBootstrap = undefined;
   lastSuccessfulBootstrapAt = undefined;
   activeService = "home";
@@ -618,6 +635,10 @@ async function logout(): Promise<boolean> {
 function registerIpc(): void {
   const trusted = (event: Electron.IpcMainInvokeEvent): boolean =>
     Boolean(mainWindow && event.sender.id === mainWindow.webContents.id);
+  const trustedOverlay = (event: Electron.IpcMainInvokeEvent): boolean =>
+    Boolean(atlasOverlay?.ownsSender(event.sender.id));
+  const trustedOverlayOrShell = (event: Electron.IpcMainInvokeEvent): boolean =>
+    trusted(event) || trustedOverlay(event);
 
   ipcMain.handle("desktop:bootstrap", (event) =>
     trusted(event)
@@ -712,6 +733,37 @@ function registerIpc(): void {
     void shell.openExternal(RELEASE_URL);
     return true;
   });
+  ipcMain.handle("atlas-overlay:get-config", (event) =>
+    trustedOverlayOrShell(event) ? atlasOverlay?.getConfig() : undefined,
+  );
+  ipcMain.handle("atlas-overlay:get-catalog", (event) =>
+    trustedOverlayOrShell(event) ? atlasOverlay?.getCatalog() : undefined,
+  );
+  ipcMain.handle("atlas-overlay:save-config", (event, patch: unknown) => {
+    if (!trustedOverlayOrShell(event) || !atlasOverlay || !patch || typeof patch !== "object") {
+      return undefined;
+    }
+    return atlasOverlay.saveConfig(patch);
+  });
+  ipcMain.handle("atlas-overlay:submit-audio", (event, input: unknown) =>
+    trustedOverlayOrShell(event) && atlasOverlay
+      ? atlasOverlay.submitAudio(input as Parameters<AtlasOverlayController["submitAudio"]>[0])
+      : ({ accepted: false, error: "untrusted_sender" }),
+  );
+  ipcMain.handle("atlas-overlay:submit-text", (event, question: unknown) =>
+    trustedOverlayOrShell(event) && atlasOverlay
+      ? atlasOverlay.submitText(String(question || ""))
+      : ({ accepted: false, error: "untrusted_sender" }),
+  );
+  ipcMain.handle("atlas-overlay:cancel", (event) => {
+    if (trustedOverlayOrShell(event)) atlasOverlay?.cancel();
+  });
+  ipcMain.handle("atlas-overlay:hide", (event) => {
+    if (trustedOverlayOrShell(event)) atlasOverlay?.hide();
+  });
+  ipcMain.handle("atlas-overlay:open-atlas", (event) => {
+    if (trustedOverlayOrShell(event)) return atlasOverlay?.openAtlas();
+  });
 }
 
 async function createWindow(): Promise<void> {
@@ -757,6 +809,51 @@ async function createWindow(): Promise<void> {
   const networkSession = desktopSession();
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
+
+  atlasOverlay = new AtlasOverlayController({
+    networkSession: desktopSession,
+    preloadPath: path.join(bundleDirectory, "../preload/overlay.cjs"),
+    rendererUrl: process.env.ELECTRON_RENDERER_URL
+      ? new URL("overlay.html", `${process.env.ELECTRON_RENDERER_URL}/`).toString()
+      : undefined,
+    rendererFile: path.join(bundleDirectory, "../renderer/overlay.html"),
+    userDataPath: app.getPath("userData"),
+    hotkeyHelperPath: app.isPackaged
+      ? path.join(process.resourcesPath, "atlas-overlay-hotkey.ps1")
+      : path.join(app.getAppPath(), "resources", "atlas-overlay-hotkey.ps1"),
+    onLog: (message, details) => log.warn(message, details),
+  });
+  const localSession = session.defaultSession;
+  localSession.setPermissionCheckHandler((webContents, permission) =>
+    permission === "media" && Boolean(webContents && atlasOverlay?.ownsSender(webContents.id)),
+  );
+  localSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = "mediaTypes" in details && Array.isArray(details.mediaTypes)
+      ? details.mediaTypes
+      : [];
+    const microphoneOnly = !mediaTypes.length || (
+      mediaTypes.includes("audio") && !mediaTypes.includes("video")
+    );
+    callback(
+      permission === "media" &&
+      microphoneOnly &&
+      Boolean(atlasOverlay?.ownsSender(webContents.id)),
+    );
+  });
+  try {
+    await atlasOverlay.initialize();
+  } catch (error) {
+    // The overlay is an optional companion surface. If its transparent window,
+    // renderer or hotkey helper cannot start on a particular machine, keep the
+    // authenticated Desktop shell usable and allow the user to retry next run.
+    log.warn("Atlas overlay initialization failed without blocking Desktop", error);
+    try {
+      atlasOverlay.dispose();
+    } catch (disposeError) {
+      log.warn("Atlas overlay cleanup failed", disposeError);
+    }
+    atlasOverlay = undefined;
+  }
 
   mainWindow.contentView.addChildView(serviceView);
   syncServiceVisibility();
@@ -826,6 +923,8 @@ async function createWindow(): Promise<void> {
     mainWindow = null;
     shellOverlayOpen = false;
     desktopLocked = false;
+    atlasOverlay?.dispose();
+    atlasOverlay = undefined;
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -859,6 +958,9 @@ app.whenReady().then(async () => {
   registerIpc();
   configureAutoUpdater();
   await createWindow();
+  screen.on("display-added", () => atlasOverlay?.onDisplaysChanged());
+  screen.on("display-removed", () => atlasOverlay?.onDisplaysChanged());
+  screen.on("display-metrics-changed", () => atlasOverlay?.onDisplaysChanged());
   startIdleLockMonitor();
   setUpdateState({});
 
@@ -883,4 +985,5 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   if (updateTimer) clearInterval(updateTimer);
   if (idleLockTimer) clearInterval(idleLockTimer);
+  atlasOverlay?.dispose();
 });

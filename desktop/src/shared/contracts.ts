@@ -1,3 +1,5 @@
+import type { AtlasOverlayBootstrapProjection } from "./atlas-overlay";
+
 export const serviceIds = [
   "home",
   "reactor",
@@ -48,6 +50,7 @@ export interface DesktopBootstrap {
     items: DesktopNotification[];
     unread: number;
   };
+  atlas_overlay?: AtlasOverlayBootstrapProjection;
 }
 
 export interface BootstrapResult {

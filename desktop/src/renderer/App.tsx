@@ -20,6 +20,14 @@ import type {
   DesktopUpdateState,
   ServiceId,
 } from "../shared/contracts";
+import type {
+  AtlasOverlayCatalog,
+  AtlasOverlayConfig,
+} from "../shared/atlas-overlay";
+import {
+  DEFAULT_ATLAS_OVERLAY_CONFIG,
+  normalizeAtlasOverlayConfig,
+} from "../shared/atlas-overlay";
 import {
   resolveNotificationServiceId,
   serviceById,
@@ -120,6 +128,10 @@ function formatTime(value: string): string {
 
 function browserApi() {
   return window.tmodDesktop;
+}
+
+function overlayApi() {
+  return window.tmodAtlasOverlay;
 }
 
 function playLaunchSound(): () => void {
@@ -361,6 +373,16 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
+  const [overlayConfig, setOverlayConfig] = useState<AtlasOverlayConfig>({
+    ...DEFAULT_ATLAS_OVERLAY_CONFIG,
+  });
+  const [overlayCatalog, setOverlayCatalog] = useState<AtlasOverlayCatalog>({
+    characters: [],
+    servers: [],
+    factions: [],
+  });
+  const [overlayBusy, setOverlayBusy] = useState(false);
+  const [overlayError, setOverlayError] = useState<string>();
   const [toast, setToast] = useState<string>();
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
@@ -417,6 +439,19 @@ export function App() {
     }
   }, []);
 
+  const loadOverlay = useCallback(async () => {
+    const api = overlayApi();
+    if (!api) return;
+    try {
+      const [config, catalog] = await Promise.all([api.getConfig(), api.getCatalog()]);
+      if (config) setOverlayConfig(normalizeAtlasOverlayConfig(config));
+      if (catalog) setOverlayCatalog(catalog);
+      setOverlayError(undefined);
+    } catch (error) {
+      setOverlayError(error instanceof Error ? error.message : "Не удалось открыть настройки Overlay.");
+    }
+  }, []);
+
   useEffect(() => {
     void loadBootstrap();
     const api = browserApi();
@@ -439,6 +474,10 @@ export function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loadBootstrap]);
+
+  useEffect(() => {
+    if (bootstrap.authenticated) void loadOverlay();
+  }, [bootstrap.authenticated, bootstrap.data?.generated_at, loadOverlay]);
 
   useEffect(() => {
     if (bootstrap.online) return;
@@ -635,6 +674,25 @@ export function App() {
     setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
   };
 
+  const saveOverlay = async (patch: Partial<AtlasOverlayConfig>) => {
+    const api = overlayApi();
+    if (!api || overlayBusy) return;
+    const previous = overlayConfig;
+    setOverlayConfig(normalizeAtlasOverlayConfig({ ...overlayConfig, ...patch }));
+    setOverlayBusy(true);
+    setOverlayError(undefined);
+    try {
+      const saved = await api.saveConfig(patch);
+      if (saved) setOverlayConfig(normalizeAtlasOverlayConfig(saved));
+      setOverlayCatalog(await api.getCatalog());
+    } catch (error) {
+      setOverlayConfig(previous);
+      setOverlayError(error instanceof Error ? error.message : "Настройки Overlay не сохранены.");
+    } finally {
+      setOverlayBusy(false);
+    }
+  };
+
   const desktopClasses = [
     "desktop",
     preferences.sidebarCollapsed ? "sidebar-collapsed" : "",
@@ -754,6 +812,9 @@ export function App() {
             onOpen={selectService}
             onLogin={login}
             onRetry={loadBootstrap}
+            overlayConfig={overlayConfig}
+            overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
+            onOverlaySettings={() => setSettingsOpen(true)}
           />
         ) : desktopState.error ? (
           <section className="service-error-stage">
@@ -781,6 +842,12 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
           onReconnect={loadBootstrap}
           onLock={lockNow}
+          overlayConfig={overlayConfig}
+          overlayCatalog={overlayCatalog}
+          overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
+          overlayBusy={overlayBusy}
+          overlayError={overlayError}
+          onOverlayChange={saveOverlay}
         />
       )}
       {paletteOpen && (
@@ -828,6 +895,9 @@ function Home({
   onOpen,
   onLogin,
   onRetry,
+  overlayConfig,
+  overlayAllowed,
+  onOverlaySettings,
 }: {
   name: string;
   bootstrap: BootstrapResult;
@@ -838,6 +908,9 @@ function Home({
   onOpen: (id: ServiceId) => Promise<void>;
   onLogin: (credentials: DesktopLoginCredentials) => Promise<DesktopLoginResult>;
   onRetry: () => Promise<void>;
+  overlayConfig: AtlasOverlayConfig;
+  overlayAllowed: boolean;
+  onOverlaySettings: () => void;
 }) {
   const [loginValue, setLoginValue] = useState("");
   const [pin, setPin] = useState("");
@@ -946,6 +1019,14 @@ function Home({
         </article>
       </section>
 
+      {overlayAllowed && (
+        <button className={`overlay-home-card ${overlayConfig.enabled ? "active" : ""}`} onClick={onOverlaySettings}>
+          <span className="overlay-home-orbit"><Icon name="atlas"/><i/><i/></span>
+          <span className="overlay-home-copy"><small>ATLAS · FIELD MODE</small><strong>{overlayConfig.enabled ? "Игровой оверлей готов" : "Подключить Atlas к GTA V"}</strong><p>{overlayConfig.enabled ? `${overlayConfig.characterName || "Персонаж"} · ${overlayConfig.factionCode.toUpperCase()} · удерживать ${overlayConfig.hotkey.replaceAll("+", " + ")}` : "Голосовой вопрос, мгновенный ответ, источники и озвучка прямо поверх игры."}</p></span>
+          <span className="overlay-home-state"><i/>{overlayConfig.enabled ? "АКТИВЕН" : "НАСТРОИТЬ"}<b>→</b></span>
+        </button>
+      )}
+
       <section className="spaces-section">
         <div className="section-title"><div><p className="kicker">Пространства</p><h2>Продолжить работу</h2></div><button onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}><Icon name="command"/> Командная строка</button></div>
         <div className="space-grid">
@@ -979,6 +1060,12 @@ function SettingsDrawer({
   onClose,
   onReconnect,
   onLock,
+  overlayConfig,
+  overlayCatalog,
+  overlayAllowed,
+  overlayBusy,
+  overlayError,
+  onOverlayChange,
 }: {
   preferences: DesktopShellPreferences;
   online: boolean;
@@ -988,6 +1075,12 @@ function SettingsDrawer({
   onClose: () => void;
   onReconnect: () => Promise<void>;
   onLock: () => void;
+  overlayConfig: AtlasOverlayConfig;
+  overlayCatalog: AtlasOverlayCatalog;
+  overlayAllowed: boolean;
+  overlayBusy: boolean;
+  overlayError?: string;
+  onOverlayChange: (patch: Partial<AtlasOverlayConfig>) => Promise<void>;
 }) {
   const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound">) =>
     onChange({ ...preferences, [key]: !preferences[key] });
@@ -1010,6 +1103,88 @@ function SettingsDrawer({
         <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
         <SettingToggle label="Звук блокировки" hint="Кинематографичный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
         <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
+      </section>
+      <section className={`overlay-settings ${overlayBusy ? "is-busy" : ""}`}>
+        <p className="settings-label">Atlas Overlay · GTA V</p>
+        <div className="overlay-setting-hero">
+          <span className="overlay-setting-globe"><Icon name="atlas"/><i/></span>
+          <div><small>FIELD INTELLIGENCE</small><strong>Atlas поверх игры</strong><p>Удерживайте клавиши, задайте вопрос и получите короткий ответ с источниками и озвучкой.</p></div>
+          <i className={overlayConfig.enabled && overlayAllowed ? "active" : ""}/>
+        </div>
+        {!overlayAllowed ? (
+          <div className="overlay-access-note"><Icon name="lock"/><span><strong>Доступ пока не выдан</strong><small>Atlas Overlay включается вместе с доступом к Atlas AI.</small></span></div>
+        ) : !overlayCatalog.characters.length ? (
+          <div className="overlay-access-note warning"><Icon name="atlas"/><span><strong>Добавьте персонажа</strong><small>Создайте хотя бы одного персонажа через T‑Mod Account, затем обновите приложение.</small></span></div>
+        ) : (
+          <fieldset disabled={overlayBusy}>
+            <SettingToggle label="Оверлей в игре" hint="Запускается вместе с T‑Mod и не забирает управление у GTA" active={overlayConfig.enabled} onClick={() => void onOverlayChange({ enabled: !overlayConfig.enabled })}/>
+            <div className="overlay-setting-block">
+              <span className="overlay-setting-title">Персонаж</span>
+              <div className="overlay-character-grid">
+                {overlayCatalog.characters.map((character) => (
+                  <button
+                    key={character.id}
+                    className={overlayConfig.characterId === character.id ? "active" : ""}
+                    onClick={() => void onOverlayChange({
+                      characterId: character.id,
+                      characterName: character.name,
+                      serverCode: character.serverCode || overlayConfig.serverCode,
+                      factionCode: character.factionCode || overlayConfig.factionCode,
+                    })}
+                  >
+                    <span>{character.name.slice(0, 1).toUpperCase()}</span>
+                    <b>{character.name}</b>
+                    <small>#{character.staticId}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="overlay-setting-block">
+              <span className="overlay-setting-title">Организация · Phoenix 15</span>
+              <div className="overlay-faction-grid">
+                {overlayCatalog.factions.map((faction) => (
+                  <button
+                    key={`${faction.serverCode}-${faction.code}`}
+                    className={overlayConfig.factionCode === faction.code ? "active" : ""}
+                    onClick={() => void onOverlayChange({ serverCode: faction.serverCode, factionCode: faction.code })}
+                  >{faction.name}</button>
+                ))}
+              </div>
+            </div>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Клавиша голоса</span><small>Удерживать в Windows</small></div>
+              <div className="overlay-preset-grid">
+                {["Control+Shift+A", "F9", "F10"].map((hotkey) => (
+                  <button key={hotkey} className={overlayConfig.hotkey === hotkey ? "active" : ""} onClick={() => void onOverlayChange({ hotkey })}>{hotkey.replaceAll("Control", "CTRL").replaceAll("+", " + ")}</button>
+                ))}
+              </div>
+            </div>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Скорость ответа</span><small>Быстро — короче, баланс — подробнее</small></div>
+              <div className="overlay-preset-grid compact">
+                <button className={overlayConfig.responseMode === "quick" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "quick" })}>Быстро</button>
+                <button className={overlayConfig.responseMode === "balanced" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "balanced" })}>Баланс</button>
+              </div>
+            </div>
+            <SettingToggle label="Озвучивать ответ" hint="Русский голос начинает говорить, пока ответ ещё дописывается" active={overlayConfig.speakAnswers} onClick={() => void onOverlayChange({ speakAnswers: !overlayConfig.speakAnswers })}/>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Громкость голоса</span><small>{Math.round(overlayConfig.speechVolume * 100)}%</small></div>
+              <div className="overlay-preset-grid compact">
+                {[.55, .78, 1].map((volume) => <button key={volume} className={overlayConfig.speechVolume === volume ? "active" : ""} onClick={() => void onOverlayChange({ speechVolume: volume })}>{Math.round(volume * 100)}%</button>)}
+              </div>
+            </div>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Положение</span><small>На активном мониторе</small></div>
+              <div className="overlay-preset-grid compact">
+                {(["top-right", "right", "bottom-right"] as const).map((anchor, index) => <button key={anchor} className={overlayConfig.anchor === anchor ? "active" : ""} onClick={() => void onOverlayChange({ anchor })}>{["Сверху", "Центр", "Снизу"][index]}</button>)}
+              </div>
+            </div>
+            <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
+            {overlayConfig.screenContextEnabled && <div className="overlay-privacy-note"><Icon name="shield"/><p><strong>Приватный режим.</strong> Кадр уменьшается, отправляется только вместе с вашим запросом и не сохраняется T‑Mod.</p></div>}
+            <div className="overlay-borderless-note"><i/><p><strong>Для GTA V выберите «Полноэкранный без рамки».</strong> Так оверлей остаётся поверх игры без внедрения в процесс и конфликтов с античитом.</p></div>
+          </fieldset>
+        )}
+        {overlayError && <output className="overlay-setting-error">{overlayError}</output>}
       </section>
       <section><p className="settings-label">Обновления</p>
         <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>
