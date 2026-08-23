@@ -69,7 +69,6 @@ class AtlasDiscordTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            patch.object(atlas_discord.global_ban_storage, "is_globally_banned", return_value=False),
             patch.object(atlas_discord.auth_storage, "web_section_grants", return_value=[{"section": "atlas_ai"}]),
             patch.object(atlas_discord.profile_storage, "list_profile_characters", return_value=[{"id": 1}]),
             patch.object(atlas_discord.atlas_storage, "atlas_dashboard", return_value=dashboard),
