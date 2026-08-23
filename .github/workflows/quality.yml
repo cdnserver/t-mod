@@ -20,13 +20,17 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      DATA_DIR: ${{ runner.temp }}/tmod-data
-      DATABASE_FILE: ${{ runner.temp }}/tmod-data/tmod.db
       DISCORD_TOKEN: test-token-not-used
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Configure isolated test storage
+        shell: bash
+        run: |
+          echo "DATA_DIR=$RUNNER_TEMP/tmod-data" >> "$GITHUB_ENV"
+          echo "DATABASE_FILE=$RUNNER_TEMP/tmod-data/tmod.db" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
