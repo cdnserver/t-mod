@@ -760,6 +760,10 @@ function registerIpc(): void {
     }
     return atlasOverlay.saveConfig(patch);
   });
+  ipcMain.handle("atlas-overlay:move-by", (event, deltaX: unknown, deltaY: unknown) => {
+    if (!trustedOverlayOrShell(event) || !atlasOverlay) return undefined;
+    return atlasOverlay.moveBy(Number(deltaX), Number(deltaY));
+  });
   ipcMain.handle("atlas-overlay:submit-audio", (event, input: unknown) =>
     trustedOverlayOrShell(event) && atlasOverlay
       ? atlasOverlay.submitAudio(input as Parameters<AtlasOverlayController["submitAudio"]>[0])

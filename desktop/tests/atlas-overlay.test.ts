@@ -9,7 +9,7 @@ import {
   parseServerSentEventJson,
   ServerSentEventDecoder,
 } from "../src/shared/atlas-overlay-sse";
-import { sanitizeOverlaySpeech } from "../src/renderer/overlay/overlaySpeech";
+import { normalizeRussianKeyboardInput, sanitizeOverlaySpeech } from "../src/renderer/overlay/overlaySpeech";
 import { OverlayVoiceCapture } from "../src/renderer/overlay/voiceCapture";
 
 afterEach(() => {
@@ -69,10 +69,12 @@ describe("Atlas Overlay hotkey contract", () => {
       speechVolume: -2,
       opacity: 0.1,
       scale: 4,
+      fontScale: 4,
       positionX: -3,
       positionY: 6,
       speechProvider: "system",
       captureInRecordings: false,
+      calibrationMode: true,
       screenContextEnabled: false,
     });
     expect(config.hotkey).toBe("Control+Shift+A");
@@ -80,6 +82,8 @@ describe("Atlas Overlay hotkey contract", () => {
     expect(config.speechVolume).toBe(0);
     expect(config.opacity).toBe(0.68);
     expect(config.scale).toBe(1.18);
+    expect(config.fontScale).toBe(1.28);
+    expect(config.calibrationMode).toBe(true);
     expect(config.positionX).toBe(0);
     expect(config.positionY).toBe(1);
     expect(config.speechProvider).toBe("system");
@@ -121,6 +125,11 @@ describe("Atlas Overlay speech delivery", () => {
     expect(sanitizeOverlaySpeech(
       "## Ответ\nСмотрите [правило](https://example.org/x) [Источник 2]. `Текст`\u0000",
     )).toBe("Ответ Смотрите правило . Текст");
+  });
+
+  it("recognizes a fast Russian request typed in the English keyboard layout", () => {
+    expect(normalizeRussianKeyboardInput("ghbdtn rfr ltkf")).toBe("привет как дела");
+    expect(normalizeRussianKeyboardInput("atlas help")).toBe("atlas help");
   });
 });
 

@@ -64,6 +64,15 @@ def _speech_endpoint() -> str:
     return "https://openrouter.ai/api/v1/audio/speech"
 
 
+def _tts_api_key() -> str:
+    """Prefer a least-privilege Atlas voice key without breaking existing installs."""
+
+    return (
+        os.getenv("ATLAS_TTS_API_KEY", "").strip()
+        or os.getenv("OPENROUTER_API_KEY", "").strip()
+    )
+
+
 def _configured_voices() -> tuple[str, ...]:
     raw = os.getenv("ATLAS_TTS_VOICES", ",".join(_DEFAULT_VOICES))
     voices: list[str] = []
@@ -108,7 +117,7 @@ def atlas_tts_config() -> AtlasTTSConfig:
         default_voice = voices[0]
     return AtlasTTSConfig(
         enabled=_env_bool("ATLAS_TTS_ENABLED", True),
-        api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
+        api_key=_tts_api_key(),
         api_url=_speech_endpoint(),
         model=os.getenv("ATLAS_TTS_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL,
         voices=voices,
@@ -201,6 +210,7 @@ class AtlasTTSService:
         self._inflight: dict[str, asyncio.Task[AtlasTTSResult]] = {}
         self._failures = 0
         self._circuit_until = 0.0
+        self._last_failure_reason = ""
 
     def voices_payload(self) -> dict[str, Any]:
         labels = {
@@ -223,6 +233,20 @@ class AtlasTTSService:
                     "provider": "openrouter",
                 }
             )
+        availability = {
+            "state": (
+                "unconfigured"
+                if not self.config.configured
+                else "degraded"
+                if self._last_failure_reason
+                else "ready"
+            ),
+            "reason": self._last_failure_reason or (
+                "" if self.config.configured else "credentials_or_endpoint_missing"
+            ),
+        }
+        if self._circuit_until > time.monotonic():
+            availability = {"state": "recovering", "reason": "provider_recovering"}
         return {
             "configured": self.config.configured,
             "provider": "openrouter" if self.config.configured else "system",
@@ -235,6 +259,7 @@ class AtlasTTSService:
                 "client_side": True,
                 "automatic": True,
             },
+            "availability": availability,
         }
 
     async def preview(self, voice: str | None = None) -> AtlasTTSResult:
@@ -304,8 +329,10 @@ class AtlasTTSService:
         voice: str,
         speed: float,
     ) -> AtlasTTSResult:
+        acquired = False
         try:
             await asyncio.wait_for(self._slots.acquire(), timeout=0.35)
+            acquired = True
         except asyncio.TimeoutError:
             return self._fallback(voice, "busy")
         try:
@@ -318,6 +345,7 @@ class AtlasTTSService:
                 return self._fallback(voice, "provider_unavailable")
             self._failures = 0
             self._circuit_until = 0.0
+            self._last_failure_reason = ""
             result = AtlasTTSResult(
                 audio=audio,
                 content_type=content_type,
@@ -329,7 +357,8 @@ class AtlasTTSService:
             self._cache_put(key, result)
             return result
         finally:
-            self._slots.release()
+            if acquired:
+                self._slots.release()
 
     async def _provider_request(
         self, text: str, voice: str, speed: float
@@ -406,6 +435,7 @@ class AtlasTTSService:
 
     def _record_failure(self) -> None:
         self._failures += 1
+        self._last_failure_reason = "provider_unavailable"
         if self._failures >= 3:
             self._circuit_until = time.monotonic() + 30.0
 

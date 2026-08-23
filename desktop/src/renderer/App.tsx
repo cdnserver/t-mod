@@ -374,8 +374,8 @@ export function App() {
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<"general" | "overlay">("general");
-  const [settingsFocusRequest, setSettingsFocusRequest] = useState(0);
+  const [atlasSettingsOpen, setAtlasSettingsOpen] = useState(false);
+  const [atlasSettingsFocusRequest, setAtlasSettingsFocusRequest] = useState(0);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
   const [overlayConfig, setOverlayConfig] = useState<AtlasOverlayConfig>({
     ...DEFAULT_ATLAS_OVERLAY_CONFIG,
@@ -464,10 +464,11 @@ export function App() {
     const unsubscribeAuth = api.onAuthChanged(loadBootstrap);
     const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
     const unsubscribeOverlaySettings = api.onAtlasOverlaySettings(() => {
+      setPaletteOpen(false);
       setNotificationsOpen(false);
-      setSettingsSection("overlay");
-      setSettingsFocusRequest((value) => value + 1);
-      setSettingsOpen(true);
+      setSettingsOpen(false);
+      setAtlasSettingsFocusRequest((value) => value + 1);
+      setAtlasSettingsOpen(true);
     });
     const refresh = window.setInterval(() => {
       if (document.visibilityState === "visible") void loadBootstrap();
@@ -518,6 +519,7 @@ export function App() {
       setPaletteOpen(false);
       setNotificationsOpen(false);
       setSettingsOpen(false);
+      setAtlasSettingsOpen(false);
       setLockReason(reason);
       setUnlocking(false);
       setLocked(true);
@@ -552,6 +554,7 @@ export function App() {
     setPaletteOpen(false);
     setNotificationsOpen(false);
     setSettingsOpen(false);
+    setAtlasSettingsOpen(false);
     void browserApi()?.lock().then((ok) => {
       if (ok) {
         if (unlockTimer.current) window.clearTimeout(unlockTimer.current);
@@ -588,6 +591,7 @@ export function App() {
         setPaletteOpen(false);
         setNotificationsOpen(false);
         setSettingsOpen(false);
+        setAtlasSettingsOpen(false);
       }
       if ((event.metaKey || event.ctrlKey) && /^[1-4]$/.test(event.key)) {
         const target = services[Number(event.key) - 1];
@@ -603,8 +607,8 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || locked);
-  }, [paletteOpen, notificationsOpen, settingsOpen, locked]);
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || locked);
+  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, locked]);
 
   useEffect(() => () => {
     void browserApi()?.setShellOverlayOpen(false);
@@ -628,6 +632,7 @@ export function App() {
     setPaletteOpen(false);
     setNotificationsOpen(false);
     setSettingsOpen(false);
+    setAtlasSettingsOpen(false);
     const api = browserApi();
     if (api) setDesktopState(await api.navigate(serviceId));
     else setDesktopState((current) => ({ ...current, activeService: serviceId }));
@@ -681,6 +686,8 @@ export function App() {
     const api = browserApi();
     if (!api) return;
     await api.logout();
+    setSettingsOpen(false);
+    setAtlasSettingsOpen(false);
     setBootstrap({ authenticated: false, online: true, error: "login_required" });
     setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
   };
@@ -704,11 +711,12 @@ export function App() {
     }
   };
 
-  const openOverlaySettings = () => {
+  const openAtlasSettings = () => {
+    setPaletteOpen(false);
     setNotificationsOpen(false);
-    setSettingsSection("overlay");
-    setSettingsFocusRequest((value) => value + 1);
-    setSettingsOpen(true);
+    setSettingsOpen(false);
+    setAtlasSettingsFocusRequest((value) => value + 1);
+    setAtlasSettingsOpen(true);
   };
 
   const desktopClasses = [
@@ -802,14 +810,14 @@ export function App() {
               )}
             </button>
           )}
-          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setSettingsSection("general"); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel.toUpperCase()}</button>
-          {desktopState.activeService === "atlas" && <button className={`atlas-overlay-shortcut ${overlayConfig.enabled ? "active" : ""}`} onClick={openOverlaySettings}><Icon name="atlas"/><span>Overlay</span><i/></button>}
+          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel.toUpperCase()}</button>
+          {desktopState.activeService === "atlas" && <button className={`atlas-overlay-shortcut ${overlayConfig.enabled ? "active" : ""} ${atlasSettingsOpen ? "selected" : ""}`} onClick={openAtlasSettings} title="Настройки Atlas"><Icon name="atlas"/><span>Настройки Atlas</span><i/></button>}
           <button className="circle-action" onClick={lockNow} title="Заблокировать T-Mod"><Icon name="lock"/></button>
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
-          <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => setNotificationsOpen((open) => !open)} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
-          <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setSettingsSection("general"); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
+          <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => { setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen((open) => !open); }} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
+          <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
           <div className="window-actions">
             <button aria-label="Свернуть" title="Свернуть" onClick={() => void browserApi()?.minimize()}><Icon name="minimize"/></button>
             <button aria-label="Развернуть" title="Развернуть" onClick={() => void browserApi()?.toggleMaximize()}><Icon name="maximize"/></button>
@@ -833,7 +841,7 @@ export function App() {
             onRetry={loadBootstrap}
             overlayConfig={overlayConfig}
             overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
-            onOverlaySettings={openOverlaySettings}
+            onOverlaySettings={openAtlasSettings}
           />
         ) : desktopState.error ? (
           <section className="service-error-stage">
@@ -861,14 +869,18 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
           onReconnect={loadBootstrap}
           onLock={lockNow}
+        />
+      )}
+      {atlasSettingsOpen && (
+        <AtlasSettingsDrawer
           overlayConfig={overlayConfig}
           overlayCatalog={overlayCatalog}
           overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
           overlayBusy={overlayBusy}
           overlayError={overlayError}
           onOverlayChange={saveOverlay}
-          focusSection={settingsSection}
-          focusRequest={settingsFocusRequest}
+          onClose={() => setAtlasSettingsOpen(false)}
+          focusRequest={atlasSettingsFocusRequest}
         />
       )}
       {paletteOpen && (
@@ -1081,14 +1093,6 @@ function SettingsDrawer({
   onClose,
   onReconnect,
   onLock,
-  overlayConfig,
-  overlayCatalog,
-  overlayAllowed,
-  overlayBusy,
-  overlayError,
-  onOverlayChange,
-  focusSection,
-  focusRequest,
 }: {
   preferences: DesktopShellPreferences;
   online: boolean;
@@ -1098,17 +1102,58 @@ function SettingsDrawer({
   onClose: () => void;
   onReconnect: () => Promise<void>;
   onLock: () => void;
+}) {
+  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound">) =>
+    onChange({ ...preferences, [key]: !preferences[key] });
+
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
+    <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <div className="settings-scroll">
+      <section><p className="settings-label">Обращение</p>
+        <label className="preferred-name-setting">
+          <span><strong>Как вас называть</strong><small>Это имя используется во всей оболочке T‑Mod на этом устройстве</small></span>
+          <div><input value={preferences.preferredName} maxLength={24} autoComplete="off" spellCheck={false} placeholder="Например, Иван" onChange={(event) => onChange({ ...preferences, preferredName: event.target.value })}/><small>{preferences.preferredName.length}/24</small></div>
+        </label>
+      </section>
+      <section><p className="settings-label">Интерфейс</p>
+        <SettingToggle label="Компактный режим" hint="Больше информации на одном экране" active={preferences.compactMode} onClick={() => toggle("compactMode")}/>
+        <SettingToggle label="Спокойные анимации" hint="Минимум движения и эффектов" active={preferences.reduceMotion} onClick={() => toggle("reduceMotion")}/>
+        <SettingToggle label="Плотные поверхности" hint="Меньше прозрачности, выше контраст" active={preferences.solidSurfaces} onClick={() => toggle("solidSurfaces")}/>
+        <div className="setting-row zoom-setting"><span><strong>Масштаб сервисов</strong><small>Применяется ко всем пространствам</small></span><div>{[0.9, 1, 1.1].map((zoom) => <button key={zoom} className={preferences.serviceZoom === zoom ? "active" : ""} onClick={() => onChange({ ...preferences, serviceZoom: zoom })}>{Math.round(zoom * 100)}%</button>)}</div></div>
+      </section>
+      <section><p className="settings-label">Экран блокировки</p>
+        <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
+        <SettingToggle label="Звук блокировки" hint="Кинематографичный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
+        <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
+      </section>
+      <section><p className="settings-label">Обновления</p>
+        <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>
+      </section>
+      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>
+      <button className="reset-preferences" onClick={() => onChange({ ...DEFAULT_PREFERENCES })}>Вернуть настройки по умолчанию</button>
+    </div>
+  </aside></>;
+}
+
+function AtlasSettingsDrawer({
+  onClose,
+  overlayConfig,
+  overlayCatalog,
+  overlayAllowed,
+  overlayBusy,
+  overlayError,
+  onOverlayChange,
+  focusRequest,
+}: {
+  onClose: () => void;
   overlayConfig: AtlasOverlayConfig;
   overlayCatalog: AtlasOverlayCatalog;
   overlayAllowed: boolean;
   overlayBusy: boolean;
   overlayError?: string;
   onOverlayChange: (patch: Partial<AtlasOverlayConfig>) => Promise<void>;
-  focusSection: "general" | "overlay";
   focusRequest: number;
 }) {
-  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound">) =>
-    onChange({ ...preferences, [key]: !preferences[key] });
   const overlaySectionRef = useRef<HTMLElement>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [aiVoices, setAiVoices] = useState<AtlasOverlayVoiceCatalog>({
@@ -1116,14 +1161,35 @@ function SettingsDrawer({
     provider: "system",
     defaultVoice: "",
     voices: [],
+    availability: {
+      state: "recovering",
+      reason: "Проверяем подключение к AI-голосу Atlas.",
+    },
   });
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
   const [microphoneStatus, setMicrophoneStatus] = useState<"idle" | "testing" | "ready" | "silent" | "error">("idle");
+  const aiVoiceAvailability = aiVoices.availability?.state ?? (aiVoices.configured ? "ready" : "unconfigured");
+  const aiVoiceStatusLabel = aiVoiceAvailability === "ready"
+    ? "AI-голос готов"
+    : aiVoiceAvailability === "recovering"
+      ? "AI-голос восстанавливается"
+      : aiVoiceAvailability === "degraded"
+        ? "AI-голос временно недоступен"
+        : "AI-голосу нужны учётные данные";
+  const aiVoiceStatusHint = aiVoices.availability?.reason === "credentials_or_endpoint_missing"
+    ? "Добавьте ключ и HTTPS-адрес AI-провайдера в настройки сервера Atlas."
+    : aiVoices.availability?.reason
+      || (aiVoiceAvailability === "ready"
+        ? "Ответы будут озвучиваться голосом Atlas."
+        : "До восстановления Atlas автоматически использует системный голос Windows.");
 
   useEffect(() => {
-    if (focusSection !== "overlay") return;
-    window.setTimeout(() => overlaySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 40);
-  }, [focusRequest, focusSection]);
+    const timer = window.setTimeout(
+      () => overlaySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      40,
+    );
+    return () => window.clearTimeout(timer);
+  }, [focusRequest]);
 
   useEffect(() => {
     if (!globalThis.speechSynthesis) return undefined;
@@ -1223,26 +1289,9 @@ function SettingsDrawer({
       void context?.close();
     }
   };
-  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
-    <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
-    <div className="settings-scroll">
-      <section><p className="settings-label">Обращение</p>
-        <label className="preferred-name-setting">
-          <span><strong>Как вас называть</strong><small>Это имя используется во всей оболочке T‑Mod на этом устройстве</small></span>
-          <div><input value={preferences.preferredName} maxLength={24} autoComplete="off" spellCheck={false} placeholder="Например, Иван" onChange={(event) => onChange({ ...preferences, preferredName: event.target.value })}/><small>{preferences.preferredName.length}/24</small></div>
-        </label>
-      </section>
-      <section><p className="settings-label">Интерфейс</p>
-        <SettingToggle label="Компактный режим" hint="Больше информации на одном экране" active={preferences.compactMode} onClick={() => toggle("compactMode")}/>
-        <SettingToggle label="Спокойные анимации" hint="Минимум движения и эффектов" active={preferences.reduceMotion} onClick={() => toggle("reduceMotion")}/>
-        <SettingToggle label="Плотные поверхности" hint="Меньше прозрачности, выше контраст" active={preferences.solidSurfaces} onClick={() => toggle("solidSurfaces")}/>
-        <div className="setting-row zoom-setting"><span><strong>Масштаб сервисов</strong><small>Применяется ко всем пространствам</small></span><div>{[0.9, 1, 1.1].map((zoom) => <button key={zoom} className={preferences.serviceZoom === zoom ? "active" : ""} onClick={() => onChange({ ...preferences, serviceZoom: zoom })}>{Math.round(zoom * 100)}%</button>)}</div></div>
-      </section>
-      <section><p className="settings-label">Экран блокировки</p>
-        <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
-        <SettingToggle label="Звук блокировки" hint="Кинематографичный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
-        <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
-      </section>
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть настройки Atlas"/><aside className="settings-drawer atlas-settings-drawer" role="dialog" aria-modal="true" aria-label="Настройки Atlas">
+    <header><div><p className="kicker">ATLAS · FIELD MODE</p><h2>Настройки Atlas</h2><small>Игровой помощник для GTA V</small></div><button onClick={onClose} aria-label="Закрыть настройки Atlas">×</button></header>
+    <div className="settings-scroll atlas-settings-scroll">
       <section ref={overlaySectionRef} className={`overlay-settings ${overlayBusy ? "is-busy" : ""}`}>
         <p className="settings-label">Atlas Overlay · GTA V</p>
         <div className="overlay-setting-hero">
@@ -1329,12 +1378,13 @@ function SettingsDrawer({
             </div>
             <SettingToggle label="Озвучивать ответ" hint="AI‑голос включается сразу после короткого ответа; системный голос умеет читать поток" active={overlayConfig.speakAnswers} onClick={() => void onOverlayChange({ speakAnswers: !overlayConfig.speakAnswers })}/>
             <div className="overlay-setting-block split">
-              <div><span className="overlay-setting-title">Источник голоса</span><small>{aiVoices.configured ? "AI-голос Atlas или быстрый голос Windows" : "AI-голос восстановится автоматически; системный доступен сейчас"}</small></div>
+              <div><span className="overlay-setting-title">Источник голоса</span><small>{aiVoiceAvailability === "ready" ? "AI-голос Atlas или быстрый голос Windows" : "Atlas выбран — системный голос используется только до восстановления AI"}</small></div>
               <div className="overlay-preset-grid compact">
-                <button className={overlayConfig.speechProvider === "ai" ? "active" : ""} disabled={!aiVoices.configured} onClick={() => void onOverlayChange({ speechProvider: "ai", speechVoice: aiVoices.defaultVoice })}>Atlas AI</button>
+                <button className={overlayConfig.speechProvider === "ai" ? "active" : ""} onClick={() => void onOverlayChange({ speechProvider: "ai", speechVoice: aiVoices.defaultVoice })}>Atlas AI</button>
                 <button className={overlayConfig.speechProvider === "system" ? "active" : ""} onClick={() => void onOverlayChange({ speechProvider: "system", speechVoice: "" })}>Системный</button>
               </div>
             </div>
+            <div className={`atlas-voice-status ${aiVoiceAvailability}`} role="status"><i/><span><strong>{aiVoiceStatusLabel}</strong><small>{aiVoiceStatusHint}</small></span></div>
             <div className="overlay-setting-block split overlay-device-row">
               <div><span className="overlay-setting-title">Голос Atlas</span><small>{overlayConfig.speechProvider === "ai" ? "Фирменный AI‑голос с системным резервом" : "Локальный голос устройства · без дополнительной задержки"}</small></div>
               <div className="overlay-device-controls">
@@ -1361,9 +1411,11 @@ function SettingsDrawer({
             </div>
             <div className="overlay-setting-block overlay-visual-controls">
               <div className="overlay-range-row"><span><b>Размер</b><small>{Math.round(overlayConfig.scale * 100)}%</small></span><input type="range" min="0.72" max="1.18" step="0.05" value={overlayConfig.scale} onChange={(event) => void onOverlayChange({ scale: Number(event.target.value) })}/></div>
+              <div className="overlay-range-row"><span><b>Размер текста</b><small>{Math.round(overlayConfig.fontScale * 100)}%</small></span><input type="range" min="0.82" max="1.28" step="0.04" value={overlayConfig.fontScale} onChange={(event) => void onOverlayChange({ fontScale: Number(event.target.value) })}/></div>
               <div className="overlay-range-row"><span><b>Прозрачность</b><small>{Math.round(overlayConfig.opacity * 100)}%</small></span><input type="range" min="0.68" max="1" step="0.04" value={overlayConfig.opacity} onChange={(event) => void onOverlayChange({ opacity: Number(event.target.value) })}/></div>
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
+            <SettingToggle label="Настройка прямо в GTA" hint="При активной GTA перетащите панель и используйте кнопки размера/шрифта на самом оверлее" active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
             <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
             {overlayConfig.screenContextEnabled && <div className="overlay-privacy-note"><Icon name="shield"/><p><strong>Приватный режим.</strong> Кадр уменьшается, отправляется только вместе с вашим запросом и не сохраняется T‑Mod.</p></div>}
             <div className="overlay-borderless-note"><i/><p><strong>Для GTA V выберите «Полноэкранный без рамки».</strong> Для OBS добавьте «Захват окна» → T‑Mod Atlas Overlay или используйте «Захват экрана»: обычный Game Capture GTA не видит внешние окна.</p></div>
@@ -1371,11 +1423,6 @@ function SettingsDrawer({
         )}
         {overlayError && <output className="overlay-setting-error">{overlayError}</output>}
       </section>
-      <section><p className="settings-label">Обновления</p>
-        <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>
-      </section>
-      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>
-      <button className="reset-preferences" onClick={() => onChange({ ...DEFAULT_PREFERENCES })}>Вернуть настройки по умолчанию</button>
     </div>
   </aside></>;
 }

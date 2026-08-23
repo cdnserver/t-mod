@@ -90,6 +90,12 @@ const overlayApi: AtlasOverlayApi = {
   getCatalog: () => ipcRenderer.invoke("atlas-overlay:get-catalog") as Promise<AtlasOverlayCatalog>,
   saveConfig: (patch) =>
     ipcRenderer.invoke("atlas-overlay:save-config", patch) as Promise<AtlasOverlayConfig>,
+  moveBy: (deltaX, deltaY) =>
+    ipcRenderer.invoke(
+      "atlas-overlay:move-by",
+      Number.isFinite(deltaX) ? Math.max(-360, Math.min(360, deltaX)) : 0,
+      Number.isFinite(deltaY) ? Math.max(-260, Math.min(260, deltaY)) : 0,
+    ) as Promise<AtlasOverlayConfig>,
   getVoices: () => ipcRenderer.invoke("atlas-overlay:get-voices") as Promise<AtlasOverlayVoiceCatalog>,
   previewVoice: (voice) =>
     ipcRenderer.invoke("atlas-overlay:preview-voice", voice) as Promise<AtlasOverlaySpeechResult>,

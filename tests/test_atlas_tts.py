@@ -80,6 +80,7 @@ class AtlasTTSServiceTests(unittest.IsolatedAsyncioTestCase):
                 await service.synthesize(f"Ответ номер {index}")
                 for index in range(4)
             ]
+            availability = service.voices_payload()["availability"]
         finally:
             await service.close()
 
@@ -87,6 +88,7 @@ class AtlasTTSServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item.fallback for item in results))
         self.assertEqual(results[-1].provider, "system")
         self.assertEqual(results[-1].reason, "provider_recovering")
+        self.assertEqual(availability["state"], "recovering")
 
     async def test_unconfigured_provider_and_invalid_voice_are_safe(self) -> None:
         service = AtlasTTSService(tts_config(configured=False))
@@ -102,6 +104,20 @@ class AtlasTTSServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.voices_payload()["provider"], "system")
         self.assertEqual(service.voices_payload()["voices"], [])
 
+    async def test_busy_slot_does_not_expand_the_tts_semaphore(self) -> None:
+        service = AtlasTTSService(tts_config())
+        service._slots = asyncio.Semaphore(0)  # bounded provider capacity invariant
+        try:
+            result = await service._synthesize_uncached(
+                "busy-key", "Проверка очереди", "ara", 1.0
+            )
+        finally:
+            await service.close()
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.reason, "busy")
+        self.assertEqual(service._slots._value, 0)
+
     def test_spoken_text_has_hard_bound_without_losing_link_label(self) -> None:
         source = "[Правило](https://example.test) " + "слово " * 100
         spoken = atlas_tts_spoken_text(source, max_chars=90)
@@ -109,6 +125,19 @@ class AtlasTTSServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("https://", spoken)
         self.assertLessEqual(len(spoken), 91)
         self.assertTrue(spoken.endswith("…"))
+
+    def test_dedicated_atlas_tts_key_overrides_the_shared_key(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "ATLAS_TTS_API_KEY": "atlas-key",
+                "OPENROUTER_API_KEY": "shared-key",
+            },
+            clear=False,
+        ):
+            from modules.atlas_tts import atlas_tts_config
+
+            self.assertEqual(atlas_tts_config().api_key, "atlas-key")
 
 
 class AtlasTTSWebTests(unittest.IsolatedAsyncioTestCase):

@@ -128,6 +128,13 @@ describe("desktop release contract", () => {
     expect(controller).toContain("this.clearHideTimer();");
   });
 
+  it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {
+    const overlay = readFileSync(resolve(root, "src/renderer/overlay.html"), "utf8");
+    expect(overlay).toContain("media-src blob:");
+    expect(overlay).toContain("connect-src 'none'");
+    expect(overlay).not.toContain("media-src *");
+  });
+
   it("ships one complete vector identity for every desktop contour", () => {
     const services = [
       "home",

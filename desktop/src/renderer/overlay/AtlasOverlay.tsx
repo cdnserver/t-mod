@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import {
   DEFAULT_ATLAS_OVERLAY_CONFIG,
   initialAtlasOverlayState,
@@ -10,7 +10,7 @@ import type {
   AtlasOverlayEvent,
   AtlasOverlayPttPhase,
 } from "../../shared/atlas-overlay";
-import { IncrementalRussianSpeech } from "./overlaySpeech";
+import { IncrementalRussianSpeech, normalizeRussianKeyboardInput } from "./overlaySpeech";
 import { OverlayVoiceCapture } from "./voiceCapture";
 import "./atlas-overlay.css";
 
@@ -92,6 +92,43 @@ function playOverlayCue(kind: "listen" | "release" | "ready" | "error"): void {
   window.setTimeout(() => void context.close(), 550);
 }
 
+type OverlayExperienceConfig = AtlasOverlayConfig & {
+  calibrationMode?: boolean;
+  fontScale?: number;
+};
+
+type OverlayExperiencePatch = Partial<AtlasOverlayConfig> & {
+  calibrationMode?: boolean;
+  fontScale?: number;
+};
+
+type CalibrationDrag = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+type AtlasSpeechEvent = Extract<AtlasOverlayEvent, { type: "speech" }>;
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable);
+}
+
+function manualTextFromEvent(event: Event): string {
+  const detail = (event as CustomEvent<unknown>).detail;
+  if (!detail || typeof detail !== "object") return "";
+  const source = detail as Record<string, unknown>;
+  return String(source.text || source.initialText || "").slice(0, 4_000);
+}
+
 export function AtlasOverlay() {
   const api = window.tmodAtlasOverlay;
   const preview = (import.meta.env.DEV || location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname))
@@ -149,15 +186,118 @@ export function AtlasOverlay() {
   const capture = useMemo(() => new OverlayVoiceCapture(), []);
   const speech = useMemo(() => new IncrementalRussianSpeech(), []);
   const mounted = useRef(true);
+  const configRef = useRef(config);
+  configRef.current = config;
   const aiAudio = useRef<{ audio: HTMLAudioElement; url: string } | undefined>(undefined);
+  const aiAudioQueue = useRef<AtlasSpeechEvent[]>([]);
+  const aiSpeechActive = useRef(false);
+  const aiAudioGeneration = useRef(0);
+  const playNextAiAudioRef = useRef<() => void>(() => undefined);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const calibrationDrag = useRef<CalibrationDrag | undefined>(undefined);
+  const [manualQueryOpen, setManualQueryOpen] = useState(false);
+  const [manualQuery, setManualQuery] = useState("");
+  const [manualQueryError, setManualQueryError] = useState("");
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [calibrationFeedback, setCalibrationFeedback] = useState("");
 
-  const stopAiAudio = () => {
+  const stopAiAudio = useCallback(() => {
+    aiAudioGeneration.current += 1;
+    aiAudioQueue.current = [];
+    aiSpeechActive.current = false;
     const current = aiAudio.current;
     if (!current) return;
+    current.audio.onended = null;
+    current.audio.onerror = null;
     current.audio.pause();
+    current.audio.removeAttribute("src");
+    current.audio.load();
     URL.revokeObjectURL(current.url);
     aiAudio.current = undefined;
-  };
+  }, []);
+
+  const playNextAiAudio = useCallback(() => {
+    if (aiSpeechActive.current) return;
+    const event = aiAudioQueue.current.shift();
+    if (!event) return;
+    const currentConfig = configRef.current;
+    if (
+      !currentConfig.speakAnswers ||
+      currentConfig.speechProvider !== "ai"
+    ) {
+      aiAudioQueue.current = [];
+      return;
+    }
+
+    aiSpeechActive.current = true;
+    const advance = () => {
+      aiSpeechActive.current = false;
+      playNextAiAudioRef.current();
+    };
+    if (!event.audio || !event.mimeType) {
+      if (event.fallbackText) {
+        void Promise.resolve(speech.speakFallback(event.fallbackText)).finally(advance);
+      } else {
+        advance();
+      }
+      return;
+    }
+
+    const generation = aiAudioGeneration.current;
+    const url = URL.createObjectURL(new Blob([event.audio], { type: event.mimeType }));
+    const audio = new Audio(url);
+    let settled = false;
+    const release = () => {
+      if (aiAudio.current?.audio === audio) {
+        URL.revokeObjectURL(url);
+        aiAudio.current = undefined;
+      }
+    };
+    const settle = (useFallback: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (generation !== aiAudioGeneration.current || aiAudio.current?.audio !== audio) return;
+      release();
+      const nextConfig = configRef.current;
+      if (
+        useFallback &&
+        nextConfig.speakAnswers &&
+        nextConfig.speechProvider === "ai" &&
+        event.fallbackText
+      ) {
+        void Promise.resolve(speech.speakFallback(event.fallbackText)).finally(advance);
+      } else {
+        advance();
+      }
+    };
+
+    audio.preload = "auto";
+    audio.setAttribute("playsinline", "");
+    audio.volume = clamp(currentConfig.speechVolume, 0, 1);
+    audio.onended = () => settle(false);
+    audio.onerror = () => settle(true);
+    aiAudio.current = { audio, url };
+    void audio.play().catch(() => settle(true));
+  }, [speech]);
+
+  playNextAiAudioRef.current = playNextAiAudio;
+
+  const playAiAudio = useCallback((event: AtlasSpeechEvent): boolean => {
+    const currentConfig = configRef.current;
+    if (
+      !currentConfig.speakAnswers ||
+      currentConfig.speechProvider !== "ai" ||
+      (!event.audio && !event.fallbackText)
+    ) return false;
+
+    // A request can now deliver a sentence at a time. The queue ensures that
+    // sentence N never cuts off N-1, regardless of AI or explicit fallback.
+    if (!aiSpeechActive.current && !aiAudioQueue.current.length) speech.cancel();
+    aiAudioQueue.current.push(event);
+    playNextAiAudioRef.current();
+    return true;
+  }, [speech]);
 
   useEffect(() => {
     mounted.current = true;
@@ -170,7 +310,7 @@ export function AtlasOverlay() {
       speech.cancel();
       stopAiAudio();
     };
-  }, [api, capture, speech]);
+  }, [api, capture, speech, stopAiAudio]);
 
   useEffect(() => {
     speech.configure({
@@ -179,7 +319,179 @@ export function AtlasOverlay() {
       volume: config.speechVolume,
       voiceName: config.speechVoice,
     });
-  }, [config.speakAnswers, config.speechProvider, config.speechRate, config.speechVolume, config.speechVoice, speech]);
+    if (!config.speakAnswers || config.speechProvider !== "ai") {
+      stopAiAudio();
+    } else if (aiAudio.current) {
+      aiAudio.current.audio.volume = clamp(config.speechVolume, 0, 1);
+    }
+  }, [
+    config.speakAnswers,
+    config.speechProvider,
+    config.speechRate,
+    config.speechVolume,
+    config.speechVoice,
+    speech,
+    stopAiAudio,
+  ]);
+
+  const experienceConfig = config as OverlayExperienceConfig;
+  const calibrationMode = experienceConfig.calibrationMode === true;
+  const fontScale = clamp(Number(experienceConfig.fontScale) || 1, 0.82, 1.35);
+  const normalizedManualQuery = useMemo(
+    () => normalizeRussianKeyboardInput(manualQuery),
+    [manualQuery],
+  );
+
+  const openManualQuery = useCallback((initialText = "") => {
+    capture.cancel();
+    speech.cancel();
+    stopAiAudio();
+    setManualQuery(initialText.slice(0, 4_000));
+    setManualQueryError("");
+    setManualSubmitting(false);
+    setManualQueryOpen(true);
+    dispatch({ type: "show" });
+  }, [capture, speech, stopAiAudio]);
+
+  const closeManualQuery = useCallback(() => {
+    if (manualSubmitting) return;
+    setManualQueryOpen(false);
+    setManualQueryError("");
+    void api?.cancel();
+  }, [api, manualSubmitting]);
+
+  const submitManualQuery = useCallback(async () => {
+    const question = normalizedManualQuery.trim();
+    if (question.length < 2) {
+      setManualQueryError("Введите вопрос для Atlas.");
+      return;
+    }
+    if (!api) {
+      setManualQueryError("Ручной запрос доступен в приложении T-Mod.");
+      return;
+    }
+
+    capture.cancel();
+    speech.cancel();
+    stopAiAudio();
+    setManualSubmitting(true);
+    setManualQueryError("");
+    try {
+      const result = await api.submitText(question);
+      if (!result.accepted) {
+        setManualQueryError(result.error || "Atlas не принял запрос.");
+        return;
+      }
+      dispatch({ type: "transcript", text: question });
+      setManualQuery("");
+      setManualQueryOpen(false);
+      playOverlayCue("release");
+    } catch {
+      setManualQueryError("Не удалось отправить вопрос. Проверьте подключение Atlas.");
+    } finally {
+      if (mounted.current) setManualSubmitting(false);
+    }
+  }, [api, capture, normalizedManualQuery, speech, stopAiAudio]);
+
+  const saveCalibration = useCallback(async (patch: OverlayExperiencePatch) => {
+    const previous = configRef.current as OverlayExperienceConfig;
+    const optimistic = { ...previous, ...patch } as AtlasOverlayConfig;
+    setConfig(optimistic);
+    setCalibrationFeedback("");
+    if (!api) return;
+    try {
+      const saved = await api.saveConfig(patch as Partial<AtlasOverlayConfig>);
+      if (mounted.current) setConfig(saved);
+    } catch {
+      if (mounted.current) {
+        setConfig(previous);
+        setCalibrationFeedback("Не удалось сохранить настройку");
+      }
+    }
+  }, [api]);
+
+  const beginCalibrationDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (!calibrationMode || event.button !== 0) return;
+    if (isTextEntryTarget(event.target)) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    calibrationDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: 0,
+      offsetY: 0,
+    };
+    setDragOffset({ x: 0, y: 0 });
+  }, [calibrationMode]);
+
+  const moveCalibrationDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = calibrationDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const x = clamp(event.clientX - drag.startX, -260, 260);
+    const y = clamp(event.clientY - drag.startY, -180, 180);
+    drag.offsetX = x;
+    drag.offsetY = y;
+    setDragOffset({ x, y });
+  }, []);
+
+  const finishCalibrationDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = calibrationDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    calibrationDrag.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDragOffset({ x: 0, y: 0 });
+    if (Math.abs(drag.offsetX) < 2 && Math.abs(drag.offsetY) < 2) return;
+    if (!api) {
+      void saveCalibration({
+        positionX: clamp(configRef.current.positionX + drag.offsetX / Math.max(360, window.innerWidth), 0, 1),
+        positionY: clamp(configRef.current.positionY + drag.offsetY / Math.max(240, window.innerHeight), 0, 1),
+      });
+      return;
+    }
+    setCalibrationFeedback("");
+    void api.moveBy(drag.offsetX, drag.offsetY).then((saved) => {
+      if (mounted.current) setConfig(saved);
+    }).catch(() => {
+      if (mounted.current) setCalibrationFeedback("Не удалось сохранить позицию");
+    });
+  }, [api, saveCalibration]);
+
+  useEffect(() => {
+    if (!manualQueryOpen) return undefined;
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [manualQueryOpen]);
+
+  useEffect(() => {
+    const receiveManualRequest = (event: Event) => openManualQuery(manualTextFromEvent(event));
+    const keyboardFallback = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (manualQueryOpen && event.key === "Escape") {
+        event.preventDefault();
+        closeManualQuery();
+        return;
+      }
+      if (
+        event.code === "Space" &&
+        event.ctrlKey &&
+        event.altKey &&
+        !event.repeat &&
+        !isTextEntryTarget(event.target)
+      ) {
+        event.preventDefault();
+        openManualQuery();
+      }
+    };
+    window.addEventListener("atlas:manual-query", receiveManualRequest);
+    window.addEventListener("keydown", keyboardFallback);
+    return () => {
+      window.removeEventListener("atlas:manual-query", receiveManualRequest);
+      window.removeEventListener("keydown", keyboardFallback);
+    };
+  }, [closeManualQuery, manualQueryOpen, openManualQuery]);
 
   useEffect(() => {
     if (!api) return undefined;
@@ -188,51 +500,51 @@ export function AtlasOverlay() {
         setConfig(event.config);
         return;
       }
-      if (event.type === "speech") {
-        if (event.audio && event.mimeType) {
-          stopAiAudio();
-          const url = URL.createObjectURL(new Blob([event.audio], { type: event.mimeType }));
-          const audio = new Audio(url);
-          audio.volume = config.speechVolume;
-          audio.onended = audio.onerror = () => {
-            if (aiAudio.current?.audio === audio) {
-              URL.revokeObjectURL(url);
-              aiAudio.current = undefined;
-            }
-          };
-          aiAudio.current = { audio, url };
-          void audio.play().catch(() => {
-            stopAiAudio();
-            if (event.fallbackText) speech.speakNow(event.fallbackText);
-          });
-        } else if (event.fallbackText) {
-          speech.speakNow(event.fallbackText);
-        }
+      if (event.type === "manual-query") {
+        openManualQuery();
         return;
       }
-      if (event.type === "delta" && config.speechProvider === "system") speech.append(event.text);
-      else if (event.type === "done") {
-        if (config.speechProvider === "system") speech.finish();
+      if (event.type === "speech") {
+        const currentConfig = configRef.current;
+        if (!currentConfig.speakAnswers || currentConfig.speechProvider !== "ai") return;
+        // A no-audio speech event is the explicit fallback contract from the
+        // main process. The same queue preserves sentence order for both
+        // audio and Windows fallback without starting local speech early.
+        playAiAudio(event);
+        return;
+      }
+      const currentConfig = configRef.current;
+      if (event.type === "delta" && currentConfig.speakAnswers && currentConfig.speechProvider === "system") {
+        speech.append(event.text);
+      } else if (event.type === "done") {
+        if (currentConfig.speakAnswers && currentConfig.speechProvider === "system") speech.finish();
         playOverlayCue("ready");
       } else if (["hide", "idle", "error"].includes(event.type)) {
         speech.cancel();
+        stopAiAudio();
+        if (event.type === "hide") {
+          setManualQueryOpen(false);
+          setManualQueryError("");
+        }
         if (event.type === "error") playOverlayCue("error");
       }
       dispatch(event);
     };
     return api.onEvent(receive);
-  }, [api, config.speechProvider, config.speechVolume, speech]);
+  }, [api, openManualQuery, playAiAudio, speech, stopAiAudio]);
 
   useEffect(() => {
     if (!api) return undefined;
     const ptt = async (phase: AtlasOverlayPttPhase) => {
       dispatch({ type: "ptt", phase });
       if (phase === "down") {
+        setManualQueryOpen(false);
+        setManualQueryError("");
         speech.cancel();
         stopAiAudio();
         playOverlayCue("listen");
         try {
-          await capture.start(config.microphoneId);
+          await capture.start(configRef.current.microphoneId);
         } catch (error) {
           dispatch({ type: "error", message: captureError(error), retryable: true });
         }
@@ -240,6 +552,8 @@ export function AtlasOverlay() {
       }
       if (phase === "cancel") {
         capture.cancel();
+        speech.cancel();
+        stopAiAudio();
         // The main process already aborted the request before broadcasting
         // this phase. Calling cancel back through IPC would create a loop.
         return;
@@ -264,25 +578,43 @@ export function AtlasOverlay() {
       }
     };
     return api.onPtt((phase) => void ptt(phase));
-  }, [api, capture, config.microphoneId, speech]);
+  }, [api, capture, speech, stopAiAudio]);
 
   const stageBusy = ["transcribing", "searching", "thinking"].includes(state.stage);
   const style = {
     "--overlay-opacity": config.opacity,
     "--overlay-scale": config.scale,
+    "--overlay-font-scale": fontScale,
+    "--calibration-drag-x": dragOffset.x + "px",
+    "--calibration-drag-y": dragOffset.y + "px",
   } as CSSProperties;
   const horizontal = config.positionX < 0.34 ? "left" : config.positionX > 0.66 ? "right" : "center";
   const vertical = config.positionY < 0.34 ? "top" : config.positionY > 0.66 ? "bottom" : "center";
 
   return (
     <main
-      className={`atlas-overlay atlas-overlay--${config.anchor}${state.visible ? " is-visible" : ""}`}
+      className={[
+        "atlas-overlay",
+        "atlas-overlay--" + config.anchor,
+        state.visible && "is-visible",
+        calibrationMode && "is-calibrating",
+        manualQueryOpen && "is-manual-query",
+        (dragOffset.x || dragOffset.y) && "is-dragging",
+      ].filter(Boolean).join(" ")}
       data-stage={state.stage}
       data-horizontal={horizontal}
       data-vertical={vertical}
       style={style}
     >
-      <section className="atlas-overlay-card" aria-live="polite" aria-atomic="false">
+      <section
+        className="atlas-overlay-card"
+        aria-live={manualQueryOpen ? "off" : "polite"}
+        aria-atomic="false"
+        onPointerDown={beginCalibrationDrag}
+        onPointerMove={moveCalibrationDrag}
+        onPointerUp={finishCalibrationDrag}
+        onPointerCancel={finishCalibrationDrag}
+      >
         <div className="atlas-overlay-aurora" aria-hidden="true" />
         <header className="atlas-overlay-head">
           <div className="atlas-overlay-brand">
@@ -295,10 +627,107 @@ export function AtlasOverlay() {
           <div className="atlas-overlay-status">
             <i />
             <span>{state.statusLabel}</span>
+            {config.speakAnswers && (
+              <em className={config.speechProvider === "ai" ? "is-ai" : ""}>
+                {config.speechProvider === "ai" ? "AI VOICE" : "LOCAL"}
+              </em>
+            )}
           </div>
         </header>
 
+        {calibrationMode && (
+          <aside
+            className="atlas-overlay-calibration"
+            onPointerDown={(event) => event.stopPropagation()}
+            aria-label="Настройка Atlas Overlay"
+          >
+            <span className="atlas-overlay-calibration-title"><i /> Режим настройки</span>
+            <span className="atlas-overlay-calibration-hint">Перетащите панель</span>
+            <div className="atlas-overlay-calibration-actions">
+              <button
+                type="button"
+                aria-label="Уменьшить размер панели"
+                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale - .04, .72, 1.18) })}
+              >−</button>
+              <button
+                type="button"
+                aria-label="Увеличить размер панели"
+                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale + .04, .72, 1.18) })}
+              >+</button>
+              <button
+                type="button"
+                className="atlas-overlay-calibration-font"
+                aria-label="Уменьшить шрифт"
+                onClick={() => void saveCalibration({ fontScale: clamp(fontScale - .04, .82, 1.28) })}
+              >A−</button>
+              <button
+                type="button"
+                className="atlas-overlay-calibration-font"
+                aria-label="Увеличить шрифт"
+                onClick={() => void saveCalibration({ fontScale: clamp(fontScale + .04, .82, 1.28) })}
+              >A+</button>
+            </div>
+            {calibrationFeedback && <span className="atlas-overlay-calibration-feedback">{calibrationFeedback}</span>}
+          </aside>
+        )}
+
         <div className="atlas-overlay-body">
+          {manualQueryOpen ? (
+            <form
+              className="atlas-overlay-manual"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitManualQuery();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <header className="atlas-overlay-manual-head">
+                <span><i /> Текстовый запрос</span>
+                <button type="button" aria-label="Закрыть текстовый запрос" onClick={closeManualQuery}>×</button>
+              </header>
+              <textarea
+                ref={inputRef}
+                value={manualQuery}
+                maxLength={4_000}
+                rows={3}
+                spellCheck={false}
+                placeholder="Напишите вопрос Atlas…"
+                aria-label="Вопрос для Atlas"
+                onChange={(event) => {
+                  setManualQuery(event.target.value);
+                  setManualQueryError("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeManualQuery();
+                  } else if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void submitManualQuery();
+                  }
+                }}
+              />
+              {normalizedManualQuery !== manualQuery && (
+                <button
+                  type="button"
+                  className="atlas-overlay-layout-hint"
+                  onClick={() => setManualQuery(normalizedManualQuery)}
+                >
+                  <span>Раскладка распознана</span>
+                  <strong>{normalizedManualQuery}</strong>
+                </button>
+              )}
+              {manualQueryError && <p className="atlas-overlay-manual-error" role="alert">{manualQueryError}</p>}
+              <footer className="atlas-overlay-manual-foot">
+                <span>{config.hotkey.replaceAll("+", " · ") + " · Space"}</span>
+                <small>Enter — отправить</small>
+                <button type="submit" disabled={manualSubmitting || manualQuery.trim().length < 2}>
+                  {manualSubmitting ? "Отправляю…" : "Спросить"}
+                </button>
+              </footer>
+            </form>
+          ) : (
+            <>
           {state.stage === "listening" && (
             <div className="atlas-overlay-listening">
               <VoiceField active />
@@ -343,6 +772,8 @@ export function AtlasOverlay() {
               <span>{config.characterName || "Atlas готов к работе"}</span>
               <kbd>{config.hotkey.replaceAll("+", "  +  ")}</kbd>
             </div>
+          )}
+            </>
           )}
         </div>
 

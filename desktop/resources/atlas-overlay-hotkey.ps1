@@ -57,7 +57,12 @@ public static class TModAtlasHotkeyState {
         Fail "invalid_primary_key"
     }
 
+    # Pressing the configured PTT chord plus Space opens Atlas' manual query
+    # surface. It deliberately works as a second mode of the same binding, so
+    # it never steals a normal GTA key or requires a second global shortcut.
+    $manualPromptSupported = -not $keys.Contains(0x20)
     $pressed = $false
+    $manualPrompt = $false
     while ($true) {
         $allDown = $true
         foreach ($virtualKey in $keys) {
@@ -66,7 +71,17 @@ public static class TModAtlasHotkeyState {
                 break
             }
         }
-        if ($allDown -and -not $pressed) {
+        $spaceDown = $manualPromptSupported -and (([TModAtlasHotkeyState]::GetAsyncKeyState(0x20) -band 0x8000) -ne 0)
+        if ($allDown -and $spaceDown -and -not $manualPrompt) {
+            $manualPrompt = $true
+            if ($pressed) {
+                $pressed = $false
+                [Console]::Out.WriteLine("cancel")
+                [Console]::Out.Flush()
+            }
+            [Console]::Out.WriteLine("text")
+            [Console]::Out.Flush()
+        } elseif ($allDown -and -not $pressed -and -not $manualPrompt) {
             $pressed = $true
             [Console]::Out.WriteLine("down")
             [Console]::Out.Flush()
@@ -74,6 +89,8 @@ public static class TModAtlasHotkeyState {
             $pressed = $false
             [Console]::Out.WriteLine("up")
             [Console]::Out.Flush()
+        } elseif (-not $allDown -and $manualPrompt) {
+            $manualPrompt = $false
         }
         Start-Sleep -Milliseconds $PollMilliseconds
     }

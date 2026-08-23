@@ -79,6 +79,10 @@ export interface AtlasOverlayConfig {
   anchor: AtlasOverlayAnchor;
   opacity: number;
   scale: number;
+  /** Enables the in-game calibration HUD. This is opt-in and only active over GTA. */
+  calibrationMode: boolean;
+  /** Independent typography scale for a legible field overlay. */
+  fontScale: number;
   positionX: number;
   positionY: number;
   screenContextEnabled: boolean;
@@ -103,6 +107,8 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   anchor: "right",
   opacity: 0.94,
   scale: 0.88,
+  calibrationMode: false,
+  fontScale: 1,
   positionX: 1,
   positionY: 0.5,
   screenContextEnabled: false,
@@ -118,6 +124,7 @@ export interface AtlasOverlayCitation {
 export type AtlasOverlayEvent =
   | { type: "show" | "hide" | "idle" }
   | { type: "config"; config: AtlasOverlayConfig }
+  | { type: "manual-query" }
   | { type: "speech"; audio?: ArrayBuffer; mimeType?: string; fallbackText?: string }
   | {
       type: "progress";
@@ -158,6 +165,10 @@ export interface AtlasOverlayVoiceCatalog {
   provider: "ai" | "system";
   defaultVoice: string;
   voices: AtlasOverlayVoice[];
+  availability?: {
+    state: "ready" | "unconfigured" | "recovering" | "degraded";
+    reason?: string;
+  };
 }
 
 export interface AtlasOverlaySpeechResult {
@@ -171,6 +182,7 @@ export interface AtlasOverlayApi {
   getConfig(): Promise<AtlasOverlayConfig>;
   getCatalog(): Promise<AtlasOverlayCatalog>;
   saveConfig(patch: Partial<AtlasOverlayConfig>): Promise<AtlasOverlayConfig>;
+  moveBy(deltaX: number, deltaY: number): Promise<AtlasOverlayConfig>;
   getVoices(): Promise<AtlasOverlayVoiceCatalog>;
   previewVoice(voice?: string): Promise<AtlasOverlaySpeechResult>;
   submitAudio(input: AtlasOverlayAudioInput): Promise<AtlasOverlaySubmitResult>;
@@ -232,6 +244,12 @@ export function reduceAtlasOverlayState(
       return state;
     case "speech":
       return state;
+    case "manual-query":
+      return {
+        ...initialAtlasOverlayState,
+        visible: true,
+        statusLabel: "Введите запрос для Atlas",
+      };
     case "ptt":
       if (event.phase === "down") {
         return {
@@ -334,6 +352,7 @@ export function normalizeAtlasOverlayConfig(
   const speechVolume = Number(source.speechVolume);
   const opacity = Number(source.opacity);
   const scale = Number(source.scale);
+  const fontScale = Number(source.fontScale);
   const anchor = ["top-right", "right", "bottom-right"].includes(String(source.anchor))
     ? source.anchor as AtlasOverlayAnchor
     : "right";
@@ -367,6 +386,8 @@ export function normalizeAtlasOverlayConfig(
     anchor,
     opacity: Number.isFinite(opacity) ? Math.max(0.68, Math.min(1, opacity)) : 0.94,
     scale: Number.isFinite(scale) ? Math.max(0.72, Math.min(1.18, scale)) : 0.88,
+    calibrationMode: source.calibrationMode === true,
+    fontScale: Number.isFinite(fontScale) ? Math.max(0.82, Math.min(1.28, fontScale)) : 1,
     positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(1, positionX)) : 1,
     positionY: Number.isFinite(positionY)
       ? Math.max(0, Math.min(1, positionY))
