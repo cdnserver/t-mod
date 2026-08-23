@@ -70,6 +70,7 @@ from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from persistence import activity_repository as activity_storage
 from persistence import admin_dashboard_repository as dashboard_storage
+from persistence import atlas_repository as atlas_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
@@ -1500,13 +1501,21 @@ def register_reactor_web_routes(
         notification_payload: dict[str, Any] = {"items": [], "unread": 0}
         preferred_name = ""
 
+        grants, overlay_context = await asyncio.gather(
+            asyncio.to_thread(
+                web_auth_storage.web_section_grants,
+                int(guild_id),
+                int(principal.user_id),
+            ),
+            asyncio.to_thread(
+                atlas_storage.atlas_overlay_context,
+                int(guild_id),
+                int(principal.user_id),
+            ),
+        )
+
         if guild_member:
-            grants, notification_payload, profile_snapshot = await asyncio.gather(
-                asyncio.to_thread(
-                    web_auth_storage.web_section_grants,
-                    int(guild_id),
-                    int(principal.user_id),
-                ),
+            notification_payload, profile_snapshot = await asyncio.gather(
                 asyncio.to_thread(
                     reactor_storage.reactor_list_notifications,
                     int(guild_id),
@@ -1531,6 +1540,7 @@ def register_reactor_web_routes(
         )
         admin_access = administrator or bool(granted_sections)
         ovr_access = administrator or "ovr" in granted_sections
+        atlas_access = administrator or "atlas_ai" in granted_sections
 
         def service(
             service_id: str,
@@ -1602,6 +1612,23 @@ def register_reactor_web_routes(
                 ),
             ],
             "notifications": notification_payload,
+            "atlas_overlay": {
+                "allowed": atlas_access,
+                "characters": overlay_context["characters"],
+                "selected_character": overlay_context["selected_character"],
+                "catalog": overlay_context["catalog"],
+                "default_hotkey": "Ctrl+Shift+Space",
+                "endpoints": {
+                    "context": "https://atlas.tvr.lat/api/atlas/overlay/context",
+                    "transcribe": "https://atlas.tvr.lat/api/atlas/overlay/transcribe",
+                    "stream": "https://atlas.tvr.lat/api/atlas/chat/stream",
+                },
+                "capabilities": {
+                    "push_to_talk": True,
+                    "spoken_reply": True,
+                    "screen_context": "consent_gated",
+                },
+            },
         }
         response = web.json_response(payload)
         response.headers["Cache-Control"] = "private, no-store"

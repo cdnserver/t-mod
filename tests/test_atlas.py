@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import os
@@ -71,6 +72,66 @@ class AtlasRepositoryTests(unittest.TestCase):
                 con.execute("SELECT COUNT(*) FROM atlas_document_templates").fetchone()[0],
                 3,
             )
+
+    def test_overlay_character_binding_is_owned_scoped_and_uses_dynamic_catalog(self) -> None:
+        character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
+        storage.add_profile_character(77, 99, "Other Person", "777777")
+
+        context = atlas_repository.atlas_set_overlay_character(
+            77,
+            42,
+            character.id,
+            server_code="phoenix-15",
+            faction_code="fib",
+            rank="Special Agent",
+            screen_context_enabled=True,
+        )
+
+        self.assertTrue(context["selected_character"]["identity_verified"])
+        self.assertEqual(context["selected_character"]["faction_code"], "fib")
+        self.assertEqual(context["selected_character"]["rank"], "Special Agent")
+        self.assertTrue(context["selected_character"]["screen_context_enabled"])
+        preserved = atlas_repository.atlas_set_overlay_character(
+            77,
+            42,
+            character.id,
+            server_code="phoenix-15",
+            faction_code="gov",
+        )
+        self.assertEqual(preserved["selected_character"]["rank"], "Special Agent")
+        self.assertEqual(len(context["characters"]), 1)
+        self.assertEqual(
+            {item["code"] for item in context["catalog"]["factions"]},
+            {"lspd", "lscsd", "fib", "gov", "sang", "ems", "wn"},
+        )
+        with self.assertRaisesRegex(ValueError, "atlas_overlay_character_not_owned"):
+            atlas_repository.atlas_set_overlay_character(
+                77,
+                99,
+                character.id,
+                server_code="phoenix-15",
+                faction_code="gov",
+            )
+
+    def test_overlay_binding_table_is_added_to_existing_database_without_data_loss(self) -> None:
+        character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
+        with connect() as con:
+            con.execute("DROP TABLE atlas_character_bindings")
+            con.commit()
+
+        storage.init_db()
+
+        with connect() as con:
+            table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("atlas_character_bindings",),
+            ).fetchone()
+            preserved = con.execute(
+                "SELECT nickname, static_id FROM profile_characters WHERE id = ?",
+                (int(character.id),),
+            ).fetchone()
+        self.assertIsNotNone(table)
+        self.assertEqual(tuple(preserved), ("Saul Goodman", "263345"))
 
     def test_answer_feedback_is_saved_and_bad_answer_is_excluded_from_memory(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -966,6 +1027,68 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Первая точная норма", result[0]["text"])
         self.assertNotIn("Другая вложенная норма", result[0]["text"])
 
+    async def test_exact_article_survives_forum_markup_and_nonbreaking_spaces(self) -> None:
+        source = {
+            "id": 95,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "# [B]Статья\u00a016.1[/B]\nТочная норма из оформленной темы.\n"
+                "[SIZE=5][B]Статья 16.2[/B][/SIZE]\nСледующая норма."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.5/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Покажи статью 16.1 УК", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "article:16.1")
+        self.assertIn("Точная норма из оформленной темы", result[0]["text"])
+        self.assertNotIn("Следующая норма", result[0]["text"])
+
+    async def test_arabic_chapter_request_matches_roman_forum_heading(self) -> None:
+        source = {
+            "id": 96,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "[CENTER][B]ГЛАВА XVI[/B][/CENTER]\nНужная глава.\n"
+                "[CENTER][B]ГЛАВА XVII[/B][/CENTER]\nСледующая глава."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.6/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Напиши 16 главу УК", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "chapter:16")
+        self.assertIn("Нужная глава", result[0]["text"])
+        self.assertNotIn("Следующая глава", result[0]["text"])
+
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
             "id": 92,
@@ -1067,6 +1190,33 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             embedded,
             ["основной вопрос", "процесс задержания", "исключения из правила"],
         )
+
+    async def test_expanded_search_does_not_drop_late_verification_queries(self) -> None:
+        embedded: list[str] = []
+
+        async def embed(texts: list[str]) -> list[list[float]]:
+            embedded.extend(texts)
+            return [[0.1, 0.2] for _ in texts]
+
+        checks = [
+            "основная норма",
+            "исключение",
+            "компетенция",
+            "срок процедуры",
+            "порядок обжалования",
+        ]
+        with patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            await atlas_search(
+                77,
+                "законность задержания",
+                expanded=True,
+                query_variants=checks,
+            )
+
+        self.assertEqual(embedded[:6], ["законность задержания", *checks])
 
     async def test_planned_queries_also_work_in_lexical_fallback(self) -> None:
         source = {
@@ -1601,10 +1751,23 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "исключения и пределы ордера на обыск",
             search.await_args.kwargs["query_variants"],
         )
+        self.assertIn(
+            "Проверить законность обыска по ордеру. Проверить: основание обыска",
+            search.await_args.kwargs["query_variants"],
+        )
         self.assertEqual(result["intelligence"]["source"], "generated")
+        self.assertEqual(result["evidence"]["matched_checks"], ["основание обыска"])
+        self.assertEqual(
+            result["evidence"]["open_checks"],
+            ["компетенция выдавшего ордер"],
+        )
+        self.assertEqual(result["citation_health"]["status"], "ok")
         final_payload = request.await_args.kwargs["payload"]
         self.assertTrue(
             any("ИССЛЕДОВАТЕЛЬСКАЯ КАРТА" in item["content"] for item in final_payload["messages"])
+        )
+        self.assertTrue(
+            any("КАРТА ДОКАЗАТЕЛЬСТВ ATLAS" in item["content"] for item in final_payload["messages"])
         )
 
     async def test_balanced_answer_can_help_when_search_has_no_confirmed_source(self) -> None:
@@ -1631,6 +1794,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["answer"], "Могу предложить творческий черновик.")
         self.assertEqual(result["citations"], [])
+        self.assertEqual(result["citation_health"]["status"], "no_sources")
         self.assertEqual(result["requested_response_mode"], "balanced")
         self.assertEqual(result["response_mode"], "creative")
         self.assertEqual(request.await_args.kwargs["payload"]["temperature"], 0.68)
@@ -1638,6 +1802,88 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "источников для этого запроса не найдено",
             request.await_args.kwargs["payload"]["messages"][1]["content"],
         )
+
+    async def test_quick_answer_has_compact_budget_and_non_repetitive_contract(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 97,
+            "title": "Уголовный кодекс",
+            "url": None,
+            "text": "Кодекс определяет преступления и ответственность.",
+            "score": 0.9,
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"choices": [{"message": {"content": "Короткий ответ [1]."}}]}),
+        ) as request:
+            await atlas_answer(77, "Что такое УК?")
+
+        payload = request.await_args.kwargs["payload"]
+        system = payload["messages"][0]["content"]
+        self.assertLessEqual(payload["max_tokens"], 1100)
+        self.assertIn("120–220 слов", system)
+        self.assertIn("Не используй по привычке постоянные рубрики", system)
+
+    async def test_overlay_answer_skips_planners_and_uses_compact_field_contract(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 97,
+            "title": "Процессуальный кодекс",
+            "url": None,
+            "text": "Сотрудник обязан разъяснить задержанному основание задержания.",
+            "score": 0.94,
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ) as search, patch(
+            "modules.atlas_ai._build_intelligence_brief", AsyncMock()
+        ) as planner, patch(
+            "modules.atlas_ai._generate_aristotle_plan", AsyncMock()
+        ) as aristotle, patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"choices": [{"message": {"content": "Назовите основание [1]."}}]}),
+        ) as request:
+            result = await atlas_answer(
+                77,
+                "Меня задержали, что делать?",
+                response_mode="aristotle",
+                latency_mode="overlay",
+                screen_context="data:image/png;base64,dmFsaWRhdGVk",
+                user_profile={"nickname": "Saul Goodman", "rank": "Адвокат"},
+            )
+
+        planner.assert_not_awaited()
+        aristotle.assert_not_awaited()
+        self.assertEqual(search.await_args.kwargs["limit"], 7)
+        payload = request.await_args.kwargs["payload"]
+        self.assertLessEqual(payload["max_tokens"], 700)
+        self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
+        self.assertIsInstance(payload["messages"][-1]["content"], list)
+        self.assertEqual(result["latency_mode"], "overlay")
+        self.assertTrue(result["screen_context_used"])
+        self.assertEqual(result["depth"], "quick")
 
 
 class AtlasKnowledgeFileTests(unittest.TestCase):
@@ -1665,6 +1911,207 @@ class AtlasKnowledgeFileTests(unittest.TestCase):
 
 
 class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_transcribe_accepts_raw_webm_and_returns_compatibility_fields(self) -> None:
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        transcriber = SimpleNamespace(
+            configured=True,
+            transcribe_pcm=lambda _pcm: "Атлас, что мне делать?",
+        )
+        app = web.Application()
+        with patch("modules.atlas_web.OpenRouterTranscriber", return_value=transcriber):
+            register_atlas_web_routes(
+                app,
+                SimpleNamespace(get_guild=lambda guild_id: None),
+                guild_id=77,
+                asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+                authenticate=authenticate,
+            )
+        with patch(
+            "modules.atlas_web._decode_overlay_audio",
+            AsyncMock(return_value=b"\0" * (48_000 * 2 * 2)),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/api/atlas/overlay/transcribe",
+                    data=b"browser-webm",
+                    headers={
+                        "Content-Type": "audio/webm;codecs=opus",
+                        "X-CSRF-Token": "admin-csrf",
+                    },
+                )
+                payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["text"], "Атлас, что мне делать?")
+        self.assertEqual(payload["transcript"], payload["text"])
+        self.assertEqual(payload["duration_ms"], 1000)
+
+    async def test_overlay_transcribe_rejects_oversized_raw_audio_before_decode(self) -> None:
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        app = web.Application(client_max_size=8 * 1024**2)
+        with patch(
+            "modules.atlas_web.OpenRouterTranscriber",
+            return_value=SimpleNamespace(configured=True),
+        ):
+            register_atlas_web_routes(
+                app,
+                SimpleNamespace(get_guild=lambda guild_id: None),
+                guild_id=77,
+                asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+                authenticate=authenticate,
+            )
+        with patch(
+            "modules.atlas_web._decode_overlay_audio",
+            AsyncMock(),
+        ) as decode:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/api/atlas/overlay/transcribe",
+                    data=io.BytesIO(b"x" * (6 * 1024**2 + 1)),
+                    headers={
+                        "Content-Type": "audio/webm",
+                        "X-CSRF-Token": "admin-csrf",
+                    },
+                )
+                payload = await response.json()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"], "atlas_overlay_audio_size_invalid")
+        decode.assert_not_awaited()
+
+    async def test_overlay_context_is_csrf_protected_and_stream_uses_owned_character_scope(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-overlay-web-test.db"
+        storage.init_db()
+        character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        async def stream_answer(_organization_id, _question, *, on_delta, **kwargs):
+            await on_delta("Полевой ответ [1].")
+            stream_answer.kwargs = kwargs
+            return {
+                "answer": "Полевой ответ [1].",
+                "citations": [],
+                "model": "atlas-tvr-a",
+                "response_mode": "balanced",
+                "requested_response_mode": "balanced",
+                "latency_mode": "overlay",
+                "latency_ms": 8,
+            }
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        try:
+            with patch("modules.atlas_web.atlas_answer_stream", stream_answer):
+                async with TestClient(TestServer(app)) as client:
+                    rejected = await client.post(
+                        "/api/atlas/overlay/context",
+                        json={
+                            "character_id": character.id,
+                            "server_code": "phoenix-15",
+                            "faction_code": "fib",
+                        },
+                    )
+                    voice_rejected = await client.post(
+                        "/api/atlas/overlay/transcribe",
+                        data=FormData(),
+                    )
+                    configured = await client.post(
+                        "/api/atlas/overlay/context",
+                        json={
+                            "character_id": character.id,
+                            "server_code": "phoenix-15",
+                            "faction_code": "fib",
+                            "rank": "Special Agent",
+                            "screen_context_enabled": True,
+                        },
+                        headers={"X-CSRF-Token": "admin-csrf"},
+                    )
+                    context = await client.get("/api/atlas/overlay/context")
+                    streamed = await client.post(
+                        "/api/atlas/chat/stream",
+                        json={
+                            "question": "Что делать при задержании?",
+                            "latency_mode": "overlay",
+                            "character_id": character.id,
+                            "faction_code": "lspd",
+                            "screen_context": "data:image/png;base64,"
+                            + base64.b64encode(b"\x89PNG\r\n\x1a\nframe").decode(),
+                        },
+                        headers={
+                            "X-CSRF-Token": "admin-csrf",
+                            "X-Idempotency-Key": "overlay-stream-1",
+                        },
+                    )
+                    context_payload = await context.json()
+                    await streamed.text()
+
+            self.assertEqual(rejected.status, 403)
+            self.assertEqual(voice_rejected.status, 403)
+            self.assertEqual(configured.status, 200)
+            self.assertEqual(context_payload["selected_character"]["faction_code"], "fib")
+            self.assertNotIn("csrf_token", context_payload)
+            self.assertEqual(streamed.status, 200)
+            self.assertEqual(stream_answer.kwargs["faction_code"], "fib")
+            self.assertEqual(stream_answer.kwargs["latency_mode"], "overlay")
+            self.assertEqual(stream_answer.kwargs["user_profile"]["nickname"], "Saul Goodman")
+            self.assertTrue(stream_answer.kwargs["screen_context"].startswith("data:image/png"))
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
     async def test_empty_chat_question_is_rejected_before_ai_or_stream_start(self) -> None:
         selected = ConsensusWebPrincipal(
             user_id=42,
@@ -1765,7 +2212,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["catalog"]["servers"][0]["label"], "Phoenix (15)")
         self.assertEqual(
             {item["code"] for item in payload["catalog"]["factions"]},
-            {"lspd", "gov"},
+            {"lspd", "lscsd", "fib", "gov", "sang", "ems", "wn"},
         )
         self.assertNotIn("documents", payload)
         self.assertEqual(forbidden.status, 403)
