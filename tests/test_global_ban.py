@@ -114,9 +114,12 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
                 protected = await client.get("/api/state")
                 page = await client.get("/banned")
                 state = await client.get("/api/banned")
+                logout = await client.get("/auth/logout", allow_redirects=False)
                 payload = await state.json()
         self.assertEqual(protected.status, 423)
         self.assertEqual(page.status, 200)
+        self.assertEqual(logout.status, 303)
+        self.assertEqual(logout.headers["Location"], "/banned")
         self.assertTrue(payload["active"])
         self.assertEqual(payload["reason"], "Критическое нарушение правил")
 
@@ -214,6 +217,10 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
                 revoked_payload = await revoked.json()
         self.assertEqual(issued.status, 200)
         self.assertEqual(issued_payload["record"]["discord_state"], "banned")
+        self.assertEqual(
+            issued_payload["record"]["user_id_text"],
+            "123456789012345678",
+        )
         guild.ban.assert_awaited_once()
         self.assertEqual(revoked.status, 200)
         self.assertFalse(revoked_payload["record"]["active"])
@@ -329,6 +336,53 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(protected.status, 400)
         self.assertFalse(bans.is_globally_banned(10, 99))
 
+    async def test_web_ban_commits_when_discord_is_temporarily_unavailable(self) -> None:
+        administrator = ConsensusWebPrincipal(
+            user_id=99,
+            guild_id=10,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=99,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),  # type: ignore[arg-type]
+        )
+        bot = SimpleNamespace(
+            user=SimpleNamespace(id=500),
+            get_guild=lambda _guild_id: None,
+            get_user=lambda _user_id: None,
+            is_ready=lambda: True,
+        )
+        app = create_consensus_web_app(bot, guild_id=10)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=administrator),
+            ):
+                access = await client.get("/api/admin/access/self")
+                issued = await client.post(
+                    "/api/admin/security/bans",
+                    headers={"X-CSRF-Token": "admin-csrf"},
+                    json={
+                        "action": "issue",
+                        "user_id": "123456789012345678",
+                        "reason": "Критическое нарушение правил",
+                        "confirmed": True,
+                    },
+                )
+                access_payload = await access.json()
+                issued_payload = await issued.json()
+
+        self.assertEqual(access.status, 200)
+        self.assertIn("security", access_payload["sections"])
+        self.assertEqual(issued.status, 200)
+        self.assertTrue(issued_payload["record"]["active"])
+        self.assertEqual(issued_payload["record"]["discord_state"], "failed")
+        self.assertIn("веб-блокировка включена", issued_payload["message"].lower())
+        self.assertTrue(bans.is_globally_banned(10, 123456789012345678))
+
     async def test_failed_discord_ban_is_reconciled_from_durable_state(self) -> None:
         bans.issue_global_ban(
             10,
@@ -359,6 +413,33 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
             bans.get_global_ban(10, 123456789012345678)["discord_state"],
             "banned",
         )
+
+    async def test_active_discord_ban_is_continuously_reasserted(self) -> None:
+        bans.issue_global_ban(
+            10,
+            123456789012345678,
+            reason="Критическое нарушение правил",
+            actor_id=99,
+            actor_display="Администратор",
+        )
+        bans.set_global_ban_discord_state(
+            10,
+            123456789012345678,
+            state="banned",
+            error=None,
+            actor_id=99,
+            actor_display="Администратор",
+        )
+        guild = SimpleNamespace(ban=AsyncMock())
+        bot = SimpleNamespace(
+            user=SimpleNamespace(id=500),
+            get_guild=lambda guild_id: guild if guild_id == 10 else None,
+        )
+
+        changed = await _reconcile_global_bans_once(bot, 10)  # type: ignore[arg-type]
+
+        self.assertEqual(changed, 0)
+        guild.ban.assert_awaited_once()
 
 
 if __name__ == "__main__":

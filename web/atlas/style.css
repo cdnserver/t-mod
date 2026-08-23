@@ -529,6 +529,24 @@ body:has(.atlas-app:not([hidden])) {
 .atlas-nav button:first-child .nav-icon svg { fill: currentColor; stroke: none; }
 .atlas-nav span { font-size: 11px; letter-spacing: .015em; }
 .atlas-nav b { padding: 4px 7px; border: 1px solid rgba(116, 218, 252, .1); border-radius: 999px; font-size: 7px; }
+.atlas-nav .desktop-overlay-settings[hidden] { display: none; }
+.atlas-nav .desktop-overlay-settings {
+  margin-top: 5px;
+  color: #98aef3;
+  border-color: rgba(133, 156, 255, .13);
+  background: linear-gradient(105deg, rgba(73, 101, 206, .12), rgba(56, 178, 201, .045));
+}
+.atlas-nav .desktop-overlay-settings::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  z-index: -1;
+  border-radius: 11px;
+  background: radial-gradient(circle at 18% 50%, rgba(98, 193, 255, .09), transparent 55%);
+}
+.atlas-nav .desktop-overlay-settings:hover { color: #e3ebff; border-color: rgba(145, 167, 255, .22); }
+.atlas-nav .desktop-overlay-settings .nav-icon { color: #a2b7ff; border-color: rgba(137, 157, 255, .15); background: rgba(93, 115, 224, .08); }
+.atlas-nav .desktop-overlay-settings b { color: #a8b7ed; border-color: rgba(137, 157, 255, .16); background: rgba(93, 115, 224, .08); }
 
 .sidebar-bottom > a {
   min-height: 48px; padding: 8px 11px; border-color: rgba(149, 148, 246, .14); border-radius: 15px;

@@ -1,3 +1,5 @@
+import type { AtlasOverlayBootstrapProjection } from "./atlas-overlay";
+
 export const serviceIds = [
   "home",
   "reactor",
@@ -48,6 +50,7 @@ export interface DesktopBootstrap {
     items: DesktopNotification[];
     unread: number;
   };
+  atlas_overlay?: AtlasOverlayBootstrapProjection;
 }
 
 export interface BootstrapResult {
@@ -59,6 +62,7 @@ export interface BootstrapResult {
 }
 
 export interface DesktopShellPreferences {
+  preferredName: string;
   sidebarCollapsed: boolean;
   compactMode: boolean;
   reduceMotion: boolean;
@@ -143,6 +147,7 @@ export interface TModDesktopApi {
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
   onCommandPalette(listener: () => void): () => void;
+  onAtlasOverlaySettings(listener: () => void): () => void;
   onLockRequested(listener: (reason: DesktopLockReason) => void): () => void;
   onUpdate(listener: (state: DesktopUpdateState) => void): () => void;
 }

@@ -73,12 +73,15 @@ ADMIN_SECTION_LABELS = {
     "media": "Музыка и голос",
     "profile": "Мой профиль",
     "discord": "Discord-аудит",
+    "security": "Глобальные блокировки",
     "system": "Технический контур",
     "atlas": "T-Mod Atlas",
     "atlas_ai": "Доступ к Atlas AI",
     "minecraft": "Minecraft",
     "ovr": "Отдел внешней разведки",
 }
+
+ADMIN_ONLY_WEB_SECTIONS = frozenset({"security"})
 
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
@@ -250,8 +253,7 @@ async def _reconcile_global_bans_once(
     )
     synchronized = 0
     for record in records:
-        if str(record.get("discord_state") or "") == "banned":
-            continue
+        previous_state = str(record.get("discord_state") or "")
         user_id = int(record.get("user_id") or 0)
         if user_id <= 0:
             continue
@@ -264,16 +266,19 @@ async def _reconcile_global_bans_once(
                 ),
                 timeout=12.0,
             )
-            await asyncio.to_thread(
-                global_ban_storage.set_global_ban_discord_state,
-                int(guild_id),
-                user_id,
-                state="banned",
-                error=None,
-                actor_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
-                actor_display="T-Mod",
-            )
-            synchronized += 1
+            # Re-assert every active decision even after a successful sync.
+            # A manual Discord unban must not bypass the T-Mod decision.
+            if previous_state != "banned":
+                await asyncio.to_thread(
+                    global_ban_storage.set_global_ban_discord_state,
+                    int(guild_id),
+                    user_id,
+                    state="banned",
+                    error=None,
+                    actor_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                    actor_display="T-Mod",
+                )
+                synchronized += 1
         except Exception:
             # Keep the durable web lock active and retry on the next pass.
             continue
@@ -446,7 +451,7 @@ def register_admin_web_routes(
             "media": "media",
             "profile": "profile",
             "system": "system",
-            "security": "system",
+            "security": "security",
             "atlas": "atlas",
         }
         endpoint = request.path.removeprefix("/api/admin/").split("/", 1)[0]
@@ -517,11 +522,6 @@ def register_admin_web_routes(
                     },
                     status=400,
                 )
-            if guild is None:
-                return web.json_response(
-                    {"error": "discord_unavailable", "message": "Discord-сервер временно недоступен."},
-                    status=503,
-                )
             discord_state = "pending"
             discord_error = None
             dm_sent = False
@@ -534,7 +534,7 @@ def register_admin_web_routes(
                         },
                         status=400,
                     )
-                member = guild.get_member(user_id)
+                member = guild.get_member(user_id) if guild is not None else None
                 if member is not None:
                     try:
                         await asyncio.wait_for(
@@ -563,6 +563,8 @@ def register_admin_web_routes(
                     actor_display=str(principal.display_name),
                 )
                 try:
+                    if guild is None:
+                        raise RuntimeError("discord_guild_unavailable")
                     await asyncio.wait_for(
                         guild.ban(
                             discord.Object(id=user_id),
@@ -590,7 +592,7 @@ def register_admin_web_routes(
                 message = (
                     "Пользователь заблокирован во всей экосистеме и в Discord."
                     if discord_state == "banned"
-                    else "Веб-доступ закрыт, но Discord не подтвердил бан. Проверьте права T-Mod."
+                    else "Глобальная веб-блокировка включена. Discord будет синхронизирован автоматически."
                 )
                 action_kind = "global_ban_issue"
             elif action == "revoke":
@@ -602,6 +604,17 @@ def register_admin_web_routes(
                         },
                         status=400,
                 )
+                if guild is None:
+                    return web.json_response(
+                        {
+                            "error": "discord_unavailable",
+                            "message": (
+                                "Discord временно недоступен. Блокировка оставлена активной; "
+                                "повторите снятие позже."
+                            ),
+                        },
+                        status=503,
+                    )
                 try:
                     await asyncio.wait_for(
                         guild.unban(
@@ -890,7 +903,7 @@ def register_admin_web_routes(
         if legacy or principal is None:
             raise web.HTTPForbidden(text='{"error":"personal_login_required"}', content_type="application/json")
         sections = (
-            sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS)
+            sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS | ADMIN_ONLY_WEB_SECTIONS)
             if principal.administrator
             else [row["section"] for row in await asyncio.to_thread(
                 web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)

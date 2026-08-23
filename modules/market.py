@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 import threading
 import traceback
@@ -50,6 +50,7 @@ from modules.majestic_api import (
 from modules.profile_notifications import evaluate_profile_notification
 from modules.tvrs_navigation_runtime import open_tvrs_hub
 from modules.technical_log import log_technical_event
+from persistence import global_ban_repository as global_ban_storage
 
 _worker_task: asyncio.Task[None] | None = None
 
@@ -1254,6 +1255,18 @@ async def dispatch_market_alerts(bot: commands.Bot) -> None:
     for notification in notifications:
         try:
             user_id = int(notification["discord_user_id"])
+            notification_guild_id = int(notification.get("guild_id") or 0)
+            if notification_guild_id > 0 and await asyncio.to_thread(
+                global_ban_storage.is_globally_banned,
+                notification_guild_id,
+                user_id,
+            ):
+                await asyncio.to_thread(
+                    storage.market_defer_alert_notification,
+                    int(notification["id"]),
+                    (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                )
+                continue
             decision = await asyncio.to_thread(
                 evaluate_profile_notification,
                 int(notification.get("guild_id") or 0),

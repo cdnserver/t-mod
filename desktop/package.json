@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.3.5-dev.2",
+  "version": "0.3.5-dev.9",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -49,6 +49,12 @@
       "out/**/*",
       "resources/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/atlas-overlay-hotkey.ps1",
+        "to": "atlas-overlay-hotkey.ps1"
+      }
     ],
     "icon": "resources/icon.png",
     "asar": true,

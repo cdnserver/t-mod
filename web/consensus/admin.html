@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="/assets/fonts.css">
     <link rel="stylesheet" href="/assets/admin.css">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/admin.js" defer></script>
+    <script src="/assets/admin.js?v=20260822-security" defer></script>
     <script src="/assets/reactor.js" defer></script>
   </head>
   <body>
@@ -120,6 +120,10 @@
           <button class="nav-item" type="button" data-section="discord">
             <span class="nav-icon">◉</span>
             <span>Discord-аудит</span>
+          </button>
+          <button class="nav-item security-nav" type="button" data-section="security">
+            <span class="nav-icon">⦸</span>
+            <span>Глобальные блокировки</span>
           </button>
           <button class="nav-item" type="button" data-section="system">
             <span class="nav-icon">⟡</span>
@@ -1413,6 +1417,53 @@
             </article>
           </section>
 
+          <section id="screen-security" class="screen security-screen" data-screen="security">
+            <div class="section-intro security-intro">
+              <div>
+                <span class="section-number">12 / IDENTITY SECURITY</span>
+                <h2>Глобальные блокировки</h2>
+                <p>Единая точка управления доступом к Discord и всей веб‑экосистеме T‑Mod.</p>
+              </div>
+              <span class="security-live"><i></i> защита активна</span>
+            </div>
+
+            <div class="security-kpis" aria-label="Состояние блокировок">
+              <article><small>Активные решения</small><strong id="global-ban-active">0</strong><span>закрывают весь T‑Mod</span></article>
+              <article><small>Discord подтверждён</small><strong id="global-ban-synced">0</strong><span>бан применён сервером</span></article>
+              <article><small>Ожидают синхронизации</small><strong id="global-ban-pending">0</strong><span>веб уже заблокирован</span></article>
+            </div>
+
+            <article id="global-ban-card" class="panel global-ban-card" hidden>
+              <div class="global-ban-scan" aria-hidden="true"></div>
+              <header class="global-ban-head">
+                <span class="global-ban-emblem" aria-hidden="true">⦸</span>
+                <div>
+                  <span class="panel-kicker">IDENTITY LOCKDOWN</span>
+                  <h2>Выдать глобальный бан</h2>
+                  <p>Сначала T‑Mod мгновенно закрывает сайты и сессии, затем подтверждает блокировку в Discord.</p>
+                </div>
+                <span id="global-ban-count" class="global-ban-count">0 активных</span>
+              </header>
+              <form id="global-ban-form" class="global-ban-form">
+                <label><span>Discord ID</span><div class="global-ban-field"><i>@</i><input name="user_id" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="721577061143019555" autocomplete="off" required></div></label>
+                <label class="global-ban-reason"><span>Причина блокировки</span><div class="global-ban-field"><i>!</i><input name="reason" minlength="5" maxlength="1000" placeholder="Основание, которое увидит пользователь" autocomplete="off" required></div></label>
+                <button class="global-ban-submit" type="submit"><span>Заблокировать везде</span><i>⦸</i></button>
+              </form>
+              <div class="global-ban-warning"><i></i><span>Результат фиксируется до обращения к Discord. Даже при временном сбое Discord доступ к сайтам уже будет закрыт, а синхронизация повторится автоматически.</span></div>
+              <div class="hard-ban-perimeter" aria-label="Контур жёсткой блокировки">
+                <span><b>01</b> Все веб-сессии отозваны</span>
+                <span><b>02</b> Повторный вход запрещён</span>
+                <span><b>03</b> Discord-бан удерживается</span>
+                <span><b>04</b> Личные сервисы остановлены</span>
+              </div>
+              <div class="global-ban-toolbar">
+                <label><span>Поиск</span><input id="global-ban-search" type="search" placeholder="Discord ID, имя или причина"></label>
+                <label><span>Показать</span><select id="global-ban-filter"><option value="active">Активные</option><option value="all">Все решения</option><option value="pending">Требуют внимания</option></select></label>
+              </div>
+              <div id="global-ban-list" class="global-ban-list"></div>
+            </article>
+          </section>
+
           <section id="screen-system" class="screen" data-screen="system">
             <div class="section-intro">
               <div>
@@ -1446,26 +1497,6 @@
               </form>
               <div class="access-control-caption"><i></i><span>Получатель увидит только выданные разделы и получит личное уведомление от T-Mod.</span></div>
               <div id="section-access-list" class="access-grant-grid"></div>
-            </article>
-
-            <article id="global-ban-card" class="panel global-ban-card" hidden>
-              <div class="global-ban-scan" aria-hidden="true"></div>
-              <header class="global-ban-head">
-                <span class="global-ban-emblem" aria-hidden="true">⦸</span>
-                <div>
-                  <span class="panel-kicker">IDENTITY LOCKDOWN</span>
-                  <h2>Глобальная блокировка</h2>
-                  <p>Один приказ закрывает Discord, общую авторизацию и все сервисы T‑Mod. Каждое действие остаётся в аудите.</p>
-                </div>
-                <span id="global-ban-count" class="global-ban-count">0 активных</span>
-              </header>
-              <form id="global-ban-form" class="global-ban-form">
-                <label><span>Discord ID</span><div class="global-ban-field"><i>@</i><input name="user_id" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="721577061143019555" autocomplete="off" required></div></label>
-                <label class="global-ban-reason"><span>Причина блокировки</span><div class="global-ban-field"><i>!</i><input name="reason" minlength="5" maxlength="1000" placeholder="Основание, которое увидит пользователь" autocomplete="off" required></div></label>
-                <button class="global-ban-submit" type="submit"><span>Заблокировать везде</span><i>⦸</i></button>
-              </form>
-              <div class="global-ban-warning"><i></i><span>Блокировка действует по подтверждённой личности Discord. IP-адреса намеренно не используются: они ненадёжны и могут задеть невиновных.</span></div>
-              <div id="global-ban-list" class="global-ban-list"></div>
             </article>
 
             <div class="kpi-grid compact-kpis">

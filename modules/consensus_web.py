@@ -1104,7 +1104,7 @@ def create_consensus_web_app(
         request[_GLOBAL_BAN_REQUEST_KEY] = ban
         if ban is not None:
             allowed = (
-                request.path in {"/banned", "/api/banned", "/auth/logout", "/api/health", "/favicon.ico"}
+                request.path in {"/banned", "/api/banned", "/api/health", "/favicon.ico"}
                 or request.path.startswith("/assets/")
             )
             if not allowed:

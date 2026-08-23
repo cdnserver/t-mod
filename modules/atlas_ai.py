@@ -2350,10 +2350,12 @@ async def _prepare_atlas_answer(
         ),
     }[mode]
     overlay_instruction = (
-        " Полевой интерфейс: цель — 70–160 слов и максимум один короткий список. "
+        " Полевой интерфейс: цель — 35–70 слов и максимум три коротких шага. "
         "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
-        "Не используй таблицы и длинные преамбулы. Если вопрос требует уточнения, сначала дай "
-        "то, что уже можно сделать безопасно, затем задай один критичный вопрос."
+        "Оставь только то, что пользователь способен применить прямо сейчас: действие, критичное "
+        "условие и точную ссылку на норму. Не используй таблицы, повтор вопроса, приветствие и "
+        "длинные оговорки. Если нужно уточнение, сначала дай безопасное действие, затем задай один "
+        "критичный вопрос."
         if selected_latency == "overlay"
         else ""
     )
@@ -2505,7 +2507,7 @@ async def _prepare_atlas_answer(
                 else {"strict": 0.15, "balanced": 0.38, "creative": 0.68, "aristotle": 0.28}[mode]
             ),
             "max_tokens": (
-                min(700, _adaptive_output_token_limit(task_profile, mode, sources))
+                min(280, _adaptive_output_token_limit(task_profile, mode, sources))
                 if selected_latency == "overlay"
                 else _adaptive_output_token_limit(task_profile, mode, sources)
             ),
@@ -2661,10 +2663,48 @@ def _citation_health(answer: str, source_count: int) -> dict[str, Any]:
     }
 
 
+def _compact_overlay_answer(
+    value: str,
+    *,
+    max_words: int = 85,
+    max_chars: int = 900,
+) -> str:
+    """Apply a deterministic last-resort bound to a field answer.
+
+    The model receives a much smaller budget already. This guard protects the
+    overlay and TTS path if a provider ignores that instruction, while source
+    metadata remains available beside the shortened answer.
+    """
+
+    text = str(value or "").strip()
+    word_matches = list(re.finditer(r"\S+", text))
+    if len(text) <= max_chars and len(word_matches) <= max_words:
+        return text
+    word_cutoff = (
+        word_matches[max_words - 1].end()
+        if len(word_matches) >= max_words
+        else len(text)
+    )
+    cutoff = min(max_chars, word_cutoff, len(text))
+    prefix = text[:cutoff]
+    boundaries = [
+        match.end()
+        for match in re.finditer(r"[.!?](?=\s|$)", prefix)
+        if match.end() >= cutoff // 2
+    ]
+    if boundaries:
+        prefix = prefix[: boundaries[-1]]
+    else:
+        prefix = prefix[: prefix.rfind(" ") if " " in prefix else cutoff]
+    return prefix.rstrip(" ,;:-") + "…"
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = str(answer or "").strip()
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
+    if prepared.latency_mode == "overlay":
+        clean_answer = _compact_overlay_answer(clean_answer)
     for step in prepared.research_plan:
         if step.get("id") == "synthesis":
             step["status"] = "complete"
@@ -2780,6 +2820,7 @@ async def atlas_answer_stream(
     timeout = aiohttp.ClientTimeout(total=180, connect=5, sock_read=90)
     answer_parts: list[str] = []
     answer_length = 0
+    stream_answer_limit = 1100 if prepared.latency_mode == "overlay" else 30000
     fallback_lines: list[str] = []
     stream_failure: AtlasAIError | None = None
     try:
@@ -2833,7 +2874,7 @@ async def atlas_answer_stream(
                     delta = _answer_text(event, streamed=True)
                     if not delta:
                         continue
-                    remaining = 30000 - answer_length
+                    remaining = stream_answer_limit - answer_length
                     if remaining <= 0:
                         continue
                     selected = delta[:remaining]
@@ -2858,7 +2899,7 @@ async def atlas_answer_stream(
             fallback = {}
         full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
         if full_text:
-            answer_parts.append(full_text[:30000])
+            answer_parts.append(full_text[:stream_answer_limit])
             await on_delta(answer_parts[0])
     if not answer_parts:
         if stream_failure is not None and not stream_failure.retryable:
@@ -2868,7 +2909,7 @@ async def atlas_answer_stream(
             {"phase": "retry", "status": "running", "reason": "empty_provider_output"},
         )
         fallback = await _retry_empty_completion(prepared)
-        answer_parts.append(fallback[:30000])
+        answer_parts.append(fallback[:stream_answer_limit])
         await on_delta(answer_parts[0])
     result = _atlas_answer_result(prepared, "".join(answer_parts))
     if prepared.research_plan:

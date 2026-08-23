@@ -925,6 +925,24 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
 
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
+    if await asyncio.to_thread(
+        storage.is_globally_banned,
+        int(member.guild.id),
+        int(member.id),
+    ):
+        try:
+            await member.guild.ban(
+                discord.Object(id=int(member.id)),
+                reason="T-Mod global ban · automatic re-entry enforcement",
+                delete_message_seconds=0,
+            )
+        except discord.DiscordException as exc:
+            print(
+                f"Global ban re-entry enforcement failed for {member.id}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        return
     if not TRACK_MEMBER_JOIN_LEAVE:
         return
     if not has_tracked_role(member):

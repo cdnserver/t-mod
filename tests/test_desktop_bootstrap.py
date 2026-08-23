@@ -98,6 +98,15 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 "Saul Goodman",
             )
             self.assertNotIn("csrf_token", payload["atlas_overlay"])
+            self.assertTrue(
+                payload["atlas_overlay"]["endpoints"]["tts_synthesize"].endswith(
+                    "/api/atlas/overlay/tts/synthesize"
+                )
+            )
+            self.assertEqual(
+                payload["atlas_overlay"]["capabilities"]["ai_voice"],
+                "system_fallback",
+            )
             self.assertEqual(response.headers["Cache-Control"], "private, no-store")
         finally:
             await client.close()
