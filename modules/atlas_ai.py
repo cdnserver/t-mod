@@ -29,7 +29,8 @@ _CREATIVE_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
-_ATLAS_DIRECT_MODEL = "x-ai/grok-4.1-fast"
+_ATLAS_DIRECT_MODEL = "x-ai/grok-4.3"
+_ATLAS_RETIRED_DIRECT_MODELS = frozenset({"x-ai/grok-4.1-fast"})
 _ATLAS_DIRECT_PREFIX_RE = re.compile(
     r"^\s*атлас\s*2\s*[,;:—–-]\s*",
     re.IGNORECASE,
@@ -323,6 +324,9 @@ def atlas_ai_config() -> AtlasAIConfig:
     # Migrate that costly default automatically; custom model IDs stay untouched.
     if not chat_model or chat_model in _ATLAS_RETIRED_DEFAULTS:
         chat_model = _ATLAS_ECONOMY_MODEL
+    direct_model = os.getenv("ATLAS_DIRECT_MODEL", _ATLAS_DIRECT_MODEL).strip()
+    if not direct_model or direct_model in _ATLAS_RETIRED_DIRECT_MODELS:
+        direct_model = _ATLAS_DIRECT_MODEL
     return AtlasAIConfig(
         openrouter_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
         openrouter_url=os.getenv(
@@ -330,10 +334,7 @@ def atlas_ai_config() -> AtlasAIConfig:
             "https://openrouter.ai/api/v1/chat/completions",
         ).strip(),
         chat_model=chat_model,
-        direct_model=(
-            os.getenv("ATLAS_DIRECT_MODEL", _ATLAS_DIRECT_MODEL).strip()
-            or _ATLAS_DIRECT_MODEL
-        ),
+        direct_model=direct_model,
         embedding_model=os.getenv(
             "ATLAS_EMBEDDING_MODEL",
             "openai/text-embedding-3-small",

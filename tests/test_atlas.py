@@ -724,6 +724,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(atlas_ai_config().chat_model, "custom/provider-model")
 
+    def test_deprecated_direct_model_is_upgraded_to_grok_43(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ATLAS_DIRECT_MODEL": "x-ai/grok-4.1-fast"},
+        ):
+            self.assertEqual(atlas_ai_config().direct_model, "x-ai/grok-4.3")
+
     def test_atlas_2_is_text_only_and_strips_its_call_prefix(self) -> None:
         self.assertEqual(
             atlas_parse_text_mode("  Атлас 2, скажи прямо  "),
