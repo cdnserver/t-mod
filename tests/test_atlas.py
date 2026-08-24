@@ -1923,11 +1923,12 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         planner.assert_not_awaited()
         aristotle.assert_not_awaited()
-        self.assertEqual(search.await_args.kwargs["limit"], 7)
+        self.assertEqual(search.await_args.kwargs["limit"], 5)
+        self.assertFalse(search.await_args.kwargs["expanded"])
         payload = request.await_args.kwargs["payload"]
-        self.assertLessEqual(payload["max_tokens"], 280)
+        self.assertLessEqual(payload["max_tokens"], 180)
         self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
-        self.assertIn("24–48 слов", payload["messages"][0]["content"])
+        self.assertIn("18–36 слов", payload["messages"][0]["content"])
         self.assertIsInstance(payload["messages"][-1]["content"], list)
         self.assertEqual(result["latency_mode"], "overlay")
         self.assertTrue(result["screen_context_used"])
@@ -1940,8 +1941,8 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         compact = _compact_overlay_answer(long_answer)
 
-        self.assertLessEqual(len(compact), 901)
-        self.assertLessEqual(len(compact.split()), 86)
+        self.assertLessEqual(len(compact), 461)
+        self.assertLessEqual(len(compact.split()), 42)
         self.assertTrue(compact.startswith("Сначала остановитесь"))
         self.assertTrue(compact.endswith("…"))
 

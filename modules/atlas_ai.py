@@ -2215,8 +2215,8 @@ async def _prepare_atlas_answer(
         mode = "balanced"
     dialog_messages = _bounded_dialog_messages(
         history,
-        max_messages=6 if selected_latency == "overlay" else 24,
-        max_chars=7_000 if selected_latency == "overlay" else 28_000,
+        max_messages=4 if selected_latency == "overlay" else 24,
+        max_chars=4_000 if selected_latency == "overlay" else 28_000,
     )
     task_profile = _atlas_task_profile(
         clean_question,
@@ -2301,16 +2301,24 @@ async def _prepare_atlas_answer(
         server_code=server_code,
         faction_code=faction_code,
         limit=(
-            7
+            5
             if selected_latency == "overlay"
             else 12
             if mode == "aristotle" or intelligence_brief is not None
             else 9
         ),
-        expanded=True,
+        expanded=selected_latency != "overlay",
         query_variants=research_queries,
     )
     sources = _atlas_merge_source_fragments(sources)
+    if selected_latency == "overlay":
+        # The field path needs one decisive fragment per source, not an entire
+        # legal library in the completion prompt. Exact/lexical extraction has
+        # already happened before this bound is applied.
+        sources = [
+            {**item, "text": str(item.get("text") or "")[:4_500]}
+            for item in sources[:5]
+        ]
     await _atlas_progress(
         on_progress,
         {
@@ -2387,7 +2395,7 @@ async def _prepare_atlas_answer(
         ),
     }[mode]
     overlay_instruction = (
-        " Полевой интерфейс: цель — 24–48 слов и максимум два коротких шага; этот лимит имеет "
+        " Полевой интерфейс: цель — 18–36 слов и максимум два коротких шага; этот лимит имеет "
         "приоритет над общим редакторским контрактом выше. "
         "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
         "Если вопрос касается статьи, нарушения, задержания, обыска, наказания или полномочия, "
@@ -2561,7 +2569,7 @@ async def _prepare_atlas_answer(
                 else {"strict": 0.15, "balanced": 0.38, "creative": 0.68, "aristotle": 0.28}[mode]
             ),
             "max_tokens": (
-                min(280, _adaptive_output_token_limit(task_profile, mode, sources))
+                min(180, _adaptive_output_token_limit(task_profile, mode, sources))
                 if selected_latency == "overlay"
                 else _adaptive_output_token_limit(task_profile, mode, sources)
             ),
@@ -2721,8 +2729,8 @@ def _citation_health(answer: str, source_count: int) -> dict[str, Any]:
 def _compact_overlay_answer(
     value: str,
     *,
-    max_words: int = 58,
-    max_chars: int = 620,
+    max_words: int = 42,
+    max_chars: int = 460,
 ) -> str:
     """Apply a deterministic last-resort bound to a field answer.
 
@@ -2876,7 +2884,7 @@ async def atlas_answer_stream(
     timeout = aiohttp.ClientTimeout(total=180, connect=5, sock_read=90)
     answer_parts: list[str] = []
     answer_length = 0
-    stream_answer_limit = 1100 if prepared.latency_mode == "overlay" else 30000
+    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
     fallback_lines: list[str] = []
     stream_failure: AtlasAIError | None = None
     try:
