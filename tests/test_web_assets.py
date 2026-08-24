@@ -82,6 +82,7 @@ class WebAssetContractTests(unittest.TestCase):
 
     def test_atlas_dom_contract_and_assets(self) -> None:
         html = (ATLAS_WEB / "index.html").read_text(encoding="utf-8")
+        install = (ATLAS_WEB / "install.html").read_text(encoding="utf-8")
         source = (ATLAS_WEB / "app.js").read_text(encoding="utf-8")
         id_values = re.findall(r'\bid=["\']([^"\']+)', html)
         ids = set(id_values)
@@ -94,6 +95,10 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertRegex(html, r'id="desktop-overlay-settings"[^>]*\bhidden\b')
         self.assertIn("TModDesktop", source)
         self.assertIn("https://tvr.lat/desktop/atlas-overlay-settings", source)
+        self.assertIn("Только T-Mod Desktop", install)
+        self.assertIn("https://www.virustotal.com/gui/home/upload", install)
+        self.assertIn("https://github.com/cdnserver/t-mod-releases/releases/latest", install)
+        self.assertTrue((ATLAS_WEB / "install.css").is_file())
 
     def test_sgl_case_os_redesign_contract(self) -> None:
         html = (SGL_WEB / "index.html").read_text(encoding="utf-8")

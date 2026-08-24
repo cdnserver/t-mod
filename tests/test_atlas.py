@@ -2228,11 +2228,31 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         async with TestClient(TestServer(app)) as client:
             page = await client.get("/atlas")
             bootstrap = await client.get("/api/atlas/bootstrap")
+            desktop_page = await client.get(
+                "/atlas",
+                headers={"User-Agent": "T-Mod QA TModDesktop/0.3.5"},
+            )
+            public_api = await client.get(
+                "/api/atlas/bootstrap",
+                headers={"Host": "atlas.tvr.lat"},
+            )
+            desktop_api = await client.get(
+                "/api/atlas/bootstrap",
+                headers={
+                    "Host": "atlas.tvr.lat",
+                    "User-Agent": "T-Mod QA TModDesktop/0.3.5",
+                },
+            )
 
             self.assertEqual(page.status, 200)
             self.assertIn("T-Mod Atlas", await page.text())
+            self.assertIn("Только T-Mod Desktop", await page.text())
+            self.assertIn('id="atlas-app"', await desktop_page.text())
             self.assertEqual(bootstrap.status, 401)
             self.assertIn((await bootstrap.json())["error"], {"unauthorized", "atlas_login_required"})
+            self.assertEqual(public_api.status, 403)
+            self.assertEqual((await public_api.json())["error"], "atlas_desktop_required")
+            self.assertEqual(desktop_api.status, 401)
 
     async def test_non_admin_receives_only_closed_preview(self) -> None:
         member = SimpleNamespace(
