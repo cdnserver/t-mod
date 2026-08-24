@@ -57,7 +57,7 @@ const FOREGROUND_PROBE_WATCHDOG_MS = 1_800;
 // render surfaces. Four probe frames are enough to absorb that transition
 // without leaving Atlas visible over a genuinely different application.
 const FOREGROUND_LOSS_GRACE_MS = 620;
-const INITIALIZATION_VISIBLE_MS = 4_200;
+const INITIALIZATION_VISIBLE_MS = 3_300;
 const MANUAL_INPUT_TIMEOUT_MS = 35_000;
 const MAX_STREAMED_AI_PHRASES = 8;
 
@@ -285,7 +285,9 @@ export class AtlasOverlayController {
   private foregroundProbeWatchdog?: ReturnType<typeof setTimeout>;
   private foregroundLossTimer?: ReturnType<typeof setTimeout>;
   private initializationTimer?: ReturnType<typeof setTimeout>;
-  private initializedGameProcessId?: number;
+  /** One cinematic handshake per T-Mod process, regardless of GTA HWND/PID changes. */
+  private initializationPresented = false;
+  private initializationInFlight = false;
   private activeGameWindow?: AtlasOverlayActiveGameWindow;
   private overlayInputEnabled = false;
   private overlayFocusable = false;
@@ -296,6 +298,7 @@ export class AtlasOverlayController {
   private speechSession?: AtlasOverlaySpeechSession;
   private speechQueue: Promise<void> = Promise.resolve();
   private speechPlaybackActive = false;
+  private speechSynthesisPending = 0;
   private settleAfterSpeech = false;
 
   constructor(options: AtlasOverlayControllerOptions) {
@@ -599,6 +602,7 @@ export class AtlasOverlayController {
     this.pendingPttUp = false;
     this.responseVisibleUntil = 0;
     this.speechPlaybackActive = false;
+    this.speechSynthesisPending = 0;
     this.settleAfterSpeech = false;
     this.endManualInput();
     this.emitPtt("cancel");
@@ -610,6 +614,7 @@ export class AtlasOverlayController {
     this.hideTimer = undefined;
     this.responseVisibleUntil = 0;
     this.speechPlaybackActive = false;
+    this.speechSynthesisPending = 0;
     this.settleAfterSpeech = false;
     this.cancelSpeechDelivery();
     this.endManualInput();
@@ -632,14 +637,8 @@ export class AtlasOverlayController {
       this.clearHideTimer();
       return;
     }
-    if (!wasActive || this.responseVisibleUntil <= 0) return;
-    const visibleUntil = this.responseVisibleUntil;
-    if (!this.settleAfterSpeech && visibleUntil > Date.now()) {
-      this.scheduleHideUntil(visibleUntil);
-      return;
-    }
-    this.settleAfterSpeech = false;
-    this.scheduleHide(1_800);
+    if (!wasActive || this.speechSynthesisPending > 0) return;
+    this.resumeResponseTimeoutAfterSpeech();
   }
 
   dispose(): void {
@@ -976,7 +975,7 @@ export class AtlasOverlayController {
         character_id: this.config.characterId,
         server_code: this.config.serverCode,
         faction_code: this.config.factionCode,
-        response_mode: this.config.responseMode,
+        response_mode: this.config.responseMode === "quick" ? "strict" : "balanced",
         latency_mode: "overlay",
         model: "atlas-tvr-a",
         ...(screenContext ? { screen_context: screenContext } : {}),
@@ -1150,6 +1149,7 @@ export class AtlasOverlayController {
   private cancelSpeechDelivery(): void {
     this.speechGeneration += 1;
     this.speechSession = undefined;
+    this.speechSynthesisPending = 0;
     // Detach a new request from a slow, obsolete provider call.  Each queued
     // task still checks its generation before it can emit renderer audio.
     this.speechQueue = Promise.resolve();
@@ -1214,6 +1214,9 @@ export class AtlasOverlayController {
   private enqueueAiSpeech(text: string, generation: number): void {
     const phrase = text.trim();
     if (!phrase) return;
+    if (generation !== this.speechGeneration) return;
+    this.speechSynthesisPending += 1;
+    this.clearHideTimer();
     const previous = this.speechQueue;
     this.speechQueue = previous
       .catch((error) => this.options.onLog?.("Atlas overlay speech queue recovered", error))
@@ -1224,14 +1227,32 @@ export class AtlasOverlayController {
           this.config.speechProvider !== "ai"
         ) return;
         await this.speakAnswer(phrase, generation);
+      })
+      .finally(() => {
+        if (generation !== this.speechGeneration) return;
+        this.speechSynthesisPending = Math.max(0, this.speechSynthesisPending - 1);
+        if (!this.speechPlaybackActive && this.speechSynthesisPending === 0) {
+          this.resumeResponseTimeoutAfterSpeech();
+        }
       });
   }
 
   private answerVisibleDelay(answer: string): number {
     const words = String(answer || "").trim().split(/\s+/).filter(Boolean).length;
-    // Keep a long answer visible while its sentence queue is playing, without
-    // leaving stale field content on screen indefinitely.
-    return Math.max(24_000, Math.min(75_000, 8_000 + words * 460));
+    if (this.config.answerHold === "brief") return Math.max(8_000, 4_000 + words * 160);
+    if (this.config.answerHold === "pinned") return 15 * 60_000;
+    return Math.max(14_000, Math.min(32_000, 7_000 + words * 300));
+  }
+
+  private resumeResponseTimeoutAfterSpeech(): void {
+    if (this.responseVisibleUntil <= 0) return;
+    const visibleUntil = this.responseVisibleUntil;
+    if (!this.settleAfterSpeech && visibleUntil > Date.now()) {
+      this.scheduleHideUntil(visibleUntil);
+      return;
+    }
+    this.settleAfterSpeech = false;
+    this.scheduleHide(this.config.answerHold === "pinned" ? 15 * 60_000 : 1_800);
   }
 
   private extendResponseVisibility(text: string): void {
@@ -1329,7 +1350,7 @@ export class AtlasOverlayController {
     this.responseVisibleUntil = until;
     this.hideTimer = setTimeout(() => {
       this.hideTimer = undefined;
-      if (this.speechPlaybackActive) {
+      if (this.speechPlaybackActive || this.speechSynthesisPending > 0) {
         this.settleAfterSpeech = true;
         return;
       }
@@ -1426,7 +1447,6 @@ export class AtlasOverlayController {
     this.foregroundProbeWatchdog = undefined;
     if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
     this.foregroundLossTimer = undefined;
-    this.initializedGameProcessId = undefined;
     const helper = this.foregroundProbe;
     this.foregroundProbe = undefined;
     if (helper && !helper.killed) helper.kill();
@@ -1474,14 +1494,24 @@ export class AtlasOverlayController {
     if (!changed) return;
     this.positionWindow();
     const initialize = this.config.initializationAnimation &&
-      this.initializedGameProcessId !== next.processId;
+      !this.initializationPresented &&
+      !this.initializationInFlight;
+    if (initialize) this.initializationInFlight = true;
     if (!initialize && !this.shouldKeepIdleVisible() && !this.shouldKeepCalibrationVisible()) return;
     void this.ensureWindow().then(() => {
-      if (!this.sameGameWindow(this.activeGameWindow, next)) return;
-      if (initialize) this.showInitialization(next.processId);
+      if (!this.sameGameWindow(this.activeGameWindow, next)) {
+        if (initialize) this.initializationInFlight = false;
+        return;
+      }
+      if (initialize) {
+        this.initializationInFlight = false;
+        this.initializationPresented = true;
+        this.showInitialization();
+      }
       else if (this.shouldKeepIdleVisible()) this.showIdle();
       else if (this.shouldKeepCalibrationVisible()) this.show();
     }).catch((error) => {
+      if (initialize) this.initializationInFlight = false;
       this.options.onLog?.("Atlas overlay window unavailable after foreground change", error);
       this.hide();
     });
@@ -1503,8 +1533,7 @@ export class AtlasOverlayController {
     this.updateOverlayInputMode();
   }
 
-  private showInitialization(processId: number): void {
-    this.initializedGameProcessId = processId;
+  private showInitialization(): void {
     if (this.initializationTimer) clearTimeout(this.initializationTimer);
     this.show();
     this.emit({

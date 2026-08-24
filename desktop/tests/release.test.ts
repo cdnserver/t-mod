@@ -141,6 +141,17 @@ describe("desktop release contract", () => {
     expect(controller).toContain("reportSpeech(active: boolean)");
   });
 
+  it("shows Atlas initialization once per app launch and avoids expensive overlay blur", () => {
+    const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/overlay/atlas-overlay.css"), "utf8");
+    expect(controller).toContain("private initializationPresented = false");
+    expect(controller).toContain("!this.initializationPresented");
+    expect(controller).not.toContain("initializedGameProcessId");
+    expect(controller).toContain("speechSynthesisPending");
+    expect(styles).not.toContain("backdrop-filter:");
+    expect(styles).toContain("contain: layout paint style");
+  });
+
   it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {
     const overlay = readFileSync(resolve(root, "src/renderer/overlay.html"), "utf8");
     expect(overlay).toContain("media-src blob:");

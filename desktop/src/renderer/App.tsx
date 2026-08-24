@@ -1301,6 +1301,12 @@ function AtlasSettingsPage({
       <div className="atlas-settings-page-state"><i className={overlayConfig.enabled && overlayAllowed ? "active" : ""}/><span><small>СОСТОЯНИЕ</small><strong>{overlayConfig.enabled && overlayAllowed ? "Готов к игре" : "Отключён"}</strong></span></div>
       <button className="atlas-settings-page-close" onClick={onClose}><Icon name="back"/> Вернуться в Atlas</button>
     </header>
+    <div className="atlas-settings-telemetry" aria-label="Сводка Atlas Overlay">
+      <span><small>ПРОФИЛЬ</small><strong>{overlayConfig.responseMode === "quick" ? "Точный полевой" : "Контекстный"}</strong></span>
+      <span><small>ФОРМА</small><strong>{{ orb: "Импульс", bar: "Строка", full: "Панель" }[overlayConfig.idleStyle]}</strong></span>
+      <span><small>ДВИЖЕНИЕ</small><strong>{{ cinematic: "Кинематографично", balanced: "Сбалансировано", minimal: "Производительно" }[overlayConfig.motion]}</strong></span>
+      <span><small>ОТВЕТ</small><strong>{{ brief: "Кратко", auto: "До конца речи", pinned: "Закреплён" }[overlayConfig.answerHold]}</strong></span>
+    </div>
     <div className="atlas-settings-page-layout">
       <nav className="atlas-settings-page-nav" aria-label="Разделы настроек">
         <p>Конфигурация</p>
@@ -1326,10 +1332,12 @@ function AtlasSettingsPage({
           <div className="overlay-access-note warning"><Icon name="atlas"/><span><strong>Добавьте персонажа</strong><small>Создайте хотя бы одного персонажа через T‑Mod Account, затем обновите приложение.</small></span></div>
         ) : (
           <fieldset disabled={overlayBusy}>
+            <div className="atlas-settings-section-heading"><span>01</span><div><strong>Запуск и присутствие</strong><small>Когда Atlas появляется поверх игры</small></div></div>
             <SettingToggle label="Оверлей в игре" hint="Запускается вместе с T‑Mod и не забирает управление у GTA" active={overlayConfig.enabled} onClick={() => void onOverlayChange({ enabled: !overlayConfig.enabled })}/>
             <SettingToggle label="Показывать статус в игре" hint="Компактная строка появляется при запуске GTA V, Majestic или RAGE Multiplayer" active={overlayConfig.showGameStatus} onClick={() => void onOverlayChange({ showGameStatus: !overlayConfig.showGameStatus })}/>
-            <SettingToggle label="Инициализация при входе в игру" hint="Кинематографичное подтверждение персонажа, сервера и готовности Atlas" active={overlayConfig.initializationAnimation} onClick={() => void onOverlayChange({ initializationAnimation: !overlayConfig.initializationAnimation })}/>
+            <SettingToggle label="Инициализация при входе в игру" hint="Показывается только один раз за запуск T-Mod — при первом фокусе GTA V" active={overlayConfig.initializationAnimation} onClick={() => void onOverlayChange({ initializationAnimation: !overlayConfig.initializationAnimation })}/>
             <SettingToggle label="Показывать в записи и трансляции" hint="Сохраняет стабильный источник Atlas Overlay для OBS" active={overlayConfig.captureInRecordings} onClick={() => void onOverlayChange({ captureInRecordings: !overlayConfig.captureInRecordings })}/>
+            <div className="atlas-settings-section-heading"><span>02</span><div><strong>Игровой контекст</strong><small>Кто обращается к Atlas и в каком контуре</small></div></div>
             <div id="atlas-settings-persona" className="overlay-setting-block atlas-settings-anchor">
               <span className="overlay-setting-title">Персонаж</span>
               <div className="overlay-character-grid">
@@ -1381,6 +1389,7 @@ function AtlasSettingsPage({
                 />
               </div>
             </div>
+            <div className="atlas-settings-section-heading"><span>03</span><div><strong>Голос и управление</strong><small>Запрос без курсора и спокойная озвучка</small></div></div>
             <div id="atlas-settings-voice" className="overlay-setting-block split overlay-device-row atlas-settings-anchor">
               <div><span className="overlay-setting-title">Микрофон</span><small>{microphoneStatus === "testing" ? "Слушаю 1 секунду…" : microphoneStatus === "ready" ? "Сигнал отличный" : microphoneStatus === "silent" ? "Сигнал слишком тихий" : microphoneStatus === "error" ? "Нет доступа к микрофону" : "Выберите вход и проверьте сигнал"}</small></div>
               <div className="overlay-device-controls">
@@ -1392,10 +1401,10 @@ function AtlasSettingsPage({
               </div>
             </div>
             <div className="overlay-setting-block split">
-              <div><span className="overlay-setting-title">Скорость ответа</span><small>Быстро — короче, баланс — подробнее</small></div>
+              <div><span className="overlay-setting-title">Профиль полевого ответа</span><small>Оба режима ограничены коротким форматом; точный быстрее выходит к применимой норме</small></div>
               <div className="overlay-preset-grid compact">
-                <button className={overlayConfig.responseMode === "quick" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "quick" })}>Быстро</button>
-                <button className={overlayConfig.responseMode === "balanced" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "balanced" })}>Баланс</button>
+                <button className={overlayConfig.responseMode === "quick" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "quick" })}>Точный</button>
+                <button className={overlayConfig.responseMode === "balanced" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "balanced" })}>Контекст</button>
               </div>
             </div>
             <SettingToggle label="Озвучивать ответ" hint="AI‑голос включается сразу после короткого ответа; системный голос умеет читать поток" active={overlayConfig.speakAnswers} onClick={() => void onOverlayChange({ speakAnswers: !overlayConfig.speakAnswers })}/>
@@ -1425,13 +1434,29 @@ function AtlasSettingsPage({
                 {[.55, .78, 1].map((volume) => <button key={volume} className={overlayConfig.speechVolume === volume ? "active" : ""} onClick={() => void onOverlayChange({ speechVolume: volume })}>{Math.round(volume * 100)}%</button>)}
               </div>
             </div>
+            <div className="overlay-range-row"><span><b>Системные сигналы</b><small>{Math.round(overlayConfig.cueVolume * 100)}%</small></span><input type="range" min="0" max="1" step="0.02" value={overlayConfig.cueVolume} onChange={(event) => void onOverlayChange({ cueVolume: Number(event.target.value) })}/></div>
             <div className="overlay-setting-block split">
               <div><span className="overlay-setting-title">Положение</span><small>На активном мониторе</small></div>
               <div className="overlay-preset-grid compact">
                 {(["top-right", "right", "bottom-right"] as const).map((anchor, index) => <button key={anchor} className={overlayConfig.anchor === anchor && overlayConfig.positionX === 1 ? "active" : ""} onClick={() => void onOverlayChange({ anchor, positionX: 1, positionY: [0, .5, 1][index] })}>{["Сверху", "Центр", "Снизу"][index]}</button>)}
               </div>
             </div>
+            <div className="atlas-position-presets" aria-label="Быстрый выбор положения">
+              <span className="overlay-setting-title">Точка привязки на экране</span>
+              <div>{([
+                [0, 0, "↖"], [.5, 0, "↑"], [1, 0, "↗"],
+                [0, .5, "←"], [.5, .5, "•"], [1, .5, "→"],
+                [0, 1, "↙"], [.5, 1, "↓"], [1, 1, "↘"],
+              ] as const).map(([x, y, label]) => <button key={`${x}-${y}`} className={Math.abs(overlayConfig.positionX - x) < .06 && Math.abs(overlayConfig.positionY - y) < .06 ? "active" : ""} onClick={() => void onOverlayChange({ positionX: x, positionY: y, anchor: y === 0 ? "top-right" : y === 1 ? "bottom-right" : "right" })}>{label}</button>)}</div>
+            </div>
+            <div className="atlas-settings-section-heading"><span>04</span><div><strong>Визуальный профиль</strong><small>Форма, цвет, движение и плотность интерфейса</small></div></div>
             <div id="atlas-settings-visual" className="overlay-setting-block overlay-visual-controls atlas-settings-anchor">
+              <span className="overlay-setting-title">Готовые профили</span>
+              <div className="atlas-visual-preset-grid">
+                <button onClick={() => void onOverlayChange({ idleStyle: "orb", theme: "graphite", motion: "minimal", scale: .78, panelWidth: 370, answerHeight: 108, fontScale: .94, opacity: .98, showCitations: false, showLatency: false })}><b>Невидимый</b><small>Максимум FPS · минимум шума</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "bar", theme: "cosmos", motion: "balanced", scale: .9, panelWidth: 430, answerHeight: 132, fontScale: 1, opacity: .94, showCitations: true, showLatency: false })}><b>Полевой</b><small>Чистый ежедневный режим</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "full", theme: "emerald", motion: "cinematic", scale: 1, panelWidth: 480, answerHeight: 180, fontScale: 1.08, opacity: .97, showCitations: true, showLatency: true })}><b>Командный</b><small>Полная информативная панель</small></button>
+              </div>
               <span className="overlay-setting-title">Форма в режиме ожидания</span>
               <div className="atlas-idle-style-grid">
                 {([
@@ -1460,8 +1485,19 @@ function AtlasSettingsPage({
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
             <SettingToggle label="Настройка прямо в GTA" hint={`${overlayConfig.hotkey.replaceAll("Control", "CTRL")} + Tab — режим; стрелки — позиция; +/− — размер; [ ] — ширина; Enter — готово`} active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
+            <div className="atlas-settings-section-heading"><span>05</span><div><strong>Ответ и интеллект</strong><small>Что остаётся на экране и какие данные получает Atlas</small></div></div>
             <div id="atlas-settings-intelligence" className="atlas-settings-anchor">
               <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
+            </div>
+            <SettingToggle label="Показывать источники" hint="До двух коротких ссылок на использованные документы под ответом" active={overlayConfig.showCitations} onClick={() => void onOverlayChange({ showCitations: !overlayConfig.showCitations })}/>
+            <SettingToggle label="Показывать время ответа" hint="Техническая задержка отображается в нижней строке оверлея" active={overlayConfig.showLatency} onClick={() => void onOverlayChange({ showLatency: !overlayConfig.showLatency })}/>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Когда сворачивать ответ</span><small>Atlas в любом случае дождётся конца озвучки</small></div>
+              <div className="overlay-preset-grid compact">
+                <button className={overlayConfig.answerHold === "brief" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "brief" })}>Быстро</button>
+                <button className={overlayConfig.answerHold === "auto" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "auto" })}>Авто</button>
+                <button className={overlayConfig.answerHold === "pinned" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "pinned" })}>Закрепить</button>
+              </div>
             </div>
             {overlayConfig.screenContextEnabled && <div className="overlay-privacy-note"><Icon name="shield"/><p><strong>Приватный режим.</strong> Кадр уменьшается, отправляется только вместе с вашим запросом и не сохраняется T‑Mod.</p></div>}
             <div className="overlay-borderless-note"><i/><p><strong>Для GTA V выберите «Полноэкранный без рамки».</strong> Для OBS добавьте «Захват окна» → T‑Mod Atlas Overlay или используйте «Захват экрана»: обычный Game Capture GTA не видит внешние окна.</p></div>

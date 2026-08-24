@@ -17,6 +17,7 @@ export type AtlasOverlaySpeechProvider = "ai" | "system";
 export type AtlasOverlayIdleStyle = "orb" | "bar" | "full";
 export type AtlasOverlayTheme = "cosmos" | "graphite" | "emerald" | "amber" | "crimson";
 export type AtlasOverlayMotion = "cinematic" | "balanced" | "minimal";
+export type AtlasOverlayAnswerHold = "brief" | "auto" | "pinned";
 export type AtlasOverlayPttPhase = "down" | "up" | "cancel";
 
 export interface AtlasOverlayCharacter {
@@ -89,6 +90,10 @@ export interface AtlasOverlayConfig {
   theme: AtlasOverlayTheme;
   motion: AtlasOverlayMotion;
   initializationAnimation: boolean;
+  showCitations: boolean;
+  showLatency: boolean;
+  answerHold: AtlasOverlayAnswerHold;
+  cueVolume: number;
   /** Enables the in-game calibration HUD. This is opt-in and only active over GTA. */
   calibrationMode: boolean;
   /** Independent typography scale for a legible field overlay. */
@@ -123,6 +128,10 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   theme: "cosmos",
   motion: "cinematic",
   initializationAnimation: true,
+  showCitations: true,
+  showLatency: false,
+  answerHold: "auto",
+  cueVolume: 0.58,
   calibrationMode: false,
   fontScale: 1,
   positionX: 1,
@@ -382,6 +391,7 @@ export function normalizeAtlasOverlayConfig(
   const panelWidth = Number(source.panelWidth);
   const answerHeight = Number(source.answerHeight);
   const fontScale = Number(source.fontScale);
+  const cueVolume = Number(source.cueVolume);
   const anchor = ["top-right", "right", "bottom-right"].includes(String(source.anchor))
     ? source.anchor as AtlasOverlayAnchor
     : "right";
@@ -431,6 +441,12 @@ export function normalizeAtlasOverlayConfig(
       ? source.motion as AtlasOverlayMotion
       : DEFAULT_ATLAS_OVERLAY_CONFIG.motion,
     initializationAnimation: source.initializationAnimation !== false,
+    showCitations: source.showCitations !== false,
+    showLatency: source.showLatency === true,
+    answerHold: ["brief", "auto", "pinned"].includes(String(source.answerHold))
+      ? source.answerHold as AtlasOverlayAnswerHold
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.answerHold,
+    cueVolume: Number.isFinite(cueVolume) ? Math.max(0, Math.min(1, cueVolume)) : 0.58,
     calibrationMode: source.calibrationMode === true,
     fontScale: Number.isFinite(fontScale) ? Math.max(0.82, Math.min(1.4, fontScale)) : 1,
     positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(1, positionX)) : 1,

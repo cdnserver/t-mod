@@ -92,6 +92,10 @@ describe("Atlas Overlay hotkey contract", () => {
       positionY: 6,
       speechProvider: "system",
       captureInRecordings: false,
+      answerHold: "pinned",
+      cueVolume: 4,
+      showCitations: false,
+      showLatency: true,
       calibrationMode: true,
       screenContextEnabled: false,
     });
@@ -111,6 +115,10 @@ describe("Atlas Overlay hotkey contract", () => {
     expect(config.positionY).toBe(1);
     expect(config.speechProvider).toBe("system");
     expect(config.captureInRecordings).toBe(false);
+    expect(config.answerHold).toBe("pinned");
+    expect(config.cueVolume).toBe(1);
+    expect(config.showCitations).toBe(false);
+    expect(config.showLatency).toBe(true);
     expect(config.screenContextEnabled).toBe(false);
   });
 });

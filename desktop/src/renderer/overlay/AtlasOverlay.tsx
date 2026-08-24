@@ -54,10 +54,11 @@ function ThinkingField() {
 function InitializationField() {
   return (
     <div className="atlas-initialization-field" aria-hidden="true">
-      <i className="atlas-init-orbit atlas-init-orbit-a" />
-      <i className="atlas-init-orbit atlas-init-orbit-b" />
-      <span><AtlasMark /></span>
-      <b /><b /><b />
+      <div className="atlas-init-sky"><i/><i/><i/><i/><i/></div>
+      <span className="atlas-init-axis" />
+      <span className="atlas-init-sweep" />
+      <span className="atlas-init-glyph"><AtlasMark /></span>
+      <div className="atlas-init-sequence"><b/><b/><b/><b/></div>
     </div>
   );
 }
@@ -70,13 +71,14 @@ function captureError(error: unknown): string {
   return "Не удалось записать голосовую команду.";
 }
 
-function playOverlayCue(kind: "listen" | "release" | "ready" | "error"): void {
+function playOverlayCue(kind: "listen" | "release" | "ready" | "error", level = 0.58): void {
   if (typeof AudioContext === "undefined") return;
   const context = new AudioContext();
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(.0001, now);
-  master.gain.exponentialRampToValueAtTime(kind === "error" ? .035 : .048, now + .025);
+  const volume = clamp(level, 0, 1);
+  master.gain.exponentialRampToValueAtTime((kind === "error" ? .035 : .048) * volume, now + .025);
   master.gain.exponentialRampToValueAtTime(.0001, now + .46);
   master.connect(context.destination);
   const notes = kind === "listen"
@@ -414,7 +416,7 @@ export function AtlasOverlay() {
       dispatch({ type: "transcript", text: question });
       setManualQuery("");
       setManualQueryOpen(false);
-      playOverlayCue("release");
+      playOverlayCue("release", configRef.current.cueVolume);
     } catch {
       setManualQueryError("Не удалось отправить вопрос. Проверьте подключение Atlas.");
     } finally {
@@ -547,7 +549,7 @@ export function AtlasOverlay() {
         speech.append(event.text);
       } else if (event.type === "done") {
         if (currentConfig.speakAnswers && currentConfig.speechProvider === "system") speech.finish();
-        playOverlayCue("ready");
+        playOverlayCue("ready", currentConfig.cueVolume);
       } else if (["hide", "idle", "error"].includes(event.type)) {
         speech.cancel();
         stopAiAudio();
@@ -555,7 +557,7 @@ export function AtlasOverlay() {
           setManualQueryOpen(false);
           setManualQueryError("");
         }
-        if (event.type === "error") playOverlayCue("error");
+        if (event.type === "error") playOverlayCue("error", currentConfig.cueVolume);
       }
       dispatch(event);
     };
@@ -571,7 +573,7 @@ export function AtlasOverlay() {
         setManualQueryError("");
         speech.cancel();
         stopAiAudio();
-        playOverlayCue("listen");
+        playOverlayCue("listen", configRef.current.cueVolume);
         try {
           await capture.start(configRef.current.microphoneId);
         } catch (error) {
@@ -588,7 +590,7 @@ export function AtlasOverlay() {
         return;
       }
       try {
-        playOverlayCue("release");
+        playOverlayCue("release", configRef.current.cueVolume);
         const recording = await capture.stop();
         if (!recording) {
           dispatch({ type: "error", message: "Голос не записан. Удерживайте клавиши чуть дольше.", retryable: true });
@@ -743,9 +745,9 @@ export function AtlasOverlay() {
             <div className="atlas-overlay-initializing">
               <InitializationField />
               <div>
-                <small>FIELD LINK ESTABLISHED</small>
-                <strong>{state.transcript || "Atlas"}, Atlas инициализирован</strong>
-                <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()} · система готова</span>
+                <small>SECURE FIELD LINK · ONLINE</small>
+                <strong>{state.transcript || "Atlas"}, система готова</strong>
+                <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()} · Atlas подключён к полевому контуру</span>
               </div>
             </div>
           )}
@@ -770,7 +772,7 @@ export function AtlasOverlay() {
             <article className="atlas-overlay-answer">
               {state.transcript && <p className="atlas-overlay-question">{state.transcript}</p>}
               <p className="atlas-overlay-copy">{state.answer}<span className="atlas-overlay-caret" /></p>
-              {state.citations.length > 0 && (
+              {config.showCitations && state.citations.length > 0 && (
                 <div className="atlas-overlay-sources">
                   {state.citations.slice(0, 2).map((citation, index) => (
                     <span key={`${citation.index || index}-${citation.title}`}>
@@ -802,7 +804,7 @@ export function AtlasOverlay() {
 
         <footer className="atlas-overlay-foot">
           <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()}</span>
-          {state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
+          {config.showLatency && state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
           <span className="atlas-overlay-mode">T-MOD DESKTOP</span>
         </footer>
       </section>
