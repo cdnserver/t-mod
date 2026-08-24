@@ -121,9 +121,9 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   responseMode: "quick",
   anchor: "right",
   opacity: 0.94,
-  scale: 0.88,
-  panelWidth: 430,
-  answerHeight: 132,
+  scale: 1,
+  panelWidth: 480,
+  answerHeight: 160,
   idleStyle: "bar",
   theme: "cosmos",
   motion: "cinematic",
@@ -133,7 +133,7 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   answerHold: "auto",
   cueVolume: 0.58,
   calibrationMode: false,
-  fontScale: 1,
+  fontScale: 1.12,
   positionX: 1,
   positionY: 0.5,
   screenContextEnabled: false,
@@ -424,9 +424,9 @@ export function normalizeAtlasOverlayConfig(
     responseMode: source.responseMode === "balanced" ? "balanced" : "quick",
     anchor,
     opacity: Number.isFinite(opacity) ? Math.max(0.68, Math.min(1, opacity)) : 0.94,
-    scale: Number.isFinite(scale) ? Math.max(0.72, Math.min(1.35, scale)) : 0.88,
+    scale: Number.isFinite(scale) ? Math.max(0.78, Math.min(1.3, scale)) : 1,
     panelWidth: Number.isFinite(panelWidth)
-      ? Math.max(340, Math.min(520, panelWidth))
+      ? Math.max(380, Math.min(620, panelWidth))
       : DEFAULT_ATLAS_OVERLAY_CONFIG.panelWidth,
     answerHeight: Number.isFinite(answerHeight)
       ? Math.max(96, Math.min(300, answerHeight))
@@ -448,7 +448,7 @@ export function normalizeAtlasOverlayConfig(
       : DEFAULT_ATLAS_OVERLAY_CONFIG.answerHold,
     cueVolume: Number.isFinite(cueVolume) ? Math.max(0, Math.min(1, cueVolume)) : 0.58,
     calibrationMode: source.calibrationMode === true,
-    fontScale: Number.isFinite(fontScale) ? Math.max(0.82, Math.min(1.4, fontScale)) : 1,
+    fontScale: Number.isFinite(fontScale) ? Math.max(0.9, Math.min(1.6, fontScale)) : 1.12,
     positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(1, positionX)) : 1,
     positionY: Number.isFinite(positionY)
       ? Math.max(0, Math.min(1, positionY))

@@ -835,6 +835,8 @@ async function createWindow(): Promise<void> {
     `${serviceView.webContents.getUserAgent()} TModDesktop/${app.getVersion()}`,
   );
   const networkSession = desktopSession();
+  const desktopUserAgent = `${networkSession.getUserAgent()} TModDesktop/${app.getVersion()}`;
+  networkSession.setUserAgent(desktopUserAgent);
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
 

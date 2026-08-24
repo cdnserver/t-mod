@@ -103,10 +103,10 @@ describe("Atlas Overlay hotkey contract", () => {
     expect(config.speechRate).toBe(1.45);
     expect(config.speechVolume).toBe(0);
     expect(config.opacity).toBe(0.68);
-    expect(config.scale).toBe(1.35);
-    expect(config.panelWidth).toBe(520);
+    expect(config.scale).toBe(1.3);
+    expect(config.panelWidth).toBe(620);
     expect(config.answerHeight).toBe(300);
-    expect(config.fontScale).toBe(1.4);
+    expect(config.fontScale).toBe(1.6);
     expect(config.idleStyle).toBe("orb");
     expect(config.theme).toBe("emerald");
     expect(config.motion).toBe("minimal");

@@ -142,6 +142,7 @@ describe("desktop release contract", () => {
   });
 
   it("shows Atlas initialization once per app launch and avoids expensive overlay blur", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
     const styles = readFileSync(resolve(root, "src/renderer/overlay/atlas-overlay.css"), "utf8");
     expect(controller).toContain("private initializationPresented = false");
@@ -150,6 +151,9 @@ describe("desktop release contract", () => {
     expect(controller).toContain("speechSynthesisPending");
     expect(styles).not.toContain("backdrop-filter:");
     expect(styles).toContain("contain: layout paint style");
+    expect(styles).toContain("zoom: var(--overlay-scale)");
+    expect(styles).not.toContain("transform: scale(var(--overlay-scale))");
+    expect(main).toContain("networkSession.setUserAgent(desktopUserAgent)");
   });
 
   it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {

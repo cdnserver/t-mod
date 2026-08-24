@@ -706,6 +706,8 @@ export class AtlasOverlayController {
     });
     this.window = overlayWindow;
     this.windowReady = false;
+    overlayWindow.webContents.setZoomFactor(1);
+    void overlayWindow.webContents.setVisualZoomLevelLimits(1, 1);
     overlayWindow.setAlwaysOnTop(true, "screen-saver", 1);
     overlayWindow.setIgnoreMouseEvents(true, { forward: true });
     overlayWindow.setContentProtection(!this.config.captureInRecordings);

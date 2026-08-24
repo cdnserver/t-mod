@@ -1453,9 +1453,9 @@ function AtlasSettingsPage({
             <div id="atlas-settings-visual" className="overlay-setting-block overlay-visual-controls atlas-settings-anchor">
               <span className="overlay-setting-title">Готовые профили</span>
               <div className="atlas-visual-preset-grid">
-                <button onClick={() => void onOverlayChange({ idleStyle: "orb", theme: "graphite", motion: "minimal", scale: .78, panelWidth: 370, answerHeight: 108, fontScale: .94, opacity: .98, showCitations: false, showLatency: false })}><b>Невидимый</b><small>Максимум FPS · минимум шума</small></button>
-                <button onClick={() => void onOverlayChange({ idleStyle: "bar", theme: "cosmos", motion: "balanced", scale: .9, panelWidth: 430, answerHeight: 132, fontScale: 1, opacity: .94, showCitations: true, showLatency: false })}><b>Полевой</b><small>Чистый ежедневный режим</small></button>
-                <button onClick={() => void onOverlayChange({ idleStyle: "full", theme: "emerald", motion: "cinematic", scale: 1, panelWidth: 480, answerHeight: 180, fontScale: 1.08, opacity: .97, showCitations: true, showLatency: true })}><b>Командный</b><small>Полная информативная панель</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "orb", theme: "graphite", motion: "minimal", scale: .84, panelWidth: 410, answerHeight: 130, fontScale: 1, opacity: .98, showCitations: false, showLatency: false })}><b>Невидимый</b><small>Максимум FPS · минимум шума</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "bar", theme: "cosmos", motion: "balanced", scale: 1, panelWidth: 480, answerHeight: 160, fontScale: 1.12, opacity: .96, showCitations: true, showLatency: false })}><b>Полевой</b><small>Чёткий ежедневный режим</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "full", theme: "emerald", motion: "cinematic", scale: 1.08, panelWidth: 560, answerHeight: 220, fontScale: 1.24, opacity: .98, showCitations: true, showLatency: true })}><b>Командный</b><small>Крупная информативная панель</small></button>
               </div>
               <span className="overlay-setting-title">Форма в режиме ожидания</span>
               <div className="atlas-idle-style-grid">
@@ -1477,10 +1477,10 @@ function AtlasSettingsPage({
                   {([['cinematic', 'Кино'], ['balanced', 'Мягко'], ['minimal', 'Минимум']] as const).map(([value, label]) => <button key={value} className={overlayConfig.motion === value ? "active" : ""} onClick={() => void onOverlayChange({ motion: value })}>{label}</button>)}
                 </div>
               </div>
-              <div className="overlay-range-row"><span><b>Размер</b><small>{Math.round(overlayConfig.scale * 100)}%</small></span><input type="range" min="0.72" max="1.35" step="0.01" value={overlayConfig.scale} onChange={(event) => void onOverlayChange({ scale: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Ширина панели</b><small>{overlayConfig.panelWidth}px</small></span><input type="range" min="340" max="520" step="10" value={overlayConfig.panelWidth} onChange={(event) => void onOverlayChange({ panelWidth: Number(event.target.value) })}/></div>
+              <div className="overlay-range-row"><span><b>Размер</b><small>{Math.round(overlayConfig.scale * 100)}%</small></span><input type="range" min="0.78" max="1.3" step="0.01" value={overlayConfig.scale} onChange={(event) => void onOverlayChange({ scale: Number(event.target.value) })}/></div>
+              <div className="overlay-range-row"><span><b>Ширина панели</b><small>{overlayConfig.panelWidth}px</small></span><input type="range" min="380" max="620" step="10" value={overlayConfig.panelWidth} onChange={(event) => void onOverlayChange({ panelWidth: Number(event.target.value) })}/></div>
               <div className="overlay-range-row"><span><b>Высота ответа</b><small>{overlayConfig.answerHeight}px</small></span><input type="range" min="96" max="300" step="12" value={overlayConfig.answerHeight} onChange={(event) => void onOverlayChange({ answerHeight: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Размер текста</b><small>{Math.round(overlayConfig.fontScale * 100)}%</small></span><input type="range" min="0.82" max="1.4" step="0.01" value={overlayConfig.fontScale} onChange={(event) => void onOverlayChange({ fontScale: Number(event.target.value) })}/></div>
+              <div className="overlay-range-row"><span><b>Размер текста</b><small>{Math.round(overlayConfig.fontScale * 100)}%</small></span><input type="range" min="0.9" max="1.6" step="0.01" value={overlayConfig.fontScale} onChange={(event) => void onOverlayChange({ fontScale: Number(event.target.value) })}/></div>
               <div className="overlay-range-row"><span><b>Прозрачность</b><small>{Math.round(overlayConfig.opacity * 100)}%</small></span><input type="range" min="0.68" max="1" step="0.01" value={overlayConfig.opacity} onChange={(event) => void onOverlayChange({ opacity: Number(event.target.value) })}/></div>
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
