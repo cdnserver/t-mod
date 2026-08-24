@@ -24,10 +24,10 @@ function AtlasMark() {
           <stop offset="1" stopColor="#9f67ff" />
         </linearGradient>
       </defs>
-      <circle cx="28" cy="29" r="17" fill="none" stroke="url(#atlas-overlay-globe)" strokeWidth="2.2" />
-      <ellipse cx="28" cy="29" rx="8" ry="17" fill="none" stroke="currentColor" strokeOpacity=".55" />
-      <path d="M11 29h34M14.7 20.5h26.6M14.7 37.5h26.6" fill="none" stroke="currentColor" strokeOpacity=".45" />
-      <path d="m43 7 1.8 4.6L49 13.5l-4.2 1.8-1.8 4.6-1.8-4.6-4.2-1.8 4.2-1.9L43 7Z" fill="#dff7ff" />
+      <circle className="atlas-mark-globe" cx="28" cy="29" r="17" fill="none" stroke="url(#atlas-overlay-globe)" strokeWidth="2.2" />
+      <ellipse className="atlas-mark-meridian" cx="28" cy="29" rx="8" ry="17" fill="none" stroke="currentColor" strokeOpacity=".55" />
+      <path className="atlas-mark-grid" d="M11 29h34M14.7 20.5h26.6M14.7 37.5h26.6" fill="none" stroke="currentColor" strokeOpacity=".45" />
+      <path className="atlas-mark-star" d="m43 7 1.8 4.6L49 13.5l-4.2 1.8-1.8 4.6-1.8-4.6-4.2-1.8 4.2-1.9L43 7Z" fill="#dff7ff" />
     </svg>
   );
 }
@@ -46,6 +46,7 @@ function ThinkingField() {
   return (
     <div className="atlas-thinking-field" aria-hidden="true">
       <i /><i /><i />
+      <b /><b /><b /><b />
       <span />
     </div>
   );
@@ -793,7 +794,7 @@ export function AtlasOverlay() {
 
           {state.stage === "idle" && (
             <div className="atlas-overlay-idle">
-              <i className="atlas-idle-signal"><b /></i>
+              <i className="atlas-idle-signal"><b /><em /></i>
               <span><strong>ATLAS</strong><small>{config.characterName || "Готов к работе"}</small></span>
               <kbd>{config.hotkey.replaceAll("+", "  +  ")}</kbd>
             </div>

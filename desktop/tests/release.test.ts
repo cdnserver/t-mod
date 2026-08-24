@@ -156,6 +156,20 @@ describe("desktop release contract", () => {
     expect(main).toContain("networkSession.setUserAgent(desktopUserAgent)");
   });
 
+  it("keeps Atlas state transitions cinematic, legible, and GPU-friendly", () => {
+    const renderer = readFileSync(resolve(root, "src/renderer/overlay/AtlasOverlay.tsx"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/overlay/atlas-overlay.css"), "utf8");
+    expect(renderer).toContain('className="atlas-mark-star"');
+    expect(renderer).toContain('<i className="atlas-idle-signal"><b /><em /></i>');
+    expect(styles).toContain("@keyframes atlas-card-listening");
+    expect(styles).toContain("@keyframes atlas-card-answer");
+    expect(styles).toContain("@keyframes atlas-stage-searching");
+    expect(styles).toContain("@keyframes atlas-idle-ring");
+    expect(styles).toContain("transform: scaleY(var(--amplitude))");
+    expect(styles).toContain('[data-motion="minimal"] .atlas-overlay-body > *');
+    expect(styles).not.toContain("filter: blur(");
+  });
+
   it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {
     const overlay = readFileSync(resolve(root, "src/renderer/overlay.html"), "utf8");
     expect(overlay).toContain("media-src blob:");

@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.3.5-dev.13",
+  "version": "0.3.5-dev.14",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
