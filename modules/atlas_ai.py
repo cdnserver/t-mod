@@ -29,7 +29,7 @@ _CREATIVE_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
-_ATLAS_DIRECT_MODEL = "x-ai/grok-4.1-fast"
+_ATLAS_DIRECT_MODEL = "x-ai/grok-4.3"
 _ATLAS_DIRECT_PREFIX_RE = re.compile(
     r"^\s*атлас\s*2\s*[,;:—–-]\s*",
     re.IGNORECASE,
