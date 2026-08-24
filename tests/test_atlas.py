@@ -32,6 +32,7 @@ from modules.atlas_ai import (
     atlas_embed,
     atlas_ensure_collection,
     atlas_index_source,
+    atlas_parse_text_mode,
     atlas_probe_collection,
     atlas_research_plan,
     atlas_search,
@@ -722,6 +723,44 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             {"ATLAS_OPENROUTER_MODEL": "custom/provider-model"},
         ):
             self.assertEqual(atlas_ai_config().chat_model, "custom/provider-model")
+
+    def test_atlas_2_is_text_only_and_strips_its_call_prefix(self) -> None:
+        self.assertEqual(
+            atlas_parse_text_mode("  Атлас 2, скажи прямо  "),
+            ("скажи прямо", True),
+        )
+        self.assertEqual(
+            atlas_parse_text_mode("Атлас 2, скажи прямо", latency_mode="overlay"),
+            ("Атлас 2, скажи прямо", False),
+        )
+
+    async def test_atlas_2_routes_to_direct_model_and_reports_mode(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="test/standard",
+            direct_model="x-ai/test-direct",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "Прямой ответ"}}]}
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[]),
+        ), patch("modules.atlas_ai._json_request", completion):
+            result = await atlas_answer(77, "Атлас 2, скажи прямо")
+
+        payload = completion.await_args.kwargs["payload"]
+        self.assertEqual(payload["model"], "x-ai/test-direct")
+        self.assertEqual(payload["messages"][-1]["content"], "скажи прямо")
+        self.assertIn("без стилистической цензуры", payload["messages"][0]["content"])
+        self.assertEqual(result["text_mode"], "atlas-2")
 
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
@@ -1881,7 +1920,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         payload = request.await_args.kwargs["payload"]
         self.assertLessEqual(payload["max_tokens"], 280)
         self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
-        self.assertIn("35–70 слов", payload["messages"][0]["content"])
+        self.assertIn("24–48 слов", payload["messages"][0]["content"])
         self.assertIsInstance(payload["messages"][-1]["content"], list)
         self.assertEqual(result["latency_mode"], "overlay")
         self.assertTrue(result["screen_context_used"])

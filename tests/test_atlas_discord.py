@@ -34,6 +34,13 @@ class _Typing:
 
 
 class AtlasDiscordTests(unittest.IsolatedAsyncioTestCase):
+    def test_channel_call_parser_accepts_atlas_2(self) -> None:
+        matched = atlas_discord._ATLAS_CALL_RE.match("Атлас 2, скажи прямо")
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        self.assertTrue(matched.group("variant"))
+        self.assertEqual(matched.group("question"), "скажи прямо")
+
     async def test_new_conversation_uses_created_thread_without_refetching_starter(self) -> None:
         bot = _Bot()
         atlas_discord.setup_atlas_discord(bot)
