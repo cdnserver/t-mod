@@ -84,6 +84,18 @@ _ATLAS_OVERLAY_AUDIO_TYPES = {
 }
 
 
+def _is_tmod_desktop_request(request: web.Request) -> bool:
+    """Recognise the product shell without treating it as authentication.
+
+    Account, grants and CSRF remain authoritative.  This marker only keeps the
+    browser product surface closed while allowing the signed-in Desktop shell.
+    """
+
+    user_agent = str(request.headers.get("User-Agent") or "").lower()
+    version = str(request.headers.get("X-TMod-Desktop-Version") or "").strip()
+    return "tmoddesktop/" in user_agent or bool(version)
+
+
 async def _decode_overlay_audio(audio: bytes) -> bytes:
     """Decode browser MediaRecorder output into Discord-compatible PCM.
 
@@ -195,12 +207,16 @@ def register_atlas_web_routes(
     # preventing a voice burst from exhausting worker threads/OpenRouter.
     overlay_transcription_slots = asyncio.Semaphore(3)
 
-    async def atlas_index(_: web.Request) -> web.FileResponse:
-        return web.FileResponse(asset_dir / "index.html")
+    async def atlas_index(request: web.Request) -> web.FileResponse:
+        page = "index.html" if _is_tmod_desktop_request(request) else "install.html"
+        response = web.FileResponse(asset_dir / page)
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Vary"] = "User-Agent, X-TMod-Desktop-Version"
+        return response
 
     async def atlas_asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
-        if name not in {"app.js", "style.css", "favicon.svg"}:
+        if name not in {"app.js", "style.css", "install.css", "favicon.svg"}:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
@@ -220,6 +236,24 @@ def register_atlas_web_routes(
                 content_type="application/json",
             )
         return selected
+
+    def require_desktop_client(request: web.Request) -> None:
+        host = str(request.host or "").partition(":")[0].lower()
+        # Local/internal calls remain available for diagnostics and automated
+        # tests.  The product restriction is enforced on the public contour.
+        if host != "atlas.tvr.lat" or _is_tmod_desktop_request(request):
+            return
+        raise web.HTTPForbidden(
+            text=json.dumps(
+                {
+                    "error": "atlas_desktop_required",
+                    "message": "Atlas AI доступен в приложении T-Mod Desktop.",
+                    "desktop_url": "https://github.com/cdnserver/t-mod-releases/releases/latest",
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json",
+        )
 
     async def body(request: web.Request, selected: ConsensusWebPrincipal) -> dict[str, Any]:
         if not csrf_matches(request, selected):
@@ -361,11 +395,13 @@ def register_atlas_web_routes(
         }
 
     async def bootstrap(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         payload = await dashboard_for(request, selected)
         return web.json_response(payload)
 
     async def overlay_context_get(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         context = await asyncio.to_thread(
@@ -400,6 +436,7 @@ def register_atlas_web_routes(
         return response
 
     async def overlay_context_set(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         payload = await body(request, selected)
@@ -429,6 +466,7 @@ def register_atlas_web_routes(
         return web.json_response({"ok": True, **context})
 
     async def overlay_transcribe(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if not csrf_matches(request, selected):
@@ -566,6 +604,7 @@ def register_atlas_web_routes(
         )
 
     async def overlay_tts_voices(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         response = web.json_response(overlay_tts.voices_payload())
@@ -573,6 +612,7 @@ def register_atlas_web_routes(
         return response
 
     async def overlay_tts_preview(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if (
@@ -594,6 +634,7 @@ def register_atlas_web_routes(
         return tts_response(result)
 
     async def overlay_tts_synthesize(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if (
@@ -709,6 +750,7 @@ def register_atlas_web_routes(
         return key, saved[1] if saved else None
 
     async def threads(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         dashboard = await user_dashboard(request, selected)
@@ -737,6 +779,7 @@ def register_atlas_web_routes(
         return web.json_response(result)
 
     async def chat(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         reject_oversized_chat(request)
@@ -944,6 +987,7 @@ def register_atlas_web_routes(
         return web.json_response(response)
 
     async def chat_stream(request: web.Request) -> web.StreamResponse | web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         reject_oversized_chat(request)
@@ -1460,6 +1504,7 @@ def register_atlas_web_routes(
         return web.json_response({"link": link}, status=201)
 
     async def message_feedback(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         payload = await body(request, selected)
