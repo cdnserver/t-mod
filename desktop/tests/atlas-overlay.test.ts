@@ -9,7 +9,7 @@ import {
   parseServerSentEventJson,
   ServerSentEventDecoder,
 } from "../src/shared/atlas-overlay-sse";
-import { normalizeRussianKeyboardInput, sanitizeOverlaySpeech } from "../src/renderer/overlay/overlaySpeech";
+import { IncrementalRussianSpeech, normalizeRussianKeyboardInput, sanitizeOverlaySpeech } from "../src/renderer/overlay/overlaySpeech";
 import { OverlayVoiceCapture } from "../src/renderer/overlay/voiceCapture";
 
 afterEach(() => {
@@ -49,6 +49,19 @@ describe("Atlas Overlay state contract", () => {
     expect(failed).toMatchObject({ stage: "error", error: "Нет связи", retryable: true });
     expect(reduceAtlasOverlayState(failed, { type: "hide" })).toEqual(initialAtlasOverlayState);
   });
+
+  it("shows the one-shot game initialization without leaking a previous answer", () => {
+    const initialized = reduceAtlasOverlayState(
+      { ...initialAtlasOverlayState, visible: true, answer: "старый ответ" },
+      { type: "initialized", name: "S. Goodman" },
+    );
+    expect(initialized).toMatchObject({
+      visible: true,
+      stage: "initializing",
+      transcript: "S. Goodman",
+      answer: "",
+    });
+  });
 });
 
 describe("Atlas Overlay hotkey contract", () => {
@@ -69,7 +82,12 @@ describe("Atlas Overlay hotkey contract", () => {
       speechVolume: -2,
       opacity: 0.1,
       scale: 4,
+      panelWidth: 4_000,
+      answerHeight: 4_000,
       fontScale: 4,
+      idleStyle: "orb",
+      theme: "emerald",
+      motion: "minimal",
       positionX: -3,
       positionY: 6,
       speechProvider: "system",
@@ -81,8 +99,13 @@ describe("Atlas Overlay hotkey contract", () => {
     expect(config.speechRate).toBe(1.45);
     expect(config.speechVolume).toBe(0);
     expect(config.opacity).toBe(0.68);
-    expect(config.scale).toBe(1.18);
-    expect(config.fontScale).toBe(1.28);
+    expect(config.scale).toBe(1.35);
+    expect(config.panelWidth).toBe(520);
+    expect(config.answerHeight).toBe(300);
+    expect(config.fontScale).toBe(1.4);
+    expect(config.idleStyle).toBe("orb");
+    expect(config.theme).toBe("emerald");
+    expect(config.motion).toBe("minimal");
     expect(config.calibrationMode).toBe(true);
     expect(config.positionX).toBe(0);
     expect(config.positionY).toBe(1);
@@ -130,6 +153,34 @@ describe("Atlas Overlay speech delivery", () => {
   it("recognizes a fast Russian request typed in the English keyboard layout", () => {
     expect(normalizeRussianKeyboardInput("ghbdtn rfr ltkf")).toBe("привет как дела");
     expect(normalizeRussianKeyboardInput("atlas help")).toBe("atlas help");
+  });
+
+  it("reports the real speech queue lifetime so the native overlay cannot collapse early", () => {
+    const utterances: SpeechSynthesisUtterance[] = [];
+    class FakeUtterance {
+      lang = "";
+      rate = 1;
+      pitch = 1;
+      volume = 1;
+      voice: SpeechSynthesisVoice | null = null;
+      onend: ((event: SpeechSynthesisEvent) => void) | null = null;
+      onerror: ((event: SpeechSynthesisErrorEvent) => void) | null = null;
+      constructor(public text: string) {}
+    }
+    vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
+    const synthesis = {
+      speak: vi.fn((utterance: SpeechSynthesisUtterance) => utterances.push(utterance)),
+      cancel: vi.fn(),
+      getVoices: () => [],
+    } as unknown as SpeechSynthesis;
+    const active: boolean[] = [];
+    const speech = new IncrementalRussianSpeech(synthesis);
+    speech.setActivityListener((value) => active.push(value));
+    speech.append("Это полный полевой ответ.");
+    expect(active.at(-1)).toBe(true);
+    expect(utterances).toHaveLength(1);
+    utterances[0].onend?.({} as SpeechSynthesisEvent);
+    expect(active.at(-1)).toBe(false);
   });
 });
 

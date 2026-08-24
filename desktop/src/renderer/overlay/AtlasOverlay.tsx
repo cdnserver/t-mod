@@ -51,6 +51,17 @@ function ThinkingField() {
   );
 }
 
+function InitializationField() {
+  return (
+    <div className="atlas-initialization-field" aria-hidden="true">
+      <i className="atlas-init-orbit atlas-init-orbit-a" />
+      <i className="atlas-init-orbit atlas-init-orbit-b" />
+      <span><AtlasMark /></span>
+      <b /><b /><b />
+    </div>
+  );
+}
+
 function captureError(error: unknown): string {
   if (error instanceof DOMException && error.name === "NotAllowedError") {
     return "Разрешите T-Mod доступ к микрофону.";
@@ -131,8 +142,9 @@ function manualTextFromEvent(event: Event): string {
 
 export function AtlasOverlay() {
   const api = window.tmodAtlasOverlay;
+  const previewParams = new URLSearchParams(location.search);
   const preview = (import.meta.env.DEV || location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname))
-    ? new URLSearchParams(location.search).get("preview")
+    ? previewParams.get("preview")
     : null;
   const previewEnabled = Boolean(preview && !api);
   const [state, dispatch] = useReducer(
@@ -160,6 +172,9 @@ export function AtlasOverlay() {
           { type: "idle" },
         );
       }
+      if (preview === "initializing") {
+        return reduceAtlasOverlayState(initial, { type: "initialized", name: "Иван" });
+      }
       const withQuestion = reduceAtlasOverlayState(initial, {
         type: "transcript",
         text: "Могу ли я проводить обыск без ордера?",
@@ -181,6 +196,12 @@ export function AtlasOverlay() {
         enabled: true,
         characterName: "S. Goodman",
         factionCode: "gov",
+        idleStyle: (["orb", "bar", "full"].includes(String(previewParams.get("idle")))
+          ? previewParams.get("idle")
+          : "bar") as AtlasOverlayConfig["idleStyle"],
+        theme: (["cosmos", "graphite", "emerald", "amber", "crimson"].includes(String(previewParams.get("theme")))
+          ? previewParams.get("theme")
+          : "cosmos") as AtlasOverlayConfig["theme"],
       }
     : { ...DEFAULT_ATLAS_OVERLAY_CONFIG });
   const capture = useMemo(() => new OverlayVoiceCapture(), []);
@@ -206,6 +227,7 @@ export function AtlasOverlay() {
     aiAudioGeneration.current += 1;
     aiAudioQueue.current = [];
     aiSpeechActive.current = false;
+    void api?.reportSpeech(false);
     const current = aiAudio.current;
     if (!current) return;
     current.audio.onended = null;
@@ -215,7 +237,7 @@ export function AtlasOverlay() {
     current.audio.load();
     URL.revokeObjectURL(current.url);
     aiAudio.current = undefined;
-  }, []);
+  }, [api]);
 
   const playNextAiAudio = useCallback(() => {
     if (aiSpeechActive.current) return;
@@ -233,7 +255,8 @@ export function AtlasOverlay() {
     aiSpeechActive.current = true;
     const advance = () => {
       aiSpeechActive.current = false;
-      playNextAiAudioRef.current();
+      if (aiAudioQueue.current.length) playNextAiAudioRef.current();
+      else void api?.reportSpeech(false);
     };
     if (!event.audio || !event.mimeType) {
       if (event.fallbackText) {
@@ -279,7 +302,7 @@ export function AtlasOverlay() {
     audio.onerror = () => settle(true);
     aiAudio.current = { audio, url };
     void audio.play().catch(() => settle(true));
-  }, [speech]);
+  }, [api, speech]);
 
   playNextAiAudioRef.current = playNextAiAudio;
 
@@ -294,10 +317,16 @@ export function AtlasOverlay() {
     // A request can now deliver a sentence at a time. The queue ensures that
     // sentence N never cuts off N-1, regardless of AI or explicit fallback.
     if (!aiSpeechActive.current && !aiAudioQueue.current.length) speech.cancel();
+    void api?.reportSpeech(true);
     aiAudioQueue.current.push(event);
     playNextAiAudioRef.current();
     return true;
-  }, [speech]);
+  }, [api, speech]);
+
+  useEffect(() => {
+    speech.setActivityListener((active) => void api?.reportSpeech(active));
+    return () => speech.setActivityListener(undefined);
+  }, [api, speech]);
 
   useEffect(() => {
     mounted.current = true;
@@ -336,7 +365,7 @@ export function AtlasOverlay() {
 
   const experienceConfig = config as OverlayExperienceConfig;
   const calibrationMode = experienceConfig.calibrationMode === true;
-  const fontScale = clamp(Number(experienceConfig.fontScale) || 1, 0.82, 1.35);
+  const fontScale = clamp(Number(experienceConfig.fontScale) || 1, 0.82, 1.4);
   const normalizedManualQuery = useMemo(
     () => normalizeRussianKeyboardInput(manualQuery),
     [manualQuery],
@@ -585,6 +614,8 @@ export function AtlasOverlay() {
     "--overlay-opacity": config.opacity,
     "--overlay-scale": config.scale,
     "--overlay-font-scale": fontScale,
+    "--overlay-panel-width": config.panelWidth + "px",
+    "--overlay-answer-height": config.answerHeight + "px",
     "--calibration-drag-x": dragOffset.x + "px",
     "--calibration-drag-y": dragOffset.y + "px",
   } as CSSProperties;
@@ -602,6 +633,9 @@ export function AtlasOverlay() {
         (dragOffset.x || dragOffset.y) && "is-dragging",
       ].filter(Boolean).join(" ")}
       data-stage={state.stage}
+      data-idle-style={config.idleStyle}
+      data-theme={config.theme}
+      data-motion={config.motion}
       data-horizontal={horizontal}
       data-vertical={vertical}
       style={style}
@@ -642,31 +676,8 @@ export function AtlasOverlay() {
             aria-label="Настройка Atlas Overlay"
           >
             <span className="atlas-overlay-calibration-title"><i /> Режим настройки</span>
-            <span className="atlas-overlay-calibration-hint">Перетащите панель</span>
-            <div className="atlas-overlay-calibration-actions">
-              <button
-                type="button"
-                aria-label="Уменьшить размер панели"
-                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale - .04, .72, 1.18) })}
-              >−</button>
-              <button
-                type="button"
-                aria-label="Увеличить размер панели"
-                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale + .04, .72, 1.18) })}
-              >+</button>
-              <button
-                type="button"
-                className="atlas-overlay-calibration-font"
-                aria-label="Уменьшить шрифт"
-                onClick={() => void saveCalibration({ fontScale: clamp(fontScale - .04, .82, 1.28) })}
-              >A−</button>
-              <button
-                type="button"
-                className="atlas-overlay-calibration-font"
-                aria-label="Увеличить шрифт"
-                onClick={() => void saveCalibration({ fontScale: clamp(fontScale + .04, .82, 1.28) })}
-              >A+</button>
-            </div>
+            <span className="atlas-overlay-calibration-hint">Стрелки — позиция · +/− — размер · [ ] — ширина · Enter — готово</span>
+            <div className="atlas-overlay-calibration-keys"><kbd>← ↑ ↓ →</kbd><kbd>+ −</kbd><kbd>[ ]</kbd><kbd>ENTER</kbd></div>
             {calibrationFeedback && <span className="atlas-overlay-calibration-feedback">{calibrationFeedback}</span>}
           </aside>
         )}
@@ -728,6 +739,17 @@ export function AtlasOverlay() {
             </form>
           ) : (
             <>
+          {state.stage === "initializing" && (
+            <div className="atlas-overlay-initializing">
+              <InitializationField />
+              <div>
+                <small>FIELD LINK ESTABLISHED</small>
+                <strong>{state.transcript || "Atlas"}, Atlas инициализирован</strong>
+                <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()} · система готова</span>
+              </div>
+            </div>
+          )}
+
           {state.stage === "listening" && (
             <div className="atlas-overlay-listening">
               <VoiceField active />
@@ -769,7 +791,8 @@ export function AtlasOverlay() {
 
           {state.stage === "idle" && (
             <div className="atlas-overlay-idle">
-              <span>{config.characterName || "Atlas готов к работе"}</span>
+              <i className="atlas-idle-signal"><b /></i>
+              <span><strong>ATLAS</strong><small>{config.characterName || "Готов к работе"}</small></span>
               <kbd>{config.hotkey.replaceAll("+", "  +  ")}</kbd>
             </div>
           )}

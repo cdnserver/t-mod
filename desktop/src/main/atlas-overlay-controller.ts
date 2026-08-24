@@ -48,11 +48,16 @@ const ATLAS_TTS_SYNTHESIZE_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/sy
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_AUDIO_DURATION_MS = 25_000;
 const MAX_SCREEN_CONTEXT_BYTES = 1_200_000;
-const OVERLAY_WIDTH = 640;
-const OVERLAY_HEIGHT = 480;
+const OVERLAY_WIDTH = 760;
+const OVERLAY_HEIGHT = 620;
 const GAME_SCREEN_SOURCE_PATTERN = /(?:grand theft auto(?:\s*v)?|gta\s*5|gta5|rage\s*(?:multiplayer|mp)|ragemp|majestic)/i;
 const FOREGROUND_PROBE_POLL_MS = 140;
 const FOREGROUND_PROBE_WATCHDOG_MS = 1_800;
+// Full-screen GTA can briefly report an empty/transition HWND while switching
+// render surfaces. Four probe frames are enough to absorb that transition
+// without leaving Atlas visible over a genuinely different application.
+const FOREGROUND_LOSS_GRACE_MS = 620;
+const INITIALIZATION_VISIBLE_MS = 4_200;
 const MANUAL_INPUT_TIMEOUT_MS = 35_000;
 const MAX_STREAMED_AI_PHRASES = 8;
 
@@ -278,6 +283,9 @@ export class AtlasOverlayController {
   private hideTimer?: ReturnType<typeof setTimeout>;
   private foregroundProbe?: ChildProcess;
   private foregroundProbeWatchdog?: ReturnType<typeof setTimeout>;
+  private foregroundLossTimer?: ReturnType<typeof setTimeout>;
+  private initializationTimer?: ReturnType<typeof setTimeout>;
+  private initializedGameProcessId?: number;
   private activeGameWindow?: AtlasOverlayActiveGameWindow;
   private overlayInputEnabled = false;
   private overlayFocusable = false;
@@ -287,6 +295,8 @@ export class AtlasOverlayController {
   private speechGeneration = 0;
   private speechSession?: AtlasOverlaySpeechSession;
   private speechQueue: Promise<void> = Promise.resolve();
+  private speechPlaybackActive = false;
+  private settleAfterSpeech = false;
 
   constructor(options: AtlasOverlayControllerOptions) {
     this.options = options;
@@ -308,7 +318,7 @@ export class AtlasOverlayController {
     AtlasOverlayApi,
     "getConfig" | "getCatalog" | "saveConfig" | "moveBy" | "getVoices" | "previewVoice" |
     "submitAudio" | "submitText" |
-    "cancel" | "hide" | "openAtlas"
+    "cancel" | "hide" | "openAtlas" | "reportSpeech"
   > {
     return {
       getConfig: async () => this.getConfig(),
@@ -322,6 +332,7 @@ export class AtlasOverlayController {
       cancel: async () => this.cancel(),
       hide: async () => this.hide(),
       openAtlas: async () => this.openAtlas(),
+      reportSpeech: async (active) => this.reportSpeech(active),
     };
   }
 
@@ -577,6 +588,8 @@ export class AtlasOverlayController {
   }
 
   cancel(): void {
+    if (this.initializationTimer) clearTimeout(this.initializationTimer);
+    this.initializationTimer = undefined;
     this.pttStartToken += 1;
     this.cancelSpeechDelivery();
     this.activeRequest?.abort();
@@ -585,6 +598,8 @@ export class AtlasOverlayController {
     this.screenContext = undefined;
     this.pendingPttUp = false;
     this.responseVisibleUntil = 0;
+    this.speechPlaybackActive = false;
+    this.settleAfterSpeech = false;
     this.endManualInput();
     this.emitPtt("cancel");
     this.settleOverlay();
@@ -594,6 +609,8 @@ export class AtlasOverlayController {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = undefined;
     this.responseVisibleUntil = 0;
+    this.speechPlaybackActive = false;
+    this.settleAfterSpeech = false;
     this.cancelSpeechDelivery();
     this.endManualInput();
     this.updateOverlayInputMode(false);
@@ -607,12 +624,32 @@ export class AtlasOverlayController {
     await shell.openExternal("https://atlas.tvr.lat/");
   }
 
+  reportSpeech(active: boolean): void {
+    const wasActive = this.speechPlaybackActive;
+    this.speechPlaybackActive = active === true;
+    if (this.speechPlaybackActive) {
+      this.settleAfterSpeech = false;
+      this.clearHideTimer();
+      return;
+    }
+    if (!wasActive || this.responseVisibleUntil <= 0) return;
+    const visibleUntil = this.responseVisibleUntil;
+    if (!this.settleAfterSpeech && visibleUntil > Date.now()) {
+      this.scheduleHideUntil(visibleUntil);
+      return;
+    }
+    this.settleAfterSpeech = false;
+    this.scheduleHide(1_800);
+  }
+
   dispose(): void {
     this.cancel();
     this.unbindPtt();
     this.stopGameDetection();
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.manualInputTimer) clearTimeout(this.manualInputTimer);
+    if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
+    if (this.initializationTimer) clearTimeout(this.initializationTimer);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = null;
   }
@@ -748,11 +785,9 @@ export class AtlasOverlayController {
   }
 
   /**
-   * Calibration accepts pointer events but deliberately remains non-activating
-   * so GTA stays the foreground window.  Text input is a short, explicit
-   * exception: it is opened only from an already validated GTA focus and is
-   * separately checked against this exact BrowserWindow by the foreground
-   * probe.  Any other foreground window still hides the overlay immediately.
+   * Calibration remains click-through and is driven by the native keyboard
+   * helper, so GTA never has to release its cursor. Text input is the only
+   * short, explicit focus exception and is verified against this exact window.
    */
   private updateOverlayInputMode(interactiveOverride?: boolean): void {
     const overlayWindow = this.window;
@@ -763,7 +798,7 @@ export class AtlasOverlayController {
     }
     const manualInputActive = this.isManualInputActive();
     const interactive = interactiveOverride ?? Boolean(
-      (this.config.calibrationMode || manualInputActive) &&
+      manualInputActive &&
       this.activeGameWindow &&
       overlayWindow.isVisible(),
     );
@@ -1294,6 +1329,10 @@ export class AtlasOverlayController {
     this.responseVisibleUntil = until;
     this.hideTimer = setTimeout(() => {
       this.hideTimer = undefined;
+      if (this.speechPlaybackActive) {
+        this.settleAfterSpeech = true;
+        return;
+      }
       this.responseVisibleUntil = 0;
       this.cancelSpeechDelivery();
       this.settleOverlay();
@@ -1385,6 +1424,9 @@ export class AtlasOverlayController {
   private stopGameDetection(): void {
     if (this.foregroundProbeWatchdog) clearTimeout(this.foregroundProbeWatchdog);
     this.foregroundProbeWatchdog = undefined;
+    if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
+    this.foregroundLossTimer = undefined;
+    this.initializedGameProcessId = undefined;
     const helper = this.foregroundProbe;
     this.foregroundProbe = undefined;
     if (helper && !helper.killed) helper.kill();
@@ -1415,21 +1457,29 @@ export class AtlasOverlayController {
       // fail-closed branch below.
       return;
     }
-    const changed = !this.sameGameWindow(this.activeGameWindow, next);
-    this.setActiveGameWindow(next);
     if (!next) {
-      // Focus loss, another monitor's app, minimization and game exit all land
-      // here.  Do not wait for a response timeout: stop delivery (including
-      // pending audio) and hide right away.
-      this.cancel();
+      if (!this.foregroundLossTimer) {
+        this.foregroundLossTimer = setTimeout(() => {
+          this.foregroundLossTimer = undefined;
+          this.setActiveGameWindow(undefined);
+          this.cancel();
+        }, FOREGROUND_LOSS_GRACE_MS);
+      }
       return;
     }
+    if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
+    this.foregroundLossTimer = undefined;
+    const changed = !this.sameGameWindow(this.activeGameWindow, next);
+    this.setActiveGameWindow(next);
     if (!changed) return;
     this.positionWindow();
-    if (!this.shouldKeepIdleVisible() && !this.shouldKeepCalibrationVisible()) return;
+    const initialize = this.config.initializationAnimation &&
+      this.initializedGameProcessId !== next.processId;
+    if (!initialize && !this.shouldKeepIdleVisible() && !this.shouldKeepCalibrationVisible()) return;
     void this.ensureWindow().then(() => {
       if (!this.sameGameWindow(this.activeGameWindow, next)) return;
-      if (this.shouldKeepIdleVisible()) this.showIdle();
+      if (initialize) this.showInitialization(next.processId);
+      else if (this.shouldKeepIdleVisible()) this.showIdle();
       else if (this.shouldKeepCalibrationVisible()) this.show();
     }).catch((error) => {
       this.options.onLog?.("Atlas overlay window unavailable after foreground change", error);
@@ -1451,6 +1501,21 @@ export class AtlasOverlayController {
   private setActiveGameWindow(next: AtlasOverlayActiveGameWindow | undefined): void {
     this.activeGameWindow = next;
     this.updateOverlayInputMode();
+  }
+
+  private showInitialization(processId: number): void {
+    this.initializedGameProcessId = processId;
+    if (this.initializationTimer) clearTimeout(this.initializationTimer);
+    this.show();
+    this.emit({
+      type: "initialized",
+      name: this.config.characterName || "Atlas",
+    });
+    this.initializationTimer = setTimeout(() => {
+      this.initializationTimer = undefined;
+      if (this.activeRequestId || this.speechPlaybackActive) return;
+      this.settleOverlay();
+    }, INITIALIZATION_VISIBLE_MS);
   }
 
   private sameGameWindow(
@@ -1579,6 +1644,31 @@ export class AtlasOverlayController {
       });
     } else if (line === "up") {
       this.releasePttWhenReady();
+    } else if (line === "edit") {
+      if (!this.activeGameWindow) return;
+      this.cancel();
+      void this.saveConfig({ calibrationMode: true }).catch((error) => {
+        this.options.onLog?.("Atlas overlay keyboard calibration unavailable", error);
+      });
+    } else if (line === "edit-done") {
+      void this.saveConfig({ calibrationMode: false }).catch((error) => {
+        this.options.onLog?.("Atlas overlay keyboard calibration could not close", error);
+      });
+    } else if (line.startsWith("move:")) {
+      const movement: Record<string, [number, number]> = {
+        "move:left": [-28, 0],
+        "move:right": [28, 0],
+        "move:up": [0, -24],
+        "move:down": [0, 24],
+      };
+      const delta = movement[line];
+      if (delta) void this.moveBy(...delta).catch((error) => this.options.onLog?.("Atlas overlay keyboard move failed", error));
+    } else if (line === "scale:up" || line === "scale:down") {
+      const delta = line === "scale:up" ? .05 : -.05;
+      void this.saveConfig({ scale: this.config.scale + delta }).catch((error) => this.options.onLog?.("Atlas overlay keyboard resize failed", error));
+    } else if (line === "width:up" || line === "width:down") {
+      const delta = line === "width:up" ? 24 : -24;
+      void this.saveConfig({ panelWidth: this.config.panelWidth + delta }).catch((error) => this.options.onLog?.("Atlas overlay keyboard width failed", error));
     } else if (line === "cancel") {
       this.cancel();
     } else if (line.startsWith("error:")) {

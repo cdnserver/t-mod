@@ -40,6 +40,12 @@ const { autoUpdater } = electronUpdater;
 // depend on a first click in Chromium. Remote service views remain muted by
 // their own permission boundary and cannot use this switch to request media.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+// GTA keeps the overlay renderer permanently unfocused. Chromium's default
+// occlusion policy may otherwise reduce CSS/WebAudio animation cadence even
+// though the native window is visible over the game.
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
 
 // electron-vite injects its own `__dirname` shim into the ESM bundle.
 // A distinct name avoids a duplicate top-level declaration in packaged builds.
@@ -782,6 +788,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("atlas-overlay:open-atlas", (event) => {
     if (trustedOverlayOrShell(event)) return atlasOverlay?.openAtlas();
+  });
+  ipcMain.handle("atlas-overlay:report-speech", (event, active: unknown) => {
+    if (trustedOverlay(event)) atlasOverlay?.reportSpeech(active === true);
   });
 }
 

@@ -54,6 +54,7 @@ const api: AtlasOverlayApi = {
   cancel: () => ipcRenderer.invoke("atlas-overlay:cancel"),
   hide: () => ipcRenderer.invoke("atlas-overlay:hide"),
   openAtlas: () => ipcRenderer.invoke("atlas-overlay:open-atlas"),
+  reportSpeech: (active) => ipcRenderer.invoke("atlas-overlay:report-speech", active === true),
   onEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: AtlasOverlayEvent) =>
       listener(payload);

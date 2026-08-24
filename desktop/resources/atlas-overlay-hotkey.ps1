@@ -61,8 +61,19 @@ public static class TModAtlasHotkeyState {
     # surface. It deliberately works as a second mode of the same binding, so
     # it never steals a normal GTA key or requires a second global shortcut.
     $manualPromptSupported = -not $keys.Contains(0x20)
+    $editModeSupported = -not $keys.Contains(0x09)
     $pressed = $false
     $manualPrompt = $false
+    $editChord = $false
+    $editMode = $false
+    $editKeys = @{
+        "move:left" = 0x25; "move:up" = 0x26; "move:right" = 0x27; "move:down" = 0x28
+        "scale:up" = 0x6B; "scale:down" = 0x6D
+        "width:up" = 0xDD; "width:down" = 0xDB
+    }
+    $editPressed = @{}
+    foreach ($command in $editKeys.Keys) { $editPressed[$command] = $false }
+    $finishPressed = $false
     while ($true) {
         $allDown = $true
         foreach ($virtualKey in $keys) {
@@ -72,7 +83,50 @@ public static class TModAtlasHotkeyState {
             }
         }
         $spaceDown = $manualPromptSupported -and (([TModAtlasHotkeyState]::GetAsyncKeyState(0x20) -band 0x8000) -ne 0)
-        if ($allDown -and $spaceDown -and -not $manualPrompt) {
+        $tabDown = $editModeSupported -and (([TModAtlasHotkeyState]::GetAsyncKeyState(0x09) -band 0x8000) -ne 0)
+        if ($editMode) {
+            foreach ($command in $editKeys.Keys) {
+                $down = ([TModAtlasHotkeyState]::GetAsyncKeyState([int]$editKeys[$command]) -band 0x8000) -ne 0
+                if ($down -and -not $editPressed[$command]) {
+                    $editPressed[$command] = $true
+                    [Console]::Out.WriteLine($command)
+                    [Console]::Out.Flush()
+                } elseif (-not $down) {
+                    $editPressed[$command] = $false
+                }
+            }
+            # OEM +/- are accepted in addition to the numeric keypad.
+            $oemPlus = ([TModAtlasHotkeyState]::GetAsyncKeyState(0xBB) -band 0x8000) -ne 0
+            $oemMinus = ([TModAtlasHotkeyState]::GetAsyncKeyState(0xBD) -band 0x8000) -ne 0
+            if ($oemPlus -and -not $editPressed["oem-plus"]) {
+                $editPressed["oem-plus"] = $true
+                [Console]::Out.WriteLine("scale:up")
+                [Console]::Out.Flush()
+            } elseif (-not $oemPlus) { $editPressed["oem-plus"] = $false }
+            if ($oemMinus -and -not $editPressed["oem-minus"]) {
+                $editPressed["oem-minus"] = $true
+                [Console]::Out.WriteLine("scale:down")
+                [Console]::Out.Flush()
+            } elseif (-not $oemMinus) { $editPressed["oem-minus"] = $false }
+
+            $finishDown = (([TModAtlasHotkeyState]::GetAsyncKeyState(0x0D) -band 0x8000) -ne 0) -or (([TModAtlasHotkeyState]::GetAsyncKeyState(0x1B) -band 0x8000) -ne 0)
+            if ($finishDown -and -not $finishPressed) {
+                $finishPressed = $true
+                $editMode = $false
+                [Console]::Out.WriteLine("edit-done")
+                [Console]::Out.Flush()
+            } elseif (-not $finishDown) { $finishPressed = $false }
+        } elseif ($allDown -and $tabDown -and -not $editChord) {
+            $editChord = $true
+            if ($pressed) {
+                $pressed = $false
+                [Console]::Out.WriteLine("cancel")
+                [Console]::Out.Flush()
+            }
+            $editMode = $true
+            [Console]::Out.WriteLine("edit")
+            [Console]::Out.Flush()
+        } elseif ($allDown -and $spaceDown -and -not $manualPrompt) {
             $manualPrompt = $true
             if ($pressed) {
                 $pressed = $false
@@ -91,6 +145,8 @@ public static class TModAtlasHotkeyState {
             [Console]::Out.Flush()
         } elseif (-not $allDown -and $manualPrompt) {
             $manualPrompt = $false
+        } elseif (-not $allDown -and $editChord) {
+            $editChord = $false
         }
         Start-Sleep -Milliseconds $PollMilliseconds
     }

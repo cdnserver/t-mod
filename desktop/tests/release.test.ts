@@ -128,6 +128,19 @@ describe("desktop release contract", () => {
     expect(controller).toContain("this.clearHideTimer();");
   });
 
+  it("ships cursor-free Atlas calibration and background animation protection", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const helper = readFileSync(resolve(root, "resources/atlas-overlay-hotkey.ps1"), "utf8");
+    const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
+    expect(main).toContain('appendSwitch("disable-renderer-backgrounding")');
+    expect(main).toContain('appendSwitch("disable-background-timer-throttling")');
+    expect(helper).toContain('[Console]::Out.WriteLine("edit")');
+    expect(helper).toContain('"move:left" = 0x25');
+    expect(helper).toContain('"width:up" = 0xDD');
+    expect(controller).toContain('line === "edit-done"');
+    expect(controller).toContain("reportSpeech(active: boolean)");
+  });
+
   it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {
     const overlay = readFileSync(resolve(root, "src/renderer/overlay.html"), "utf8");
     expect(overlay).toContain("media-src blob:");
