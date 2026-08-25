@@ -139,6 +139,10 @@ describe("desktop release contract", () => {
     expect(helper).toContain('"width:up" = 0xDD');
     expect(controller).toContain('line === "edit-done"');
     expect(controller).toContain("reportSpeech(active: boolean)");
+    expect(controller).toContain("scheduleForegroundProbeRestart");
+    expect(controller).toContain("healOverlayVisibility");
+    expect(controller).toContain("scheduleOverlayWindowRecovery");
+    expect(controller).toContain("POST_SPEECH_HOLD_MS");
   });
 
   it("shows Atlas initialization once per app launch and avoids expensive overlay blur", () => {

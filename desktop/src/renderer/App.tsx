@@ -703,7 +703,7 @@ export function App() {
     const api = overlayApi();
     if (!api || overlayBusy) return;
     const previous = overlayConfig;
-    setOverlayConfig(normalizeAtlasOverlayConfig({ ...overlayConfig, ...patch }));
+    setOverlayConfig((current) => normalizeAtlasOverlayConfig({ ...current, ...patch }));
     setOverlayBusy(true);
     setOverlayError(undefined);
     try {
@@ -716,6 +716,10 @@ export function App() {
     } finally {
       setOverlayBusy(false);
     }
+  };
+
+  const previewOverlay = (patch: Partial<AtlasOverlayConfig>) => {
+    setOverlayConfig((current) => normalizeAtlasOverlayConfig({ ...current, ...patch }));
   };
 
   const openAtlasSettings = () => {
@@ -843,6 +847,7 @@ export function App() {
             overlayBusy={overlayBusy}
             overlayError={overlayError}
             onOverlayChange={saveOverlay}
+            onOverlayPreview={previewOverlay}
             onClose={() => setAtlasSettingsOpen(false)}
             focusRequest={atlasSettingsFocusRequest}
           />
@@ -1149,6 +1154,7 @@ function AtlasSettingsPage({
   overlayBusy,
   overlayError,
   onOverlayChange,
+  onOverlayPreview,
   focusRequest,
 }: {
   onClose: () => void;
@@ -1158,6 +1164,7 @@ function AtlasSettingsPage({
   overlayBusy: boolean;
   overlayError?: string;
   onOverlayChange: (patch: Partial<AtlasOverlayConfig>) => Promise<void>;
+  onOverlayPreview: (patch: Partial<AtlasOverlayConfig>) => void;
   focusRequest: number;
 }) {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -1434,7 +1441,7 @@ function AtlasSettingsPage({
                 {[.55, .78, 1].map((volume) => <button key={volume} className={overlayConfig.speechVolume === volume ? "active" : ""} onClick={() => void onOverlayChange({ speechVolume: volume })}>{Math.round(volume * 100)}%</button>)}
               </div>
             </div>
-            <div className="overlay-range-row"><span><b>Системные сигналы</b><small>{Math.round(overlayConfig.cueVolume * 100)}%</small></span><input type="range" min="0" max="1" step="0.02" value={overlayConfig.cueVolume} onChange={(event) => void onOverlayChange({ cueVolume: Number(event.target.value) })}/></div>
+            <OverlayRange label="Системные сигналы" value={overlayConfig.cueVolume} min={0} max={1} step={.02} display={`${Math.round(overlayConfig.cueVolume * 100)}%`} onPreview={(value) => onOverlayPreview({ cueVolume: value })} onCommit={(value) => onOverlayChange({ cueVolume: value })}/>
             <div className="overlay-setting-block split">
               <div><span className="overlay-setting-title">Положение</span><small>На активном мониторе</small></div>
               <div className="overlay-preset-grid compact">
@@ -1477,11 +1484,11 @@ function AtlasSettingsPage({
                   {([['cinematic', 'Кино'], ['balanced', 'Мягко'], ['minimal', 'Минимум']] as const).map(([value, label]) => <button key={value} className={overlayConfig.motion === value ? "active" : ""} onClick={() => void onOverlayChange({ motion: value })}>{label}</button>)}
                 </div>
               </div>
-              <div className="overlay-range-row"><span><b>Размер</b><small>{Math.round(overlayConfig.scale * 100)}%</small></span><input type="range" min="0.78" max="1.3" step="0.01" value={overlayConfig.scale} onChange={(event) => void onOverlayChange({ scale: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Ширина панели</b><small>{overlayConfig.panelWidth}px</small></span><input type="range" min="380" max="620" step="10" value={overlayConfig.panelWidth} onChange={(event) => void onOverlayChange({ panelWidth: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Высота ответа</b><small>{overlayConfig.answerHeight}px</small></span><input type="range" min="96" max="300" step="12" value={overlayConfig.answerHeight} onChange={(event) => void onOverlayChange({ answerHeight: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Размер текста</b><small>{Math.round(overlayConfig.fontScale * 100)}%</small></span><input type="range" min="0.9" max="1.6" step="0.01" value={overlayConfig.fontScale} onChange={(event) => void onOverlayChange({ fontScale: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Прозрачность</b><small>{Math.round(overlayConfig.opacity * 100)}%</small></span><input type="range" min="0.68" max="1" step="0.01" value={overlayConfig.opacity} onChange={(event) => void onOverlayChange({ opacity: Number(event.target.value) })}/></div>
+              <OverlayRange label="Размер" value={overlayConfig.scale} min={.78} max={1.3} step={.01} display={`${Math.round(overlayConfig.scale * 100)}%`} onPreview={(value) => onOverlayPreview({ scale: value })} onCommit={(value) => onOverlayChange({ scale: value })}/>
+              <OverlayRange label="Ширина панели" value={overlayConfig.panelWidth} min={380} max={620} step={10} display={`${overlayConfig.panelWidth}px`} onPreview={(value) => onOverlayPreview({ panelWidth: value })} onCommit={(value) => onOverlayChange({ panelWidth: value })}/>
+              <OverlayRange label="Высота ответа" value={overlayConfig.answerHeight} min={96} max={300} step={4} display={`${overlayConfig.answerHeight}px`} onPreview={(value) => onOverlayPreview({ answerHeight: value })} onCommit={(value) => onOverlayChange({ answerHeight: value })}/>
+              <OverlayRange label="Размер текста" value={overlayConfig.fontScale} min={.9} max={1.6} step={.01} display={`${Math.round(overlayConfig.fontScale * 100)}%`} onPreview={(value) => onOverlayPreview({ fontScale: value })} onCommit={(value) => onOverlayChange({ fontScale: value })}/>
+              <OverlayRange label="Прозрачность" value={overlayConfig.opacity} min={.68} max={1} step={.01} display={`${Math.round(overlayConfig.opacity * 100)}%`} onPreview={(value) => onOverlayPreview({ opacity: value })} onCommit={(value) => onOverlayChange({ opacity: value })}/>
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
             <SettingToggle label="Настройка прямо в GTA" hint={`${overlayConfig.hotkey.replaceAll("Control", "CTRL")} + Tab — режим; стрелки — позиция; +/− — размер; [ ] — ширина; Enter — готово`} active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
@@ -1512,6 +1519,70 @@ function AtlasSettingsPage({
 
 function SettingToggle({ label, hint, active, onClick }: { label: string; hint: string; active: boolean; onClick: () => void }) {
   return <button className="setting-row" onClick={onClick}><span><strong>{label}</strong><small>{hint}</small></span><i className={`toggle ${active ? "active" : ""}`}><b/></i></button>;
+}
+
+function OverlayRange({
+  label,
+  value,
+  min,
+  max,
+  step,
+  display,
+  onPreview,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  const dragging = useRef(false);
+  const committed = useRef(value);
+
+  useEffect(() => {
+    if (dragging.current) return;
+    draftRef.current = value;
+    committed.current = value;
+    setDraft(value);
+  }, [value]);
+
+  const update = (next: number) => {
+    const safe = Math.max(min, Math.min(max, next));
+    draftRef.current = safe;
+    setDraft(safe);
+    onPreview(safe);
+  };
+  const commit = () => {
+    const next = draftRef.current;
+    if (Math.abs(next - committed.current) < Number.EPSILON) return;
+    committed.current = next;
+    void onCommit(next);
+  };
+  const progress = ((draft - min) / Math.max(Number.EPSILON, max - min)) * 100;
+
+  return <label className="overlay-range-row">
+    <span><b>{label}</b><small>{display}</small></span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      style={{ "--range-progress": `${progress}%` } as CSSProperties}
+      onPointerDown={() => { dragging.current = true; }}
+      onChange={(event) => update(Number(event.currentTarget.value))}
+      onPointerUp={() => { dragging.current = false; commit(); }}
+      onPointerCancel={() => { dragging.current = false; commit(); }}
+      onKeyUp={commit}
+      onBlur={() => { dragging.current = false; commit(); }}
+    />
+  </label>;
 }
 
 function OverlayPlacementPreview({
