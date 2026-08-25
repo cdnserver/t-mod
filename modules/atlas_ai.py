@@ -1460,6 +1460,12 @@ _ATLAS_DEEP_RE = re.compile(
     r"сравн|все\s+риски|судебн(?:ая|ой)\s+практик)\w*",
     re.IGNORECASE,
 )
+_ATLAS_SOCIAL_RE = re.compile(
+    r"^\s*(?:atlas[\s,.:—-]*)?(?:привет(?:ик)?|здравствуй(?:те)?|"
+    r"доброе\s+(?:утро|день)|добрый\s+(?:день|вечер)|как\s+дела|"
+    r"спасибо|благодарю|до\s+свидания|пока)(?:[\s!?.🙂👋]*)$",
+    re.IGNORECASE,
+)
 
 
 def _last_dialog_message(
@@ -1519,7 +1525,9 @@ def _atlas_task_profile(
         and bool(_ATLAS_FOLLOWUP_RE.search(clean))
     )
 
-    if _ATLAS_EXACT_LOOKUP_RE.search(clean):
+    if _ATLAS_SOCIAL_RE.fullmatch(clean):
+        intent = "social"
+    elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
     elif _ATLAS_SUMMARY_RE.search(routed_text):
         intent = "summary"
@@ -1538,7 +1546,7 @@ def _atlas_task_profile(
 
     if mode == "aristotle" or _ATLAS_DEEP_RE.search(clean) or len(clean) > 900:
         depth = "deep"
-    elif intent in {"exact_lookup", "summary"} or (
+    elif intent in {"social", "exact_lookup", "summary"} or (
         len(clean) < 120 and re.match(r"^(?:что|кто|где|когда|можно\s+ли)\b", lowered)
     ):
         depth = "quick"
@@ -1552,6 +1560,10 @@ def _atlas_task_profile(
         retrieval_query = clean
 
     briefs = {
+        "social": (
+            "Это обычное человеческое обращение. Ответь естественно одной короткой фразой; не "
+            "обсуждай интерфейс, режим, источники, поиск, персонажа или внутреннее устройство Atlas."
+        ),
         "exact_lookup": (
             "Пользователь просит точную норму. Если она есть в материалах, приведи запрошенный "
             "текст без замены пересказом; затем добавь только действительно нужное пояснение."
@@ -2295,7 +2307,10 @@ async def _prepare_atlas_answer(
         on_progress,
         {"phase": "retrieval", "status": "running", "latency_mode": selected_latency},
     )
-    sources = await atlas_search(
+    overlay_legal = task_profile.intent in {
+        "exact_lookup", "legal_analysis", "procedural_advice"
+    }
+    sources = [] if task_profile.intent == "social" else await atlas_search(
         organization_id,
         task_profile.retrieval_query,
         server_code=server_code,
@@ -2307,7 +2322,10 @@ async def _prepare_atlas_answer(
             if mode == "aristotle" or intelligence_brief is not None
             else 9
         ),
-        expanded=selected_latency != "overlay",
+        # A legal field question needs lexical aliases and adjacent fragments
+        # even in the low-latency path. Everyday chat stays on the cheapest
+        # route and social greetings deliberately skip retrieval altogether.
+        expanded=selected_latency != "overlay" or overlay_legal,
         query_variants=research_queries,
     )
     sources = _atlas_merge_source_fragments(sources)
@@ -2339,7 +2357,9 @@ async def _prepare_atlas_answer(
             f"{item['text']}"
         )
     context = "\n\n".join(context_parts) or (
-        "Подходящих подтверждённых источников для этого запроса не найдено."
+        "Для обычного приветствия внешние источники не требуются."
+        if task_profile.intent == "social"
+        else "Подходящих подтверждённых источников для этого запроса не найдено."
     )
     agent_reports: list[dict[str, str]] = []
     if research_plan:
@@ -2395,6 +2415,10 @@ async def _prepare_atlas_answer(
         ),
     }[mode]
     overlay_instruction = (
+        " Обычное общение: ответь дружелюбно одной короткой фразой. Не упоминай полевой интерфейс, "
+        "настройки, экран, источники, режим работы или правовую базу, если об этом не спрашивали."
+        if selected_latency == "overlay" and task_profile.intent == "social"
+        else
         " Полевой интерфейс: цель — 18–36 слов и максимум два коротких шага; этот лимит имеет "
         "приоритет над общим редакторским контрактом выше. "
         "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
@@ -2409,7 +2433,7 @@ async def _prepare_atlas_answer(
     )
     clean_screen_context = (
         str(screen_context or "").strip()
-        if selected_latency == "overlay"
+        if selected_latency == "overlay" and task_profile.intent != "social"
         else ""
     )
     if clean_screen_context:
@@ -2465,6 +2489,9 @@ async def _prepare_atlas_answer(
                 "Отвечай сразу по существу: не повторяй обращение, имя, должность или приветствие в "
                 "каждом сообщении, если пользователь не попросил составить официальный текст. "
                 "Учитывай уточнения из текущего диалога и не проси заново контекст, который уже дан. "
+                "Не говори об интерфейсе Atlas, кадре экрана, настройках или режиме работы, если это "
+                "не является предметом вопроса пользователя. На приветствие отвечай как собеседник, "
+                "а не как справка о продукте. "
                 "Если новые обстоятельства меняют прежний вывод, прямо отзови или сузь устаревшую часть, "
                 "сохрани остальное и ответь только в запрошенном объёме. При разборе ситуации сначала проверь "
                 "основание, затем процедуру, исключения и доступные действия; неизвестные обстоятельства не "

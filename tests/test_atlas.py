@@ -888,6 +888,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.intent, "legal_analysis")
         self.assertEqual(profile.depth, "quick")
 
+    def test_plain_greeting_stays_social_instead_of_describing_the_interface(self) -> None:
+        profile = _atlas_task_profile("Привет!", mode="balanced")
+
+        self.assertEqual(profile.intent, "social")
+        self.assertEqual(profile.depth, "quick")
+        self.assertIn("обычное человеческое обращение", profile.response_brief)
+
     def test_contextual_drafting_reuses_the_described_situation(self) -> None:
         profile = _atlas_task_profile(
             "На основе уже описанной ситуации составь жалобу",
@@ -1924,7 +1931,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         planner.assert_not_awaited()
         aristotle.assert_not_awaited()
         self.assertEqual(search.await_args.kwargs["limit"], 5)
-        self.assertFalse(search.await_args.kwargs["expanded"])
+        self.assertTrue(search.await_args.kwargs["expanded"])
         payload = request.await_args.kwargs["payload"]
         self.assertLessEqual(payload["max_tokens"], 180)
         self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
@@ -1933,6 +1940,37 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["latency_mode"], "overlay")
         self.assertTrue(result["screen_context_used"])
         self.assertEqual(result["depth"], "quick")
+
+    async def test_overlay_greeting_skips_retrieval_and_screen_analysis(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock()
+        ) as search, patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"choices": [{"message": {"content": "Привет! Что на уме?"}}]}),
+        ) as request:
+            result = await atlas_answer(
+                77,
+                "Привет!",
+                latency_mode="overlay",
+                screen_context="data:image/png;base64,dmFsaWRhdGVk",
+            )
+
+        search.assert_not_awaited()
+        system = request.await_args.kwargs["payload"]["messages"][0]["content"]
+        self.assertIn("Обычное общение", system)
+        self.assertFalse(result["screen_context_used"])
+        self.assertEqual(result["intent"], "social")
 
     def test_overlay_answer_hard_bound_prefers_complete_sentence(self) -> None:
         long_answer = (
