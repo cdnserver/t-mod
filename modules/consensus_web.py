@@ -1042,7 +1042,7 @@ def _apply_security_headers(
     request_path: str = "",
 ) -> None:
     path = str(request_path or "")
-    if path.startswith("/assets/"):
+    if path.startswith(("/assets/", "/sgl/assets/")):
         if path.endswith((".woff2", ".mp3")):
             response.headers["Cache-Control"] = (
                 "public, max-age=2592000, immutable"
