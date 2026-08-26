@@ -78,7 +78,10 @@ def _payload(source_path: Path) -> str:
 
 
 def _launcher(title: str, marker: str, payload: str, *, remote: bool) -> str:
-    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    # Windows PowerShell 5.1 treats UTF-8 without a BOM as the active ANSI
+    # code page. The embedded script contains Cyrillic and box-drawing glyphs,
+    # so the BOM is required for the extracted portable payload to parse.
+    encoded = base64.b64encode(payload.encode("utf-8-sig")).decode("ascii")
     lines = [
         "@echo off",
         "setlocal EnableExtensions DisableDelayedExpansion",

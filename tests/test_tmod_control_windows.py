@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def read_bundle_payload(path: Path, marker: str) -> str:
     bundle = path.read_text(encoding="utf-8")
     encoded = "".join(bundle.rsplit(marker, 1)[1].split())
-    return base64.b64decode(encoded).decode("utf-8")
+    payload = base64.b64decode(encoded)
+    if not payload.startswith(b"\xef\xbb\xbf"):
+        raise AssertionError("portable PowerShell payload must have a UTF-8 BOM")
+    return payload.decode("utf-8-sig")
 
 
 class TModControlWindowsTests(unittest.TestCase):
