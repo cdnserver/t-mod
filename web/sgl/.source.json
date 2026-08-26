@@ -1,5 +1,12 @@
 {
   "repository": "https://github.com/cdnserver/t-mod-sgl-web.git",
-  "commit": "3b7713ee30f481df85ab4637d6a19098c7c4f5e5",
-  "imported_at": "2026-08-16T17:52:15.205096+00:00"
+  "commit": "23f1dcfb30056c4573fb280c2062ca73ad378eb2",
+  "imported_at": "2026-08-25T18:24:34+00:00",
+  "integration": "reviewed-selective",
+  "preserved_product_files": [
+    "app.js",
+    "admin.css",
+    "admin-v2.css"
+  ],
+  "note": "Public UI, local fonts, accessibility and motion updates were integrated onto the current SGL Case OS product surface."
 }

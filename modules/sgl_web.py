@@ -303,7 +303,7 @@ def register_sgl_web_routes(
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
         if name not in {
-            "app.js", "app-ui.css", "app-ui.js", "admin.css", "admin-v2.css", "style.css", "site.css",
+            "app.js", "app-ui.css", "app-ui.js", "admin.css", "admin-v2.css", "style.css", "site.css", "fonts.css",
             "site.js", "favicon.svg", "logo.webp", "logo-vector.svg",
         }:
             raise web.HTTPNotFound()
@@ -313,6 +313,20 @@ def register_sgl_web_routes(
         elif name == "logo-vector.svg":
             response.content_type = "image/svg+xml"
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
+        return response
+
+    async def font_asset(request: web.Request) -> web.FileResponse:
+        name = str(request.match_info.get("name") or "")
+        # Font requests get their own flat, allow-listed directory route. This
+        # supports self-hosted typography without exposing an arbitrary file server.
+        if not name.endswith(".woff2") or name != Path(name).name:
+            raise web.HTTPNotFound()
+        path = asset_dir / "fonts" / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        response = web.FileResponse(path)
+        response.content_type = "font/woff2"
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
     async def workspace_access(
@@ -1761,6 +1775,7 @@ def register_sgl_web_routes(
     app.router.add_get("/sgl/", index)
     app.router.add_get("/sgl/cases/{case_number}", index)
     app.router.add_get("/sgl/assets/{name}", asset)
+    app.router.add_get("/sgl/assets/fonts/{name}", font_asset)
     app.router.add_get("/api/sgl/bootstrap", bootstrap)
     app.router.add_get("/api/sgl/operations", operations)
     app.router.add_get("/api/sgl/notifications", list_notifications)

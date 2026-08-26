@@ -14,15 +14,16 @@
   </style>
   <link rel="icon" href="/sgl/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/fonts.css">
+  <link rel="stylesheet" data-public-only href="/sgl/assets/fonts.css?v=20260825-sgl-a11y-v3">
   <link rel="stylesheet" data-public-only href="/sgl/assets/style.css?v=20260811-sgl-v11">
-  <link rel="stylesheet" data-public-only href="/sgl/assets/site.css?v=20260816-sgl-redesign-v2">
+  <link rel="stylesheet" data-public-only href="/sgl/assets/site.css?v=20260825-sgl-a11y-v3">
   <link rel="stylesheet" data-public-only href="/sgl/assets/app-ui.css?v=20260816-sgl-redesign-v2">
   <link rel="stylesheet" href="/sgl/assets/admin.css?v=20260820-case-os-r15">
   <link rel="stylesheet" href="/sgl/assets/admin-v2.css?v=20260821-case-os-r16">
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
-  <section id="loading" class="loading"><div class="seal logo-seal"><span class="sgl-lockup"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span></div><b>Открываем SGL</b><small>приёмная · реестр · архив</small></section>
+  <section id="loading" class="loading" role="status" aria-live="polite"><div class="seal logo-seal"><span class="sgl-lockup"><img src="/sgl/assets/logo-vector.svg" alt="SGL"></span></div><b>Открываем SGL</b><small>приёмная · реестр · архив</small></section>
 
   <section id="public-site" class="sx-site" hidden>
     <div class="sx-progress" aria-hidden="true"><i></i></div>
@@ -39,7 +40,14 @@
         <a href="#standards">Стандарты</a>
       </nav>
       <a id="public-discord-top" class="sx-cta" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer"><span>Открыть обращение</span><i>↗</i></a>
+      <button class="sx-burger" type="button" aria-label="Открыть меню" aria-expanded="false" aria-controls="sx-mobile-nav"><span></span><span></span><span></span></button>
     </header>
+    <nav id="sx-mobile-nav" class="sx-mobile-nav" aria-label="Мобильное меню" aria-hidden="true">
+      <a href="#services">Услуги</a>
+      <a href="#process">Как работаем</a>
+      <a href="#standards">Стандарты</a>
+      <a id="public-discord-mobile" href="https://discord.gg/buPmaEgZ9B" target="_blank" rel="noreferrer">Открыть обращение ↗</a>
+    </nav>
 
     <main class="sx-main">
       <section class="sx-hero" id="top">
