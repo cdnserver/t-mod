@@ -1,16 +1,16 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-title Install T-Mod Desktop Launcher
+title Install T-Mod Control
 chcp 65001 >nul
 
-set "SOURCE_FILE=%~dp0start_tmod_windows.bat"
+set "SOURCE_FILE=%~dp0tmod_control_windows.bat"
 for %%D in ("%~dp0..") do set "DESKTOP_DIR=%%~fD"
-set "TARGET_FILE=%DESKTOP_DIR%\Start T-Mod.bat"
+set "TARGET_FILE=%DESKTOP_DIR%\T-Mod Control.bat"
 
 echo.
 echo ============================================================
-echo   T-Mod Desktop Launcher Installer
+echo   T-Mod Control Installer
 echo ============================================================
 echo.
 
@@ -27,9 +27,9 @@ if exist "%~dp0configure_auto_update_windows.ps1" (
 echo [OK] Desktop launcher installed:
 echo      %TARGET_FILE%
 echo.
-echo Double-click "Start T-Mod.bat" on the Desktop to update and
-echo start the bot. The project folder must be named "esgiel".
-echo Future commits from origin/main will be installed automatically.
+echo Open "T-Mod Control.bat" on the Desktop. Use arrow keys to
+echo update, start, diagnose and manage individual services.
+echo Safe automatic updates from origin/main remain enabled.
 echo.
 pause
 exit /b 0

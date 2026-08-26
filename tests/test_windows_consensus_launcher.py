@@ -216,7 +216,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
 
         self.assertIn("configure_auto_update_windows.ps1", runtime)
         self.assertIn("configure_auto_update_windows.ps1", desktop_installer)
-        self.assertIn("Desktop launcher refreshed", runtime)
+        self.assertIn("T-Mod Control refreshed", runtime)
         self.assertIn("credential.interactive=never", watcher)
         self.assertIn("-IntervalMinutes 2", runtime)
         self.assertIn("schtasks.exe", installer)
