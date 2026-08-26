@@ -8,11 +8,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$script:ClientVersion = "1.0.0"
+$script:ClientVersion = "1.1.0"
 $script:AppDir = Join-Path $env:LOCALAPPDATA "TModRemote"
 $script:ConfigPath = Join-Path $script:AppDir "config.json"
 $script:UpdateStatePath = Join-Path $script:AppDir "update-state.json"
 $script:ManifestUrl = "https://raw.githubusercontent.com/cdnserver/t-mod/main/tmod_remote_version.json"
+$uiModule = Join-Path $PSScriptRoot "tmod_console_ui.psm1"
+if (-not (Test-Path -LiteralPath $uiModule)) {
+    $uiBootstrapUrl = "https://raw.githubusercontent.com/cdnserver/t-mod/main/tmod_console_ui.psm1"
+    $uiBootstrapHash = "e64a8287eeec9faf74a764380c30c965e78d3003f5a9436c569b52a58f252316"
+    $uiTemporary = "$uiModule.new"
+    Invoke-WebRequest -UseBasicParsing -Uri $uiBootstrapUrl -OutFile $uiTemporary -TimeoutSec 15
+    $uiActualHash = (Get-FileHash -LiteralPath $uiTemporary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($uiActualHash -ne $uiBootstrapHash) { Remove-Item -LiteralPath $uiTemporary -Force -ErrorAction SilentlyContinue; throw "Модуль интерфейса не прошёл проверку SHA-256" }
+    Move-Item -LiteralPath $uiTemporary -Destination $uiModule -Force
+}
+Import-Module $uiModule -Force
+$script:Theme = Get-TModTheme "aurora"
+Initialize-TModConsole -Title "T-Mod Remote Control"
 $script:Services = @(
     "tmod-postgres", "tmod-db-migrate", "tmod-discord-bot", "tmod-web", "tmod-worker",
     "atlas-qdrant", "atlas-forum-browser", "tmod-caddy", "minecraft", "minecraft-supervisor"
@@ -23,61 +36,32 @@ $script:RemoteActions = @(
     "service-start", "service-stop", "service-restart", "service-update",
     "service-logs", "service-logs-follow",
     "group-start", "group-stop", "group-restart",
-    "diagnostics", "backup", "db-status", "db-check", "caddy-reload", "auto-update", "version"
+    "diagnostics", "backup", "db-status", "db-check", "caddy-reload", "auto-update",
+    "auto-update-status", "auto-update-disable", "update-status", "git-status", "domain-check",
+    "resources", "error-log", "export-diagnostics", "docker-clean", "version"
 )
 
 function Write-RemoteBrand {
     param([string]$Section = "REMOTE CONTROL")
     Clear-Host
-    Write-Host ""
-    Write-Host "  ████████╗      ███╗   ███╗ ██████╗ ██████╗ " -ForegroundColor Cyan
-    Write-Host "  ╚══██╔══╝      ████╗ ████║██╔═══██╗██╔══██╗" -ForegroundColor Cyan
-    Write-Host "     ██║   █████╗██╔████╔██║██║   ██║██║  ██║" -ForegroundColor White
-    Write-Host "     ██║   ╚════╝██║╚██╔╝██║██║   ██║██║  ██║" -ForegroundColor White
-    Write-Host "     ██║         ██║ ╚═╝ ██║╚██████╔╝██████╔╝" -ForegroundColor DarkCyan
-    Write-Host "     ╚═╝         ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ " -ForegroundColor DarkCyan
-    Write-Host ""
-    Write-Host ("  {0}  /  v{1}" -f $Section, $script:ClientVersion) -ForegroundColor DarkGray
-    Write-Host ("─" * 92) -ForegroundColor DarkGray
+    Write-TModHeader -Section $Section -Version $script:ClientVersion -Context "WIREGUARD / SSH" -Theme $script:Theme
 }
 
 function Select-RemoteItem {
-    param([string]$Title, [object[]]$Items, [string]$Subtitle = "↑ ↓ выбрать  ·  Enter открыть  ·  Esc назад")
-    $index = 0
-    try { [Console]::CursorVisible = $false } catch {}
-    while ($true) {
-        Write-RemoteBrand
-        Write-Host ("  {0}" -f $Title) -ForegroundColor White
-        Write-Host ("  {0}" -f $Subtitle) -ForegroundColor DarkGray
-        Write-Host ""
-        for ($itemIndex = 0; $itemIndex -lt $Items.Count; $itemIndex++) {
-            $item = $Items[$itemIndex]
-            if ($itemIndex -eq $index) {
-                Write-Host "  › " -NoNewline -ForegroundColor Cyan
-                Write-Host ([string]$item.Label) -NoNewline -ForegroundColor Black -BackgroundColor Cyan
-                Write-Host ("  {0}" -f [string]$item.Hint) -ForegroundColor DarkCyan
-            }
-            else {
-                Write-Host ("    {0}" -f [string]$item.Label) -ForegroundColor Gray
-                if ($item.Hint) { Write-Host ("      {0}" -f [string]$item.Hint) -ForegroundColor DarkGray }
-            }
-        }
-        $key = [Console]::ReadKey($true)
-        switch ($key.Key) {
-            "UpArrow" { $index = if ($index -eq 0) { $Items.Count - 1 } else { $index - 1 } }
-            "DownArrow" { $index = if ($index -eq $Items.Count - 1) { 0 } else { $index + 1 } }
-            "Home" { $index = 0 }
-            "End" { $index = $Items.Count - 1 }
-            "Enter" { return $Items[$index].Value }
-            "Escape" { return $null }
-        }
-    }
+    param(
+        [string]$Title,
+        [object[]]$Items,
+        [string]$Subtitle = "↑ ↓ выбрать  ·  Enter открыть  ·  Esc назад",
+        [scriptblock]$OnRender,
+        [hashtable]$Hotkeys = @{},
+        [string]$Footer = ""
+    )
+    $header = { Write-RemoteBrand }
+    return (Select-TModMenu -Title $Title -Items $Items -Subtitle $Subtitle -Header $header -OnRender $OnRender -Hotkeys $Hotkeys -Theme $script:Theme -Footer $Footer)
 }
 
 function Wait-RemoteKey {
-    Write-Host ""
-    Write-Host "  Нажмите любую клавишу, чтобы вернуться" -ForegroundColor DarkGray
-    [Console]::ReadKey($true) | Out-Null
+    Wait-TModKey -Theme $script:Theme
 }
 
 function Confirm-RemoteAction {
@@ -85,7 +69,7 @@ function Confirm-RemoteAction {
     $answer = Select-RemoteItem $Title @(
         [pscustomobject]@{ Label = "Продолжить"; Hint = "Подтверждаю удалённое действие"; Value = "yes" },
         [pscustomobject]@{ Label = "Отмена"; Hint = "Ничего не менять"; Value = "no" }
-    ) $Description
+    ) -Subtitle $Description
     return $answer -eq "yes"
 }
 
@@ -108,7 +92,11 @@ function Get-RemoteConfig {
     if (-not (Test-Path -LiteralPath $script:ConfigPath)) { return $null }
     try {
         $config = Get-Content -Raw -LiteralPath $script:ConfigPath | ConvertFrom-Json
-        if (Test-RemoteConfig $config) { return $config }
+        if (Test-RemoteConfig $config) {
+            if (-not ($config.PSObject.Properties.Name -contains "theme")) { $config | Add-Member -NotePropertyName theme -NotePropertyValue "aurora" }
+            if (-not ($config.PSObject.Properties.Name -contains "animations")) { $config | Add-Member -NotePropertyName animations -NotePropertyValue $true }
+            return $config
+        }
     }
     catch {}
     return $null
@@ -154,6 +142,8 @@ function New-RemoteConfiguration {
         project_dir = $projectDir
         persistent_dir = $persistentDir
         key_path = $keyPath
+        theme = "aurora"
+        animations = $true
         created_at = (Get-Date).ToUniversalTime().ToString("o")
     }
     if (-not (Test-RemoteConfig $config)) { throw "Параметры подключения имеют неверный формат" }
@@ -281,28 +271,28 @@ function Update-RemoteClient {
         if (-not $Quiet) { Write-Host "  Установлена актуальная версия T-Mod Remote." -ForegroundColor Green }
         return $false
     }
-    $runningInstalledCopy = $PSScriptRoot.TrimEnd("\") -ieq $script:AppDir.TrimEnd("\")
-    if (-not $runningInstalledCopy) {
-        if (-not $Quiet) { Write-Host "  Обновление найдено. Запустите установленный T-Mod Remote с рабочего стола." -ForegroundColor Yellow }
+    $runningBundlePath = [string]$env:TMOD_REMOTE_BUNDLE_PATH
+    if (-not $runningBundlePath -or -not (Test-Path -LiteralPath $runningBundlePath)) {
+        if (-not $Quiet) { Write-Host "  Обновление найдено. Запустите единый файл T-Mod Remote.bat." -ForegroundColor Yellow }
         return $false
     }
-    foreach ($fileName in @("tmod_remote_windows.ps1", "tmod_remote_windows.bat")) {
+    foreach ($fileName in @("tmod_remote_windows.bat")) {
         $url = [string]$manifest.files.$fileName
         if (-not $url.StartsWith("https://raw.githubusercontent.com/cdnserver/t-mod/")) { throw "Манифест содержит недопустимый адрес" }
-        $temporary = Join-Path $script:AppDir ("{0}.new" -f $fileName)
+        $temporary = "$runningBundlePath.next.download"
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $temporary -TimeoutSec 15
         if ((Get-Item -LiteralPath $temporary).Length -lt 100) { throw "Загруженный файл повреждён: $fileName" }
-        if ($fileName.EndsWith(".ps1") -and -not ((Get-Content -Raw -LiteralPath $temporary) -match "TModRemoteClient")) { throw "Проверка клиента не пройдена" }
+        if (-not ((Get-Content -Raw -LiteralPath $temporary) -match ":__TMOD_REMOTE_PAYLOAD__")) { throw "Проверка клиента не пройдена" }
         $expectedHash = [string]$manifest.sha256.$fileName
         $actualHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($expectedHash -notmatch "^[a-fA-F0-9]{64}$" -or $actualHash -ne $expectedHash.ToLowerInvariant()) {
             Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
             throw "Контрольная сумма обновления не совпала: $fileName"
         }
-        Move-Item -LiteralPath $temporary -Destination (Join-Path $script:AppDir $fileName) -Force
+        Move-Item -LiteralPath $temporary -Destination "$runningBundlePath.next" -Force
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:AppDir "tmod_remote_version.json") -Encoding UTF8
-    if (-not $Quiet) { Write-Host "  T-Mod Remote обновлён до v$($manifest.version). Изменения включатся при следующем запуске." -ForegroundColor Green }
+    if (-not $Quiet) { Write-Host "  T-Mod Remote v$($manifest.version) подготовлен. При следующем запуске единый файл обновится сам." -ForegroundColor Green }
     return $true
 }
 
@@ -384,55 +374,168 @@ function Show-RemoteData {
     }
 }
 
-function Show-RemoteMenu {
-    $config = Get-RemoteConfig
-    if (-not $config) { $config = New-RemoteConfiguration }
-    Invoke-AutomaticUpdateCheck
-    while ($true) {
-        $online = Test-RemoteConnection $config
-        $connectionHint = if ($online) { "$($config.host) · WireGuard/SSH online" } else { "$($config.host) · нет соединения" }
-        $selection = Select-RemoteItem "Удалённый центр управления" @(
-            [pscustomobject]@{ Label = "Обзор сервера"; Hint = $connectionHint; Value = "status" },
-            [pscustomobject]@{ Label = "Безопасно обновить и запустить"; Hint = "GitHub, тесты, backup и rollback"; Value = "update" },
-            [pscustomobject]@{ Label = "Запустить установленную версию"; Hint = "Полный серверный запуск"; Value = "start" },
-            [pscustomobject]@{ Label = "Сервисы"; Hint = "Контейнеры и логи"; Value = "services" },
-            [pscustomobject]@{ Label = "Контуры"; Hint = "Ядро, Atlas, Minecraft"; Value = "groups" },
-            [pscustomobject]@{ Label = "Диагностика"; Hint = "API, Docker, диск и ошибки"; Value = "diagnostics" },
-            [pscustomobject]@{ Label = "Защита данных"; Hint = "Backup, состояние и полная проверка"; Value = "data" },
-            [pscustomobject]@{ Label = "Проверить и применить Caddy"; Hint = "Валидация перед reload"; Value = "caddy-reload" },
-            [pscustomobject]@{ Label = "Открыть сервисы в браузере"; Hint = "T-Mod, Reactor, Consensus, Atlas, SGL"; Value = "open-sites" },
-            [pscustomobject]@{ Label = "Включить автообновление сервера"; Hint = "Безопасная проверка origin/main"; Value = "auto-update" },
-            [pscustomobject]@{ Label = "Перезапустить всю систему"; Hint = "Все существующие контейнеры"; Value = "restart" },
-            [pscustomobject]@{ Label = "Остановить всю систему"; Hint = "Контейнеры остановятся, данные сохранятся"; Value = "stop" },
-            [pscustomobject]@{ Label = "Обновить T-Mod Remote"; Hint = "Проверить стабильный канал клиента"; Value = "self-update" },
-            [pscustomobject]@{ Label = "Настроить подключение"; Hint = "WireGuard, SSH, пути и новый ключ"; Value = "configure" },
-            [pscustomobject]@{ Label = "Выход"; Hint = "Закрыть T-Mod Remote"; Value = "exit" }
-        )
-        if (-not $selection -or $selection -eq "exit") { return }
-        if ($selection -eq "services") { Show-RemoteServices $config; continue }
-        if ($selection -eq "groups") { Show-RemoteGroups $config; continue }
-        if ($selection -eq "data") { Show-RemoteData $config; continue }
-        if ($selection -eq "configure") { $config = New-RemoteConfiguration; continue }
-        if ($selection -eq "open-sites") {
-            foreach ($url in @("https://tvr.lat", "https://reactor.tvr.lat", "https://consensus.tvr.lat", "https://atlas.tvr.lat", "https://sgl.tvr.lat")) { Start-Process $url }
-            continue
+function Invoke-RemoteInteractiveAction {
+    param($Config, [string]$RemoteAction, [string]$Section = "REMOTE OPERATION")
+    Show-TModTransition -Label $Section -Theme $script:Theme -Disabled:(-not [bool]$Config.animations)
+    Write-RemoteBrand -Section $Section
+    try {
+        $code = Invoke-ServerAction $Config $RemoteAction
+        if ($code -eq 0 -and $RemoteAction -notin @("status", "diagnostics", "update-status", "git-status", "domain-check", "resources", "error-log", "auto-update-status")) {
+            Write-Host "  Операция завершена." -ForegroundColor $script:Theme.Good
         }
-        if ($selection -eq "stop" -and -not (Confirm-RemoteAction "Остановить домашний сервер T-Mod?" "Все контейнеры проекта будут остановлены; данные сохранятся.")) { continue }
-        Write-RemoteBrand -Section "REMOTE OPERATION"
-        if ($selection -eq "self-update") {
-            try { Update-RemoteClient | Out-Null } catch { Write-Host ("  Ошибка обновления: {0}" -f $_.Exception.Message) -ForegroundColor Red }
+        elseif ($code -ne 0) { Write-Host ("  Сервер вернул код {0}." -f $code) -ForegroundColor $script:Theme.Bad }
+    }
+    catch { Write-Host ("  Ошибка: {0}" -f $_.Exception.Message) -ForegroundColor $script:Theme.Bad }
+    Wait-RemoteKey
+}
+
+function Show-RemotePower {
+    param($Config)
+    while ($true) {
+        $action = Select-RemoteItem "Питание домашнего сервера" @(
+            [pscustomobject]@{ Label = "Запустить установленную версию"; Hint = "Полная подготовка и запуск"; Value = "start" },
+            [pscustomobject]@{ Label = "Перезапустить всю систему"; Hint = "Пересоздание с зависимостями"; Value = "restart" },
+            [pscustomobject]@{ Label = "Остановить всю систему"; Hint = "Данные сохраняются"; Value = "stop" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Удалённое выключение Windows намеренно не выполняется этим пультом."
+        if (-not $action -or $action -eq "back") { return }
+        if ($action -in @("restart", "stop") -and -not (Confirm-RemoteAction "Подтвердить действие?" "Сервисы временно станут недоступны.")) { continue }
+        Invoke-RemoteInteractiveAction $Config $action "REMOTE POWER"
+    }
+}
+
+function Show-RemoteUpdates {
+    param($Config)
+    while ($true) {
+        $action = Select-RemoteItem "Центр обновлений домашнего сервера" @(
+            [pscustomobject]@{ Label = "Безопасно обновить и запустить"; Hint = "Тесты, backup, healthcheck и rollback"; Value = "update" },
+            [pscustomobject]@{ Label = "История обновлений"; Hint = "Updater, watcher и launch guard"; Value = "update-status" },
+            [pscustomobject]@{ Label = "Состояние Git"; Hint = "Commit, origin/main и рабочая копия"; Value = "git-status" },
+            [pscustomobject]@{ Label = "Состояние автообновления"; Hint = "Windows Task Scheduler"; Value = "auto-update-status" },
+            [pscustomobject]@{ Label = "Включить автообновление"; Hint = "Проверка раз в 2 минуты"; Value = "auto-update" },
+            [pscustomobject]@{ Label = "Приостановить автообновление"; Hint = "Текущая версия продолжит работу"; Value = "auto-update-disable" },
+            [pscustomobject]@{ Label = "Обновить клиент Remote"; Hint = "Стабильный канал с SHA-256"; Value = "self-update" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Серверное обновление и обновление Remote — независимые защищённые контуры."
+        if (-not $action -or $action -eq "back") { return }
+        if ($action -eq "auto-update-disable" -and -not (Confirm-RemoteAction "Приостановить автообновление?" "Сервер останется на текущей версии.")) { continue }
+        if ($action -eq "self-update") {
+            Write-RemoteBrand -Section "REMOTE UPDATE"
+            try { Update-RemoteClient | Out-Null } catch { Write-Host ("  Ошибка: {0}" -f $_.Exception.Message) -ForegroundColor $script:Theme.Bad }
             Wait-RemoteKey
             continue
         }
+        Invoke-RemoteInteractiveAction $Config $action "REMOTE UPDATE CENTER"
+    }
+}
+
+function Show-RemoteObservability {
+    param($Config)
+    while ($true) {
+        $action = Select-RemoteItem "Наблюдение за домашним сервером" @(
+            [pscustomobject]@{ Label = "Полная диагностика"; Hint = "Docker, API, Discord и диск"; Value = "diagnostics" },
+            [pscustomobject]@{ Label = "Поток инцидентов"; Hint = "Критические записи контейнеров за час"; Value = "error-log" },
+            [pscustomobject]@{ Label = "Ресурсы"; Hint = "CPU, RAM, сеть и диск"; Value = "resources" },
+            [pscustomobject]@{ Label = "Экспортировать отчёт"; Hint = "Файл останется на домашнем сервере"; Value = "export-diagnostics" },
+            [pscustomobject]@{ Label = "Очистить старый Docker cache"; Hint = "Без volumes и рабочих контейнеров"; Value = "docker-clean" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        )
+        if (-not $action -or $action -eq "back") { return }
+        if ($action -eq "docker-clean" -and -not (Confirm-RemoteAction "Очистить старый Docker cache?" "Удаляется только неиспользуемое старше 7 дней.")) { continue }
+        Invoke-RemoteInteractiveAction $Config $action "REMOTE OBSERVABILITY"
+    }
+}
+
+function Show-RemoteNetwork {
+    param($Config)
+    while ($true) {
+        $action = Select-RemoteItem "Сеть и публичные сервисы" @(
+            [pscustomobject]@{ Label = "Проверить все домены"; Hint = "HTTPS и задержка"; Value = "domain-check" },
+            [pscustomobject]@{ Label = "Проверить и применить Caddy"; Hint = "Validate перед reload"; Value = "caddy-reload" },
+            [pscustomobject]@{ Label = "Открыть сервисы локально"; Hint = "T-Mod, Reactor, Consensus, Atlas и SGL"; Value = "open-sites" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        )
+        if (-not $action -or $action -eq "back") { return }
+        if ($action -eq "open-sites") {
+            foreach ($url in @("https://tvr.lat", "https://reactor.tvr.lat", "https://consensus.tvr.lat", "https://atlas.tvr.lat", "https://sgl.tvr.lat")) { Start-Process $url }
+            continue
+        }
+        Invoke-RemoteInteractiveAction $Config $action "REMOTE NETWORK"
+    }
+}
+
+function Show-RemoteSettings {
+    param($Config)
+    while ($true) {
+        $action = Select-RemoteItem "Настройки T-Mod Remote" @(
+            [pscustomobject]@{ Label = "Aurora"; Hint = "Холодный основной стиль"; Value = "theme-aurora" },
+            [pscustomobject]@{ Label = "Reactor"; Hint = "Зелёный инженерный контур"; Value = "theme-reactor" },
+            [pscustomobject]@{ Label = "Atlas"; Hint = "Сине-фиолетовый контур"; Value = "theme-atlas" },
+            [pscustomobject]@{ Label = "Ember"; Hint = "Янтарный аварийный контур"; Value = "theme-ember" },
+            [pscustomobject]@{ Label = "Анимации"; Hint = $(if ([bool]$Config.animations) { "Включены" } else { "Выключены" }); Value = "animations" },
+            [pscustomobject]@{ Label = "Переподключить сервер"; Hint = "WireGuard, SSH, пути и новый ключ"; Value = "configure" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        )
+        if (-not $action -or $action -eq "back") { return $Config }
+        if ($action.StartsWith("theme-")) {
+            $Config.theme = $action.Substring("theme-".Length)
+            $script:Theme = Get-TModTheme ([string]$Config.theme)
+            Save-RemoteConfig $Config
+            Show-TModTransition -Label ("THEME / {0}" -f ([string]$Config.theme).ToUpperInvariant()) -Theme $script:Theme -Disabled:(-not [bool]$Config.animations)
+            continue
+        }
+        if ($action -eq "animations") { $Config.animations = -not [bool]$Config.animations; Save-RemoteConfig $Config; continue }
+        if ($action -eq "configure") { return (New-RemoteConfiguration) }
+    }
+}
+
+function Show-RemoteMenu {
+    $config = Get-RemoteConfig
+    if (-not $config) { $config = New-RemoteConfiguration }
+    $script:Theme = Get-TModTheme ([string]$config.theme)
+    Invoke-AutomaticUpdateCheck
+    Show-TModIntro -Theme $script:Theme -Disabled:(-not [bool]$config.animations) -Mode "REMOTE CONTROL"
+    while ($true) {
+        $online = Test-RemoteConnection $config
+        $connectionHint = if ($online) { "$($config.host) · WireGuard/SSH online" } else { "$($config.host) · нет соединения" }
+        $remoteDashboard = {
+            Write-TModCardRow -Theme $script:Theme -Cards @(
+                [pscustomobject]@{ Title = "CLIENT"; Value = ("v{0}" -f $script:ClientVersion); Kind = "info" },
+                [pscustomobject]@{ Title = "TUNNEL"; Value = $(if ($online) { "online" } else { "offline" }); Kind = $(if ($online) { "good" } else { "bad" }) },
+                [pscustomobject]@{ Title = "TARGET"; Value = [string]$config.host; Kind = $(if ($online) { "good" } else { "warn" }) }
+            )
+        }
+        $selection = Select-RemoteItem "Удалённый центр управления" @(
+            [pscustomobject]@{ Label = "Обзор сервера"; Hint = $connectionHint; Value = "status" },
+            [pscustomobject]@{ Label = "Безопасно обновить"; Hint = "GitHub, тесты, backup и rollback"; Value = "update" },
+            [pscustomobject]@{ Label = "Питание системы"; Hint = "Запуск, restart и остановка"; Value = "power" },
+            [pscustomobject]@{ Label = "Сервисы"; Hint = "Каждый контейнер и живые логи"; Value = "services" },
+            [pscustomobject]@{ Label = "Контуры"; Hint = "Ядро T-Mod, Atlas и Minecraft"; Value = "groups" },
+            [pscustomobject]@{ Label = "Центр обновлений"; Hint = "История, Git, watcher и клиент"; Value = "updates" },
+            [pscustomobject]@{ Label = "Наблюдение"; Hint = "Диагностика, инциденты и ресурсы"; Value = "observability" },
+            [pscustomobject]@{ Label = "Защита данных"; Hint = "Backup, состояние и полная проверка"; Value = "data" },
+            [pscustomobject]@{ Label = "Сеть"; Hint = "Домены, Caddy и публичные сервисы"; Value = "network" },
+            [pscustomobject]@{ Label = "Настройки"; Hint = "Темы, анимации и подключение"; Value = "settings" },
+            [pscustomobject]@{ Label = "Выход"; Hint = "Закрыть T-Mod Remote"; Value = "exit" }
+        ) -OnRender $remoteDashboard -Hotkeys @{ R = "refresh"; U = "updates"; D = "diagnostics"; Q = "exit" } -Footer "R обновить  ·  U обновления  ·  D диагностика  ·  Q выход"
+        if (-not $selection -or $selection -eq "exit") { return }
+        if ($selection -eq "refresh") { continue }
+        if ($selection -eq "settings") { $config = Show-RemoteSettings $config; $script:Theme = Get-TModTheme ([string]$config.theme); continue }
+        if ($selection -eq "updates") { Show-RemoteUpdates $config; continue }
         if (-not $online) {
-            Write-Host "  Сервер недоступен. Проверьте WireGuard и SSH." -ForegroundColor Red
+            Write-RemoteBrand -Section "CONNECTION LOST"
+            Write-Host "  Сервер недоступен. Проверьте WireGuard и SSH." -ForegroundColor $script:Theme.Bad
             Write-Host ("  Адрес: {0}:{1}" -f $config.host, $config.port) -ForegroundColor DarkGray
             Wait-RemoteKey
             continue
         }
-        try { Invoke-ServerAction $config $selection | Out-Null }
-        catch { Write-Host ("  Ошибка: {0}" -f $_.Exception.Message) -ForegroundColor Red }
-        Wait-RemoteKey
+        if ($selection -eq "power") { Show-RemotePower $config; continue }
+        if ($selection -eq "services") { Show-RemoteServices $config; continue }
+        if ($selection -eq "groups") { Show-RemoteGroups $config; continue }
+        if ($selection -eq "observability") { Show-RemoteObservability $config; continue }
+        if ($selection -eq "data") { Show-RemoteData $config; continue }
+        if ($selection -eq "network") { Show-RemoteNetwork $config; continue }
+        Invoke-RemoteInteractiveAction $config $selection $(if ($selection -eq "diagnostics") { "REMOTE DIAGNOSTICS" } else { "REMOTE SAFE UPDATE" })
     }
 }
 

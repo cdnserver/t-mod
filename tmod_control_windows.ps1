@@ -10,12 +10,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$script:ControlVersion = "1.0.0"
+$script:ControlVersion = "1.1.0"
 $script:ProjectDir = (Resolve-Path -LiteralPath $ProjectDir).Path
 $script:PersistentDir = $PersistentDir
 $script:LogDir = Join-Path $PersistentDir "logs"
 $script:LogPath = Join-Path $script:LogDir "tmod-control.log"
+$script:SettingsPath = Join-Path $PersistentDir "control\settings.json"
 $script:OriginalCursorVisible = $true
+$script:ReleaseCache = $null
+$script:ReleaseCacheAt = [datetime]::MinValue
+$uiModule = Join-Path $PSScriptRoot "tmod_console_ui.psm1"
+if (-not (Test-Path -LiteralPath $uiModule)) { throw "Модуль интерфейса не найден: $uiModule" }
+Import-Module $uiModule -Force
 
 $script:Services = @(
     "tmod-postgres",
@@ -47,8 +53,36 @@ $script:AllowedActions = @(
     "service-logs", "service-logs-follow",
     "group-start", "group-stop", "group-restart",
     "diagnostics", "backup", "db-status", "db-check",
-    "caddy-reload", "open-sites", "auto-update", "version"
+    "caddy-reload", "open-sites", "auto-update", "auto-update-status", "auto-update-disable",
+    "update-status", "git-status", "domain-check", "resources", "error-log",
+    "export-diagnostics", "docker-clean", "version"
 )
+
+function Get-ControlSettings {
+    $defaults = [pscustomobject]@{ theme = "aurora"; animations = $true; compact_dashboard = $false }
+    if (-not (Test-Path -LiteralPath $script:SettingsPath)) { return $defaults }
+    try {
+        $loaded = Get-Content -Raw -LiteralPath $script:SettingsPath | ConvertFrom-Json
+        if ([string]$loaded.theme -notin @("aurora", "reactor", "atlas", "ember")) { $loaded.theme = "aurora" }
+        if ($null -eq $loaded.animations) { $loaded | Add-Member -NotePropertyName animations -NotePropertyValue $true }
+        if ($null -eq $loaded.compact_dashboard) { $loaded | Add-Member -NotePropertyName compact_dashboard -NotePropertyValue $false }
+        return $loaded
+    }
+    catch { return $defaults }
+}
+
+function Save-ControlSettings {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $script:SettingsPath) -Force | Out-Null
+    $temporary = "$($script:SettingsPath).tmp"
+    $encoding = New-Object System.Text.UTF8Encoding
+    [IO.File]::WriteAllText($temporary, ($script:Settings | ConvertTo-Json -Depth 4), $encoding)
+    Move-Item -LiteralPath $temporary -Destination $script:SettingsPath -Force
+}
+
+$script:Settings = Get-ControlSettings
+$script:Theme = Get-TModTheme ([string]$script:Settings.theme)
+$script:AnimationDisabled = $NoAnimation -or -not [bool]$script:Settings.animations
+Initialize-TModConsole -Title "T-Mod Control Center"
 
 function Write-ControlLog {
     param([string]$Message)
@@ -65,55 +99,27 @@ function Write-ControlLog {
 }
 
 function Get-ConsoleWidth {
-    try { return [Math]::Max(76, [Math]::Min(118, [Console]::WindowWidth - 1)) }
-    catch { return 92 }
+    return (Get-TModConsoleWidth)
 }
 
 function Write-Rule {
     param([ConsoleColor]$Color = [ConsoleColor]::DarkGray)
-    Write-Host (([char]0x2500).ToString() * (Get-ConsoleWidth)) -ForegroundColor $Color
+    Write-TModRule -Theme $script:Theme
 }
 
 function Write-Brand {
     param([string]$Section = "CONTROL PLANE")
-    Write-Host ""
-    Write-Host "  ████████╗      ███╗   ███╗ ██████╗ ██████╗ " -ForegroundColor Cyan
-    Write-Host "  ╚══██╔══╝      ████╗ ████║██╔═══██╗██╔══██╗" -ForegroundColor Cyan
-    Write-Host "     ██║   █████╗██╔████╔██║██║   ██║██║  ██║" -ForegroundColor White
-    Write-Host "     ██║   ╚════╝██║╚██╔╝██║██║   ██║██║  ██║" -ForegroundColor White
-    Write-Host "     ██║         ██║ ╚═╝ ██║╚██████╔╝██████╔╝" -ForegroundColor DarkCyan
-    Write-Host "     ╚═╝         ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ " -ForegroundColor DarkCyan
-    Write-Host ""
-    Write-Host ("  {0}  /  v{1}" -f $Section, $script:ControlVersion) -ForegroundColor DarkGray
-    Write-Rule
+    $release = Get-ReleaseInfo
+    Write-TModHeader -Section $Section -Version $script:ControlVersion -Context ("{0}/{1}" -f $release.Branch, $release.Commit) -Theme $script:Theme
 }
 
 function Show-Intro {
-    if ($NoAnimation -or $env:TMOD_NO_ANIMATION -eq "1" -or [Console]::IsOutputRedirected) { return }
-    try { $script:OriginalCursorVisible = [Console]::CursorVisible; [Console]::CursorVisible = $false } catch {}
-    $frames = @(
-        "                         ·        ",
-        "                    ·    ╱         ",
-        "                ·       ╱          ",
-        "             ✦─────────╱           ",
-        "         T — M O D   ONLINE         "
-    )
-    foreach ($frame in $frames) {
-        Clear-Host
-        Write-Host ""
-        Write-Host ""
-        Write-Host $frame -ForegroundColor Cyan
-        Start-Sleep -Milliseconds 105
-    }
-    Start-Sleep -Milliseconds 120
+    Show-TModIntro -Theme $script:Theme -Disabled:($script:AnimationDisabled -or $env:TMOD_NO_ANIMATION -eq "1") -Mode "CONTROL CENTER"
 }
 
 function Wait-ForKey {
     param([string]$Message = "Нажмите любую клавишу, чтобы вернуться")
-    if ([Console]::IsInputRedirected) { return }
-    Write-Host ""
-    Write-Host ("  {0}" -f $Message) -ForegroundColor DarkGray
-    [Console]::ReadKey($true) | Out-Null
+    Wait-TModKey -Message $Message -Theme $script:Theme
 }
 
 function Select-ControlItem {
@@ -121,42 +127,13 @@ function Select-ControlItem {
         [Parameter(Mandatory = $true)][string]$Title,
         [Parameter(Mandatory = $true)][object[]]$Items,
         [int]$InitialIndex = 0,
-        [string]$Subtitle = "↑ ↓ выбрать  ·  Enter открыть  ·  Esc назад"
+        [string]$Subtitle = "↑ ↓ выбрать  ·  Enter открыть  ·  Esc назад",
+        [scriptblock]$OnRender,
+        [hashtable]$Hotkeys = @{},
+        [string]$Footer = ""
     )
-    if ($Items.Count -eq 0) { return $null }
-    $index = [Math]::Max(0, [Math]::Min($InitialIndex, $Items.Count - 1))
-    try { [Console]::CursorVisible = $false } catch {}
-    while ($true) {
-        Clear-Host
-        Write-Brand
-        Write-Host ("  {0}" -f $Title) -ForegroundColor White
-        Write-Host ("  {0}" -f $Subtitle) -ForegroundColor DarkGray
-        Write-Host ""
-        for ($itemIndex = 0; $itemIndex -lt $Items.Count; $itemIndex++) {
-            $item = $Items[$itemIndex]
-            $label = [string]$item.Label
-            $hint = [string]$item.Hint
-            if ($itemIndex -eq $index) {
-                Write-Host "  › " -NoNewline -ForegroundColor Cyan
-                Write-Host $label -NoNewline -ForegroundColor Black -BackgroundColor Cyan
-                if ($hint) { Write-Host ("  {0}" -f $hint) -ForegroundColor DarkCyan }
-                else { Write-Host "" }
-            }
-            else {
-                Write-Host ("    {0}" -f $label) -ForegroundColor Gray
-                if ($hint) { Write-Host ("      {0}" -f $hint) -ForegroundColor DarkGray }
-            }
-        }
-        $key = [Console]::ReadKey($true)
-        switch ($key.Key) {
-            "UpArrow" { $index = if ($index -le 0) { $Items.Count - 1 } else { $index - 1 } }
-            "DownArrow" { $index = if ($index -ge $Items.Count - 1) { 0 } else { $index + 1 } }
-            "Home" { $index = 0 }
-            "End" { $index = $Items.Count - 1 }
-            "Enter" { return $Items[$index].Value }
-            "Escape" { return $null }
-        }
-    }
+    $header = { Write-Brand }
+    return (Select-TModMenu -Title $Title -Items $Items -InitialIndex $InitialIndex -Subtitle $Subtitle -Header $header -OnRender $OnRender -Hotkeys $Hotkeys -Theme $script:Theme -Footer $Footer)
 }
 
 function Confirm-ControlAction {
@@ -254,6 +231,7 @@ function Get-StateColor {
 }
 
 function Get-ReleaseInfo {
+    if ($script:ReleaseCache -and ((Get-Date) - $script:ReleaseCacheAt).TotalSeconds -lt 8) { return $script:ReleaseCache }
     if (-not (Get-Command "git.exe" -ErrorAction SilentlyContinue) -and -not (Get-Command "git" -ErrorAction SilentlyContinue)) {
         return [pscustomobject]@{ Commit = "unknown"; Branch = "git unavailable" }
     }
@@ -261,7 +239,9 @@ function Get-ReleaseInfo {
     if (-not $commit) { $commit = "unknown" }
     $branch = (& git -C $script:ProjectDir branch --show-current 2>$null | Select-Object -First 1)
     if (-not $branch) { $branch = "detached" }
-    return [pscustomobject]@{ Commit = $commit.Trim(); Branch = $branch.Trim() }
+    $script:ReleaseCache = [pscustomobject]@{ Commit = $commit.Trim(); Branch = $branch.Trim() }
+    $script:ReleaseCacheAt = Get-Date
+    return $script:ReleaseCache
 }
 
 function Show-Status {
@@ -389,6 +369,181 @@ function Invoke-Diagnostics {
     }
 }
 
+function Get-JsonFileSafe {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try { return (Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json) }
+    catch { return $null }
+}
+
+function Show-UpdateState {
+    Clear-Host
+    Write-Brand -Section "UPDATE CENTER"
+    $safeState = Get-JsonFileSafe (Join-Path $script:PersistentDir "updates\status.json")
+    $watcherState = Get-JsonFileSafe (Join-Path $script:PersistentDir "updates\watcher.json")
+    $guardState = Get-JsonFileSafe (Join-Path $script:PersistentDir "updates\launcher_guard.json")
+    foreach ($entry in @(
+        [pscustomobject]@{ Label = "Safe Update"; Data = $safeState },
+        [pscustomobject]@{ Label = "GitHub watcher"; Data = $watcherState },
+        [pscustomobject]@{ Label = "Launch guard"; Data = $guardState }
+    )) {
+        Write-Host ("  {0}" -f $entry.Label) -ForegroundColor White
+        if ($entry.Data) {
+            Write-TModMetric -Label "Состояние" -Value ([string]$entry.Data.state) -Kind $(if ([string]$entry.Data.state -match "success|current|updated|fallback_started") { "good" } elseif ([string]$entry.Data.state -match "error|failed|rolled_back") { "bad" } else { "warn" }) -Theme $script:Theme
+            if ($entry.Data.message) { Write-Host ("    {0}" -f [string]$entry.Data.message) -ForegroundColor Gray }
+            if ($entry.Data.updated_at) { Write-Host ("    {0}" -f [string]$entry.Data.updated_at) -ForegroundColor DarkGray }
+            elseif ($entry.Data.checked_at) { Write-Host ("    {0}" -f [string]$entry.Data.checked_at) -ForegroundColor DarkGray }
+        }
+        else { Write-Host "    Состояние ещё не записано." -ForegroundColor DarkGray }
+        Write-Host ""
+    }
+}
+
+function Show-GitState {
+    Clear-Host
+    Write-Brand -Section "RELEASE CHANNEL"
+    if (-not (Get-Command "git.exe" -ErrorAction SilentlyContinue) -and -not (Get-Command "git" -ErrorAction SilentlyContinue)) {
+        Write-Host "  Git for Windows не найден." -ForegroundColor $script:Theme.Bad
+        return
+    }
+    $release = Get-ReleaseInfo
+    $remoteCommit = (& git -C $script:ProjectDir rev-parse --short=12 origin/main 2>$null | Select-Object -First 1)
+    $dirty = (& git -C $script:ProjectDir status --porcelain --untracked-files=normal 2>$null | Out-String).Trim()
+    Write-TModMetric -Label "Ветка" -Value $release.Branch -Kind "info" -Theme $script:Theme
+    Write-TModMetric -Label "Установлено" -Value $release.Commit -Kind "good" -Theme $script:Theme
+    Write-TModMetric -Label "Известный origin/main" -Value $(if ($remoteCommit) { $remoteCommit.Trim() } else { "неизвестно" }) -Kind $(if ($remoteCommit -and $remoteCommit.Trim() -ne $release.Commit) { "warn" } else { "good" }) -Theme $script:Theme
+    Write-TModMetric -Label "Рабочая копия" -Value $(if ($dirty) { "есть локальные изменения" } else { "чистая" }) -Kind $(if ($dirty) { "warn" } else { "good" }) -Theme $script:Theme
+    if ($dirty) { Write-Host ""; Write-Host $dirty -ForegroundColor DarkYellow }
+    Write-Host ""
+    Write-Host "  Точная проверка GitHub выполняется защищённым updater с ограничением времени." -ForegroundColor DarkGray
+}
+
+function Invoke-DomainCheck {
+    Clear-Host
+    Write-Brand -Section "NETWORK FABRIC"
+    foreach ($domain in @("tvr.lat", "reactor.tvr.lat", "consensus.tvr.lat", "atlas.tvr.lat", "sgl.tvr.lat", "ovr.tvr.lat")) {
+        $latency = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri ("https://{0}/gateway-health" -f $domain) -TimeoutSec 7
+            $latency.Stop()
+            Write-TModMetric -Label $domain -Value ("HTTP {0} · {1} ms" -f [int]$response.StatusCode, $latency.ElapsedMilliseconds) -Kind "good" -Theme $script:Theme -Width 28
+        }
+        catch {
+            $latency.Stop()
+            Write-TModMetric -Label $domain -Value ("недоступен · {0}" -f $_.Exception.Message) -Kind "bad" -Theme $script:Theme -Width 28
+        }
+    }
+}
+
+function Show-ResourceSnapshot {
+    Clear-Host
+    Write-Brand -Section "RESOURCE TELEMETRY"
+    if (-not (Test-DockerReady)) { Write-Host "  Docker недоступен." -ForegroundColor Red; return }
+    & docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" | Out-Host
+    Write-Host ""
+    $driveName = [IO.Path]::GetPathRoot($script:PersistentDir).TrimEnd("\").TrimEnd(":")
+    $drive = Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue
+    if ($drive) {
+        Write-TModMetric -Label "Диск свободен" -Value ("{0:N1} GB" -f ($drive.Free / 1GB)) -Kind $(if ($drive.Free -gt 20GB) { "good" } elseif ($drive.Free -gt 8GB) { "warn" } else { "bad" }) -Theme $script:Theme
+        Write-TModMetric -Label "Диск занят" -Value ("{0:N1} GB" -f ($drive.Used / 1GB)) -Kind "info" -Theme $script:Theme
+    }
+}
+
+function Show-ErrorCenter {
+    Clear-Host
+    Write-Brand -Section "INCIDENT STREAM"
+    foreach ($container in @("tmod-discord-bot", "tmod-web", "tmod-worker", "tmod-caddy", "tmod-postgres", "minecraft")) {
+        Write-Host ("  ◈ {0}" -f $container) -ForegroundColor $script:Theme.Accent
+        $matches = @(& docker logs --since 60m --tail 240 $container 2>&1 | Select-String -Pattern "error|exception|traceback|fatal|panic|503|504|unhealthy" -CaseSensitive:$false | Select-Object -Last 10)
+        if ($matches.Count -eq 0) { Write-Host "    За последний час критических записей нет." -ForegroundColor DarkGreen }
+        else { $matches | ForEach-Object { Write-Host ("    {0}" -f $_.Line) -ForegroundColor DarkYellow } }
+        Write-Host ""
+    }
+}
+
+function Export-DiagnosticReport {
+    New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
+    $reportPath = Join-Path $script:LogDir ("diagnostic-{0}.txt" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("T-Mod diagnostic report")
+    $lines.Add(("Generated: {0}" -f (Get-Date).ToUniversalTime().ToString("o")))
+    $lines.Add(("Control: {0}" -f $script:ControlVersion))
+    $lines.Add(("Project: {0}" -f $script:ProjectDir))
+    $lines.Add("")
+    $lines.Add("=== docker compose ps ===")
+    Push-Location $script:ProjectDir
+    try { (& docker compose ps -a 2>&1) | ForEach-Object { $lines.Add([string]$_) } }
+    finally { Pop-Location }
+    foreach ($container in @("tmod-discord-bot", "tmod-web", "tmod-worker", "tmod-caddy")) {
+        $lines.Add("")
+        $lines.Add(("=== {0} errors ===" -f $container))
+        (& docker logs --since 60m --tail 300 $container 2>&1 | Select-String -Pattern "error|exception|traceback|fatal|panic|503|504" -CaseSensitive:$false | Select-Object -Last 40) | ForEach-Object { $lines.Add($_.Line) }
+    }
+    $encoding = New-Object System.Text.UTF8Encoding
+    [IO.File]::WriteAllLines($reportPath, $lines, $encoding)
+    Write-Host ("  Отчёт сохранён: {0}" -f $reportPath) -ForegroundColor Green
+    return 0
+}
+
+function Show-AutoUpdateStatus {
+    Clear-Host
+    Write-Brand -Section "AUTOMATION"
+    & schtasks.exe /Query /TN "T-Mod Auto Update" /FO LIST /V 2>&1 | Out-Host
+    return $LASTEXITCODE
+}
+
+function Disable-AutoUpdate {
+    & schtasks.exe /Change /TN "T-Mod Auto Update" /Disable 2>&1 | Out-Host
+    return $LASTEXITCODE
+}
+
+function Invoke-SafeDockerCleanup {
+    if (-not (Ensure-DockerReady)) { return 1 }
+    Write-Host "  Удаляю только неиспользуемые образы и build-cache старше 7 дней." -ForegroundColor Yellow
+    Write-Host "  Volumes, базы данных и работающие контейнеры не затрагиваются." -ForegroundColor DarkGray
+    & docker image prune -f --filter "until=168h" | Out-Host
+    if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
+    & docker builder prune -f --filter "until=168h" | Out-Host
+    return $LASTEXITCODE
+}
+
+function Get-DashboardData {
+    $snapshot = Get-ServiceSnapshot
+    function Get-ContourState([string[]]$Names) {
+        $online = 0
+        foreach ($name in $Names) {
+            $label = Get-StateLabel $snapshot[$name]
+            if ($label -in @("ONLINE", "DONE")) { $online++ }
+        }
+        if ($online -eq $Names.Count) { return [pscustomobject]@{ Value = "online"; Kind = "good" } }
+        if ($online -gt 0) { return [pscustomobject]@{ Value = "$online/$($Names.Count)"; Kind = "warn" } }
+        return [pscustomobject]@{ Value = "offline"; Kind = "bad" }
+    }
+    $watcher = Get-JsonFileSafe (Join-Path $script:PersistentDir "updates\watcher.json")
+    return [pscustomobject]@{
+        Core = Get-ContourState @("tmod-postgres", "tmod-discord-bot", "tmod-web", "tmod-worker", "tmod-caddy")
+        Atlas = Get-ContourState @("atlas-qdrant", "atlas-forum-browser")
+        Minecraft = Get-ContourState @("minecraft", "minecraft-supervisor")
+        Watcher = if ($watcher) { [string]$watcher.state } else { "нет данных" }
+    }
+}
+
+function Write-MainDashboard {
+    param($Dashboard)
+    Write-TModCardRow -Theme $script:Theme -Cards @(
+        [pscustomobject]@{ Title = "CORE"; Value = $Dashboard.Core.Value; Kind = $Dashboard.Core.Kind },
+        [pscustomobject]@{ Title = "ATLAS"; Value = $Dashboard.Atlas.Value; Kind = $Dashboard.Atlas.Kind },
+        [pscustomobject]@{ Title = "MINECRAFT"; Value = $Dashboard.Minecraft.Value; Kind = $Dashboard.Minecraft.Kind }
+    )
+    if (-not [bool]$script:Settings.compact_dashboard) {
+        Write-Host ""
+        Write-TModMetric -Label "GitHub watcher" -Value $Dashboard.Watcher -Kind $(if ($Dashboard.Watcher -match "current|updated") { "good" } elseif ($Dashboard.Watcher -match "error|blocked") { "warn" } else { "info" }) -Theme $script:Theme
+        $events = @()
+        if (Test-Path -LiteralPath $script:LogPath) { $events = @(Get-Content -LiteralPath $script:LogPath -Tail 2 -ErrorAction SilentlyContinue) }
+        foreach ($eventLine in $events) { Write-Host ("  · {0}" -f $eventLine) -ForegroundColor DarkGray }
+    }
+}
+
 function Invoke-ControlAction {
     param([string]$RequestedAction, [string]$RequestedService = "", [string]$RequestedGroup = "")
     if ($script:AllowedActions -notcontains $RequestedAction) { throw "Недопустимое действие: $RequestedAction" }
@@ -397,7 +552,8 @@ function Invoke-ControlAction {
     Write-ControlLog ("action={0} service={1} group={2}" -f $RequestedAction, $RequestedService, $RequestedGroup)
     $dockerActions = @(
         "stop", "restart", "service-start", "service-stop", "service-restart", "service-update",
-        "service-logs", "service-logs-follow", "group-start", "group-stop", "group-restart", "caddy-reload"
+        "service-logs", "service-logs-follow", "group-start", "group-stop", "group-restart", "caddy-reload",
+        "resources", "error-log", "export-diagnostics"
     )
     if ($dockerActions -contains $RequestedAction -and -not (Ensure-DockerReady)) { return 1 }
     switch ($RequestedAction) {
@@ -421,6 +577,13 @@ function Invoke-ControlAction {
             return 0
         }
         "diagnostics" { Invoke-Diagnostics; return 0 }
+        "update-status" { Show-UpdateState; return 0 }
+        "git-status" { Show-GitState; return 0 }
+        "domain-check" { Invoke-DomainCheck; return 0 }
+        "resources" { Show-ResourceSnapshot; return 0 }
+        "error-log" { Show-ErrorCenter; return 0 }
+        "export-diagnostics" { return (Export-DiagnosticReport) }
+        "docker-clean" { return (Invoke-SafeDockerCleanup) }
         "backup" { return (Invoke-DatabaseCommand "backup") }
         "db-status" { return (Invoke-DatabaseCommand "status") }
         "db-check" { return (Invoke-DatabaseCommand "check") }
@@ -438,6 +601,8 @@ function Invoke-ControlAction {
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $script:ProjectDir "configure_auto_update_windows.ps1") -ProjectDir $script:ProjectDir -IntervalMinutes 2
             return $LASTEXITCODE
         }
+        "auto-update-status" { return (Show-AutoUpdateStatus) }
+        "auto-update-disable" { return (Disable-AutoUpdate) }
     }
     return 1
 }
@@ -512,40 +677,178 @@ function Show-DataMenu {
     }
 }
 
+function Invoke-InteractiveAction {
+    param([string]$RequestedAction, [string]$Section = "OPERATION")
+    Show-TModTransition -Label $Section -Theme $script:Theme -Disabled:$script:AnimationDisabled
+    Clear-Host
+    Write-Brand -Section $Section
+    try {
+        $exitCode = Invoke-ControlAction $RequestedAction
+        if ($exitCode -eq 0 -and $RequestedAction -notin @("status", "diagnostics", "update-status", "git-status", "domain-check", "resources", "error-log", "auto-update-status")) {
+            Write-Host "  Операция завершена." -ForegroundColor $script:Theme.Good
+        }
+        elseif ($exitCode -ne 0) { Write-Host ("  Операция завершилась с кодом {0}." -f $exitCode) -ForegroundColor $script:Theme.Bad }
+    }
+    catch {
+        Write-ControlLog ("error action={0}: {1}" -f $RequestedAction, $_.Exception.Message)
+        Write-Host ("  Ошибка: {0}" -f $_.Exception.Message) -ForegroundColor $script:Theme.Bad
+    }
+    Wait-ForKey
+}
+
+function Show-PowerMenu {
+    while ($true) {
+        $powerAction = Select-ControlItem -Title "Управление питанием системы" -Items @(
+            [pscustomobject]@{ Label = "Запустить установленную версию"; Hint = "Полная подготовка, сборка и запуск"; Value = "start" },
+            [pscustomobject]@{ Label = "Перезапустить всю систему"; Hint = "Пересоздание с соблюдением зависимостей"; Value = "restart" },
+            [pscustomobject]@{ Label = "Остановить всю систему"; Hint = "Контейнеры остановятся, данные сохранятся"; Value = "stop" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Данные PostgreSQL, Qdrant и Minecraft никогда не удаляются этим экраном."
+        if (-not $powerAction -or $powerAction -eq "back") { return }
+        if ($powerAction -in @("restart", "stop") -and -not (Confirm-ControlAction "Подтвердить действие?" "Сервисы временно станут недоступны.")) { continue }
+        Invoke-InteractiveAction $powerAction "POWER CONTROL"
+    }
+}
+
+function Show-UpdateMenu {
+    while ($true) {
+        $updateAction = Select-ControlItem -Title "Центр обновлений" -Items @(
+            [pscustomobject]@{ Label = "Безопасно обновить и запустить"; Hint = "GitHub → тесты → backup → healthcheck → rollback"; Value = "update" },
+            [pscustomobject]@{ Label = "История обновлений"; Hint = "Safe Update, watcher и launch guard"; Value = "update-status" },
+            [pscustomobject]@{ Label = "Состояние Git"; Hint = "Ветка, commit, origin/main и локальные изменения"; Value = "git-status" },
+            [pscustomobject]@{ Label = "Состояние автообновления"; Hint = "Задача Windows Task Scheduler"; Value = "auto-update-status" },
+            [pscustomobject]@{ Label = "Включить автообновление"; Hint = "Проверка origin/main раз в 2 минуты"; Value = "auto-update" },
+            [pscustomobject]@{ Label = "Приостановить автообновление"; Hint = "Ручной запуск останется доступен"; Value = "auto-update-disable" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Неудачный релиз автоматически помещается в карантин до следующего коммита."
+        if (-not $updateAction -or $updateAction -eq "back") { return }
+        if ($updateAction -eq "auto-update-disable" -and -not (Confirm-ControlAction "Приостановить автообновление?" "T-Mod продолжит работать на текущей версии.")) { continue }
+        Invoke-InteractiveAction $updateAction "UPDATE CENTER"
+    }
+}
+
+function Show-ObservabilityMenu {
+    while ($true) {
+        $observeAction = Select-ControlItem -Title "Наблюдение и диагностика" -Items @(
+            [pscustomobject]@{ Label = "Полная диагностика"; Hint = "Docker, Web, Discord, диск и свежие ошибки"; Value = "diagnostics" },
+            [pscustomobject]@{ Label = "Поток инцидентов"; Hint = "Ошибки всех ключевых контейнеров за час"; Value = "error-log" },
+            [pscustomobject]@{ Label = "Ресурсы"; Hint = "CPU, RAM, сеть и свободное место"; Value = "resources" },
+            [pscustomobject]@{ Label = "Экспортировать отчёт"; Hint = "Сохранить диагностический пакет в Documents"; Value = "export-diagnostics" },
+            [pscustomobject]@{ Label = "Очистить старый Docker cache"; Hint = "Только неиспользуемое старше 7 дней; volumes не трогаются"; Value = "docker-clean" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Живые логи конкретного сервиса находятся в разделе «Сервисы»."
+        if (-not $observeAction -or $observeAction -eq "back") { return }
+        if ($observeAction -eq "docker-clean" -and -not (Confirm-ControlAction "Очистить старый Docker cache?" "Работающие контейнеры и данные не затрагиваются.")) { continue }
+        Invoke-InteractiveAction $observeAction "OBSERVABILITY"
+    }
+}
+
+function Show-NetworkMenu {
+    while ($true) {
+        $networkAction = Select-ControlItem -Title "Сеть и публичные сервисы" -Items @(
+            [pscustomobject]@{ Label = "Проверить все домены"; Hint = "HTTPS-ответ и задержка каждого контура"; Value = "domain-check" },
+            [pscustomobject]@{ Label = "Проверить и применить Caddy"; Hint = "Validate перед безопасным reload"; Value = "caddy-reload" },
+            [pscustomobject]@{ Label = "Открыть сервисы"; Hint = "T-Mod, Reactor, Consensus, Atlas и SGL"; Value = "open-sites" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        ) -Footer "Публичные запросы идут через Caddy; внутренний порт 8787 остаётся на localhost."
+        if (-not $networkAction -or $networkAction -eq "back") { return }
+        Invoke-InteractiveAction $networkAction "NETWORK FABRIC"
+    }
+}
+
+function Show-ThemeMenu {
+    $themeName = Select-ControlItem -Title "Цветовой контур" -Items @(
+        [pscustomobject]@{ Label = "Aurora"; Hint = "Холодный cyan — основной стиль T-Mod"; Value = "aurora" },
+        [pscustomobject]@{ Label = "Reactor"; Hint = "Зелёный инженерный контур"; Value = "reactor" },
+        [pscustomobject]@{ Label = "Atlas"; Hint = "Синий и фиолетовый интеллект"; Value = "atlas" },
+        [pscustomobject]@{ Label = "Ember"; Hint = "Янтарный аварийный контур"; Value = "ember" },
+        [pscustomobject]@{ Label = "Назад"; Hint = "Настройки"; Value = "back" }
+    )
+    if (-not $themeName -or $themeName -eq "back") { return }
+    $script:Settings.theme = $themeName
+    $script:Theme = Get-TModTheme $themeName
+    Save-ControlSettings
+    Show-TModTransition -Label ("THEME / {0}" -f $themeName.ToUpperInvariant()) -Theme $script:Theme -Disabled:$script:AnimationDisabled
+}
+
+function Show-SettingsMenu {
+    while ($true) {
+        $settingsAction = Select-ControlItem -Title "Настройки Control Center" -Items @(
+            [pscustomobject]@{ Label = "Цветовой контур"; Hint = ("Сейчас: {0}" -f $script:Settings.theme); Value = "theme" },
+            [pscustomobject]@{ Label = "Анимации"; Hint = $(if ([bool]$script:Settings.animations) { "Включены" } else { "Выключены" }); Value = "animations" },
+            [pscustomobject]@{ Label = "Компактный дашборд"; Hint = $(if ([bool]$script:Settings.compact_dashboard) { "Включён" } else { "Выключен" }); Value = "compact" },
+            [pscustomobject]@{ Label = "Переустановить ярлык"; Hint = "Обновить T-Mod Control.bat на рабочем столе"; Value = "launcher" },
+            [pscustomobject]@{ Label = "Назад"; Hint = "Главный экран"; Value = "back" }
+        )
+        if (-not $settingsAction -or $settingsAction -eq "back") { return }
+        if ($settingsAction -eq "theme") { Show-ThemeMenu; continue }
+        if ($settingsAction -eq "animations") {
+            $script:Settings.animations = -not [bool]$script:Settings.animations
+            $script:AnimationDisabled = $NoAnimation -or -not [bool]$script:Settings.animations
+            Save-ControlSettings
+            continue
+        }
+        if ($settingsAction -eq "compact") {
+            $script:Settings.compact_dashboard = -not [bool]$script:Settings.compact_dashboard
+            Save-ControlSettings
+            continue
+        }
+        if ($settingsAction -eq "launcher") {
+            & cmd.exe /d /c ('call "{0}"' -f (Join-Path $script:ProjectDir "install_desktop_launcher_windows.bat")) | Out-Host
+            Wait-ForKey
+        }
+    }
+}
+
+function Show-ControlHelp {
+    Clear-Host
+    Write-Brand -Section "CONTROL MANUAL"
+    Write-Host "  БЫСТРЫЕ КЛАВИШИ" -ForegroundColor White
+    Write-TModMetric -Label "R" -Value "обновить главный экран" -Kind "info" -Theme $script:Theme
+    Write-TModMetric -Label "U" -Value "центр обновлений" -Kind "info" -Theme $script:Theme
+    Write-TModMetric -Label "D" -Value "диагностика" -Kind "info" -Theme $script:Theme
+    Write-TModMetric -Label "F1" -Value "эта справка" -Kind "info" -Theme $script:Theme
+    Write-TModMetric -Label "Q" -Value "выход" -Kind "info" -Theme $script:Theme
+    Write-Host ""
+    Write-Host "  ПРИНЦИПЫ БЕЗОПАСНОСТИ" -ForegroundColor White
+    Write-Host "  · Update не переключает main до прохождения тестов и резервного копирования." -ForegroundColor Gray
+    Write-Host "  · Ошибка healthcheck возвращает предыдущие код и Docker-образы." -ForegroundColor Gray
+    Write-Host "  · Очистка Docker никогда не удаляет volumes или рабочие контейнеры." -ForegroundColor Gray
+    Write-Host "  · Remote принимает только заранее разрешённые действия и сервисы." -ForegroundColor Gray
+    Wait-ForKey
+}
+
 function Show-MainMenu {
     Show-Intro
     while ($true) {
+        $dashboard = Get-DashboardData
+        $renderDashboard = { Write-MainDashboard $dashboard }
         $selection = Select-ControlItem -Title "Центр управления" -Items @(
-            [pscustomobject]@{ Label = "Обзор системы"; Hint = "Версия, Docker и здоровье каждого сервиса"; Value = "status" },
-            [pscustomobject]@{ Label = "Безопасно обновить и запустить"; Hint = "GitHub → тесты → backup → запуск → rollback при ошибке"; Value = "update" },
-            [pscustomobject]@{ Label = "Запустить установленную версию"; Hint = "Полная подготовка и запуск Docker-системы"; Value = "start" },
-            [pscustomobject]@{ Label = "Сервисы"; Hint = "Управление отдельными контейнерами и логами"; Value = "services" },
-            [pscustomobject]@{ Label = "Контуры"; Hint = "Ядро T-Mod, Atlas или Minecraft"; Value = "groups" },
-            [pscustomobject]@{ Label = "Диагностика"; Hint = "Сеть, API, диск и свежие ошибки"; Value = "diagnostics" },
-            [pscustomobject]@{ Label = "Защита данных"; Hint = "Резервные копии и проверка базы"; Value = "data" },
-            [pscustomobject]@{ Label = "Проверить и применить Caddy"; Hint = "Валидация конфигурации перед reload"; Value = "caddy-reload" },
-            [pscustomobject]@{ Label = "Открыть сервисы в браузере"; Hint = "T-Mod, Reactor, Consensus, Atlas, SGL"; Value = "open-sites" },
-            [pscustomobject]@{ Label = "Включить автообновление"; Hint = "Безопасная проверка origin/main каждые 2 минуты"; Value = "auto-update" },
-            [pscustomobject]@{ Label = "Перезапустить всю систему"; Hint = "Перезапуск существующих контейнеров"; Value = "restart" },
-            [pscustomobject]@{ Label = "Остановить всю систему"; Hint = "Контейнеры остановятся, данные сохранятся"; Value = "stop" },
+            [pscustomobject]@{ Label = "Обзор системы"; Hint = "Полная карта версии и здоровья сервисов"; Value = "status" },
+            [pscustomobject]@{ Label = "Безопасно обновить"; Hint = "Проверенный релиз с backup и rollback"; Value = "update" },
+            [pscustomobject]@{ Label = "Питание системы"; Hint = "Запуск, полный restart и остановка"; Value = "power" },
+            [pscustomobject]@{ Label = "Сервисы"; Hint = "Каждый контейнер, обновления и живые логи"; Value = "services" },
+            [pscustomobject]@{ Label = "Контуры"; Hint = "Ядро T-Mod, Atlas и Minecraft"; Value = "groups" },
+            [pscustomobject]@{ Label = "Центр обновлений"; Hint = "История, Git и автоматизация"; Value = "updates" },
+            [pscustomobject]@{ Label = "Наблюдение"; Hint = "Диагностика, инциденты и ресурсы"; Value = "observability" },
+            [pscustomobject]@{ Label = "Защита данных"; Hint = "Backup, состояние и полная проверка"; Value = "data" },
+            [pscustomobject]@{ Label = "Сеть"; Hint = "Домены, Caddy и публичные сервисы"; Value = "network" },
+            [pscustomobject]@{ Label = "Настройки"; Hint = "Темы, анимации и плотность интерфейса"; Value = "settings" },
+            [pscustomobject]@{ Label = "Справка"; Hint = "Горячие клавиши и принципы безопасности"; Value = "help" },
             [pscustomobject]@{ Label = "Выход"; Hint = "Закрыть T-Mod Control"; Value = "exit" }
-        )
+        ) -OnRender $renderDashboard -Hotkeys @{ R = "refresh"; U = "updates"; D = "diagnostics"; F1 = "help"; Q = "exit" } -Footer "R обновить  ·  U обновления  ·  D диагностика  ·  F1 помощь  ·  Q выход"
         if (-not $selection -or $selection -eq "exit") { return }
+        if ($selection -eq "refresh") { continue }
+        if ($selection -eq "power") { Show-PowerMenu; continue }
         if ($selection -eq "services") { Show-ServiceMenu; continue }
         if ($selection -eq "groups") { Show-GroupMenu; continue }
+        if ($selection -eq "updates") { Show-UpdateMenu; continue }
+        if ($selection -eq "observability") { Show-ObservabilityMenu; continue }
         if ($selection -eq "data") { Show-DataMenu; continue }
-        if ($selection -eq "stop" -and -not (Confirm-ControlAction "Остановить T-Mod?" "Все контейнеры проекта будут остановлены; данные останутся на месте.")) { continue }
-        Clear-Host; Write-Brand -Section "OPERATION"
-        try {
-            $exitCode = Invoke-ControlAction $selection
-            if ($exitCode -eq 0 -and $selection -notin @("status", "diagnostics")) { Write-Host "  Операция завершена." -ForegroundColor Green }
-            elseif ($exitCode -ne 0) { Write-Host ("  Операция завершилась с кодом {0}." -f $exitCode) -ForegroundColor Red }
-        }
-        catch {
-            Write-ControlLog ("error action={0}: {1}" -f $selection, $_.Exception.Message)
-            Write-Host ("  Ошибка: {0}" -f $_.Exception.Message) -ForegroundColor Red
-        }
-        Wait-ForKey
+        if ($selection -eq "network") { Show-NetworkMenu; continue }
+        if ($selection -eq "settings") { Show-SettingsMenu; continue }
+        if ($selection -eq "help") { Show-ControlHelp; continue }
+        Invoke-InteractiveAction $selection $(if ($selection -eq "diagnostics") { "DIAGNOSTICS" } elseif ($selection -eq "update") { "SAFE UPDATE" } else { "OPERATION" })
     }
 }
 
