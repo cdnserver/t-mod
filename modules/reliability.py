@@ -215,9 +215,10 @@ async def reliability_worker(bot: Any) -> None:
     global _last_maintenance, _last_maintenance_error
     while not bot.is_closed():
         try:
-            _last_maintenance = await asyncio.to_thread(
-                run_scheduled_database_protection
-            )
+            if os.getenv("TMOD_DB_PROTECTION_OWNER", "bot").strip().lower() == "bot":
+                _last_maintenance = await asyncio.to_thread(
+                    run_scheduled_database_protection
+                )
             await public_surface_health(force=True)
             _last_maintenance_error = None
         except asyncio.CancelledError:

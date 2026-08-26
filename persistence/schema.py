@@ -17,6 +17,8 @@ from persistence.activity_repository import set_meta
 
 def _backup_before_consensus_reset() -> Path | None:
     """Create a consistent SQLite backup before the one-time destructive reset."""
+    if _core.postgres_enabled():
+        return None
     if not _core.DATABASE_FILE.exists() or _core.DATABASE_FILE.stat().st_size == 0:
         return None
     source = sqlite3.connect(_core.DATABASE_FILE, timeout=30)
@@ -70,6 +72,9 @@ def _consensus_result_dedup_meta_key(migration_id: str) -> str:
 
 def _backup_before_consensus_result_dedup() -> Path | None:
     """Back up a previously reset live DB before removing legacy duplicates."""
+
+    if _core.postgres_enabled():
+        return None
 
     if not _core.DATABASE_FILE.exists() or _core.DATABASE_FILE.stat().st_size == 0:
         return None

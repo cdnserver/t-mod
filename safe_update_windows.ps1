@@ -204,8 +204,21 @@ function Restore-DatabaseIfCorrupt {
         $relativeBackup = $BackupPath.Substring($PersistentDir.Length).TrimStart("\", "/").Replace("\", "/")
         $containerBackupPath = "/app/persistent/$relativeBackup"
     }
+    if ([IO.Path]::GetExtension($BackupPath) -eq ".dump") {
+        & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py check --full *> $null
+        if ($LASTEXITCODE -eq 0) { return $false }
+        Push-Location $ProjectDir
+        try {
+            & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null
+            & docker compose run --rm --no-deps tmod-worker `
+                python /app/scripts/tmod_db_guard.py restore $containerBackupPath --offline-confirmed
+            if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore failed" }
+        }
+        finally { Pop-Location }
+        return $true
+    }
     Push-Location $ProjectDir
-    try { & docker compose stop tmod-discord-bot *> $null }
+    try { & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null }
     finally { Pop-Location }
     & docker run --rm --user 0:0 `
         --env "DATA_DIR=/app/persistent/data" `
@@ -304,15 +317,24 @@ try {
         if (-not (Test-Path -LiteralPath $hostBackupPath)) {
             throw "Pre-update database backup is unavailable for migration validation"
         }
-        $CandidateDbDir = Join-Path $UpdateRoot "db-validation-$shortTarget-$(Get-Date -Format yyyyMMddHHmmss)"
-        New-Item -ItemType Directory -Path (Join-Path $CandidateDbDir "data") -Force | Out-Null
-        Copy-Item -LiteralPath $hostBackupPath -Destination (Join-Path $CandidateDbDir "data\tmod.db") -Force
-        Invoke-Native docker run --rm --user 0:0 --entrypoint python `
-            --env "DATA_DIR=/app/persistent/data" `
-            --env "DATABASE_FILE=/app/persistent/data/tmod.db" `
-            --mount "type=bind,source=$CandidateDbDir,target=/app/persistent" `
-            tmod-discord-bot:latest `
-            -c "import sqlite3, storage; storage.init_db(); con=sqlite3.connect(storage.DATABASE_FILE); result=con.execute('PRAGMA integrity_check').fetchone()[0]; con.close(); assert result == 'ok', result"
+        if ([IO.Path]::GetExtension($hostBackupPath) -eq ".dump") {
+            $relativeBackup = $hostBackupPath.Substring($PersistentDir.Length).TrimStart("\", "/").Replace("\", "/")
+            Invoke-Native docker run --rm --user 0:0 --entrypoint pg_restore `
+                --mount "type=bind,source=$PersistentDir,target=/app/persistent" `
+                tmod-discord-bot:latest `
+                --list "/app/persistent/$relativeBackup"
+        }
+        else {
+            $CandidateDbDir = Join-Path $UpdateRoot "db-validation-$shortTarget-$(Get-Date -Format yyyyMMddHHmmss)"
+            New-Item -ItemType Directory -Path (Join-Path $CandidateDbDir "data") -Force | Out-Null
+            Copy-Item -LiteralPath $hostBackupPath -Destination (Join-Path $CandidateDbDir "data\tmod.db") -Force
+            Invoke-Native docker run --rm --user 0:0 --entrypoint python `
+                --env "DATA_DIR=/app/persistent/data" `
+                --env "DATABASE_FILE=/app/persistent/data/tmod.db" `
+                --mount "type=bind,source=$CandidateDbDir,target=/app/persistent" `
+                tmod-discord-bot:latest `
+                -c "import sqlite3, storage; storage.init_db(); con=sqlite3.connect(storage.DATABASE_FILE); result=con.execute('PRAGMA integrity_check').fetchone()[0]; con.close(); assert result == 'ok', result"
+        }
         Invoke-Native docker run --rm `
             --mount "type=bind,source=$CandidateDir\Caddyfile,target=/etc/caddy/Caddyfile,readonly" `
             caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile

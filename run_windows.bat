@@ -19,6 +19,7 @@ set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
 set SECRETS_DIR=%PERSISTENT_DIR%\secrets
 set MINECRAFT_RCON_SECRET=%SECRETS_DIR%\minecraft-rcon-password.txt
 set MINECRAFT_SUPERVISOR_SECRET=%SECRETS_DIR%\minecraft-supervisor-token.txt
+set POSTGRES_SECRET=%SECRETS_DIR%\postgres-password.txt
 set MINECRAFT_SECRETS_MARKER=%TEMP%\tmod-minecraft-secrets-changed.flag
 set MINECRAFT_SECRETS_CHANGED=0
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
@@ -43,6 +44,13 @@ if errorlevel 1 (
 )
 if exist "%MINECRAFT_SECRETS_MARKER%" set MINECRAFT_SECRETS_CHANGED=1
 call :ok "Minecraft control secrets verified outside Git"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_postgres_secret_windows.ps1" -SecretPath "%POSTGRES_SECRET%"
+if errorlevel 1 (
+  call :fail "Failed to verify PostgreSQL secret"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :ok "PostgreSQL secret verified outside Git"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
@@ -106,7 +114,10 @@ call :module "SGL Audio"
 call :module "T-Mod Music"
 call :module "Zigmund AI"
 call :module "SGL Contracts"
-call :module "SQLite Migrator"
+call :module "PostgreSQL 17"
+call :module "SQLite to PostgreSQL Migrator"
+call :module "T-Mod Web Gateway"
+call :module "T-Mod Maintenance Worker"
 call :module "Minecraft Paper 26.1.2-74"
 call :module "Minecraft Lifecycle Supervisor"
 
@@ -143,6 +154,38 @@ if "%TMOD_SKIP_BUILD%"=="1" (
 )
 
 call :stage "10" "Starting T-Mod and Minecraft"
+rem Start the database first and detect the one-time SQLite import.  The old
+rem Discord container must be stopped before the importer opens SQLite, or a
+rem message arriving during COPY could exist only in the legacy database.
+docker compose up -d tmod-postgres
+if errorlevel 1 (
+  call :fail "PostgreSQL startup failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+set POSTGRES_READY=0
+for /l %%i in (1,1,60) do (
+  docker inspect --format "{{.State.Health.Status}}" tmod-postgres 2>nul | findstr /I /X /C:"healthy" >nul
+  if not errorlevel 1 (
+    set POSTGRES_READY=1
+    goto :postgres_ready
+  )
+  timeout /t 2 /nobreak >nul
+)
+:postgres_ready
+if not "%POSTGRES_READY%"=="1" (
+  call :fail "PostgreSQL did not become healthy within 120 seconds"
+  docker logs --tail 100 tmod-postgres
+  call :pause_if_interactive
+  exit /b 1
+)
+set POSTGRES_MIGRATION_REQUIRED=1
+docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'" 2>nul | findstr /X /C:"1" >nul
+if not errorlevel 1 set POSTGRES_MIGRATION_REQUIRED=0
+if "%POSTGRES_MIGRATION_REQUIRED%"=="1" (
+  call :warn "First PostgreSQL import detected; freezing the SQLite writer"
+  docker stop tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+)
 if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
   call :warn "Minecraft control secret changed; one controlled restart is required"
   docker compose up -d --force-recreate minecraft minecraft-supervisor
@@ -220,7 +263,8 @@ if exist "%~dp0configure_auto_update_windows.ps1" (
 echo.
 echo ============================================================
 echo   T-Mod startup finished.
-echo   Database: %PERSISTENT_DIR%\data\tmod.db
+echo   Database: PostgreSQL 17 ^(private Docker volume^)
+echo   Archive:  %PERSISTENT_DIR%\data\tmod.db ^(original SQLite, preserved^)
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
 echo   Reactor:  https://reactor.tvr.lat
@@ -240,6 +284,8 @@ docker logs --tail 60 tmod-discord-bot
 echo ------------------------------------------------------------
 echo.
 echo Live logs: docker logs -f tmod-discord-bot
+echo Web gateway logs: docker logs -f tmod-web
+echo Database logs: docker logs -f tmod-postgres
 echo Minecraft logs: docker logs -f minecraft
 echo.
 call :pause_if_interactive

@@ -22,7 +22,7 @@ from persistence.database_guard import (  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="T-Mod SQLite protection utility")
+    parser = argparse.ArgumentParser(description="T-Mod database protection utility")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     backup = subparsers.add_parser("backup")

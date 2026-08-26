@@ -12,6 +12,7 @@ RUN apt-get update \
         ffmpeg \
         libffi-dev \
         poppler-utils \
+        postgresql-client \
         fontconfig \
         fonts-dejavu-core \
         fonts-liberation \

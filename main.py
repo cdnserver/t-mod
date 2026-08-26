@@ -1007,7 +1007,8 @@ async def on_ready() -> None:
 
     print(t("console.ready", user=user, user_id=user.id))
     print(t("console.persistent_localization", path=LOCALIZATION_FILE))
-    print(t("console.db_path", path=storage.DATABASE_FILE))
+    database_label = "PostgreSQL (private service)" if storage.postgres_enabled() else storage.DATABASE_FILE
+    print(t("console.db_path", path=database_label))
     print(f"Activity queue max size: {ACTIVITY_QUEUE_MAXSIZE}; dropped: {_activity_dropped}")
     print(t("console.tracking_scope", track_all=TRACK_ALL_MEMBERS, role_id=TRACK_ONLY_ROLE_ID))
     print(
@@ -1069,7 +1070,9 @@ setup_zigmund(bot, remember_command_activity)
 
 if __name__ == "__main__":
     runtime_token = require_discord_token()
-    if storage.DATABASE_FILE.exists() and storage.DATABASE_FILE.stat().st_size > 0:
+    if storage.postgres_enabled() or (
+        storage.DATABASE_FILE.exists() and storage.DATABASE_FILE.stat().st_size > 0
+    ):
         boot_line("[DB] Creating validated startup recovery point ...")
         try:
             startup_backup = ensure_startup_recovery_point(
@@ -1090,9 +1093,10 @@ if __name__ == "__main__":
                 f"the safety budget ({type(exc).__name__}: {exc}). "
                 "Startup will continue; scheduled protection will retry later."
             )
-    boot_line("[DB] SQLite migration check ...")
+    backend_name = "PostgreSQL" if storage.postgres_enabled() else "SQLite"
+    boot_line(f"[DB] {backend_name} migration check ...")
     storage.init_db()
-    boot_line(f"[DB] Ready: {storage.DATABASE_FILE}")
+    boot_line(f"[DB] Ready: {backend_name}")
     migration = storage.migrate_legacy_activity_json()
     if migration.get("status") == "imported":
         print(t("console.db_migration", events=migration.get("events", 0), users=migration.get("users", 0), counters=migration.get("counters", 0)))

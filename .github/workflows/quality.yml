@@ -71,3 +71,43 @@ jobs:
 
       - name: Run unit, contract and architecture tests
         run: python -m unittest discover -s tests -v
+
+  postgres:
+    name: PostgreSQL 17 · schema and SQLite migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: tmod_ci
+          POSTGRES_USER: tmod
+          POSTGRES_PASSWORD: tmod-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tmod -d tmod_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TMOD_POSTGRES_INTEGRATION: "1"
+      TMOD_DATABASE_BACKEND: postgresql
+      DATABASE_URL: postgresql://tmod:tmod-ci-password@127.0.0.1:5432/tmod_ci
+      DISCORD_TOKEN: test-token-not-used
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Validate schema, repositories and lossless SQLite import
+        run: python scripts/postgres_integration_test.py
