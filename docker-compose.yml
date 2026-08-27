@@ -71,6 +71,7 @@ services:
     volumes:
       - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
       - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
+      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
       - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
       - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:

@@ -67,6 +67,14 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
 
+        bot_service = compose.split("  tmod-web:", 1)[0].split(
+            "  tmod-discord-bot:", 1
+        )[1]
+        self.assertIn(
+            "postgres-password.txt:/run/secrets/postgres_password:ro",
+            bot_service,
+        )
+
     def test_runtime_uses_matching_postgres_17_backup_tools(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM postgres:17-bookworm AS postgres-tools", dockerfile)
