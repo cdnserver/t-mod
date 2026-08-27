@@ -10,12 +10,21 @@ from persistence.postgres_compat import (
     split_sql_script,
     translate_sql,
 )
+from scripts.migrate_sqlite_to_postgres import _coerce_value, _json_default
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_legacy_values_are_validated_before_postgres_copy(self) -> None:
+        self.assertEqual(_coerce_value("1488", "bigint", False), 1488)
+        self.assertEqual(_coerce_value("true", "boolean", False), True)
+        self.assertEqual(_coerce_value("hello\x00world", "text", False), "helloworld")
+        with self.assertRaisesRegex(ValueError, "invalid_integer"):
+            _coerce_value("RU15", "bigint", False)
+        self.assertEqual(_json_default(b"tmod"), {"type": "bytes", "base64": "dG1vZA=="})
+
     def test_backend_selection_is_explicit_or_database_url_driven(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(postgres_enabled())

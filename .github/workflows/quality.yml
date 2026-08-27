@@ -50,6 +50,28 @@ jobs:
       - name: Generate embedded backend
         run: python scripts/build_tmod_windows_bundles.py
 
+      - name: Validate Windows launch scripts
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "launch_tmod_guarded_windows.ps1",
+            "safe_update_windows.ps1",
+            "watch_tmod_updates_windows.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+              throw "PowerShell parse failed: $script"
+            }
+          }
+
       - name: Build and run native self-test
         shell: pwsh
         run: |

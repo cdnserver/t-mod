@@ -64,14 +64,17 @@ function Start-InstalledRuntime {
         $env:TMOD_SKIP_BUILD = "0"
         $env:TMOD_NONINTERACTIVE = "1"
         $env:TMOD_TRANSACTIONAL_UPDATE = "1"
-        Push-Location $ProjectDir
-        try {
-            return Invoke-BoundedProcess `
-                -File "cmd.exe" `
-                -Arguments '/d /c "call run_windows.bat"' `
-                -TimeoutSeconds $FallbackTimeoutSeconds
+        $runtimePath = Join-Path $ProjectDir "run_windows.bat"
+        if (-not (Test-Path -LiteralPath $runtimePath)) {
+            throw "Installed runtime launcher is missing: $runtimePath"
         }
-        finally { Pop-Location }
+        # A spawned Process does not reliably inherit PowerShell's temporary
+        # Push-Location on Windows. Pass an absolute batch path to cmd instead.
+        $runtimeArguments = '/d /s /c ""{0}""' -f $runtimePath.Replace('"', '""')
+        return Invoke-BoundedProcess `
+            -File "cmd.exe" `
+            -Arguments $runtimeArguments `
+            -TimeoutSeconds $FallbackTimeoutSeconds
     }
     finally {
         $env:TMOD_SKIP_BUILD = $previousSkip

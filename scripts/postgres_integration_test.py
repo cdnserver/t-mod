@@ -44,6 +44,8 @@ def run() -> None:
                         "c=storage.connect(); "
                         "c.execute(\"INSERT INTO members(guild_id,user_id,display_name,name,mention,is_bot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)\","
                         "(1488,7215,'Иван','ivan','<@7215>',0,n,n)); "
+                        "c.execute(\"INSERT INTO members(guild_id,user_id,display_name,name,mention,is_bot,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)\","
+                        "('RU15',9999,'Повреждённая строка','legacy','<@9999>',0,n,n)); "
                         "c.execute(\"INSERT INTO member_profiles(guild_id,user_id,preferred_name,created_at,updated_at) VALUES(?,?,?,?,?)\","
                         "(1488,7215,'Иван',n,n)); c.commit(); c.close()"
                     ),
@@ -91,8 +93,16 @@ def run() -> None:
                 marker = verification.execute(
                     "SELECT COUNT(*) FROM tmod_platform_migrations"
                 ).fetchone()
+                quarantine = verification.execute(
+                    "SELECT source_table, row_json, error "
+                    "FROM tmod_platform_migration_quarantine"
+                ).fetchall()
                 assert member and member[0] == "Иван"
                 assert marker and marker[0] == 1
+                assert len(quarantine) == 1
+                assert quarantine[0][0] == "members"
+                assert '"RU15"' in quarantine[0][1]
+                assert "invalid_integer" in quarantine[0][2]
     finally:
         with psycopg.connect(admin_url, autocommit=True) as admin:
             admin.execute(

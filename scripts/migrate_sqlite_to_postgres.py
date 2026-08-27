@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sqlite3
@@ -45,7 +46,10 @@ def _postgres_tables(connection: Any) -> list[str]:
             """
             SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-              AND table_name <> 'tmod_platform_migrations'
+              AND table_name NOT IN (
+                  'tmod_platform_migrations',
+                  'tmod_platform_migration_quarantine'
+              )
             ORDER BY table_name
             """
         )
@@ -65,12 +69,78 @@ def _postgres_columns(connection: Any, table: str) -> list[str]:
         return [str(row[0]) for row in cursor.fetchall()]
 
 
+def _postgres_column_types(
+    connection: Any, table: str
+) -> dict[str, tuple[str, bool]]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table,),
+        )
+        return {
+            str(name): (str(data_type), str(nullable).upper() == "YES")
+            for name, data_type, nullable in cursor.fetchall()
+        }
+
+
 def _clean_value(value: Any) -> Any:
     # PostgreSQL correctly rejects NUL in text; old Discord payloads can contain
     # it. SQLite allowed it, so preserve the surrounding text losslessly.
     if isinstance(value, str):
         return value.replace("\x00", "")
     return value
+
+
+def _coerce_value(value: Any, data_type: str, nullable: bool) -> Any:
+    if value is None:
+        if not nullable:
+            raise ValueError("required_value_missing")
+        return None
+    selected = str(data_type).lower()
+    if selected in {"bigint", "integer", "smallint"}:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"invalid_integer:{value!r}")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid_integer:{value!r}") from exc
+    if selected in {"double precision", "real", "numeric", "decimal"}:
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid_number:{value!r}") from exc
+    if selected == "boolean":
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError(f"invalid_boolean:{value!r}")
+        return bool(value)
+    if selected == "bytea":
+        if isinstance(value, memoryview):
+            return value.tobytes()
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value)
+        raise ValueError(f"invalid_binary:{type(value).__name__}")
+    return _clean_value(value)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return {
+            "type": "bytes",
+            "base64": base64.b64encode(bytes(value)).decode("ascii"),
+        }
+    return str(value)
 
 
 def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
@@ -89,6 +159,19 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                     key TEXT PRIMARY KEY,
                     details_json TEXT NOT NULL,
                     completed_at TEXT NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tmod_platform_migration_quarantine (
+                    id BIGSERIAL PRIMARY KEY,
+                    migration_key TEXT NOT NULL,
+                    source_table TEXT NOT NULL,
+                    source_row_number BIGINT NOT NULL,
+                    row_json TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
                 """
             )
@@ -153,6 +236,8 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                         )
 
             counts: dict[str, int] = {}
+            source_counts: dict[str, int] = {}
+            quarantined: list[tuple[str, int, str, str]] = []
             # Metadata inspection above starts an implicit psycopg transaction.
             # Close it before the atomic import; otherwise ``transaction()`` is
             # only a nested savepoint and connection.close() would roll the
@@ -163,6 +248,9 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                     cursor.execute("SET LOCAL session_replication_role = replica")
                     for table in reversed(target_tables):
                         cursor.execute(f'TRUNCATE TABLE "{table}" CASCADE')
+                    cursor.execute(
+                        "TRUNCATE TABLE tmod_platform_migration_quarantine RESTART IDENTITY"
+                    )
 
                     for table in shared_tables:
                         sqlite_columns = [
@@ -175,11 +263,13 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                         columns = [name for name in sqlite_columns if name in pg_columns]
                         if not columns:
                             continue
+                        column_types = _postgres_column_types(pg, table)
                         quoted = ", ".join(f'"{name}"' for name in columns)
                         source = sqlite_connection.execute(
                             f'SELECT {quoted} FROM "{table}"'
                         )
                         imported = 0
+                        source_row_number = 0
                         with cursor.copy(
                             f'COPY "{table}" ({quoted}) FROM STDIN'
                         ) as copy:
@@ -188,11 +278,56 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                                 if not rows:
                                     break
                                 for row in rows:
-                                    copy.write_row(
-                                        tuple(_clean_value(row[name]) for name in columns)
-                                    )
+                                    source_row_number += 1
+                                    try:
+                                        values = tuple(
+                                            _coerce_value(
+                                                row[name],
+                                                column_types[name][0],
+                                                column_types[name][1],
+                                            )
+                                            for name in columns
+                                        )
+                                    except (TypeError, ValueError) as exc:
+                                        quarantined.append(
+                                            (
+                                                table,
+                                                source_row_number,
+                                                json.dumps(
+                                                    {name: row[name] for name in columns},
+                                                    ensure_ascii=False,
+                                                    default=_json_default,
+                                                ),
+                                                f"{type(exc).__name__}: {exc}"[:1000],
+                                            )
+                                        )
+                                        continue
+                                    copy.write_row(values)
                                     imported += 1
                         counts[table] = imported
+                        source_counts[table] = source_row_number
+
+                    completed_at = datetime.now(timezone.utc).isoformat()
+                    if quarantined:
+                        cursor.executemany(
+                            """
+                            INSERT INTO tmod_platform_migration_quarantine(
+                                migration_key, source_table, source_row_number,
+                                row_json, error, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            [
+                                (
+                                    MIGRATION_ID,
+                                    table,
+                                    row_number,
+                                    row_json,
+                                    error,
+                                    completed_at,
+                                )
+                                for table, row_number, row_json, error in quarantined
+                            ],
+                        )
 
                     # Move every BIGSERIAL sequence past imported IDs.
                     cursor.execute(
@@ -226,7 +361,6 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                                 f"{source_count}!={target_count}"
                             )
 
-                    completed_at = datetime.now(timezone.utc).isoformat()
                     details = {
                         "status": "migrated",
                         "migration": MIGRATION_ID,
@@ -234,6 +368,11 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                         "sqlite_size_bytes": sqlite_path.stat().st_size,
                         "table_count": len(counts),
                         "row_count": sum(counts.values()),
+                        "source_row_count": sum(source_counts.values()),
+                        "quarantined_row_count": len(quarantined),
+                        "quarantined_tables": sorted(
+                            {table for table, _, _, _ in quarantined}
+                        ),
                         "completed_at": completed_at,
                     }
                     cursor.execute(
