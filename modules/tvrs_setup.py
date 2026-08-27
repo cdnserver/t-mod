@@ -21,7 +21,10 @@ from modules.tvrs_config import (
     TVRS_COMMAND_DESCRIPTION,
     TVRS_COMMAND_NAME,
     TVRS_CONSENSUS_VOICE_CHANNEL_ID,
+    TVRS_DIRECTORY_COMMAND_DESCRIPTION,
+    TVRS_DIRECTORY_COMMAND_NAME,
     TVRS_MATERIALS_CHANNEL_ID,
+    TVRS_SENATOR_ROLE_ID,
     TVRS_SETBILL_COMMAND_DESCRIPTION,
     TVRS_SETBILL_COMMAND_NAME,
     TVRS_STICKY_COMMAND_DESCRIPTION,
@@ -31,6 +34,15 @@ from modules.tvrs_formatting import (
     format_bill_number,
 )
 from modules.tvrs_navigation_runtime import register_tvrs_hub_handler
+from modules.tvrs_directory import (
+    adopt_directory_from_channel,
+    clear_directory_slot,
+    directory_summary_text,
+    ensure_directory_message,
+    reset_directory_state,
+    schedule_directory_refresh,
+    update_directory_state,
+)
 from modules.tvrs_delivery import (
     TVRS_CONTROL_DM_TOPIC,
     TVRS_CONTROL_NOTICE_TOPIC,
@@ -114,6 +126,29 @@ def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.I
         session = _active_sessions.get(member.guild.id)
         if session and not session.finished:
             await check_realtime_quorum(bot, member.guild, session)
+
+    @bot.listen("on_member_update")
+    async def tvrs_directory_member_update(before: discord.Member, after: discord.Member) -> None:
+        if after.bot or after.guild is None:
+            return
+        before_roles = {role.id for role in getattr(before, "roles", ())}
+        after_roles = {role.id for role in getattr(after, "roles", ())}
+        if (TVRS_SENATOR_ROLE_ID in before_roles) != (TVRS_SENATOR_ROLE_ID in after_roles):
+            schedule_directory_refresh(bot, after.guild)
+
+    @bot.listen("on_member_join")
+    async def tvrs_directory_member_join(member: discord.Member) -> None:
+        if member.bot or member.guild is None:
+            return
+        if TVRS_SENATOR_ROLE_ID in {role.id for role in getattr(member, "roles", ())}:
+            schedule_directory_refresh(bot, member.guild)
+
+    @bot.listen("on_member_remove")
+    async def tvrs_directory_member_remove(member: discord.Member) -> None:
+        if member.bot or member.guild is None:
+            return
+        if TVRS_SENATOR_ROLE_ID in {role.id for role in getattr(member, "roles", ())}:
+            schedule_directory_refresh(bot, member.guild)
 
     @bot.tree.command(name=TVRS_COMMAND_NAME, description=TVRS_COMMAND_DESCRIPTION)
     async def tvrs(interaction: discord.Interaction) -> None:
@@ -308,5 +343,162 @@ def setup_tvrs(bot: commands.Bot, remember_command_activity: Callable[[discord.I
         remember_command_activity(interaction, "command_tvrs_sticky", "/tvrs_sticky")
         await ensure_sticky_message(interaction.client, interaction.guild, force_repost=True)
         await interaction.followup.send(f"Сообщение подачи законопроектов обновлено в <#{TVRS_MATERIALS_CHANNEL_ID}>.", ephemeral=True)
+
+    directory_action_choices = [
+        app_commands.Choice(name="Показать состояние", value="view"),
+        app_commands.Choice(name="Опубликовать/обновить", value="publish"),
+        app_commands.Choice(name="Быстро обновить", value="refresh"),
+        app_commands.Choice(name="Импортировать ручной пост", value="adopt"),
+        app_commands.Choice(name="Назначить слот", value="set"),
+        app_commands.Choice(name="Очистить слот", value="clear"),
+        app_commands.Choice(name="Сбросить всё", value="reset"),
+    ]
+    directory_slot_choices = [
+        app_commands.Choice(name="Техническая поддержка", value="technical_support"),
+        app_commands.Choice(name="Модерация законопроектов", value="bill_moderation"),
+        app_commands.Choice(name="Коммуникации ОВР", value="ovr_communications"),
+        app_commands.Choice(name="Секретариат SGL Bureau", value="bureau_secretariat"),
+        app_commands.Choice(name="Первый председатель", value="chair_1"),
+        app_commands.Choice(name="Второй председатель", value="chair_2"),
+        app_commands.Choice(name="Третий председатель", value="chair_3"),
+    ]
+
+    @bot.tree.command(name=TVRS_DIRECTORY_COMMAND_NAME, description=TVRS_DIRECTORY_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        action="Что сделать с реестром",
+        slot="Поле для назначения или очистки",
+        member="Кого назначить в слот",
+    )
+    @app_commands.choices(action=directory_action_choices, slot=directory_slot_choices)
+    async def tvrs_directory(
+        interaction: discord.Interaction,
+        action: str,
+        slot: str | None = None,
+        member: discord.Member | None = None,
+    ) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Команда работает только на сервере Discord.", ephemeral=True)
+            return
+        if not is_chair(interaction.user):
+            await interaction.response.send_message("Команда доступна только председателю.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        remember_command_activity(interaction, "command_tvrs_directory", "/tvrs_directory")
+        clean_action = str(action).strip().lower()
+        clean_slot = str(slot).strip().lower() if slot else ""
+
+        if clean_action == "view":
+            await interaction.followup.send(
+                f"```text\n{directory_summary_text(interaction.guild)}\n```",
+                ephemeral=True,
+            )
+            return
+
+        if clean_action in {"publish", "refresh"}:
+            message = await ensure_directory_message(interaction.client, interaction.guild)
+            if message is None:
+                await interaction.followup.send(
+                    "Не удалось обновить реестр: проверьте доступ бота к каналу.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send(
+                f"Реестр обновлён в <#{message.channel.id}>: {message.jump_url}",
+                ephemeral=True,
+            )
+            return
+
+        if clean_action == "adopt":
+            source_id = await adopt_directory_from_channel(interaction.client, interaction.guild)
+            message = await ensure_directory_message(interaction.client, interaction.guild)
+            if message is None:
+                await interaction.followup.send(
+                    "Не удалось синхронизировать реестр: проверьте доступ бота к каналу.",
+                    ephemeral=True,
+                )
+                return
+            if source_id is None:
+                await interaction.followup.send(
+                    f"Ручной пост с упоминаниями не найден; текущая конфигурация сохранена. {message.jump_url}",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
+            await interaction.followup.send(
+                f"Данные импортированы из сообщения {source_id} и опубликованы: {message.jump_url}",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        if clean_action == "set":
+            if not clean_slot or member is None:
+                await interaction.followup.send(
+                    "Для `set` нужны `slot` и `member`. Доступные слоты: `technical_support`, `bill_moderation`, `ovr_communications`, `bureau_secretariat`, `chair_1`, `chair_2`, `chair_3`.",
+                    ephemeral=True,
+                )
+                return
+            if member.bot:
+                await interaction.followup.send(
+                    "Бота нельзя назначить ответственным или председателем.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                updated = await asyncio.to_thread(
+                    update_directory_state,
+                    interaction.guild.id,
+                    slot=clean_slot,
+                    member_id=int(member.id),
+                    actor_id=interaction.user.id,
+                )
+            except ValueError as exc:
+                await interaction.followup.send(f"Слот не распознан: `{str(exc)}`", ephemeral=True)
+                return
+            message = await ensure_directory_message(interaction.client, interaction.guild)
+            await interaction.followup.send(
+                f"Назначение обновлено. `{clean_slot}` → {member.mention} · ревизия `{updated.get('revision', 0)}`{f' · реестр: {message.jump_url}' if message else ''}",
+                ephemeral=True,
+            )
+            return
+
+        if clean_action == "clear":
+            if not clean_slot:
+                await interaction.followup.send("Для `clear` укажите `slot`.", ephemeral=True)
+                return
+            try:
+                updated = await asyncio.to_thread(
+                    clear_directory_slot,
+                    interaction.guild.id,
+                    slot=clean_slot,
+                    actor_id=interaction.user.id,
+                )
+            except ValueError as exc:
+                await interaction.followup.send(f"Слот не распознан: `{str(exc)}`", ephemeral=True)
+                return
+            message = await ensure_directory_message(interaction.client, interaction.guild)
+            await interaction.followup.send(
+                f"Слот `{clean_slot}` очищен · ревизия `{updated.get('revision', 0)}`{f' · реестр: {message.jump_url}' if message else ''}",
+                ephemeral=True,
+            )
+            return
+
+        if clean_action == "reset":
+            updated = await asyncio.to_thread(
+                reset_directory_state,
+                interaction.guild.id,
+                actor_id=interaction.user.id,
+            )
+            message = await ensure_directory_message(interaction.client, interaction.guild)
+            await interaction.followup.send(
+                f"Реестр сброшен и синхронизирован · ревизия `{updated.get('revision', 0)}`{f' · реестр: {message.jump_url}' if message else ''}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            "Неизвестное действие. Используйте `view`, `publish`, `refresh`, `set`, `clear` или `reset`.",
+            ephemeral=True,
+        )
 
 __all__ = ['setup_tvrs']

@@ -16,7 +16,7 @@ from modules.sgbureau import SGBUREAU_CATEGORY_ID, SGBUREAU_COMMAND_CHANNEL_ID, 
 from modules.sgl_archive import setup_sgl_archive
 from modules.sglaudio import setup_sglaudio
 from modules.zigmund import setup_zigmund
-from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure_sticky_all
+from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure_sticky_all, tvrs_ensure_directory_all
 from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
@@ -103,6 +103,7 @@ TVRS_EVENT_TYPES = {
     "command_tvrs_setbill",
     "command_tvrs_sticky",
     "command_tvrs",
+    "command_tvrs_directory",
     "command_finance",
     "command_finance_undo",
     "command_craft",
@@ -1002,6 +1003,7 @@ async def on_ready() -> None:
         register_tvrs_persistent_views(bot)
         _TVRS_VIEWS_REGISTERED = True
     await tvrs_ensure_sticky_all(bot)
+    await tvrs_ensure_directory_all(bot)
 
     await apply_bot_status()
 
