@@ -2,13 +2,16 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import storage
 from modules.error_inbox import (
     ErrorInboxConfig,
     GitHubIssuePublisher,
     capture_runtime_event,
+    classify_runtime_error,
+    error_fingerprint,
+    publish_error_inbox_once,
     sanitize_error_text,
 )
 from persistence import error_repository
@@ -26,6 +29,7 @@ def inbox_config(**overrides) -> ErrorInboxConfig:
         "interval_seconds": 30,
         "batch_size": 10,
         "comment_cooldown_seconds": 1800,
+        "dependency_occurrence_threshold": 3,
         "retention_days": 90,
         "request_timeout_seconds": 10,
     }
@@ -84,6 +88,97 @@ class ErrorInboxTests(unittest.TestCase):
         self.assertEqual(len(ready), 1)
         self.assertEqual(ready[0]["occurrences"], 2)
         self.assertEqual(ready[0]["details"], "second")
+
+    def test_expected_disconnect_and_expired_interaction_do_not_enter_inbox(self) -> None:
+        async def capture_noise() -> None:
+            disconnected = await capture_runtime_event(
+                title="Ошибка журнала aiohttp.server",
+                details="ConnectionResetError: Connection lost",
+                component="aiohttp.server",
+                exception=ConnectionResetError("Connection lost"),
+                config=inbox_config(publish_enabled=False, token=""),
+            )
+            expired = await capture_runtime_event(
+                title="Ошибка редактора",
+                details="404 Not Found (error code: 10062): Unknown interaction",
+                component="bill-editor",
+                config=inbox_config(publish_enabled=False, token=""),
+            )
+            self.assertFalse(disconnected)
+            self.assertFalse(expired)
+
+        asyncio.run(capture_noise())
+        self.assertEqual(
+            error_repository.runtime_error_inbox_summary(),
+            {"total": 0, "pending": 0, "published": 0},
+        )
+
+    def test_discord_connectivity_is_one_dependency_incident(self) -> None:
+        first = classify_runtime_error(
+            title="Ошибка журнала discord.client",
+            details="Cannot connect to host discord.com:443 ssl:default",
+            component="discord.client",
+            exception_type="ClientConnectorError",
+        )
+        second = classify_runtime_error(
+            title="Сбой рабочего цикла активных задач",
+            details="Temporary failure in name resolution for discord.com",
+            component="operations-worker",
+            exception_type="ClientConnectorDNSError",
+        )
+        self.assertEqual(first.category, "dependency")
+        self.assertEqual(first.fingerprint_hint, second.fingerprint_hint)
+        self.assertEqual(first.component, "dependency.discord")
+
+    def test_dependency_waits_for_confirmation_before_publishing(self) -> None:
+        def record() -> None:
+            error_repository.record_runtime_error(
+                fingerprint="discord-network",
+                title="Discord временно недоступен",
+                component="dependency.discord",
+                level="error",
+                exception_type="ClientConnectorError",
+                details="Cannot connect to host discord.com:443",
+                traceback_text=None,
+                environment="test",
+                release="one",
+            )
+
+        record()
+        with patch.object(GitHubIssuePublisher, "publish") as publish:
+            self.assertEqual(asyncio.run(publish_error_inbox_once(inbox_config())), 0)
+            publish.assert_not_called()
+
+        record()
+        record()
+        with patch.object(
+            GitHubIssuePublisher,
+            "publish",
+            return_value=(77, "https://github.com/cdnserver/t-mod/issues/77"),
+        ) as publish:
+            self.assertEqual(asyncio.run(publish_error_inbox_once(inbox_config())), 1)
+            publish.assert_called_once()
+
+    def test_traceback_fingerprint_ignores_line_numbers_and_logger_name(self) -> None:
+        def fail() -> None:
+            raise RuntimeError("boom")
+
+        try:
+            fail()
+        except RuntimeError as exc:
+            first = error_fingerprint(
+                hint=None,
+                title="logger one",
+                component="asyncio",
+                exception=exc,
+            )
+            second = error_fingerprint(
+                hint=None,
+                title="logger two",
+                component="discord.ui.view",
+                exception=exc,
+            )
+        self.assertEqual(first, second)
 
     def test_publish_ack_does_not_lose_a_concurrent_recurrence(self) -> None:
         first = error_repository.record_runtime_error(
@@ -188,6 +283,9 @@ class ErrorInboxTests(unittest.TestCase):
         calls = publisher._request.call_args_list
         self.assertEqual(calls[0].args[:2], ("PATCH", "/repos/cdnserver/t-mod/issues/17"))
         self.assertEqual(calls[1].args[:2], ("POST", "/repos/cdnserver/t-mod/issues/17/comments"))
+        self.assertEqual(calls[0].args[2]["state"], "open")
+        self.assertIn("runtime:defect", calls[0].args[2]["labels"])
+        self.assertIn("### Следующее действие", calls[0].args[2]["body"])
 
 
 if __name__ == "__main__":

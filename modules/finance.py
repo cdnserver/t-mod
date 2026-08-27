@@ -11,6 +11,10 @@ from discord.ext import commands
 
 from persistence import finance_context as storage
 from modules.control_center_config import ACTIVE_TASKS_CHANNEL_ID
+from modules.discord_interactions import (
+    is_expired_interaction_error,
+    safe_interaction_error_message,
+)
 from modules.craft_runtime import build_craft_stats_embed, refresh_craft_plan, wake_craft_worker
 from modules.finance_config import (
     FINANCE_ADMIN_USER_ID,
@@ -512,30 +516,28 @@ class FinanceDailyPromptView(discord.ui.View):
         if interaction.guild is None or interaction.channel_id != FINANCE_DAILY_CHANNEL_ID:
             await interaction.response.send_message("Эта кнопка работает только на исходной сверке в финансовом журнале.", ephemeral=True)
             return
-        message_id = interaction.message.id if interaction.message else 0
-        prompt = await asyncio.to_thread(
-            storage.finance_get_daily_prompt_by_message,
-            guild_id=interaction.guild.id,
-            message_id=message_id,
-        )
-        if prompt is None:
-            prompt_id = prompt_id_from_message(interaction.message)
-            if prompt_id is not None:
-                prompt = await asyncio.to_thread(storage.finance_get_daily_prompt, prompt_id)
-                if prompt is not None and interaction.message is not None:
-                    prompt = await asyncio.to_thread(
-                        storage.finance_bind_daily_prompt_message,
-                        prompt_id=prompt_id,
-                        channel_id=interaction.channel_id,
-                        message_id=interaction.message.id,
-                    )
-        if prompt is None:
+        # Modal delivery is the interaction acknowledgement, so it must happen
+        # before any database round trip. The durable prompt is validated again
+        # when the submitted modal has its own fresh interaction token.
+        prompt_id = prompt_id_from_message(interaction.message)
+        if prompt_id is None:
             await interaction.response.send_message("Не удалось найти этот отчёт в базе данных.", ephemeral=True)
             return
-        if str(prompt.get("status")) != "open":
-            await interaction.response.send_message("Этот отчёт уже заполнен.", ephemeral=True)
-            return
-        await interaction.response.send_modal(DailySnapshotModal(int(prompt["id"])))
+        await interaction.response.send_modal(DailySnapshotModal(prompt_id))
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        del item
+        if not is_expired_interaction_error(error):
+            traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_interaction_error_message(
+            interaction,
+            "Не удалось открыть отчёт. Нажмите кнопку ещё раз.",
+        )
 
 
 class DailySnapshotModal(discord.ui.Modal):
@@ -552,15 +554,15 @@ class DailySnapshotModal(discord.ui.Modal):
         self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             amount = parse_money(self.amount.value, allow_zero=True)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
         if interaction.guild is None:
-            await interaction.response.send_message("Отчёт можно заполнить только на сервере.", ephemeral=True)
+            await interaction.followup.send("Отчёт можно заполнить только на сервере.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         event = await asyncio.to_thread(
             storage.finance_record_snapshot,
             guild_id=interaction.guild.id,
@@ -593,11 +595,12 @@ class DailySnapshotModal(discord.ui.Modal):
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        traceback.print_exception(type(error), error, error.__traceback__)
-        if interaction.response.is_done():
-            await interaction.followup.send("Не удалось сохранить отчёт. Попробуйте ещё раз.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Не удалось сохранить отчёт. Попробуйте ещё раз.", ephemeral=True)
+        if not is_expired_interaction_error(error):
+            traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_interaction_error_message(
+            interaction,
+            "Не удалось сохранить отчёт. Попробуйте ещё раз.",
+        )
 
 
 class MovementModal(discord.ui.Modal):
@@ -634,11 +637,12 @@ class MovementModal(discord.ui.Modal):
         self.add_item(self.captcha)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if interaction.guild is None:
-            await interaction.response.send_message("Операцию можно провести только на сервере Discord.", ephemeral=True)
+            await interaction.followup.send("Операцию можно провести только на сервере Discord.", ephemeral=True)
             return
         if self.captcha.value.strip() != self.captcha_value:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Капча введена неверно. Операция не сохранена — откройте форму ещё раз.",
                 ephemeral=True,
             )
@@ -646,14 +650,13 @@ class MovementModal(discord.ui.Modal):
         try:
             amount = parse_money(self.amount.value, allow_zero=False)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
         reason = self.reason.value.strip()
         game_code = "".join(secrets.choice(GAME_CODE_ALPHABET) for _ in range(4))
         digest = hashlib.sha256(
             f"{interaction.guild.id}:{interaction.user.id}:{self.captcha_value}".encode("utf-8")
         ).hexdigest()
-        await interaction.response.defer(ephemeral=True, thinking=True)
         event = await asyncio.to_thread(
             storage.finance_record_movement,
             guild_id=interaction.guild.id,
@@ -685,11 +688,12 @@ class MovementModal(discord.ui.Modal):
         await interaction.followup.send(embed=response, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        traceback.print_exception(type(error), error, error.__traceback__)
-        if interaction.response.is_done():
-            await interaction.followup.send("Не удалось сохранить операцию. Попробуйте ещё раз.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Не удалось сохранить операцию. Попробуйте ещё раз.", ephemeral=True)
+        if not is_expired_interaction_error(error):
+            traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_interaction_error_message(
+            interaction,
+            "Не удалось сохранить операцию. Попробуйте ещё раз.",
+        )
 
 
 class InterimSnapshotModal(discord.ui.Modal):
@@ -706,15 +710,15 @@ class InterimSnapshotModal(discord.ui.Modal):
         self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if interaction.guild is None:
-            await interaction.response.send_message("Межотчёт можно провести только на сервере Discord.", ephemeral=True)
+            await interaction.followup.send("Межотчёт можно провести только на сервере Discord.", ephemeral=True)
             return
         try:
             amount = parse_money(self.amount.value, allow_zero=True)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         event = await asyncio.to_thread(
             storage.finance_record_snapshot,
             guild_id=interaction.guild.id,
@@ -738,11 +742,12 @@ class InterimSnapshotModal(discord.ui.Modal):
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        traceback.print_exception(type(error), error, error.__traceback__)
-        if interaction.response.is_done():
-            await interaction.followup.send("Не удалось сохранить межотчёт. Попробуйте ещё раз.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Не удалось сохранить межотчёт. Попробуйте ещё раз.", ephemeral=True)
+        if not is_expired_interaction_error(error):
+            traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_interaction_error_message(
+            interaction,
+            "Не удалось сохранить межотчёт. Попробуйте ещё раз.",
+        )
 
 
 class FinancePanelView(discord.ui.View):

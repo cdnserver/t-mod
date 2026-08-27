@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from modules import finance
-from modules.finance import FinanceDailyPromptView, FinancePanelView, MovementModal, parse_money
+from modules.finance import (
+    DailySnapshotModal,
+    FinanceDailyPromptView,
+    FinancePanelView,
+    MovementModal,
+    parse_money,
+)
 
 
 class FinanceFormatTests(unittest.TestCase):
@@ -30,6 +36,31 @@ class FinanceComponentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.label for item in panel.children], ["Снял", "Положил", "Межотчёт"])
         self.assertEqual(len(modal.children), 3)
         self.assertRegex(modal.captcha_value, r"^[0-9]{3}$")
+
+    async def test_daily_prompt_opens_modal_without_database_round_trip(self) -> None:
+        view = FinanceDailyPromptView()
+        discord = __import__("discord")
+        embed = discord.Embed()
+        embed.set_footer(text="finance-prompt:42")
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            channel_id=finance.FINANCE_DAILY_CHANNEL_ID,
+            message=SimpleNamespace(embeds=[embed]),
+            response=SimpleNamespace(
+                send_message=AsyncMock(),
+                send_modal=AsyncMock(),
+            ),
+        )
+        with patch.object(
+            finance.storage,
+            "finance_get_daily_prompt_by_message",
+        ) as database_lookup:
+            await view.children[0].callback(interaction)
+        database_lookup.assert_not_called()
+        interaction.response.send_modal.assert_awaited_once()
+        opened = interaction.response.send_modal.await_args.args[0]
+        self.assertIsInstance(opened, DailySnapshotModal)
+        self.assertEqual(opened.prompt_id, 42)
 
     async def test_filled_daily_prompt_is_not_republished_after_channel_migration(self) -> None:
         current = datetime(2026, 7, 15, 19, 0, tzinfo=ZoneInfo("Europe/Riga"))

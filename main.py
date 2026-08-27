@@ -27,6 +27,7 @@ from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.error_inbox import setup_error_inbox_runtime
+from modules.discord_interactions import is_expired_interaction_error
 from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 from modules.reliability import setup_reliability
@@ -747,6 +748,16 @@ async def activity(
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    if is_expired_interaction_error(error):
+        # Discord can expire an interaction before a packet reaches the bot during
+        # reconnects. There is no valid response channel left and retrying only
+        # creates a second exception. The command can safely be invoked again.
+        print(
+            f"Expired Discord interaction ignored: "
+            f"{getattr(interaction.command, 'qualified_name', 'unknown')}",
+            file=sys.stderr,
+        )
+        return
     error_id = int(utc_now().timestamp())
     print(t("console.interaction_failed", error=f"interaction_error_{error_id}: {error}"), file=sys.stderr)
     traceback.print_exception(type(error), error, error.__traceback__)

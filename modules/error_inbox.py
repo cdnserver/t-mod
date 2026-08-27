@@ -71,6 +71,7 @@ class ErrorInboxConfig:
     interval_seconds: int
     batch_size: int
     comment_cooldown_seconds: int
+    dependency_occurrence_threshold: int
     retention_days: int
     request_timeout_seconds: int
 
@@ -117,6 +118,12 @@ def load_error_inbox_config() -> ErrorInboxConfig:
             minimum=60,
             maximum=86400,
         ),
+        dependency_occurrence_threshold=_env_int(
+            "ERROR_INBOX_DEPENDENCY_THRESHOLD",
+            3,
+            minimum=1,
+            maximum=100,
+        ),
         retention_days=_env_int("ERROR_INBOX_RETENTION_DAYS", 90, minimum=7, maximum=730),
         request_timeout_seconds=_env_int("ERROR_INBOX_TIMEOUT_SECONDS", 10, minimum=3, maximum=60),
     )
@@ -137,10 +144,138 @@ def sanitize_error_text(value: object, *, limit: int = 12000) -> str:
     return text[: max(1, int(limit))]
 
 
+@dataclass(frozen=True, slots=True)
+class ErrorClassification:
+    category: str
+    priority: str
+    publish: bool
+    title: str
+    component: str
+    fingerprint_hint: str | None
+    next_action: str
+
+
+def _root_exception(exc: BaseException | None) -> BaseException | None:
+    current = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        next_error = current.__cause__ or current.__context__
+        if not isinstance(next_error, BaseException):
+            break
+        current = next_error
+    return current
+
+
 def _traceback_signature(exc: BaseException) -> str:
-    frames = traceback.extract_tb(exc.__traceback__)
-    stable_frames = [f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}" for frame in frames[-5:]]
-    return "|".join([type(exc).__name__, *stable_frames])
+    root = _root_exception(exc) or exc
+    frames = traceback.extract_tb(root.__traceback__)
+    application_frames = [
+        frame
+        for frame in frames
+        if "/app/" in frame.filename.replace("\\", "/")
+        or "/modules/" in frame.filename.replace("\\", "/")
+        or "/persistence/" in frame.filename.replace("\\", "/")
+    ]
+    selected = application_frames[-5:] or frames[-3:]
+    # Line numbers change after harmless edits. File + callable still identifies
+    # the failing application path without splitting one defect every release.
+    stable_frames = [f"{Path(frame.filename).name}:{frame.name}" for frame in selected]
+    if stable_frames:
+        return "|".join([type(root).__name__, *stable_frames])
+    message = re.sub(r"\b\d{4,}\b", "<id>", str(root).lower())[:240]
+    return f"{type(root).__name__}:{message}"
+
+
+def classify_runtime_error(
+    *,
+    title: str,
+    details: str,
+    component: str,
+    level: str = "error",
+    exception: BaseException | None = None,
+    exception_type: str | None = None,
+) -> ErrorClassification:
+    root = _root_exception(exception)
+    exception_name = str(exception_type or (type(root).__name__ if root else ""))
+    searchable = "\n".join((str(title), str(details), str(component), exception_name)).lower()
+
+    if "unknown interaction" in searchable or "error code: 10062" in searchable:
+        return ErrorClassification(
+            category="interaction-expired",
+            priority="P4",
+            publish=False,
+            title="Discord-взаимодействие уже завершилось",
+            component="discord.interaction",
+            fingerprint_hint="noise:discord-interaction-expired",
+            next_action=(
+                "Issue не требуется: Discord уже закрыл нажатие или форму. "
+                "Событие остаётся в техническом журнале, но не засоряет очередь разработки."
+            ),
+        )
+
+    disconnected_client = exception_name in {
+        "ConnectionResetError",
+        "ClientConnectionResetError",
+        "BrokenPipeError",
+    } and any(
+        marker in searchable
+        for marker in ("connection lost", "closing transport", "aiohttp.server", "broken pipe")
+    )
+    if disconnected_client:
+        return ErrorClassification(
+            category="client-disconnect",
+            priority="P4",
+            publish=False,
+            title="Клиент закрыл соединение",
+            component="web.client",
+            fingerprint_hint="noise:web-client-disconnect",
+            next_action=(
+                "Issue не требуется: браузер или Discord закрыл транспорт до завершения запроса."
+            ),
+        )
+
+    network_failure = any(
+        marker in searchable
+        for marker in (
+            "clientconnectorerror",
+            "clientconnectordnserror",
+            "temporary failure in name resolution",
+            "connect call failed",
+            "cannot connect to host",
+        )
+    )
+    if network_failure:
+        service = "discord" if any(
+            marker in searchable for marker in ("discord.com", "discord.client", "discord.gateway")
+        ) else "external"
+        return ErrorClassification(
+            category="dependency",
+            priority="P2",
+            publish=True,
+            title=(
+                "Discord временно недоступен"
+                if service == "discord"
+                else "Внешний сервис временно недоступен"
+            ),
+            component=f"dependency.{service}",
+            fingerprint_hint=f"dependency:{service}:connectivity",
+            next_action=(
+                "Проверить сеть/DNS и доступность внешнего сервиса. Программный дефект "
+                "создаётся только после нескольких повторов одного инцидента."
+            ),
+        )
+
+    critical = str(level).lower() == "critical"
+    return ErrorClassification(
+        category="defect",
+        priority="P1" if critical else "P2",
+        publish=True,
+        title=str(title or "Необработанная ошибка"),
+        component=str(component or "tmod"),
+        fingerprint_hint=None,
+        next_action="Воспроизвести по traceback, исправить первопричину и добавить регрессионный тест.",
+    )
 
 
 def error_fingerprint(*, hint: str | None, title: str, component: str, exception: BaseException | None) -> str:
@@ -165,6 +300,16 @@ def _record_safely(
     if not config.capture_enabled or str(level).lower() not in {"error", "critical"}:
         return False
     try:
+        classification = classify_runtime_error(
+            title=title,
+            details=details,
+            component=component,
+            level=level,
+            exception=exception,
+        )
+        if not classification.publish:
+            return False
+        root = _root_exception(exception)
         trace_text = ""
         if exception is not None:
             trace_text = "".join(
@@ -172,15 +317,15 @@ def _record_safely(
             )
         error_storage.record_runtime_error(
             fingerprint=error_fingerprint(
-                hint=fingerprint_hint,
-                title=title,
-                component=component,
-                exception=exception,
+                hint=classification.fingerprint_hint or fingerprint_hint,
+                title=classification.title,
+                component=classification.component,
+                exception=root,
             ),
-            title=sanitize_error_text(title, limit=180),
-            component=sanitize_error_text(component, limit=120),
+            title=sanitize_error_text(classification.title, limit=180),
+            component=sanitize_error_text(classification.component, limit=120),
             level=str(level).lower(),
-            exception_type=(type(exception).__name__ if exception is not None else None),
+            exception_type=(type(root).__name__ if root is not None else None),
             details=sanitize_error_text(details, limit=12000),
             traceback_text=sanitize_error_text(trace_text, limit=20000) if trace_text else None,
             environment=sanitize_error_text(config.environment, limit=80),
@@ -238,13 +383,44 @@ def capture_runtime_event_sync(
     )
 
 
+def _record_classification(record: dict[str, Any]) -> ErrorClassification:
+    return classify_runtime_error(
+        title=str(record.get("title") or "Необработанная ошибка"),
+        details=str(record.get("details") or ""),
+        component=str(record.get("component") or "tmod"),
+        level=str(record.get("level") or "error"),
+        exception_type=str(record.get("exception_type") or ""),
+    )
+
+
+def _issue_title(record: dict[str, Any]) -> str:
+    classification = _record_classification(record)
+    title = f"[T-Mod][{classification.priority}] {classification.title}"
+    return title[:240]
+
+
+def _issue_labels(record: dict[str, Any], base_label: str) -> list[str]:
+    classification = _record_classification(record)
+    labels = [base_label] if base_label else []
+    labels.append(
+        "runtime:dependency" if classification.category == "dependency" else "runtime:defect"
+    )
+    labels.append(
+        "priority:high" if classification.priority == "P1" else "priority:normal"
+    )
+    return list(dict.fromkeys(labels))
+
+
 def _issue_body(record: dict[str, Any]) -> str:
     details = sanitize_error_text(record.get("details"), limit=12000) or "Нет дополнительных сведений."
     trace_text = sanitize_error_text(record.get("traceback_text"), limit=20000)
+    classification = _record_classification(record)
     lines = [
         f"<!-- tmod-runtime:{record['fingerprint']} -->",
         "## Автоматический отчёт T-Mod",
         "",
+        f"- **Приоритет:** `{classification.priority}`",
+        f"- **Категория:** `{classification.category}`",
         f"- **Компонент:** `{record.get('component') or 'tmod'}`",
         f"- **Уровень:** `{record.get('level') or 'error'}`",
         f"- **Исключение:** `{record.get('exception_type') or 'не указано'}`",
@@ -259,6 +435,9 @@ def _issue_body(record: dict[str, Any]) -> str:
         "```text",
         details,
         "```",
+        "",
+        "### Следующее действие",
+        classification.next_action,
     ]
     if trace_text:
         lines.extend(("", "### Traceback", "```text", trace_text, "```"))
@@ -329,11 +508,10 @@ class GitHubIssuePublisher:
     def _create_issue(self, record: dict[str, Any]) -> tuple[int, str]:
         repository = self.config.repository
         payload: dict[str, Any] = {
-            "title": f"[T-Mod runtime] {str(record.get('title') or 'Ошибка')[:180]}",
+            "title": _issue_title(record),
             "body": _issue_body(record),
         }
-        if self.config.label:
-            payload["labels"] = [self.config.label]
+        payload["labels"] = _issue_labels(record, self.config.label)
         try:
             result = self._request("POST", f"/repos/{repository}/issues", payload)
         except RuntimeError as exc:
@@ -352,13 +530,23 @@ class GitHubIssuePublisher:
             return self._create_issue(record)
 
         number = int(issue_number)
+        update_payload: dict[str, Any] = {
+            "state": "open",
+            "title": _issue_title(record),
+            "body": _issue_body(record),
+            "labels": _issue_labels(record, self.config.label),
+        }
         try:
-            self._request("PATCH", f"/repos/{repository}/issues/{number}", {"state": "open"})
+            self._request("PATCH", f"/repos/{repository}/issues/{number}", update_payload)
         except RuntimeError as exc:
             # A manually deleted issue must not poison the durable outbox forever.
             if "github_http_404" in str(exc):
                 return self._create_issue(record)
-            raise
+            if "github_http_422" in str(exc):
+                update_payload.pop("labels", None)
+                self._request("PATCH", f"/repos/{repository}/issues/{number}", update_payload)
+            else:
+                raise
         self._request(
             "POST",
             f"/repos/{repository}/issues/{number}/comments",
@@ -375,12 +563,21 @@ async def publish_error_inbox_once(config: ErrorInboxConfig | None = None) -> in
         return 0
     records = await asyncio.to_thread(
         error_storage.list_runtime_errors_ready,
-        limit=selected.batch_size,
+        limit=min(100, selected.batch_size * 5),
         comment_cooldown_seconds=selected.comment_cooldown_seconds,
     )
     publisher = GitHubIssuePublisher(selected)
     published = 0
     for record in records:
+        if published >= selected.batch_size:
+            break
+        classification = _record_classification(record)
+        if (
+            classification.category == "dependency"
+            and int(record.get("occurrences") or 1)
+            < selected.dependency_occurrence_threshold
+        ):
+            continue
         try:
             number, url = await asyncio.to_thread(publisher.publish, record)
             await asyncio.to_thread(
@@ -434,8 +631,6 @@ class ErrorInboxLoggingHandler(logging.Handler):
         try:
             exception = record.exc_info[1] if record.exc_info else None
             details = self.format(record)
-            hint = f"logging:{record.name}:{record.pathname}:{record.lineno}:{type(exception).__name__ if exception else record.msg}"
-
             def schedule() -> None:
                 self.loop.create_task(
                     capture_runtime_event(
@@ -443,7 +638,9 @@ class ErrorInboxLoggingHandler(logging.Handler):
                         details=details,
                         component=record.name,
                         level="error",
-                        fingerprint_hint=hint,
+                        # The exception's application traceback is a much more stable
+                        # fingerprint than the line where a third-party logger emitted it.
+                        fingerprint_hint=None,
                         exception=exception,
                         config=self.config,
                     )
@@ -538,6 +735,7 @@ __all__ = [
     "GitHubIssuePublisher",
     "capture_runtime_event",
     "capture_runtime_event_sync",
+    "classify_runtime_error",
     "error_fingerprint",
     "error_inbox_worker",
     "load_error_inbox_config",

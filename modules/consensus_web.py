@@ -1023,6 +1023,11 @@ async def _security_middleware(
         if canonical_location is not None:
             raise web.HTTPPermanentRedirect(location=canonical_location)
         response = await handler(request)
+    except ConnectionResetError:
+        # The browser can close a request while navigating away or cancelling a
+        # stream. This is not an application failure and must not reach aiohttp's
+        # error logger (or the GitHub defect inbox).
+        response = web.Response(status=499)
     except web.HTTPException as exc:
         _apply_security_headers(exc, request_path=request.path)
         exc.headers["Server-Timing"] = (
@@ -2132,7 +2137,7 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
     view.add_item(
         discord.ui.Button(
             label="Суфлёр ведущего",
-            emoji="🎙️",
+            emoji="🎤",
             style=discord.ButtonStyle.link,
             url=host_url,
         )
