@@ -92,7 +92,7 @@ jobs:
           python -m pip_audit --local --progress-spinner off --ignore-vuln CVE-2025-69277
 
       - name: Compile production and tests
-        run: python -m compileall -q main.py storage.py localization.py modules persistence scripts minecraft-supervisor tests
+        run: python -m compileall -q main.py web_gateway.py worker_main.py storage.py localization.py modules persistence scripts minecraft-supervisor tests
 
       - name: Lint Python
         run: python -m ruff check .

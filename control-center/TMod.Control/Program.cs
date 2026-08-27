@@ -5,7 +5,7 @@ namespace TMod.Control;
 
 internal static class Program
 {
-    private const string Version = "1.2.0";
+    private const string Version = "1.2.1";
     private static Backend _backend = null!;
     private static TerminalUi _ui = null!;
     private static ControlSettings _settings = new();

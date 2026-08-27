@@ -128,6 +128,60 @@ function New-PreUpdateBackup {
     param([string]$Note)
     $output = $null
     Write-Host "[SAFE UPDATE] Creating a consistent database backup (limit ${BackupTimeoutSeconds}s) ..."
+    # Once PostgreSQL migration is active, the SQLite file is an immutable
+    # archive and must never satisfy the production backup gate. Use the
+    # matching v17 tools already present in the database container so this
+    # remains reliable even while upgrading an older application image.
+    & docker inspect tmod-postgres *> $null
+    if ($LASTEXITCODE -eq 0) {
+        $migrationTable = (& docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT CASE WHEN to_regclass('public.tmod_platform_migrations') IS NULL THEN 0 ELSE 1 END" 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify the active PostgreSQL database before update"
+        }
+        $migrationMarker = "0"
+        if ($migrationTable -eq "1") {
+            $migrationMarker = (& docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT CASE WHEN EXISTS (SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1') THEN 1 ELSE 0 END" 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not verify the PostgreSQL migration marker before update"
+            }
+        }
+        if ($migrationMarker -eq "1") {
+            $backupDirectory = Join-Path $PersistentDir "backups\database"
+            New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+            $created = [DateTime]::UtcNow
+            $stamp = $created.ToString("yyyyMMddTHHmmssffffffZ")
+            $name = "tmod-pre-update-$stamp.dump"
+            $hostPath = Join-Path $backupDirectory $name
+            $containerPath = "/tmp/$name"
+            try {
+                & docker exec tmod-postgres pg_dump -U tmod -d tmod --format=custom --compress=6 --no-owner --no-privileges --file=$containerPath
+                if ($LASTEXITCODE -ne 0) { throw "PostgreSQL pre-update pg_dump failed" }
+                & docker exec tmod-postgres pg_restore --list $containerPath *> $null
+                if ($LASTEXITCODE -ne 0) { throw "PostgreSQL pre-update dump validation failed" }
+                & docker cp "tmod-postgres:$containerPath" $hostPath
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostPath)) { throw "PostgreSQL pre-update dump copy failed" }
+                $size = (Get-Item -LiteralPath $hostPath).Length
+                if ($size -lt 1024) { throw "PostgreSQL pre-update dump is unexpectedly small" }
+                $metadata = [ordered]@{
+                    name = $name
+                    path = "/app/persistent/backups/database/$name"
+                    kind = "pre-update"
+                    backend = "postgresql"
+                    created_at = $created.ToString("o")
+                    size_bytes = $size
+                    integrity = [ordered]@{ ok = $true; result = "pg_restore_list_ok" }
+                    note = $Note
+                } | ConvertTo-Json -Depth 5
+                $metadataPath = [IO.Path]::ChangeExtension($hostPath, ".json")
+                $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                [IO.File]::WriteAllText($metadataPath, $metadata, $utf8NoBom)
+                return "/app/persistent/backups/database/$name"
+            }
+            finally {
+                & docker exec tmod-postgres rm -f $containerPath *> $null
+            }
+        }
+    }
     & docker inspect tmod-discord-bot *> $null
     if ($LASTEXITCODE -eq 0) {
         $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note --timeout-seconds $BackupTimeoutSeconds 2>&1

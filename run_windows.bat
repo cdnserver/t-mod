@@ -210,6 +210,13 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
+call :stage "10A" "Split backend health"
+call :ensure_split_runtime
+if errorlevel 1 (
+  call :pause_if_interactive
+  exit /b 1
+)
+
 rem A bind-mounted Caddyfile can change without Compose recreating Caddy.
 rem Validate it first, then restart so new subdomains receive certificates.
 docker exec tmod-caddy caddy validate --config /etc/caddy/Caddyfile
@@ -293,6 +300,55 @@ echo Database logs: docker logs -f tmod-postgres
 echo Minecraft logs: docker logs -f minecraft
 echo.
 call :pause_if_interactive
+exit /b 0
+
+:ensure_split_runtime
+set SPLIT_RUNTIME_READY=0
+for /l %%i in (1,1,30) do (
+  set WEB_HEALTH=
+  set WORKER_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+    set SPLIT_RUNTIME_READY=1
+    goto :split_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+
+echo.
+call :warn "Web or worker health did not converge; performing one controlled repair"
+docker compose up -d --no-deps --force-recreate tmod-web tmod-worker
+if errorlevel 1 goto :split_runtime_failed
+for /l %%i in (1,1,30) do (
+  set WEB_HEALTH=
+  set WORKER_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+    set SPLIT_RUNTIME_READY=1
+    goto :split_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+
+:split_runtime_failed
+echo.
+call :fail "The split backend did not become healthy after automatic repair"
+docker compose ps -a tmod-web tmod-worker
+echo.
+echo --- tmod-web ---
+docker logs --tail 100 tmod-web 2>&1
+echo.
+echo --- tmod-worker ---
+docker logs --tail 100 tmod-worker 2>&1
+exit /b 1
+
+:split_runtime_ready
+echo.
+call :ok "T-Mod Web and T-Mod Worker are healthy"
 exit /b 0
 
 :check_minecraft_rcon

@@ -67,6 +67,37 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
 
+    def test_runtime_uses_matching_postgres_17_backup_tools(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("FROM postgres:17-bookworm AS postgres-tools", dockerfile)
+        self.assertIn(
+            "COPY --from=postgres-tools /usr/lib/postgresql/17/bin/pg_dump",
+            dockerfile,
+        )
+        self.assertIn(
+            "COPY --from=postgres-tools /usr/lib/postgresql/17/bin/pg_restore",
+            dockerfile,
+        )
+        self.assertIn(
+            "COPY --from=postgres-tools /usr/lib/x86_64-linux-gnu/libpq.so.5*",
+            dockerfile,
+        )
+        self.assertIn("RUN ldconfig", dockerfile)
+        self.assertIn('pg_dump --version | grep -F "PostgreSQL) 17."', dockerfile)
+
+    def test_safe_update_backs_up_the_active_postgres_database(self) -> None:
+        updater = (ROOT / "safe_update_windows.ps1").read_text(encoding="utf-8")
+        postgres_gate = updater.index("to_regclass('public.tmod_platform_migrations')")
+        legacy_gate = updater.index("docker inspect tmod-discord-bot", postgres_gate)
+        active_path = updater[postgres_gate:legacy_gate]
+
+        self.assertIn("Could not verify the active PostgreSQL database", active_path)
+        self.assertIn("docker exec tmod-postgres pg_dump", active_path)
+        self.assertIn("docker exec tmod-postgres pg_restore --list", active_path)
+        self.assertIn('docker cp "tmod-postgres:$containerPath"', active_path)
+        self.assertIn('backend = "postgresql"', active_path)
+        self.assertIn('return "/app/persistent/backups/database/$name"', active_path)
+
 
 if __name__ == "__main__":
     unittest.main()

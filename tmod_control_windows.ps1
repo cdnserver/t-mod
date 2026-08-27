@@ -216,6 +216,7 @@ function Get-StateLabel {
     param($Snapshot)
     if ($Snapshot.State -eq "running" -and ($Snapshot.Health -eq "healthy" -or -not $Snapshot.Health)) { return "ONLINE" }
     if ($Snapshot.State -eq "running" -and $Snapshot.Health -eq "starting") { return "STARTING" }
+    if ($Snapshot.State -eq "running") { return "DEGRADED" }
     if ($Snapshot.State -eq "exited" -and $Snapshot.Name -eq "tmod-db-migrate") { return "DONE" }
     if ($Snapshot.State -eq "exited") { return "STOPPED" }
     if ($Snapshot.State -eq "paused") { return "PAUSED" }
@@ -225,7 +226,7 @@ function Get-StateLabel {
 function Get-StateColor {
     param([string]$Label)
     if ($Label -eq "ONLINE" -or $Label -eq "DONE") { return [ConsoleColor]::Green }
-    if ($Label -eq "STARTING" -or $Label -eq "PAUSED") { return [ConsoleColor]::Yellow }
+    if ($Label -eq "STARTING" -or $Label -eq "PAUSED" -or $Label -eq "DEGRADED") { return [ConsoleColor]::Yellow }
     if ($Label -eq "STOPPED") { return [ConsoleColor]::DarkYellow }
     return [ConsoleColor]::DarkGray
 }

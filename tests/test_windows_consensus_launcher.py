@@ -108,6 +108,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("atlas.tvr.lat", caddyfile)
         self.assertIn("ovr.tvr.lat", caddyfile)
         self.assertIn("OVR_WEB_PUBLIC_URL", script)
+
         self.assertIn("atlas-qdrant", compose)
         self.assertIn("qdrant/qdrant:v1.16.2", compose)
         self.assertIn('"atlas-qdrant-data:/qdrant/storage"', compose)
@@ -133,6 +134,23 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("USER tmod", dockerfile)
         self.assertIn("COPY --chown=tmod:tmod . .", dockerfile)
+
+    def test_launcher_repairs_and_requires_split_runtime_health(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        self.assertIn("call :ensure_split_runtime", launcher)
+        self.assertIn(
+            'docker inspect --format "{{.State.Health.Status}}" tmod-web',
+            launcher,
+        )
+        self.assertIn(
+            'docker inspect --format "{{.State.Health.Status}}" tmod-worker',
+            launcher,
+        )
+        self.assertIn(
+            "docker compose up -d --no-deps --force-recreate tmod-web tmod-worker",
+            launcher,
+        )
+        self.assertIn("The split backend did not become healthy", launcher)
 
     def test_web_health_server_starts_before_discord_ready(self) -> None:
         source = (ROOT / "main.py").read_text(encoding="utf-8")

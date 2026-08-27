@@ -156,7 +156,7 @@ internal sealed class TerminalUi : IDisposable
         var lastVisible = Math.Min(items.Count, firstVisible + visibleCount);
         var builder = new StringBuilder($"{Esc}H{Bg("5;10;18")}{Fg(Theme.Text)}");
         builder.Append("  ").Append(Fg(Theme.Accent)).Append(Bold).Append("T—MOD").Append(Reset).Append(Bg("5;10;18"));
-        builder.Append(Fg(Theme.Muted)).Append("  /  CONTROL CENTER  ").Append(Fg(Theme.Glow)).Append("v1.2.0");
+        builder.Append(Fg(Theme.Muted)).Append("  /  CONTROL CENTER  ").Append(Fg(Theme.Glow)).Append("v1.2.1");
         builder.Append(Fg(Theme.Muted)).Append("  /  ").Append(DateTime.Now.ToString("HH:mm:ss")).Append('\n');
         var railWidth = Math.Max(8, width - 4);
         var railPosition = Math.Abs(phase % Math.Max(1, railWidth * 2 - 2) - (railWidth - 1));

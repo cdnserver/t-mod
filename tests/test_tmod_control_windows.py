@@ -71,6 +71,7 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn('"--force-recreate", "--remove-orphans"', self.control)
         self.assertNotIn("git reset --hard", self.control)
         self.assertNotIn("docker compose down -v", self.control)
+        self.assertIn('if ($Snapshot.State -eq "running") { return "DEGRADED" }', self.control)
 
     def test_services_and_contours_are_explicitly_allowlisted(self) -> None:
         for service in (

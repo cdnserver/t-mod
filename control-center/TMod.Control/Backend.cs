@@ -52,7 +52,7 @@ internal sealed class Backend : IDisposable
     {
         var assembly = Assembly.GetExecutingAssembly();
         var resource = assembly.GetManifestResourceNames().Single(name => name.EndsWith("TModControlPayload.ps1", StringComparison.Ordinal));
-        var cacheDir = Path.Combine(Path.GetTempPath(), "TMod", "Control", "1.2.0");
+        var cacheDir = Path.Combine(Path.GetTempPath(), "TMod", "Control", "1.2.1");
         Directory.CreateDirectory(cacheDir);
         var destination = Path.Combine(cacheDir, "control.ps1");
         using var source = assembly.GetManifestResourceStream(resource) ?? throw new InvalidOperationException("Встроенный управляющий модуль отсутствует.");
