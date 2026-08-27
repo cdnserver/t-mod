@@ -1744,13 +1744,14 @@ def craft_stats(guild_id: int, days: int = 30) -> dict[str, Any]:
                 SELECT actor_id, MAX(actor_display) AS actor_display,
                        SUM(purchases) AS purchases, SUM(batches) AS batches, SUM(sales) AS sales
                 FROM (
-                    SELECT actor_id, actor_display, COUNT(*) AS purchases, 0 AS batches, 0 AS sales
+                    SELECT actor_id, MAX(actor_display) AS actor_display,
+                           COUNT(*) AS purchases, 0 AS batches, 0 AS sales
                     FROM craft_purchases WHERE undone_at IS NULL AND plan_id IN ({placeholders}) GROUP BY actor_id
                     UNION ALL
-                    SELECT started_by_id, started_by_display, 0, COUNT(*), 0
+                    SELECT started_by_id, MAX(started_by_display), 0, COUNT(*), 0
                     FROM craft_batches WHERE undone_at IS NULL AND plan_id IN ({placeholders}) GROUP BY started_by_id
                     UNION ALL
-                    SELECT actor_id, actor_display, 0, 0, COUNT(*)
+                    SELECT actor_id, MAX(actor_display), 0, 0, COUNT(*)
                     FROM craft_sales WHERE undone_at IS NULL AND plan_id IN ({placeholders}) GROUP BY actor_id
                 ) x
                 GROUP BY actor_id

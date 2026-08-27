@@ -651,7 +651,7 @@ def finance_stats(guild_id: int, days: int = 30) -> dict[str, Any]:
         ).fetchall()
         top_reasons_rows = con.execute(
             """
-            SELECT reason, COUNT(*) AS operations, SUM(amount) AS total
+            SELECT MAX(reason) AS reason, COUNT(*) AS operations, SUM(amount) AS total
             FROM finance_events e
             WHERE e.guild_id = ? AND e.created_at >= ?
               AND e.event_kind IN ('deposit', 'withdraw')

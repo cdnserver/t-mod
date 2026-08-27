@@ -457,8 +457,12 @@ class PostgresCompatConnection:
         if re.match(r"^SELECT\s+seq\s+FROM\s+sqlite_sequence\b", raw, re.IGNORECASE):
             return VirtualCursor(("seq",), ())
         if re.match(r"^BEGIN\s+IMMEDIATE\b", raw, re.IGNORECASE):
-            if self._connection.info.transaction_status.name == "IDLE":
-                self._connection.execute("BEGIN")
+            # psycopg opens a transaction automatically before the first
+            # statement. Sending an explicit BEGIN here therefore creates a
+            # redundant nested-BEGIN warning in PostgreSQL. The following
+            # repository statement starts the same transaction implicitly;
+            # PostgreSQL row locks provide the write isolation SQLite obtained
+            # from BEGIN IMMEDIATE.
             return VirtualCursor((), ())
         if re.match(r"^SELECT\s+last_insert_rowid\s*\(\s*\)", raw, re.IGNORECASE):
             return VirtualCursor(("last_insert_rowid",), (((self._last_insert_id or 0),),))

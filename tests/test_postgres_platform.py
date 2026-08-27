@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from persistence.postgres_compat import (
+    PostgresCompatConnection,
     postgres_enabled,
     split_sql_script,
     translate_sql,
@@ -18,6 +19,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_begin_immediate_relies_on_psycopg_implicit_transaction(self) -> None:
+        class Connection:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def execute(self, statement: str, *_args: object) -> None:
+                self.calls.append(statement)
+
+        connection = Connection()
+        adapter = PostgresCompatConnection(connection, object())
+        cursor = adapter.execute("BEGIN IMMEDIATE")
+        self.assertEqual(cursor.rowcount, 0)
+        self.assertEqual(connection.calls, [])
+
+    def test_postgres_strict_repository_queries_are_unambiguous(self) -> None:
+        activity = (ROOT / "persistence/activity_repository.py").read_text(encoding="utf-8")
+        voice = (ROOT / "persistence/voice_control_repository.py").read_text(encoding="utf-8")
+        craft = (ROOT / "persistence/craft_repository.py").read_text(encoding="utf-8")
+        finance = (ROOT / "persistence/finance_repository.py").read_text(encoding="utf-8")
+        atlas = (ROOT / "persistence/atlas_repository.py").read_text(encoding="utf-8")
+
+        self.assertIn("count = activity_counters.count + 1", activity)
+        self.assertIn(
+            "commands_total = voice_user_profiles.commands_total + 1",
+            voice,
+        )
+        self.assertIn("SELECT actor_id, MAX(actor_display) AS actor_display", craft)
+        self.assertIn("SELECT MAX(reason) AS reason", finance)
+        self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE indexed_at END", atlas)
+        self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE last_success_at END", atlas)
+
     def test_legacy_values_are_validated_before_postgres_copy(self) -> None:
         self.assertEqual(_coerce_value("1488", "bigint", False), 1488)
         self.assertEqual(_coerce_value("true", "boolean", False), True)

@@ -143,10 +143,10 @@ def record_voice_recognition(
                 latency_samples, latency_total_ms, last_engine, updated_at
             ) VALUES(?, ?, 1, ?, 1, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
-                commands_total = commands_total + 1,
-                failures_total = failures_total + excluded.failures_total,
-                latency_samples = latency_samples + 1,
-                latency_total_ms = latency_total_ms + excluded.latency_total_ms,
+                commands_total = voice_user_profiles.commands_total + 1,
+                failures_total = voice_user_profiles.failures_total + excluded.failures_total,
+                latency_samples = voice_user_profiles.latency_samples + 1,
+                latency_total_ms = voice_user_profiles.latency_total_ms + excluded.latency_total_ms,
                 last_engine = excluded.last_engine,
                 updated_at = excluded.updated_at
             """,

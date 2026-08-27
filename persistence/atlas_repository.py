@@ -1293,23 +1293,29 @@ def atlas_mark_knowledge_indexed(
 ) -> None:
     now = utc_now_iso()
     with _db_lock, connect() as con:
-        con.execute(
-            """
-            UPDATE atlas_knowledge_sources
-            SET status = ?, qdrant_point_id = COALESCE(?, qdrant_point_id),
-                indexed_at = CASE WHEN ? IS NULL THEN ? ELSE indexed_at END,
-                last_error = ?, updated_at = ?
-            WHERE id = ?
-            """,
+        indexed_at_assignment = "indexed_at = ?" if error is None else "indexed_at = indexed_at"
+        params: list[Any] = [
+            "failed" if error else "indexed",
+            point_id,
+        ]
+        if error is None:
+            params.append(now)
+        params.extend(
             (
-                "failed" if error else "indexed",
-                point_id,
-                error,
-                now,
                 str(error or "")[:2000] or None,
                 now,
                 int(source_id),
-            ),
+            )
+        )
+        con.execute(
+            f"""
+            UPDATE atlas_knowledge_sources
+            SET status = ?, qdrant_point_id = COALESCE(?, qdrant_point_id),
+                {indexed_at_assignment},
+                last_error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            params,
         )
         con.commit()
 
@@ -1417,23 +1423,29 @@ def atlas_forum_sync_finished(
             now_dt + timedelta(seconds=max(3600, int(feed["interval_seconds"])))
         ).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
-        con.execute(
-            """
-            UPDATE atlas_forum_feeds
-            SET status = ?, last_success_at = CASE WHEN ? IS NULL THEN ? ELSE last_success_at END,
-                next_sync_at = ?, last_error = ?, last_stats_json = ?, updated_at = ?
-            WHERE id = ?
-            """,
+        success_assignment = (
+            "last_success_at = last_success_at" if error else "last_success_at = ?"
+        )
+        params: list[Any] = [status]
+        if not error:
+            params.append(now)
+        params.extend(
             (
-                status,
-                error,
-                now,
                 next_sync,
                 str(error or "")[:4000] or None,
                 _json(stats or {}),
                 now,
                 int(feed_id),
-            ),
+            )
+        )
+        con.execute(
+            f"""
+            UPDATE atlas_forum_feeds
+            SET status = ?, {success_assignment},
+                next_sync_at = ?, last_error = ?, last_stats_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            params,
         )
         row = con.execute(
             "SELECT * FROM atlas_forum_feeds WHERE id = ?",
