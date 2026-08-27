@@ -107,11 +107,17 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
     try:
-        async for chunk in upstream.content.iter_chunked(64 * 1024):
-            await response.write(chunk)
+        try:
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                await response.write(chunk)
+            await response.write_eof()
+        except (ConnectionResetError, asyncio.CancelledError):
+            # A navigation, tab close, or cancelled download can disconnect the
+            # browser while the upstream is still streaming. This is a normal
+            # client lifecycle event, not a gateway failure.
+            return response
     finally:
         upstream.release()
-    await response.write_eof()
     return response
 
 
