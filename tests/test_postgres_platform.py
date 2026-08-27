@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -33,6 +34,24 @@ class PostgresCompatibilityTests(unittest.TestCase):
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://example/tmod"}, clear=True):
             self.assertTrue(postgres_enabled())
 
+    def test_postgres_password_uses_persistent_fallback_file(self) -> None:
+        from persistence.postgres_compat import _secret
+
+        with tempfile.TemporaryDirectory() as directory:
+            fallback = Path(directory) / "postgres-password.txt"
+            fallback.write_text("safe-password", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "POSTGRES_PASSWORD_FILE": "/missing/runtime-secret",
+                    "POSTGRES_PASSWORD_FALLBACK_FILE": str(fallback),
+                },
+                clear=True,
+            ):
+                self.assertEqual(
+                    _secret("POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"),
+                    "safe-password",
+                )
     def test_sqlite_repository_dialect_translates_without_changing_aggregates(self) -> None:
         translated = translate_sql(
             """
@@ -80,7 +99,15 @@ class PostgresCompatibilityTests(unittest.TestCase):
             "  tmod-discord-bot:", 1
         )[1]
         self.assertIn(
-            "postgres-password.txt:/run/secrets/postgres_password:ro",
+            'POSTGRES_PASSWORD_FILE: "/app/persistent/secrets/postgres-password.txt"',
+            compose,
+        )
+        self.assertIn(
+            'POSTGRES_PASSWORD_FALLBACK_FILE: "/run/secrets/postgres_password"',
+            compose,
+        )
+        self.assertIn(
+            '"C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"',
             bot_service,
         )
 

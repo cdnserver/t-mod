@@ -34,10 +34,26 @@ def _secret(name: str, file_name: str, default: str = "") -> str:
         return direct
     path = os.getenv(file_name, "").strip()
     if path:
-        try:
-            return Path(path).read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError(f"postgres_secret_unavailable:{path}") from exc
+        candidates = [path]
+        if file_name == "POSTGRES_PASSWORD_FILE":
+            fallback = os.getenv("POSTGRES_PASSWORD_FALLBACK_FILE", "").strip()
+            if fallback and fallback not in candidates:
+                candidates.append(fallback)
+            persistent = "/app/persistent/secrets/postgres-password.txt"
+            if persistent not in candidates:
+                candidates.append(persistent)
+        failure: OSError | None = None
+        for candidate in candidates:
+            try:
+                value = Path(candidate).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                failure = exc
+                continue
+            if value:
+                return value
+        raise RuntimeError(
+            "postgres_secret_unavailable:" + ",".join(candidates)
+        ) from failure
     return default
 
 
