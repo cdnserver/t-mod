@@ -314,6 +314,15 @@ def translate_sql(sql: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
+    # Remaining SQLite julianday() calls are used for chronological ordering.
+    # Keep their numeric semantics so future arithmetic expressions translate
+    # correctly as well.
+    value = re.sub(
+        r"\bjulianday\s*\(\s*([^()]+?)\s*\)",
+        r"(EXTRACT(EPOCH FROM ((\1)::timestamptz)) / 86400.0 + 2440587.5)",
+        value,
+        flags=re.IGNORECASE,
+    )
     insert_ignore = bool(re.match(r"^INSERT\s+OR\s+IGNORE\s+INTO\b", value, re.IGNORECASE))
     if insert_ignore:
         value = re.sub(

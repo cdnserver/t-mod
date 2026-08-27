@@ -80,6 +80,13 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("LOWER(name)=LOWER(%s)", search)
         self.assertNotIn("NOCASE", search)
 
+    def test_sqlite_julianday_ordering_translates_to_postgres(self) -> None:
+        translated = translate_sql(
+            "SELECT due_at FROM delivery_outbox ORDER BY julianday(due_at), due_at"
+        )
+        self.assertNotIn("julianday", translated.lower())
+        self.assertIn("EXTRACT(EPOCH FROM ((due_at)::timestamptz))", translated)
+
     def test_script_splitter_does_not_break_quoted_semicolons(self) -> None:
         self.assertEqual(
             split_sql_script("INSERT INTO x(v) VALUES ('a;b'); SELECT 1;"),
