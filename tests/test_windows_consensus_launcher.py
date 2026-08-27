@@ -12,6 +12,14 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("configure_direct_web_windows.ps1", launcher)
         self.assertNotIn("configure_cloudflare_tunnel_windows.ps1", launcher)
         self.assertIn("docker compose up -d --remove-orphans", launcher)
+        self.assertIn(
+            "PostgreSQL secret mount verified inside Docker",
+            launcher,
+        )
+        self.assertIn(
+            "docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-worker",
+            launcher,
+        )
         self.assertNotIn("docker stop minecraft", launcher)
         self.assertNotIn("docker rm minecraft", launcher)
         self.assertIn("http://127.0.0.1:8787/api/health", launcher)

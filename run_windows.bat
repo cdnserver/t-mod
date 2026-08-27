@@ -179,6 +179,17 @@ if not "%POSTGRES_READY%"=="1" (
   call :pause_if_interactive
   exit /b 1
 )
+rem Verify the application-side secret path through the effective Compose
+rem configuration. This catches stale or missing Docker Desktop bind mounts
+rem before Python starts and emits a clear boot-stage failure.
+docker compose run --rm --no-deps tmod-db-migrate python -c "from pathlib import Path; p=Path('/app/persistent/secrets/postgres-password.txt'); assert p.is_file() and len(p.read_text(encoding='utf-8').strip()) >= 32, p"
+if errorlevel 1 (
+  call :fail "PostgreSQL secret is not visible inside application containers"
+  call :warn "Expected host file: %POSTGRES_SECRET%"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :ok "PostgreSQL secret mount verified inside Docker"
 set POSTGRES_MIGRATION_REQUIRED=1
 docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'" 2>nul | findstr /X /C:"1" >nul
 if not errorlevel 1 set POSTGRES_MIGRATION_REQUIRED=0
@@ -195,6 +206,11 @@ if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
     exit /b 1
   )
 )
+rem Always replace the application containers. A failed transactional update
+rem can otherwise leave a stopped bot carrying the previous Compose mounts and
+rem environment even after the repository was updated. Persistent data and the
+rem PostgreSQL volume are not removed.
+docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-worker >nul 2>nul
 docker compose up -d --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"
