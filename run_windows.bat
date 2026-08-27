@@ -243,13 +243,16 @@ if errorlevel 1 if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
 call :stage "13" "Status"
 docker compose ps
 
-for %%D in ("%~dp0..") do set "DESKTOP_LAUNCHER=%%~fD\T-Mod Control.bat"
-copy /y "%~dp0tmod_control_windows.bat" "%DESKTOP_LAUNCHER%" >nul 2>nul
-if errorlevel 1 (
-  call :warn "T-Mod Control launcher could not be refreshed"
+set "CONTROL_INSTALLER=%~dp0install_tmod_control_windows.ps1"
+if exist "%CONTROL_INSTALLER%" (
+  powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%CONTROL_INSTALLER%" -ProjectDir "%~dp0" -Quiet
+  if errorlevel 1 (
+    call :warn "Native T-Mod Control could not be refreshed; server startup remains successful"
+  ) else (
+    call :ok "T-Mod Control refreshed: native EXE is current"
+  )
 ) else (
-  if exist "%%~fD\Start T-Mod.bat" del /Q "%%~fD\Start T-Mod.bat" >nul 2>nul
-  call :ok "T-Mod Control refreshed: %DESKTOP_LAUNCHER%"
+  call :warn "Native T-Mod Control installer is missing"
 )
 
 if exist "%~dp0configure_auto_update_windows.ps1" (

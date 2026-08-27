@@ -178,6 +178,10 @@ def main() -> None:
             newline="",
         )
         print(f"built {destination.name}")
+    control_payload = ROOT / "control-center" / "TMod.Control" / "Generated" / "TModControlPayload.ps1"
+    control_payload.parent.mkdir(parents=True, exist_ok=True)
+    control_payload.write_bytes(_payload(ROOT / "tmod_control_windows.ps1").encode("utf-8-sig"))
+    print(f"built {control_payload.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

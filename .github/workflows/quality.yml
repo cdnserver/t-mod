@@ -13,6 +13,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  control-center:
+    name: Native Control Center · build and self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.424"
+
+      - name: Generate embedded backend
+        run: python scripts/build_tmod_windows_bundles.py
+
+      - name: Build and run native self-test
+        shell: pwsh
+        run: |
+          dotnet build control-center/TMod.Control/TMod.Control.csproj -c Release --nologo
+          dotnet run --project control-center/TMod.Control/TMod.Control.csproj -c Release --no-build -- --self-test
+
+      - name: Publish one self-contained Windows EXE
+        shell: pwsh
+        run: |
+          dotnet publish control-center/TMod.Control/TMod.Control.csproj -c Release -r win-x64 --self-contained true -o control-center/publish --nologo
+          $files = @(Get-ChildItem control-center/publish -File)
+          if ($files.Count -ne 1 -or $files[0].Extension -ne '.exe') { throw 'Expected exactly one EXE' }
+
   test:
     name: Python 3.12 · security, lint and test
     runs-on: ubuntu-latest
