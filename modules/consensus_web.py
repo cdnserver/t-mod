@@ -25,6 +25,7 @@ from modules.consensus_core import (
     ConsensusStateError,
     session_from_snapshot,
 )
+from modules.consensus_health import assess_consensus_health
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import get_consensus_simulation
 from modules.consensus_web_auth import (
@@ -434,6 +435,9 @@ def _session_payload(
     simulation: bool,
     current_bill_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Finished snapshots are intentionally used for the post-session screen;
+    # ``assess_consensus_health`` diagnoses active registry entries only.
+    health = None if session.finished else assess_consensus_health(session)
     participants = sorted(
         session.participants.values(),
         key=lambda item: (
@@ -486,6 +490,26 @@ def _session_payload(
         "leader": {
             "id": int(session.leader_id),
             "name": str(session.leader_display),
+        },
+        "integrity": {
+            "status": (
+                "critical"
+                if health is not None and health.critical
+                else (
+                    "warning"
+                    if health is not None and health.warnings
+                    else "nominal"
+                )
+            ),
+            "issues": [
+                {
+                    "code": item.code,
+                    "severity": item.severity,
+                    "message": item.message,
+                    "recovery": item.recovery,
+                }
+                for item in (health.issues if health is not None else ())
+            ],
         },
         "current_bill": _bill_payload(
             current_bill,

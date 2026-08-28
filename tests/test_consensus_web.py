@@ -107,6 +107,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "created_at": "2026-07-28T12:00:00+00:00",
             },
             stage="voting",
+            revision=3,
         )
         self.session.votes = {1: "yes", 4: "no"}
         active_sessions[77] = self.session
@@ -145,6 +146,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["session"]["voting"]["received"], 2)
         self.assertEqual(state["session"]["voting"]["expected"], 4)
         self.assertEqual(state["session"]["blocks"]["first"], "hidden")
+        self.assertEqual(state["session"]["integrity"]["status"], "nominal")
         self.assertEqual(len(state["queue"]), 1)
         rendered = str(state["session"]["participants"])
         self.assertNotIn("'vote':", rendered)
@@ -385,9 +387,25 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "paused": {"resume", "finish_session"},
             "after_result": {"next_bill", "finish_session"},
         }
+        bill = dict(self.session.current_bill or {})
         for stage, actions in expected.items():
             with self.subTest(stage=stage):
                 self.session.stage = stage  # type: ignore[assignment]
+                self.session.current_bill = None if stage in {"registration", "after_result"} else dict(bill)
+                self.session.pending_action = (
+                    {
+                        "kind": "vote",
+                        "forced": True,
+                        "actor_id": 1,
+                        "bill_id": int(bill["id"]),
+                        "claimed_at": "2026-07-28T12:00:00+00:00",
+                    }
+                    if stage == "finalizing"
+                    else None
+                )
+                self.session.previous_stage = "voting" if stage == "paused" else None
+                self.session.discussion_type = "Правовая" if stage == "discussion" else None
+                self.session.discussion_initiator_id = 4 if stage == "discussion" else None
                 self.assertTrue(
                     actions.issubset(
                         set(
@@ -401,6 +419,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.session.stage = "voting"
+        self.session.current_bill = dict(bill)
+        self.session.previous_stage = None
         observer = self._principal(user_id=4)
         self.assertEqual(
             consensus_web_capabilities(
@@ -410,6 +430,34 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             ),
             ["participant_vote", "request_discussion"],
         )
+
+    async def test_corrupt_roster_is_read_only_in_web_console(self) -> None:
+        self.session.participants[2].voting_block = "first"
+        principal = self._principal()
+
+        self.assertEqual(
+            consensus_web_capabilities(
+                mode="live",
+                session=self.session,
+                principal=principal,
+            ),
+            [],
+        )
+        with self.assertRaises(ConsensusWebCommandError) as raised:
+            await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                SimpleNamespace(id=77),
+                principal,
+                mode="live",
+                action="finalize_vote",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={"confirm": True},
+            )
+
+        self.assertEqual(raised.exception.code, "consensus_integrity_locked")
+        self.assertIn("voting_blocks_invalid", raised.exception.details["issues"])
 
     async def test_host_timer_accepts_custom_duration_and_replace_mode(self) -> None:
         timer = AsyncMock()
@@ -581,6 +629,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_discussion_composer_uses_current_allowed_roster(self) -> None:
         self.session.stage = "discussion"
         self.session.discussion_channel_id = 555
+        self.session.discussion_type = "Правовая"
+        self.session.discussion_initiator_id = 4
         self.session.discussion_allowed_user_ids = {4}
         principal = self._principal(user_id=4)
         self.assertEqual(

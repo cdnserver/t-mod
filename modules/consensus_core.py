@@ -239,7 +239,42 @@ def transition_session(session: LiveConsensusSession, target_stage: str) -> tupl
     return current, target
 
 
+def validate_consensus_roster(session: LiveConsensusSession) -> None:
+    """Reject a malformed frozen roster before it can affect a decision.
+
+    The roster is copied into every durable snapshot and is the basis for
+    quorum, vote ownership and the four decision blocks. Validating it in the
+    domain layer keeps Discord, web, recovery and simulation on one contract.
+    """
+
+    if not session.participants:
+        raise ConsensusStateError("Состав консенсуса пуст.")
+    occupied_blocks: dict[str, int] = {}
+    for roster_id, participant in session.participants.items():
+        if int(roster_id) != int(participant.user_id):
+            raise ConsensusStateError("Идентификатор участника не совпадает с составом.")
+        if participant.kind not in {"chair", "senator"}:
+            raise ConsensusStateError("В составе найдена неизвестная роль участника.")
+        if participant.permanent and participant.kind != "chair":
+            raise ConsensusStateError("Право постоянного вето закреплено не за председателем.")
+        block = participant.voting_block
+        if block is None:
+            continue
+        if block not in {"first", "second", "third"} or participant.kind != "chair":
+            raise ConsensusStateError("Личный блок голоса закреплён некорректно.")
+        if block in occupied_blocks:
+            raise ConsensusStateError("Один блок голоса закреплён за несколькими участниками.")
+        occupied_blocks[block] = int(participant.user_id)
+
+    leader = session.participants.get(int(session.leader_id))
+    if leader is None or leader.kind != "chair":
+        raise ConsensusStateError("Ведущий отсутствует среди председателей состава.")
+    if not leader.confirmed:
+        raise ConsensusStateError("Ведущий не подтвердил участие в заседании.")
+
+
 def calculate_consensus(session: LiveConsensusSession) -> dict[str, Any]:
+    validate_consensus_roster(session)
     if session.rules.version >= 3:
         participants = session.confirmed_participants()
         valid_internal_votes = [
@@ -492,6 +527,7 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
     ):
         raise ConsensusStateError("Для фиксации результата отсутствует сохранённое действие.")
     participants: dict[int, LiveParticipant] = {}
+    occupied_blocks: dict[str, int] = {}
     for raw in snapshot.get("participants") or []:
         user_id = int(raw["user_id"])
         if user_id in participants:
@@ -499,6 +535,25 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
         kind = str(raw.get("kind") or "")
         if kind not in {"chair", "senator"}:
             raise ConsensusStateError(f"Неизвестная роль участника: {kind}")
+        voting_block = (
+            str(raw["voting_block"])
+            if raw.get("voting_block") in {"first", "second", "third"}
+            else None
+        )
+        if voting_block is not None:
+            if kind != "chair":
+                raise ConsensusStateError(
+                    "Личный блок голоса назначен участнику без статуса председателя."
+                )
+            if voting_block in occupied_blocks:
+                raise ConsensusStateError(
+                    f"Блок {voting_block} повторяется в составе консенсуса."
+                )
+            occupied_blocks[voting_block] = user_id
+        if bool(raw.get("permanent")) and kind != "chair":
+            raise ConsensusStateError(
+                "Право постоянного вето назначено участнику без статуса председателя."
+            )
         participants[user_id] = LiveParticipant(
             user_id=user_id,
             display_name=str(raw.get("display_name") or user_id),
@@ -511,11 +566,7 @@ def session_from_snapshot(snapshot: dict[str, Any]) -> LiveConsensusSession:
             vote_message_id=int(raw["vote_message_id"]) if raw.get("vote_message_id") else None,
             vote_bill_id=int(raw["vote_bill_id"]) if raw.get("vote_bill_id") else None,
             discussion_message_id=int(raw["discussion_message_id"]) if raw.get("discussion_message_id") else None,
-            voting_block=(
-                str(raw["voting_block"])
-                if raw.get("voting_block") in {"first", "second", "third"}
-                else None
-            ),  # type: ignore[arg-type]
+            voting_block=voting_block,  # type: ignore[arg-type]
         )
     results = [
         LiveResult(

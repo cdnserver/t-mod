@@ -518,6 +518,9 @@ a:focus-visible,
 .host-telemetry dl div { min-width: 0; }
 .host-telemetry dt { color: var(--muted); font-size: 0.59rem; }
 .host-telemetry dd { margin: 4px 0 0; overflow: hidden; font-size: 0.68rem; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+.host-telemetry dd[data-status="nominal"] { color: var(--accent); }
+.host-telemetry dd[data-status="warning"] { color: #f2c66d; }
+.host-telemetry dd[data-status="critical"] { color: var(--danger); text-shadow: 0 0 16px rgba(255, 146, 127, 0.25); }
 .host-telemetry header button { min-height: 32px; }
 .host-settings-button { width: 100%; }
 

@@ -137,6 +137,47 @@ class ConsensusLifecycleSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ConsensusStateError, "идентификатор"):
             session_from_snapshot(snapshot)
 
+    def test_snapshot_rejects_duplicate_voting_block(self) -> None:
+        snapshot = session_to_snapshot(make_session(stage="voting"))
+        snapshot["participants"][0]["voting_block"] = "first"
+        snapshot["participants"][1]["voting_block"] = "first"
+
+        with self.assertRaisesRegex(ConsensusStateError, "повторяется"):
+            session_from_snapshot(snapshot)
+
+    def test_health_locks_ambiguous_roster_and_repeated_current_bill(self) -> None:
+        session = make_session(stage="voting")
+        session.participants[1].voting_block = "first"
+        session.participants[2].voting_block = "first"
+        session.results.append(
+            LiveResult(10, 7, "Проект", "accepted", 75, 75, True, {})
+        )
+
+        codes = {item.code for item in assess_consensus_health(session).critical}
+
+        self.assertIn("voting_blocks_invalid", codes)
+        self.assertIn("current_bill_already_resolved", codes)
+
+    def test_domain_rejects_invalid_bill_and_external_discussion_recipient(self) -> None:
+        coordinator = ConsensusCoordinator(MemoryRepository())
+        session = make_session(stage="after_result")
+        session.current_bill = None
+        with self.assertRaisesRegex(ConsensusStateError, "номер"):
+            coordinator.begin_bill(
+                session,
+                {"id": 0, "bill_number": 7, "title": "Повреждённый"},
+                actor=ConsensusActor(1, "Первый"),
+            )
+
+        session = make_session(stage="discussion_type")
+        with self.assertRaisesRegex(ConsensusStateError, "подтверждённого состава"):
+            coordinator.begin_discussion(
+                session,
+                "Правовая",
+                channel_id=500,
+                allowed_user_ids={3, 999},
+            )
+
     def test_resume_refuses_to_guess_missing_previous_stage(self) -> None:
         coordinator = ConsensusCoordinator(MemoryRepository())
         session = make_session(stage="paused")
