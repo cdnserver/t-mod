@@ -628,7 +628,7 @@ class AdmissionPublicView(discord.ui.View):
                 label="Открыть Phoenix",
                 style=discord.ButtonStyle.link,
                 url=ADMISSION_PUBLIC_URL,
-                emoji="✦",
+                emoji="🌐",
             )
         )
         self.add_item(
@@ -636,7 +636,7 @@ class AdmissionPublicView(discord.ui.View):
                 label="Создать T-Mod аккаунт",
                 style=discord.ButtonStyle.link,
                 url=f"https://discord.com/users/{int(bot_user_id)}",
-                emoji="◈",
+                emoji="👤",
             )
         )
 
