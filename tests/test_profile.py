@@ -668,6 +668,12 @@ class ProfileUiTests(unittest.TestCase):
         view = TModAccountView(10, 20, [character], None)
         labels = {getattr(item, "label", None) for item in view.children}
         self.assertEqual(labels, {"Добавить персонажа", "Персонажи", "Логин и PIN"})
+        add_character = next(
+            item
+            for item in view.children
+            if getattr(item, "label", None) == "Добавить персонажа"
+        )
+        self.assertEqual(str(add_character.emoji), "➕")
         modal = TModAccountCharacterModal(10, 20, character)
         self.assertEqual(modal.character_id, 7)
         self.assertEqual(str(modal.nickname.default), "Robert Test")

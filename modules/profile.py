@@ -1372,7 +1372,7 @@ class TModAccountView(ProfileBaseView):
                 )
             )
 
-    @discord.ui.button(label="Добавить персонажа", emoji="＋", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Добавить персонажа", emoji="➕", style=discord.ButtonStyle.primary)
     async def add_character(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(TModAccountCharacterModal(self.guild_id, self.requester_id))
 

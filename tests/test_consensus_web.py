@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from decimal import Decimal
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from pypdf import PdfReader
 
 import storage
+from modules.consensus_admin_web import _json_ready
 from modules.consensus_core import (
     LiveConsensusSession,
     LiveParticipant,
@@ -138,6 +140,17 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             csrf_token="csrf-test-token",
             member=member,  # type: ignore[arg-type]
         )
+
+    async def test_admin_json_boundary_normalizes_postgres_decimals(self) -> None:
+        payload = _json_ready({
+            "counts": Decimal("12"),
+            "finance": {"balance": Decimal("1250.75")},
+            "series": (Decimal("1"), Decimal("2.5")),
+        })
+
+        self.assertEqual(payload["counts"], 12)
+        self.assertEqual(payload["finance"]["balance"], 1250.75)
+        self.assertEqual(payload["series"], [1, 2.5])
 
     async def test_state_exposes_progress_but_not_live_vote_directions(self) -> None:
         state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
@@ -868,6 +881,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Host": "reactor.tvr.lat"},
                 allow_redirects=False,
             )
+            admission = await client.get(
+                "/admission",
+                headers={"Host": "tvr.lat"},
+                allow_redirects=False,
+            )
         finally:
             await client.close()
 
@@ -882,6 +900,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
         self.assertEqual(ovr.status, 308)
         self.assertEqual(ovr.headers["Location"], "https://ovr.tvr.lat/ovr")
+        self.assertEqual(admission.status, 308)
+        self.assertEqual(
+            admission.headers["Location"],
+            "https://phx.tvr.lat/admission",
+        )
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)

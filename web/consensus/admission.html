@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#07090d">
+    <title>Phoenix · путь в Сенат</title>
+    <link rel="icon" href="/favicon.ico">
+    <link rel="stylesheet" href="/assets/fonts.css">
+    <link rel="stylesheet" href="/admission-assets/admission.css?v=1">
+    <script defer src="/admission-assets/admission.js?v=1"></script>
+  </head>
+  <body>
+    <div class="sky" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="aurora" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="/admission" aria-label="Phoenix">
+        <span class="brand-mark"><i></i></span>
+        <span><strong>PHOENIX</strong><small>T-Mod · Товарищество</small></span>
+      </a>
+      <nav>
+        <a href="#path">Порядок</a>
+        <a href="#application">Заявка</a>
+        <a class="top-login" href="/login?next=/admission">Войти в T-Mod</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-orbit" aria-hidden="true"><i></i><b></b><span></span></div>
+        <div class="hero-copy">
+          <p class="eyebrow"><i></i> ЕДИНЫЙ ПУТЬ ВСТУПЛЕНИЯ</p>
+          <h1>Ваш путь<br>в <em>Сенат</em></h1>
+          <p class="hero-lead">Одна прозрачная процедура: T-Mod аккаунт, анкета, проверка ОВР и решение пленарного консенсуса. Никаких потерянных сообщений и неизвестных статусов.</p>
+          <div class="hero-actions">
+            <a class="button primary" href="#application">Начать путь <span>↘</span></a>
+            <a class="button quiet" href="#path">Как всё устроено</a>
+          </div>
+        </div>
+        <div class="hero-status" aria-label="Этапы вступления">
+          <span>PHX / ADMISSION</span>
+          <strong>01 — 05</strong>
+          <p>От первого шага до решения Товарищества</p>
+        </div>
+      </section>
+
+      <section id="path" class="path-section">
+        <header class="section-heading">
+          <p>ПРОЦЕДУРА</p>
+          <h2>Пять этапов.<br>Одна история.</h2>
+          <span>Каждое решение сохраняется, а об изменениях T-Mod сообщает лично.</span>
+        </header>
+        <div class="path-grid">
+          <article><b>01</b><i></i><h3>T-Mod аккаунт</h3><p>Создайте веб-доступ в ЛС с ботом через <code>/account</code> и добавьте хотя бы одного персонажа.</p></article>
+          <article><b>02</b><i></i><h3>Заявка Phoenix</h3><p>Укажите персонажей, форумный профиль, мотивацию и пройдите ситуационный тест.</p></article>
+          <article><b>03</b><i></i><h3>Проверка ОВР</h3><p>Отдел внешней разведки изучает сведения и готовит мотивированное решение в срок до 48 часов.</p></article>
+          <article><b>04</b><i></i><h3>Консенсус</h3><p>После допуска T-Mod сам создаёт инициативу. Решение принимает пленарный консенсус.</p></article>
+          <article><b>05</b><i></i><h3>Вступление</h3><p>При положительном решении с вами связывается сопредседатель и завершает IC-процедуру.</p></article>
+        </div>
+      </section>
+
+      <section id="application" class="application-section">
+        <div id="loading-card" class="loading-card">
+          <div class="loader"><i></i><span></span></div>
+          <strong>Синхронизация с T-Mod</strong>
+          <p>Проверяем аккаунт и историю заявления</p>
+        </div>
+
+        <article id="account-gate" class="account-gate" hidden>
+          <div class="gate-visual" aria-hidden="true"><span>T</span><i></i><b></b></div>
+          <div>
+            <p class="eyebrow">ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ</p>
+            <h2>Сначала — ваш<br>T-Mod аккаунт</h2>
+            <p>Он связывает заявку с вами, защищает от повторной подачи и позволяет получать решения ОВР и консенсуса лично.</p>
+            <ol>
+              <li><b>Откройте ЛС с T-Mod</b><span>Нажмите кнопку ниже или найдите T-Mod на сервере.</span></li>
+              <li><b>Введите <code>/account</code></b><span>Создайте логин и восьмизначный PIN.</span></li>
+              <li><b>Добавьте персонажа</b><span>Минимум один персонаж с ником и статиком.</span></li>
+            </ol>
+            <div class="gate-actions">
+              <a class="button primary" href="https://discord.com/users/1500495112638038246" target="_blank" rel="noopener">Открыть T-Mod в Discord</a>
+              <a class="button quiet" href="/login?next=/admission">У меня уже есть аккаунт</a>
+            </div>
+          </div>
+        </article>
+
+        <article id="senator-card" class="decision-card accepted" hidden>
+          <span class="decision-seal">✓</span><p class="eyebrow">МАНДАТ АКТИВЕН</p>
+          <h2>Вы уже являетесь сенатором</h2>
+          <p>Повторная заявка не требуется. Ваш действующий мандат доступен в персональном Реакторе.</p>
+          <a class="button primary" href="https://tvr.lat/reactor">Открыть Реактор</a>
+        </article>
+
+        <article id="status-card" class="status-card" hidden>
+          <header>
+            <div><p class="eyebrow"><i></i> ЛИЧНАЯ КАРТОЧКА PHOENIX</p><h2 id="status-title">Заявка рассматривается</h2><p id="status-copy"></p></div>
+            <div class="status-reference"><small>РЕГИСТРАЦИЯ</small><strong id="status-reference">—</strong></div>
+          </header>
+          <div class="status-track" id="status-track"></div>
+          <div class="status-grid">
+            <section><small>ПЕРСОНАЖИ</small><div id="status-characters"></div></section>
+            <section><small>ХРОНОЛОГИЯ</small><div id="status-events" class="event-list"></div></section>
+          </div>
+          <footer><span><i></i> Страница обновляется автоматически</span><span id="status-updated">—</span></footer>
+        </article>
+
+        <article id="form-shell" class="form-shell" hidden>
+          <aside class="form-rail">
+            <p class="eyebrow">ЗАЯВКА PHOENIX</p>
+            <h2>Расскажите<br>о себе</h2>
+            <p>Черновик живёт только в вашем браузере. После отправки данные зафиксируются и автоматически перейдут в ОВР.</p>
+            <div id="step-nav" class="step-nav">
+              <button type="button" data-step="0"><b>01</b><span>Персонажи<small>Игровая идентичность</small></span></button>
+              <button type="button" data-step="1"><b>02</b><span>О вас<small>Мотивация и вклад</small></span></button>
+              <button type="button" data-step="2"><b>03</b><span>Ситуации<small>Ваш способ действий</small></span></button>
+              <button type="button" data-step="3"><b>04</b><span>Проверка<small>Перед фиксацией</small></span></button>
+            </div>
+            <div class="form-progress"><i id="form-progress"></i></div>
+          </aside>
+
+          <form id="admission-form" novalidate>
+            <section class="form-step" data-step="0">
+              <header><small>01 / ИДЕНТИЧНОСТЬ</small><h3>Ваши персонажи</h3><p>От одного до трёх. Для каждого укажите полный игровой ник и статик. Форумный профиль общий.</p></header>
+              <label class="field"><span>Ссылка на форумный профиль</span><input id="forum-url" type="url" maxlength="1000" placeholder="https://forum.majestic-rp.ru/members/..." required><small>Полная ссылка на ваш профиль Majestic RP</small></label>
+              <div id="characters" class="characters"></div>
+              <button id="add-character" class="add-character" type="button"><span>＋</span> Добавить ещё одного персонажа</button>
+            </section>
+
+            <section class="form-step" data-step="1" hidden>
+              <header><small>02 / НАМЕРЕНИЕ</small><h3>Что вы принесёте в круг</h3><p>Нам важен не идеальный ответ, а ясное и честное понимание ваших намерений.</p></header>
+              <label class="field"><span>Почему вы хотите вступить в Товарищество?</span><textarea id="motivation" rows="6" minlength="20" maxlength="2000" placeholder="Расскажите о мотивации, ожиданиях и том, что для вас означает участие" required></textarea><small><b data-count="motivation">0</b> / 2000</small></label>
+              <label class="field"><span>Чем вы готовы быть полезны?</span><textarea id="contribution" rows="5" minlength="10" maxlength="1500" placeholder="Навыки, опыт, интересы, инициативы" required></textarea><small><b data-count="contribution">0</b> / 1500</small></label>
+              <label class="field"><span>Когда и насколько регулярно вы доступны?</span><input id="availability" maxlength="500" placeholder="Например: по будням после 19:00, 3–4 вечера в неделю" required></label>
+            </section>
+
+            <section class="form-step test-step" data-step="2" hidden>
+              <header><small>03 / СИТУАЦИОННЫЙ ПРОФИЛЬ</small><h3>Как вы принимаете решения</h3><p>Здесь нет «правильной личности». Выберите вариант, который действительно ближе вашему поведению.</p></header>
+              <div id="questions" class="questions"></div>
+            </section>
+
+            <section class="form-step review-step" data-step="3" hidden>
+              <header><small>04 / ФИКСАЦИЯ</small><h3>Последняя проверка</h3><p>После отправки создать вторую заявку нельзя. Дальнейшие этапы будут продолжаться в этой карточке.</p></header>
+              <div id="review" class="review"></div>
+              <label class="consent"><input id="consent" type="checkbox" required><span><i></i><b>Подтверждаю достоверность сведений</b><small>Я понимаю, что заявка будет передана в закрытый контур ОВР и затем, при допуске, на консенсус.</small></span></label>
+            </section>
+
+            <footer class="form-controls">
+              <button id="back-step" class="button quiet" type="button">← Назад</button>
+              <span id="form-message" role="status"></span>
+              <button id="next-step" class="button primary" type="button">Продолжить <span>→</span></button>
+              <button id="submit-form" class="button primary" type="submit" hidden>Зафиксировать и передать в ОВР</button>
+            </footer>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer"><span>Phoenix / T-Mod</span><p>Технологический контур Товарищества</p><span>Светлый круг · 2026</span></footer>
+    <div id="toast" class="toast" hidden></div>
+  </body>
+</html>

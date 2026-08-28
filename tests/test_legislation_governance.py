@@ -51,6 +51,34 @@ class LegislationGovernanceTests(unittest.TestCase):
         self.assertEqual(reopened["id"], workspace["id"])
         self.assertEqual(len(legislation.moderation_events([workspace["id"]])[workspace["id"]]), 2)
 
+    def test_return_for_changes_coexists_with_authors_new_draft(self) -> None:
+        reviewed, _ = workspaces.create_or_get_bill_workspace(
+            guild_id=1, author_id=2, author_display="Автор", parent_channel_id=3
+        )
+        reviewed = workspaces.update_bill_workspace(
+            reviewed["id"], expected_revision=reviewed["revision"],
+            title="Первый проект",
+            summary="Проект уже находится на проверке модерации.", status="review",
+        )
+        reviewed = legislation.submit_for_moderation(
+            reviewed["id"], guild_id=1, author_id=2,
+            author_display="Автор", expected_revision=reviewed["revision"],
+        )
+        draft, created = workspaces.create_or_get_bill_workspace(
+            guild_id=1, author_id=2, author_display="Автор", parent_channel_id=3
+        )
+        self.assertTrue(created)
+        self.assertNotEqual(draft["id"], reviewed["id"])
+
+        returned = legislation.record_moderation_decision(
+            reviewed["id"], guild_id=1, moderator_id=9,
+            moderator_display="Председатель", expected_revision=reviewed["revision"],
+            decision="changes_requested", note="Дополните порядок исполнения.",
+        )
+
+        self.assertEqual(returned["status"], "changes_requested")
+        self.assertEqual(workspaces.get_bill_workspace(draft["id"])["status"], "draft")
+
     def test_ovr_private_fields_are_visible_only_to_authorized_desk(self) -> None:
         case = ovr.create_case(
             guild_id=1, first_name="Saul", last_name="Goodman", static_id="123",

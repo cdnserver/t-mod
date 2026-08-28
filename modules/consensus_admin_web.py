@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from dataclasses import asdict
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -82,6 +83,18 @@ ADMIN_SECTION_LABELS = {
 }
 
 ADMIN_ONLY_WEB_SECTIONS = frozenset({"security"})
+
+
+def _json_ready(value: Any) -> Any:
+    """Normalize PostgreSQL-native values before aiohttp JSON encoding."""
+
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
@@ -1242,11 +1255,11 @@ def register_admin_web_routes(
             force=request.query.get("fresh") == "1",
         )
         response = web.json_response(
-            {
+            _json_ready({
                 **context(principal),
                 **snapshot,
                 "cache_state": cache_state,
-            }
+            })
         )
         response.headers["X-T-Mod-Cache"] = cache_state
         return response

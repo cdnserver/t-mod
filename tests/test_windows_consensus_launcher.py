@@ -110,11 +110,13 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("PORTAL_WEB_PUBLIC_URL=https://tvr.lat", example)
         self.assertIn("ATLAS_WEB_PUBLIC_URL=https://atlas.tvr.lat", example)
         self.assertIn("OVR_WEB_PUBLIC_URL=https://ovr.tvr.lat", example)
+        self.assertIn("ADMISSION_WEB_PUBLIC_URL=https://phx.tvr.lat", example)
         self.assertIn("reactor.tvr.lat", caddyfile)
         self.assertIn("consensus.tvr.lat", caddyfile)
         self.assertIn("zigmund.tvr.lat", caddyfile)
         self.assertIn("atlas.tvr.lat", caddyfile)
         self.assertIn("ovr.tvr.lat", caddyfile)
+        self.assertIn("phx.tvr.lat", caddyfile)
         self.assertIn("OVR_WEB_PUBLIC_URL", script)
 
         self.assertIn("atlas-qdrant", compose)

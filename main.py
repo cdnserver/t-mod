@@ -33,6 +33,7 @@ from modules.consensus_web import ensure_consensus_web_server, setup_consensus_w
 from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
 from modules.games_discord import setup_games_discord
+from modules.admission import setup_admission
 from persistence.database_guard import ensure_startup_recovery_point
 
 
@@ -1062,6 +1063,8 @@ boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
 boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
+boot_module("Phoenix Admission")
+setup_admission(bot)
 boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")

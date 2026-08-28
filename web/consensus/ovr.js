@@ -591,6 +591,46 @@
     }));
   }
 
+  function renderAdmission(application) {
+    const card = byId("case-admission-card");
+    if (!card) return;
+    card.hidden = !application;
+    if (!application) return;
+    const statusLabels = {
+      ovr_review: "НА ПРОВЕРКЕ",
+      ovr_approved: "ДОПУЩЕН",
+      ovr_denied: "НЕ ДОПУЩЕН",
+      consensus_queued: "НА КОНСЕНСУСЕ",
+      membership_approved: "ПРИНЯТ",
+      membership_denied: "НЕ ПРИНЯТ",
+    };
+    byId("case-admission-status").textContent = statusLabels[application.status] || "PHOENIX";
+    byId("case-admission-characters").replaceChildren(...(application.characters || []).map((character, index) => {
+      const row = node("div", "admission-character");
+      row.append(
+        node("b", "", String(index + 1).padStart(2, "0")),
+        node("span", "", character.nickname || "Персонаж"),
+        node("small", "", `#${character.static_id || "—"}`),
+      );
+      return row;
+    }));
+    byId("case-admission-motivation").textContent = textOr(application.motivation, "Не указана");
+    byId("case-admission-contribution").textContent = textOr(application.contribution, "Не указан");
+    byId("case-admission-availability").textContent = textOr(application.availability, "Не указана");
+    byId("case-admission-traits").replaceChildren(...Object.entries(application.traits || {}).map(([label, value]) => {
+      const item = node("div", "admission-trait");
+      const head = node("span");
+      head.append(node("small", "", label), node("b", "", `${Number(value) || 0}%`));
+      const rail = node("i");
+      rail.style.setProperty("--value", `${Math.max(0, Math.min(100, Number(value) || 0))}%`);
+      item.append(head, rail);
+      return item;
+    }));
+    const forum = byId("case-admission-forum");
+    forum.href = application.forum_url || "#";
+    forum.hidden = !application.forum_url;
+  }
+
   function renderCase() {
     const detail = state.detail;
     if (!detail?.case) return;
@@ -650,6 +690,7 @@
     renderRelations(detail.relations);
     renderTasks(detail.tasks);
     renderTimeline(detail.events);
+    renderAdmission(detail.admission);
     selectTab(state.activeTab);
     setDirty(false);
   }

@@ -100,6 +100,16 @@ ovr.tvr.lat {
 	}
 }
 
+phx.tvr.lat {
+	handle / {
+		rewrite * /admission
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 zigmund.tvr.lat {
 	handle / {
 		rewrite * /egg

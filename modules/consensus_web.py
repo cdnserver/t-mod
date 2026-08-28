@@ -52,6 +52,7 @@ from modules.reactor_web import register_reactor_web_routes
 from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
+from modules.admission_web import register_admission_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
@@ -153,6 +154,10 @@ OVR_WEB_PUBLIC_URL = _configured_surface_url(
     "OVR_WEB_PUBLIC_URL",
     "https://ovr.tvr.lat",
 )
+ADMISSION_WEB_PUBLIC_URL = _configured_surface_url(
+    "ADMISSION_WEB_PUBLIC_URL",
+    "https://phx.tvr.lat",
+)
 
 
 def _configured_guild_id() -> int:
@@ -224,6 +229,8 @@ def consensus_web_entry_url(
         base_url = ATLAS_WEB_PUBLIC_URL
     elif destination == "/sgl" and SGL_WEB_PUBLIC_URL:
         base_url = SGL_WEB_PUBLIC_URL
+    elif destination == "/admission" and ADMISSION_WEB_PUBLIC_URL:
+        base_url = ADMISSION_WEB_PUBLIC_URL
     return _authenticated_entry_url(
         base_url,
         guild_id=guild_id,
@@ -994,6 +1001,12 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = SGL_WEB_PUBLIC_URL
     elif belongs_to("/ovr") or path.startswith("/api/ovr"):
         target_url = OVR_WEB_PUBLIC_URL
+    elif (
+        belongs_to("/admission")
+        or path.startswith("/admission-assets/")
+        or path.startswith("/api/admission")
+    ):
+        target_url = ADMISSION_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
@@ -1007,6 +1020,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             target_url = SGL_WEB_PUBLIC_URL
         elif next_path == "/ovr":
             target_url = OVR_WEB_PUBLIC_URL
+        elif next_path == "/admission":
+            target_url = ADMISSION_WEB_PUBLIC_URL
         else:
             target_url = consensus_url
     if not target_url:
@@ -1028,6 +1043,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             ZIGMUND_WEB_PUBLIC_URL,
             SGL_WEB_PUBLIC_URL,
             OVR_WEB_PUBLIC_URL,
+            ADMISSION_WEB_PUBLIC_URL,
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1324,12 +1340,12 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
-            if not principal.guild_member and next_path != "/atlas":
+            if not principal.guild_member and next_path not in {"/atlas", "/admission"}:
                 raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
@@ -1460,7 +1476,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1486,7 +1502,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1615,7 +1631,9 @@ def create_consensus_web_app(
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
         if member is None and not desktop_client:
-            if next_path != "/atlas" or "atlas_ai" not in sections:
+            if next_path == "/admission":
+                pass
+            elif next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(
                     location="/login?next=%2Fatlas&error=atlas_access"
                 )
@@ -2044,6 +2062,12 @@ def create_consensus_web_app(
         guild_id=int(guild_id),
         asset_dir=Path(__file__).resolve().parents[1] / "web" / "sgl",
         authenticate=authenticated_request,
+    )
+    register_admission_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
     )
     return app
 

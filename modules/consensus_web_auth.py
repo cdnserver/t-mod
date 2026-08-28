@@ -190,7 +190,7 @@ def consensus_web_entry_url(
     selected_destination = (
         str(destination)
         if str(destination)
-        in {"/", "/admin", "/reactor", "/atlas", "/games", "/host", "/ovr", "/tasks"}
+        in {"/", "/admin", "/reactor", "/atlas", "/games", "/host", "/ovr", "/tasks", "/admission"}
         else "/"
     )
     query = urlencode(
