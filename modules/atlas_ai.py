@@ -445,8 +445,8 @@ def _adaptive_output_token_limit(
     if mode == "aristotle" or task.depth == "deep":
         return configured
     if task.depth == "quick":
-        return min(configured, 1100)
-    return min(configured, 1600)
+        return min(configured, 700)
+    return min(configured, 1000)
 
 
 _QDRANT_CORRUPTION_MARKERS = (
@@ -1662,6 +1662,8 @@ def _atlas_task_profile(
     reasoning_effort = (
         "high"
         if depth == "deep"
+        else "low"
+        if depth == "quick"
         else "medium"
         if mode == "creative" or intent in {"legal_analysis", "procedural_advice", "drafting"}
         else "low"

@@ -30,7 +30,6 @@ from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
 from modules.atlas_forum_sync import (
-    AtlasForumManualActionRequired,
     AtlasForumSyncError,
     AtlasForumSyncRunner,
 )
@@ -1876,7 +1875,79 @@ def register_atlas_web_routes(
             )
             raise
 
+    async def run_forum_thread_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Read one forum topic without holding an HTTP request open."""
+
+        payload = dict(job.get("payload") or {})
+        source_url = str(payload.get("source_url") or "").strip()
+        organization_id = int(job["organization_id"])
+        actor_user_id = int(job.get("created_by_id") or 0)
+        if forum_sync_runner is None:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        try:
+            await report({"percent": 8, "stage": "opening_forum"})
+            snapshot = await forum_sync_runner.fetch_thread(source_url)
+            await report({"percent": 62, "stage": "saving_topic"})
+            source = await asyncio.to_thread(
+                storage.atlas_add_knowledge,
+                organization_id,
+                actor_user_id,
+                title=snapshot.title,
+                content=snapshot.content,
+                source_kind="forum",
+                source_url=snapshot.url,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+                visibility_scope=str(payload.get("visibility_scope") or "server"),
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                metadata={
+                    "author": snapshot.author,
+                    "source_updated_at": snapshot.source_updated_at,
+                    "import_mode": "authenticated_forum_thread",
+                },
+            )
+            index_job = await queue_knowledge_index(source)
+            taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+            await report({"percent": 92, "stage": "index_queued"})
+            await asyncio.to_thread(
+                storage.atlas_record_event,
+                organization_id,
+                actor_user_id,
+                "forum_thread_imported",
+                f"Atlas прочитал тему форума: {snapshot.title}",
+                target_type="knowledge_source",
+                target_id=int(source["id"]),
+                details={"source_url": snapshot.url, "taxonomy": taxonomy},
+            )
+            return {
+                "source_id": int(source["id"]),
+                "title": str(source.get("title") or snapshot.title),
+                "taxonomy": taxonomy,
+                "index_job_id": int(index_job["id"]),
+            }
+        except Exception as exc:
+            await atlas_log(
+                "не удалось прочитать тему форума",
+                (
+                    f"Ссылка: `{source_url[:800]}`\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
+                    "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
+                ),
+                level="warning",
+                exception=exc,
+                dedupe_key=(
+                    "atlas-forum-thread-error:"
+                    + hashlib.sha256(source_url.casefold().encode("utf-8")).hexdigest()[:20]
+                ),
+            )
+            raise
+
     job_worker.register("atlas.forum.listing.v1", run_forum_listing_job)
+    job_worker.register("atlas.forum.thread.v1", run_forum_thread_job)
 
     async def queue_forum_listing_import(
         *,
@@ -1913,6 +1984,45 @@ def register_atlas_web_routes(
                 "corpus_kind": corpus_kind,
             },
             subject_type="forum_listing",
+            subject_id=source_url,
+            max_attempts=4,
+        )
+        job_worker.wake()
+        return queued
+
+    async def queue_forum_thread_import(
+        *,
+        source_url: str,
+        organization_id: int,
+        actor_user_id: int,
+        server_code: str,
+        faction_code: str,
+        visibility_scope: str,
+        knowledge_domain: str | None,
+        corpus_kind: str | None,
+        request_key: str | None = None,
+    ) -> dict[str, Any]:
+        request_fingerprint = hashlib.sha256(
+            str(request_key or f"{actor_user_id}:{time.time_ns()}").encode("utf-8")
+        ).hexdigest()[:20]
+        source_fingerprint = hashlib.sha256(
+            source_url.strip().casefold().encode("utf-8")
+        ).hexdigest()[:20]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(organization_id),
+            int(actor_user_id),
+            job_type="atlas.forum.thread.v1",
+            dedupe_key=f"{source_fingerprint}:{request_fingerprint}",
+            payload={
+                "source_url": source_url,
+                "server_code": server_code,
+                "faction_code": faction_code,
+                "visibility_scope": visibility_scope,
+                "knowledge_domain": knowledge_domain,
+                "corpus_kind": corpus_kind,
+            },
+            subject_type="forum_thread",
             subject_id=source_url,
             max_attempts=4,
         )
@@ -2643,62 +2753,34 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
-            snapshot = await forum_sync_runner.fetch_thread(source_url)
             dashboard = await user_dashboard(request, selected)
-            source = await asyncio.to_thread(
-                storage.atlas_add_knowledge,
-                int(dashboard["organization"]["id"]),
-                int(selected.user_id),
-                title=snapshot.title,
-                content=snapshot.content,
-                source_kind="forum",
-                source_url=snapshot.url,
-                server_code=server_code,
-                faction_code=faction_code,
-                visibility_scope=visibility_scope,
-                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
-                corpus_kind=str(payload.get("corpus_kind") or "") or None,
-                metadata={
-                    "author": snapshot.author,
-                    "source_updated_at": snapshot.source_updated_at,
-                    "import_mode": "authenticated_forum_thread",
-                },
-            )
-        except (AtlasForumSyncError, TypeError, ValueError) as exc:
-            code = str(exc)
-            if isinstance(exc, AtlasForumManualActionRequired):
-                message = (
-                    f"{code} Откройте живой Chromium на домашнем сервере, завершите вход "
-                    "и повторите импорт."
-                )
-            elif "thread_body_missing" in code or "content_too_short" in code:
-                message = (
-                    "Страница открылась, но Atlas не нашёл в ней текст первого сообщения. "
-                    "Проверьте, что это ссылка на тему и аккаунт видит её содержимое."
-                )
-            elif "browser_unavailable" in code or "page_failed" in code:
-                message = "Chromium Atlas не смог открыть страницу. Повторите через несколько секунд."
-            elif "url_invalid" in code:
-                message = "Нужна ссылка Majestic Forum на тему /threads/... или раздел /forums/... ."
-            else:
-                message = f"Не удалось прочитать тему: {code[:300]}"
+        except (TypeError, ValueError) as exc:
             return web.json_response(
                 {
-                    "error": code,
-                    "message": message,
-                    "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                    "error": str(exc),
+                    "message": "Проверьте сервер, организацию и доступ материала.",
                 },
                 status=400,
             )
-        queued_job = await queue_knowledge_index(source)
-        taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+        queued_job = await queue_forum_thread_import(
+            source_url=source_url,
+            organization_id=int(dashboard["organization"]["id"]),
+            actor_user_id=int(selected.user_id),
+            server_code=server_code,
+            faction_code=faction_code,
+            visibility_scope=visibility_scope,
+            knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+            corpus_kind=str(payload.get("corpus_kind") or "") or None,
+            request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
+        )
         return web.json_response(
             {
-                "source": source,
                 "job": queued_job,
-                "taxonomy": taxonomy,
                 "queued": True,
-                "message": "Тема прочитана, классифицирована и добавлена в библиотеку.",
+                "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                "message": (
+                    "Тема принята. Atlas прочитает её в фоне, классифицирует и добавит в поиск."
+                ),
             },
             status=202,
         )

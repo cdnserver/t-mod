@@ -95,7 +95,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("tmod-postgres:", compose)
         self.assertIn("tmod-db-migrate:", compose)
         self.assertIn("tmod-worker:", compose)
-        self.assertIn("response_header_timeout 15s", caddyfile)
+        self.assertIn("response_header_timeout 300s", caddyfile)
         self.assertIn("docker compose restart tmod-caddy", launcher)
         self.assertIn("Permissions-Policy", caddyfile)
         self.assertIn("condition: service_completed_successfully", compose)

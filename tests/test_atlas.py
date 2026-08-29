@@ -1991,7 +1991,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         payload = request.await_args.kwargs["payload"]
         system = payload["messages"][0]["content"]
-        self.assertLessEqual(payload["max_tokens"], 1100)
+        self.assertLessEqual(payload["max_tokens"], 700)
         self.assertIn("120–220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
 
@@ -2630,7 +2630,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
                 AsyncMock(return_value=snapshot),
-            ), patch(
+            ) as fetch_thread, patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.trigger",
                 return_value=True,
             ) as trigger, patch(
@@ -2691,9 +2691,9 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.1)
 
             self.assertEqual(response.status, 202, payload)
-            self.assertEqual(payload["taxonomy"]["domain"], "ic")
-            self.assertEqual(payload["taxonomy"]["corpus_kind"], "charter")
-            self.assertEqual(payload["source"]["faction_code"], "gov")
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["job"]["job_type"], "atlas.forum.thread.v1")
+            fetch_thread.assert_awaited_once_with(snapshot.url)
             self.assertEqual(bulk_response.status, 202, bulk_payload)
             self.assertTrue(bulk_payload["bulk"])
             trigger.assert_called_once_with()
@@ -2704,11 +2704,19 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "https://forum.majestic-rp.ru/forums/general-server-rules/"
             )
             sources = atlas_repository.atlas_searchable_knowledge_sources(
-                int(payload["source"]["organization_id"]),
+                int(payload["job"]["organization_id"]),
                 server_code="phoenix-15",
                 faction_code="gov",
             )
-            self.assertIn("Общие правила сервера", {item["title"] for item in sources})
+            by_title = {item["title"]: item for item in sources}
+            self.assertIn("Общие правила сервера", by_title)
+            self.assertIn("Устав GOV", by_title)
+            self.assertEqual(by_title["Устав GOV"]["faction_code"], "gov")
+            self.assertEqual(by_title["Устав GOV"]["metadata"]["taxonomy"]["domain"], "ic")
+            self.assertEqual(
+                by_title["Устав GOV"]["metadata"]["taxonomy"]["corpus_kind"],
+                "charter",
+            )
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

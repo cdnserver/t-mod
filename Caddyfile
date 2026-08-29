@@ -33,7 +33,10 @@
 			lb_try_duration 5s
 			transport http {
 				dial_timeout 3s
-				response_header_timeout 15s
+				# Atlas may spend up to 90 seconds on a provider response.  The
+				# gateway already streams long responses and bounds dead upstreams;
+				# do not let the public edge turn valid work into an early HTTP 504.
+				response_header_timeout 300s
 			}
 		}
 	}
