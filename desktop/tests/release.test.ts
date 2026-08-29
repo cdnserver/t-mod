@@ -64,7 +64,13 @@ describe("desktop release contract", () => {
     expect(main).toContain("bootstrapRevision += 1");
     expect(main).toContain("return { ok: true, bootstrap: result }");
     expect(main).toContain("AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length]");
+    expect(main).toContain('networkSession.cookies.on("changed"');
+    expect(main).toContain("scheduleAuthProjectionRefresh");
+    expect(main).toContain("isTModAuthenticationUrl(url)");
+    expect(main).toContain("reconcileActiveServiceAccess");
     expect(renderer).toContain("result.ok && result.bootstrap");
+    expect(renderer).toContain("bootstrapRefreshPending.current = true");
+    expect(renderer).toContain("while (bootstrapRefreshPending.current)");
     expect(renderer).toContain("Устанавливаем защищённую сессию");
     expect(renderer).toContain("Восстанавливаем соединение с T-Mod");
     expect(renderer).not.toContain("Нет соединения с сервером");
@@ -138,6 +144,8 @@ describe("desktop release contract", () => {
     expect(main).toContain("atlasOverlay = undefined;");
     expect(controller).toContain('this.csrfToken = "";');
     expect(controller).toContain("this.activeThreadId = undefined;");
+    expect(controller).toContain("invalidateAccountSession(): void");
+    expect(main).toContain("atlasOverlay?.invalidateAccountSession()");
     expect(controller).toContain("this.clearHideTimer();");
   });
 

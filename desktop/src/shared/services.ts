@@ -120,6 +120,16 @@ export function isTrustedTModUrl(value: string): boolean {
   }
 }
 
+export function isTModAuthenticationUrl(value: string): boolean {
+  if (!isTrustedTModUrl(value)) return false;
+  try {
+    const path = new URL(value).pathname.replace(/\/+$/, "") || "/";
+    return path === "/login" || path === "/auth/login" || path === "/logout";
+  } catch {
+    return false;
+  }
+}
+
 export function resolveNotificationServiceId(route: string | null): ServiceId | null {
   if (!route) return null;
   const firstSegment = route

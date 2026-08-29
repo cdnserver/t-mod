@@ -156,6 +156,39 @@ class AtlasRepositoryTests(unittest.TestCase):
                 organization_id, 99, message_id, "good"
             )
 
+    def test_finetuning_candidates_require_good_feedback_and_pair_last_user_message(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(organization_id, 42, "Обучение")
+        atlas_repository.atlas_add_message(thread_id, "user", "Первый вопрос")
+        rejected_id = atlas_repository.atlas_add_message(
+            thread_id, "assistant", "Ответ без положительной оценки"
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, rejected_id, "bad"
+        )
+        user_id = atlas_repository.atlas_add_message(thread_id, "user", "Точный вопрос")
+        accepted_id = atlas_repository.atlas_add_message(
+            thread_id,
+            "assistant",
+            "Точный и полезный ответ со ссылками.",
+            citations=[{"title": "Уголовный кодекс"}],
+            model="atlas-test",
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, accepted_id, "good", comment="Проверено"
+        )
+
+        candidates = atlas_repository.atlas_training_candidates(
+            organization_id=organization_id
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["assistant_message_id"], accepted_id)
+        self.assertEqual(candidates[0]["user_message_id"], user_id)
+        self.assertEqual(candidates[0]["user_text"], "Точный вопрос")
+        self.assertEqual(candidates[0]["citations"][0]["title"], "Уголовный кодекс")
+
     def test_agent_threads_have_isolated_memory_lanes(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])

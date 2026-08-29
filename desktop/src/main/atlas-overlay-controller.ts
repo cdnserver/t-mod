@@ -507,6 +507,18 @@ export class AtlasOverlayController {
     }
   }
 
+  invalidateAccountSession(): void {
+    // The HttpOnly account cookie was replaced or removed. Never let an old
+    // user's CSRF token, thread or in-flight answer cross the new SSO boundary.
+    this.activeRequest?.abort();
+    this.activeRequest = undefined;
+    this.activeRequestId = undefined;
+    this.csrfToken = "";
+    this.activeThreadId = undefined;
+    this.bindingDirty = true;
+    this.cancelSpeechDelivery();
+  }
+
   async saveConfig(patch: Partial<AtlasOverlayConfig>): Promise<AtlasOverlayConfig> {
     const previous = { ...this.config };
     const previousThreadId = this.activeThreadId;

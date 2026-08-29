@@ -1681,7 +1681,9 @@ def register_reactor_web_routes(
                 if str(row.get("section") or "").strip()
             }
         )
-        admin_access = administrator or bool(granted_sections)
+        # Atlas AI is a product entitlement, not a grant to the Nuclear
+        # Reactor. Only actual administrative section grants expose it.
+        admin_access = administrator or bool(set(granted_sections) - {"atlas_ai"})
         ovr_access = administrator or "ovr" in granted_sections
         atlas_access = administrator or "atlas_ai" in granted_sections
 
@@ -1723,7 +1725,13 @@ def register_reactor_web_routes(
                     reason=member_reason,
                 ),
                 service("consensus", "Consensus", "https://consensus.tvr.lat/"),
-                service("atlas", "Atlas", "https://atlas.tvr.lat/"),
+                service(
+                    "atlas",
+                    "Atlas",
+                    "https://atlas.tvr.lat/",
+                    enabled=atlas_access,
+                    reason="Доступ к Atlas AI выдаётся администраторами.",
+                ),
                 service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
                 service(
                     "ovr",

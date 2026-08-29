@@ -1881,6 +1881,68 @@ def atlas_set_message_feedback(
     return _row(row)
 
 
+def atlas_training_candidates(
+    *,
+    organization_id: int | None = None,
+    limit: int = 5_000,
+) -> list[dict[str, Any]]:
+    """Return explicitly liked answer pairs for offline human review.
+
+    This is deliberately a candidate feed, not an automatic training export.
+    A positive reaction is useful evidence, but a reviewer still has to approve
+    the redacted pair before it may enter a fine-tuning dataset.
+    """
+
+    filters = ["f.rating = 'good'", "assistant.role = 'assistant'"]
+    params: list[Any] = []
+    if organization_id is not None:
+        filters.append("f.organization_id = ?")
+        params.append(int(organization_id))
+    params.append(max(1, min(50_000, int(limit))))
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"""
+            SELECT
+                f.id AS feedback_id,
+                f.organization_id,
+                f.thread_id,
+                f.message_id AS assistant_message_id,
+                f.comment_text,
+                f.updated_at AS feedback_updated_at,
+                thread.agent_id,
+                thread.title AS thread_title,
+                assistant.content_text AS assistant_text,
+                assistant.citations_json,
+                assistant.model,
+                assistant.latency_ms,
+                (
+                    SELECT user_message.id
+                    FROM atlas_ai_messages user_message
+                    WHERE user_message.thread_id = assistant.thread_id
+                      AND user_message.role = 'user'
+                      AND user_message.id < assistant.id
+                    ORDER BY user_message.id DESC LIMIT 1
+                ) AS user_message_id,
+                (
+                    SELECT user_message.content_text
+                    FROM atlas_ai_messages user_message
+                    WHERE user_message.thread_id = assistant.thread_id
+                      AND user_message.role = 'user'
+                      AND user_message.id < assistant.id
+                    ORDER BY user_message.id DESC LIMIT 1
+                ) AS user_text
+            FROM atlas_ai_feedback f
+            JOIN atlas_ai_messages assistant ON assistant.id = f.message_id
+            JOIN atlas_ai_threads thread ON thread.id = assistant.thread_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY f.updated_at DESC, f.id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_row(row) for row in rows if row["user_message_id"] is not None]
+
+
 def atlas_bind_discord_thread(
     *,
     discord_thread_id: int,

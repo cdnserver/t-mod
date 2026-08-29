@@ -407,6 +407,7 @@ export function App() {
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
+  const bootstrapRefreshPending = useRef(false);
   const bootstrapRevision = useRef(0);
   const hasLoadedBootstrap = useRef(false);
   const unlockInFlight = useRef(false);
@@ -429,7 +430,12 @@ export function App() {
   }, []);
 
   const loadBootstrap = useCallback(async () => {
-    if (bootstrapInFlight.current) return;
+    if (bootstrapInFlight.current) {
+      // Cookie, resume and service-navigation events can arrive while an older
+      // projection is in flight. Never lose the newest refresh request.
+      bootstrapRefreshPending.current = true;
+      return;
+    }
     const api = browserApi();
     if (!api) {
       setBootstrapLoading(false);
@@ -440,18 +446,19 @@ export function App() {
       });
       return;
     }
-    const revision = ++bootstrapRevision.current;
     bootstrapInFlight.current = true;
     if (!hasLoadedBootstrap.current) setBootstrapLoading(true);
     try {
-      const result = await api.bootstrap();
-      if (bootstrapRevision.current === revision) setBootstrap(result);
+      do {
+        bootstrapRefreshPending.current = false;
+        const revision = ++bootstrapRevision.current;
+        const result = await api.bootstrap();
+        if (bootstrapRevision.current === revision) setBootstrap(result);
+      } while (bootstrapRefreshPending.current);
     } finally {
-      if (bootstrapRevision.current === revision) {
-        hasLoadedBootstrap.current = true;
-        bootstrapInFlight.current = false;
-        setBootstrapLoading(false);
-      }
+      hasLoadedBootstrap.current = true;
+      bootstrapInFlight.current = false;
+      setBootstrapLoading(false);
     }
   }, []);
 
@@ -692,7 +699,6 @@ export function App() {
     // Any periodic bootstrap that started before this click is now stale.
     // Its late offline result must not replace the authenticated projection.
     bootstrapRevision.current += 1;
-    bootstrapInFlight.current = false;
     const result = await api.login(credentials);
     if (result.ok && result.bootstrap) {
       hasLoadedBootstrap.current = true;

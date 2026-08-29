@@ -19,6 +19,7 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import {
   isServiceId,
+  isTModAuthenticationUrl,
   isTrustedTModUrl,
 } from "../shared/services";
 import type {
@@ -54,6 +55,7 @@ const SHELL_HEADER_HEIGHT = 70;
 const SHELL_SIDEBAR_WIDTH = 286;
 const SHELL_SIDEBAR_COLLAPSED_WIDTH = 78;
 const DESKTOP_PARTITION = "persist:tmod-desktop-v1";
+const ACCOUNT_SESSION_COOKIE = "tmod_account_session";
 const BOOTSTRAP_URLS = [
   "https://tvr.lat/api/desktop/v1/bootstrap",
   "https://reactor.tvr.lat/api/desktop/v1/bootstrap",
@@ -106,6 +108,8 @@ let lastSuccessfulBootstrapAt: string | undefined;
 let shellPreferences = { ...DEFAULT_PREFERENCES };
 let serviceRetryAttempt = 0;
 let serviceRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let authProjectionTimer: ReturnType<typeof setTimeout> | undefined;
+let authCookieObserverInstalled = false;
 let lastMainFrameHttpStatus = 0;
 let atlasOverlay: AtlasOverlayController | undefined;
 let updateState: DesktopUpdateState = {
@@ -119,6 +123,28 @@ nativeTheme.themeSource = "dark";
 
 function desktopSession() {
   return session.fromPartition(DESKTOP_PARTITION, { cache: true });
+}
+
+function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {}): void {
+  if (options.sessionRemoved) {
+    bootstrapRevision += 1;
+    lastSuccessfulBootstrap = undefined;
+    lastSuccessfulBootstrapAt = undefined;
+    clearServiceManifest();
+    void applyAtlasOverlayBootstrapSafely(undefined);
+    activeService = "home";
+    serviceLoading = false;
+    lastServiceError = undefined;
+    syncServiceVisibility();
+    emitState();
+  }
+  if (authProjectionTimer) clearTimeout(authProjectionTimer);
+  authProjectionTimer = setTimeout(() => {
+    authProjectionTimer = undefined;
+    if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("desktop:auth-changed");
+    }
+  }, options.sessionRemoved ? 0 : 180);
 }
 
 function clearServiceManifest(): void {
@@ -139,6 +165,18 @@ function applyServiceManifest(data: DesktopBootstrap): boolean {
   }
   serviceManifest = next;
   return next.size > 0;
+}
+
+function reconcileActiveServiceAccess(): void {
+  if (activeService === "home") return;
+  const access = serviceManifest.get(activeService as Exclude<ServiceId, "home">);
+  if (access?.enabled) return;
+  clearServiceRetry();
+  activeService = "home";
+  serviceLoading = false;
+  lastServiceError = undefined;
+  syncServiceVisibility();
+  emitState();
 }
 
 function state(): DesktopState {
@@ -258,7 +296,13 @@ function configureAutoUpdater(): void {
 
   setTimeout(() => void checkForUpdates(), 5_000);
   updateTimer = setInterval(() => void checkForUpdates(), UPDATE_INTERVAL_MS);
-  powerMonitor.on("resume", () => void checkForUpdates());
+  powerMonitor.on("resume", () => {
+    void checkForUpdates();
+    // A suspended laptop can wake after the account session or section grants
+    // changed. Refresh the shared projection immediately instead of waiting
+    // for the renderer's periodic poll.
+    scheduleAuthProjectionRefresh();
+  });
 }
 
 function positionViews(): void {
@@ -526,7 +570,22 @@ async function fetchBootstrapCandidate(): Promise<Response | undefined> {
     return response;
   });
   try {
-    return await Promise.any(requests);
+    const never = new Promise<Response>(() => undefined);
+    const healthy = Promise.any(
+      requests.map(async (request) => {
+        const response = await request;
+        if (!response.ok) throw new Error(`bootstrap_non_success_${response.status}`);
+        return response;
+      }),
+    ).catch(() => never);
+    const fallback = Promise.any(requests).then(async (response) => {
+      // During a rolling restart one contour can briefly reject a valid shared
+      // session while its healthy mirror already accepts it. Give a successful
+      // mirror a short priority window without making real login failures slow.
+      if (!response.ok) await wait(400);
+      return response;
+    });
+    return await Promise.race([healthy, fallback]);
   } catch {
     return undefined;
   }
@@ -546,6 +605,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         if (current) {
           lastSuccessfulBootstrap = undefined;
           clearServiceManifest();
+          reconcileActiveServiceAccess();
           await applyAtlasOverlayBootstrapSafely(undefined);
         }
         return { authenticated: false, online: true, error: "login_required" };
@@ -559,7 +619,10 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       }
       const data = await response.json() as DesktopBootstrap;
       if (data.protocol_version !== 1 || !Array.isArray(data.services)) {
-        if (current) clearServiceManifest();
+        if (current) {
+          clearServiceManifest();
+          reconcileActiveServiceAccess();
+        }
         return {
           authenticated: false,
           online: true,
@@ -569,12 +632,14 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       if (current) {
         if (!applyServiceManifest(data)) {
           clearServiceManifest();
+          reconcileActiveServiceAccess();
           return {
             authenticated: false,
             online: true,
             error: "desktop_protocol_invalid",
           };
         }
+        reconcileActiveServiceAccess();
         await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
         lastSuccessfulBootstrap = data;
         lastSuccessfulBootstrapAt = new Date().toISOString();
@@ -908,6 +973,19 @@ async function createWindow(): Promise<void> {
   networkSession.setUserAgent(desktopUserAgent);
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
+  if (!authCookieObserverInstalled) {
+    authCookieObserverInstalled = true;
+    networkSession.cookies.on("changed", (_event, cookie, cause, removed) => {
+      if (cookie.name !== ACCOUNT_SESSION_COOKIE) return;
+      const domain = String(cookie.domain || "").replace(/^\./, "").toLowerCase();
+      if (domain !== "tvr.lat" && !domain.endsWith(".tvr.lat")) return;
+      // All service WebContents share this partition. Cookie changes are the
+      // authoritative signal for login, logout and expiry across every contour.
+      // An overwrite is a renewal, not a logout.
+      atlasOverlay?.invalidateAccountSession();
+      scheduleAuthProjectionRefresh({ sessionRemoved: removed && cause !== "overwrite" });
+    });
+  }
 
   atlasOverlay = new AtlasOverlayController({
     networkSession: desktopSession,
@@ -1006,8 +1084,11 @@ async function createWindow(): Promise<void> {
     syncServiceVisibility();
     emitState();
   });
-  serviceView.webContents.on("did-navigate", (_event, _url, httpResponseCode) => {
+  serviceView.webContents.on("did-navigate", (_event, url, httpResponseCode) => {
     lastMainFrameHttpStatus = Number(httpResponseCode || 0);
+    if (lastMainFrameHttpStatus === 401 || isTModAuthenticationUrl(url)) {
+      scheduleAuthProjectionRefresh();
+    }
     emitState();
   });
   serviceView.webContents.on("did-navigate-in-page", emitState);
@@ -1092,5 +1173,6 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   if (updateTimer) clearInterval(updateTimer);
   if (idleLockTimer) clearInterval(idleLockTimer);
+  if (authProjectionTimer) clearTimeout(authProjectionTimer);
   atlasOverlay?.dispose();
 });

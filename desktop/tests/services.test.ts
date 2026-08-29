@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isServiceId,
+  isTModAuthenticationUrl,
   isTrustedTModUrl,
   mergeServiceAccess,
   resolveNotificationServiceId,
@@ -20,6 +21,14 @@ describe("desktop service boundary", () => {
     expect(isTrustedTModUrl("http://tvr.lat/reactor")).toBe(false);
     expect(isTrustedTModUrl("https://tvr.lat.attacker.example/")).toBe(false);
     expect(isTrustedTModUrl("javascript:alert(1)")).toBe(false);
+  });
+
+  it("recognizes only canonical T-Mod authentication routes", () => {
+    expect(isTModAuthenticationUrl("https://tvr.lat/login?next=/reactor")).toBe(true);
+    expect(isTModAuthenticationUrl("https://reactor.tvr.lat/auth/login?client=desktop")).toBe(true);
+    expect(isTModAuthenticationUrl("https://atlas.tvr.lat/logout")).toBe(true);
+    expect(isTModAuthenticationUrl("https://atlas.tvr.lat/atlas")).toBe(false);
+    expect(isTModAuthenticationUrl("https://tvr.lat.attacker.example/login")).toBe(false);
   });
 
   it("keeps the local catalog stable while applying server access text", () => {
