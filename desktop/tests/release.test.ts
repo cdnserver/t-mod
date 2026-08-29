@@ -57,6 +57,19 @@ describe("desktop release contract", () => {
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
   });
 
+  it("keeps login authoritative across transient network and bootstrap races", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    expect(main).toContain("Promise.any(requests)");
+    expect(main).toContain("bootstrapRevision += 1");
+    expect(main).toContain("return { ok: true, bootstrap: result }");
+    expect(main).toContain("AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length]");
+    expect(renderer).toContain("result.ok && result.bootstrap");
+    expect(renderer).toContain("Устанавливаем защищённую сессию");
+    expect(renderer).toContain("Восстанавливаем соединение с T-Mod");
+    expect(renderer).not.toContain("Нет соединения с сервером");
+  });
+
   it("locks the complete service surface and supports Beta or Dev updates", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const preload = readFileSync(resolve(root, "src/preload/index.ts"), "utf8");
@@ -143,6 +156,9 @@ describe("desktop release contract", () => {
     expect(controller).toContain("healOverlayVisibility");
     expect(controller).toContain("scheduleOverlayWindowRecovery");
     expect(controller).toContain("POST_SPEECH_HOLD_MS");
+    expect(controller).toContain("resolveAtlasOverlayDisplayArea");
+    expect(controller).toContain("GetProcessName(uint processId)");
+    expect(controller).toContain("if (!this.foregroundProbe) this.startForegroundProbe()");
   });
 
   it("shows Atlas initialization once per app launch and avoids expensive overlay blur", () => {

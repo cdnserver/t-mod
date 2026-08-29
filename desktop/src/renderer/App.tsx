@@ -407,6 +407,7 @@ export function App() {
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
+  const bootstrapRevision = useRef(0);
   const hasLoadedBootstrap = useRef(false);
   const unlockInFlight = useRef(false);
   const unlockTimer = useRef<number | undefined>(undefined);
@@ -439,14 +440,18 @@ export function App() {
       });
       return;
     }
+    const revision = ++bootstrapRevision.current;
     bootstrapInFlight.current = true;
     if (!hasLoadedBootstrap.current) setBootstrapLoading(true);
     try {
-      setBootstrap(await api.bootstrap());
+      const result = await api.bootstrap();
+      if (bootstrapRevision.current === revision) setBootstrap(result);
     } finally {
-      hasLoadedBootstrap.current = true;
-      bootstrapInFlight.current = false;
-      setBootstrapLoading(false);
+      if (bootstrapRevision.current === revision) {
+        hasLoadedBootstrap.current = true;
+        bootstrapInFlight.current = false;
+        setBootstrapLoading(false);
+      }
     }
   }, []);
 
@@ -684,8 +689,18 @@ export function App() {
   const login = async (credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> => {
     const api = browserApi();
     if (!api) return { ok: false, error: "login_failed" };
+    // Any periodic bootstrap that started before this click is now stale.
+    // Its late offline result must not replace the authenticated projection.
+    bootstrapRevision.current += 1;
+    bootstrapInFlight.current = false;
     const result = await api.login(credentials);
-    if (result.ok) await loadBootstrap();
+    if (result.ok && result.bootstrap) {
+      hasLoadedBootstrap.current = true;
+      setBootstrapLoading(false);
+      setBootstrap(result.bootstrap);
+    } else if (result.ok) {
+      await loadBootstrap();
+    }
     return result;
   };
 
@@ -973,19 +988,6 @@ function Home({
     );
   }
 
-  if (bridgeAvailable && !bootstrap.authenticated && !bootstrap.online) {
-    return (
-      <section className="offline-stage" aria-live="polite">
-        <div className="offline-signal"><span/><i/><i/></div>
-        <p className="kicker">ДАННЫЕ В БЕЗОПАСНОСТИ</p>
-        <h1>T-Mod временно<br/>не отвечает</h1>
-        <p>Приложение продолжает восстанавливать соединение в фоне. Если вы уже входили, повторная авторизация не потребуется.</p>
-        <button className="primary" onClick={() => void onRetry()}><Icon name="refresh"/> Проверить сейчас</button>
-        <small>Это может быть краткий перезапуск сервиса или нестабильная сеть.</small>
-      </section>
-    );
-  }
-
   if (!bootstrap.authenticated) {
     const messages: Record<NonNullable<DesktopLoginResult["error"]>, string> = {
       invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
@@ -994,8 +996,8 @@ function Home({
       character_required: "Сначала добавьте персонажа через /account в Discord.",
       atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
-      network_unavailable: "Нет связи с T-Mod. Проверьте интернет и повторите вход.",
-      login_failed: "Сессию не удалось подтвердить. Повторите вход.",
+      network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
+      login_failed: "Вход принят, но подтверждение сессии задержалось. Повторите нажатие — PIN вводить заново не потребуется.",
       invalid_input: "Логин — от 3 символов, PIN — ровно 8 цифр.",
     };
     const submit = async (event: FormEvent) => {
@@ -1025,8 +1027,8 @@ function Home({
           <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
           {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
           {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите T-Mod из последнего релиза.</output>}
-          <button className="primary" type="submit" disabled={loginBusy || !bridgeAvailable}>{loginBusy ? "Проверяем аккаунт…" : "Войти в T-Mod"}<span>→</span></button>
-          <footer><i className={bootstrap.online ? "online" : ""}/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Нет соединения с сервером"}</span></footer>
+          <button className={`primary ${loginBusy ? "busy" : ""}`} type="submit" disabled={loginBusy || !bridgeAvailable} aria-busy={loginBusy}>{loginBusy ? "Устанавливаем защищённую сессию…" : "Войти в T-Mod"}<span>{loginBusy ? "•••" : "→"}</span></button>
+          <footer className={bootstrap.online ? "online" : "reconnecting"}><i/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Восстанавливаем соединение с T-Mod…"}</span>{!bootstrap.online && <button type="button" onClick={() => void onRetry()} aria-label="Повторить подключение"><Icon name="refresh"/></button>}</footer>
         </form>
       </section>
     );
