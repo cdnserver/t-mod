@@ -650,7 +650,7 @@ class AdmissionPublicView(discord.ui.View):
                 label="Вступить в Discord",
                 style=discord.ButtonStyle.link,
                 url=DISCORD_TVRS_LINK,
-                emoji="✦",
+                emoji="🔗",
             )
         )
 
