@@ -82,6 +82,8 @@ export interface DesktopLoginCredentials {
 
 export interface DesktopLoginResult {
   ok: boolean;
+  /** Fresh server projection returned by the successful login transaction. */
+  bootstrap?: BootstrapResult;
   error?:
     | "invalid"
     | "locked"

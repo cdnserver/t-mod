@@ -60,12 +60,18 @@ const BOOTSTRAP_URLS = [
 ] as const;
 const LOGIN_URL = "https://tvr.lat/login?next=/reactor";
 const AUTH_LOGIN_URL = "https://tvr.lat/auth/login?client=desktop";
+const AUTH_LOGIN_URLS = [
+  AUTH_LOGIN_URL,
+  "https://reactor.tvr.lat/auth/login?client=desktop",
+] as const;
 const LOGOUT_URL = "https://tvr.lat/logout";
 const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
 const ATLAS_OVERLAY_SETTINGS_URL = "https://tvr.lat/desktop/atlas-overlay-settings";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
-const BOOTSTRAP_ATTEMPTS = 4;
-const BOOTSTRAP_TIMEOUT_MS = 12_000;
+const BOOTSTRAP_WAVES = 3;
+const BOOTSTRAP_TIMEOUT_MS = 7_000;
+const LOGIN_ATTEMPTS = 3;
+const LOGIN_TIMEOUT_MS = 10_000;
 const SERVICE_RETRY_DELAYS = [700, 1_800, 4_000] as const;
 const RETRYABLE_NETWORK_ERRORS = new Set([-2, -7, -21, -101, -102, -105, -106, -118, -324]);
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
@@ -91,7 +97,11 @@ let idleLockTimer: ReturnType<typeof setInterval> | undefined;
 let desktopLocked = false;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
-let bootstrapInFlight: Promise<BootstrapResult> | undefined;
+let bootstrapRevision = 0;
+let bootstrapInFlight: {
+  revision: number;
+  promise: Promise<BootstrapResult>;
+} | undefined;
 let lastSuccessfulBootstrapAt: string | undefined;
 let shellPreferences = { ...DEFAULT_PREFERENCES };
 let serviceRetryAttempt = 0;
@@ -492,36 +502,53 @@ async function applyAtlasOverlayBootstrapSafely(
   }
 }
 
-async function performBootstrap(): Promise<BootstrapResult> {
+function retryableBootstrapStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function fetchBootstrapCandidate(): Promise<Response | undefined> {
+  const requests = BOOTSTRAP_URLS.map(async (endpoint) => {
+    const response = await desktopSession().fetch(endpoint, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "X-TMod-Desktop-Version": app.getVersion(),
+      },
+      signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
+    });
+    // A dead contour must not delay a healthy mirror. Promise.any resolves as
+    // soon as one endpoint returns an authoritative response.
+    if (retryableBootstrapStatus(response.status)) {
+      throw new Error(`bootstrap_http_${response.status}`);
+    }
+    return response;
+  });
+  try {
+    return await Promise.any(requests);
+  } catch {
+    return undefined;
+  }
+}
+
+async function performBootstrap(revision: number): Promise<BootstrapResult> {
   let lastError = "network_unavailable";
-  for (let attempt = 0; attempt < BOOTSTRAP_ATTEMPTS; attempt += 1) {
-    if (attempt > 0) await wait(attempt === 1 ? 350 : attempt === 2 ? 1_000 : 2_200);
+  for (let attempt = 0; attempt < BOOTSTRAP_WAVES; attempt += 1) {
+    if (attempt > 0) await wait(attempt === 1 ? 450 : 1_250);
     try {
-      const endpoint = BOOTSTRAP_URLS[attempt % BOOTSTRAP_URLS.length];
-      const response = await desktopSession().fetch(endpoint, {
-        method: "GET",
-        cache: "no-store",
-        credentials: "include",
-        headers: {
-          Accept: "application/json",
-          "X-TMod-Desktop-Version": app.getVersion(),
-        },
-        signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
-      });
+      const response = await fetchBootstrapCandidate();
+      if (!response) continue;
+      // A login/logout transaction superseded this request. Its result may be
+      // returned to the old caller, but must never mutate the current session.
+      const current = revision === bootstrapRevision;
       if (response.status === 401) {
-        lastSuccessfulBootstrap = undefined;
-        clearServiceManifest();
-        await applyAtlasOverlayBootstrapSafely(undefined);
+        if (current) {
+          lastSuccessfulBootstrap = undefined;
+          clearServiceManifest();
+          await applyAtlasOverlayBootstrapSafely(undefined);
+        }
         return { authenticated: false, online: true, error: "login_required" };
-      }
-      if (
-        response.status === 408 ||
-        response.status === 425 ||
-        response.status === 429 ||
-        response.status >= 500
-      ) {
-        lastError = `bootstrap_http_${response.status}`;
-        continue;
       }
       if (!response.ok) {
         return {
@@ -531,22 +558,32 @@ async function performBootstrap(): Promise<BootstrapResult> {
         };
       }
       const data = await response.json() as DesktopBootstrap;
-      if (!applyServiceManifest(data)) {
-        clearServiceManifest();
+      if (data.protocol_version !== 1 || !Array.isArray(data.services)) {
+        if (current) clearServiceManifest();
         return {
           authenticated: false,
           online: true,
           error: "desktop_protocol_invalid",
         };
       }
-      await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
-      lastSuccessfulBootstrap = data;
-      lastSuccessfulBootstrapAt = new Date().toISOString();
+      if (current) {
+        if (!applyServiceManifest(data)) {
+          clearServiceManifest();
+          return {
+            authenticated: false,
+            online: true,
+            error: "desktop_protocol_invalid",
+          };
+        }
+        await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
+        lastSuccessfulBootstrap = data;
+        lastSuccessfulBootstrapAt = new Date().toISOString();
+      }
       return {
         authenticated: true,
         online: true,
         data,
-        lastSuccessfulAt: lastSuccessfulBootstrapAt,
+        lastSuccessfulAt: current ? lastSuccessfulBootstrapAt : new Date().toISOString(),
       };
     } catch {
       lastError = "network_unavailable";
@@ -556,13 +593,15 @@ async function performBootstrap(): Promise<BootstrapResult> {
 }
 
 async function bootstrap(): Promise<BootstrapResult> {
-  if (bootstrapInFlight) return bootstrapInFlight;
-  const request = performBootstrap();
-  bootstrapInFlight = request;
+  const revision = bootstrapRevision;
+  if (bootstrapInFlight?.revision === revision) return bootstrapInFlight.promise;
+  const request = performBootstrap(revision);
+  const entry = { revision, promise: request };
+  bootstrapInFlight = entry;
   try {
     return await request;
   } finally {
-    if (bootstrapInFlight === request) bootstrapInFlight = undefined;
+    if (bootstrapInFlight === entry) bootstrapInFlight = undefined;
   }
 }
 
@@ -591,36 +630,66 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginValue) || !/^\d{8}$/.test(pin)) {
     return { ok: false, error: "invalid_input" };
   }
+  // Invalidate an older periodic bootstrap before changing the session. This
+  // closes the race where its delayed 401 overwrote a successful login.
+  bootstrapRevision += 1;
   try {
     const form = new URLSearchParams({ login: loginValue, pin });
-    const response = await desktopSession().fetch(AUTH_LOGIN_URL, {
-      method: "POST",
-      redirect: "manual",
-      credentials: "include",
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      },
-      body: form.toString(),
-    });
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) await wait(attempt === 1 ? 450 : 1_250);
+      try {
+        const candidate = await desktopSession().fetch(
+          AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length],
+          {
+            method: "POST",
+            redirect: "manual",
+            credentials: "include",
+            headers: {
+              Accept: "text/html,application/xhtml+xml",
+              "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
+            body: form.toString(),
+            signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
+          },
+        );
+        if (retryableBootstrapStatus(candidate.status)) continue;
+        response = candidate;
+        break;
+      } catch {
+        // Retry short DNS, TLS and service-restart gaps inside this same login
+        // operation so the user never has to submit the PIN twice.
+      }
+    }
+    if (!response) return { ok: false, error: "network_unavailable" };
     if (response.status === 403) return { ok: false, error: "banned" };
-    if (response.status >= 500) return { ok: false, error: "network_unavailable" };
     const error = loginErrorFromLocation(response.headers.get("location") || response.url);
     if (error) return { ok: false, error };
-    const result = await bootstrap();
-    if (!result.authenticated) return { ok: false, error: "login_failed" };
+    let result: BootstrapResult | undefined;
+    for (const delay of [120, 450, 1_100]) {
+      await wait(delay);
+      result = await bootstrap();
+      if (result.authenticated) break;
+    }
+    if (!result?.authenticated) {
+      return {
+        ok: false,
+        error: result?.online ? "login_failed" : "network_unavailable",
+      };
+    }
     activeService = "home";
     serviceLoading = false;
     lastServiceError = undefined;
     syncServiceVisibility();
     emitState();
-    return { ok: true };
+    return { ok: true, bootstrap: result };
   } catch {
     return { ok: false, error: "network_unavailable" };
   }
 }
 
 async function logout(): Promise<boolean> {
+  bootstrapRevision += 1;
   try {
     await desktopSession().fetch(LOGOUT_URL, {
       redirect: "manual",

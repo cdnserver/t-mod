@@ -34,6 +34,7 @@ import {
 import { splitAtlasOverlaySpeech } from "../shared/atlas-overlay-speech-segments";
 import {
   parseAtlasOverlayForegroundProbe,
+  resolveAtlasOverlayDisplayArea,
   resolveAtlasOverlayForegroundGame,
   type AtlasOverlayActiveGameWindow,
   type AtlasOverlayForegroundProbe,
@@ -128,6 +129,31 @@ public static class TModAtlasForegroundProbe {
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr process, uint flags, StringBuilder path, ref uint size
+    );
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static string GetProcessName(uint processId) {
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+        if (process == IntPtr.Zero) return "";
+        try {
+            uint size = 1024;
+            StringBuilder path = new StringBuilder((int)size);
+            if (!QueryFullProcessImageName(process, 0, path, ref size)) return "";
+            return System.IO.Path.GetFileNameWithoutExtension(path.ToString());
+        } finally {
+            CloseHandle(process);
+        }
+    }
 }
 "@
 
@@ -153,6 +179,9 @@ function New-TModAtlasForegroundProbe {
     [void][TModAtlasForegroundProbe]::GetWindowThreadProcessId($hwnd, [ref]$processId)
     $processName = ""
     try { $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {}
+    if (-not $processName -and $processId -gt 0) {
+        try { $processName = [TModAtlasForegroundProbe]::GetProcessName($processId) } catch {}
+    }
 
     $result = [ordered]@{
         available = $true
@@ -470,7 +499,11 @@ export class AtlasOverlayController {
       this.hide();
     } else if (this.config.enabled) {
       await this.ensureWindow();
-      this.syncGameDetection();
+      // Desktop refreshes its bootstrap periodically. Reusing the healthy
+      // probe avoids a hide/restart flash every 45 seconds and preserves an
+      // answer that is still visible or being spoken.
+      if (!this.foregroundProbe) this.startForegroundProbe();
+      else if (this.activeGameWindow) this.healOverlayVisibility();
     }
   }
 
@@ -1507,7 +1540,16 @@ export class AtlasOverlayController {
     }
     this.foregroundProbeRestartAttempts = 0;
     this.armForegroundProbeWatchdog(helper);
-    const next = resolveAtlasOverlayForegroundGame(probe);
+    const detected = resolveAtlasOverlayForegroundGame(probe);
+    const next = detected
+      ? {
+          ...detected,
+          workArea: resolveAtlasOverlayDisplayArea(
+            detected.workArea,
+            screen.getAllDisplays().map((display) => ({ ...display.workArea })),
+          ),
+        }
+      : undefined;
     if (!next && this.isOwnManualInputForeground(probe)) {
       // The text field is allowed to own focus briefly after a confirmed GTA
       // foreground. Keep the last game monitor as the placement target; a
