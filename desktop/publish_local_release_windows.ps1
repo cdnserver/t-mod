@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ReleaseRepository = "cdnserver/t-mod-releases"
+    [string]$ReleaseRepository = "cdnserver/t-mod-releases",
+    [switch]$BuildOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,12 +10,17 @@ $Package = Get-Content (Join-Path $Desktop "package.json") -Raw | ConvertFrom-Js
 $Version = [string]$Package.version
 $Tag = "v$Version"
 
-foreach ($Command in @("node", "pnpm", "gh")) {
+foreach ($Command in @("node", "pnpm")) {
     if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) {
         throw "$Command is required to build T-Mod Desktop locally"
     }
 }
-gh auth status | Out-Null
+if (-not $BuildOnly) {
+    if (-not (Get-Command "gh" -ErrorAction SilentlyContinue)) {
+        throw "gh is required to publish T-Mod Desktop"
+    }
+    gh auth status | Out-Null
+}
 
 Push-Location $Desktop
 try {
@@ -29,6 +35,11 @@ try {
     Write-Host "[T-Mod Desktop] Building Windows x64 installer locally" -ForegroundColor Cyan
     $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
     pnpm exec electron-builder --win nsis --x64 --publish never
+
+    if ($BuildOnly) {
+        Write-Host "[T-Mod Desktop] Windows Beta $Version built locally." -ForegroundColor Green
+        return
+    }
 
     $Notes = @"
 T-Mod Desktop $Version · Beta
