@@ -906,17 +906,6 @@ class WebAccessModal(ProfileModal, title="Веб-доступ T-Mod"):
                 ephemeral=True,
             )
             return
-        characters = await asyncio.to_thread(
-            storage.list_profile_characters,
-            self.member.guild.id,
-            self.member.id,
-        )
-        if not characters:
-            await interaction.response.send_message(
-                "Сначала добавьте хотя бы одного персонажа через `/account`.",
-                ephemeral=True,
-            )
-            return
         # Modal submissions created directly by /reset do not have an original
         # message. A thinking response creates one that can be safely edited.
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1056,13 +1045,13 @@ def _tmod_account_embed(
     characters: list[Any],
     credential: Any | None,
 ) -> discord.Embed:
-    active = bool(characters and credential)
+    active = bool(credential)
     embed = discord.Embed(
         title="T-Mod Account",
         description=(
             "Единая учётная запись активна. Она узнаёт вас в сервисах T-Mod."
             if active
-            else "Создайте персонажа, затем задайте логин и восьмизначный PIN."
+            else "Задайте логин и восьмизначный PIN. Персонажа можно добавить до подачи заявок в сервисах."
         ),
         color=0x57F2C8 if active else 0x5865F2,
     )
@@ -1191,12 +1180,6 @@ class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"
             return
         if str(self.pin.value) != str(self.pin_repeat.value):
             await interaction.response.send_message(PROFILE_ERROR_MESSAGES["web_pin_mismatch"], ephemeral=True)
-            return
-        characters = await asyncio.to_thread(
-            storage.list_profile_characters, self.guild_id, self.requester_id
-        )
-        if not characters:
-            await interaction.response.send_message("Сначала добавьте хотя бы одного персонажа.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1350,7 +1333,7 @@ class TModAccountView(ProfileBaseView):
         self.credential = credential
         self.add_character.disabled = len(characters) >= storage.PROFILE_MAX_CHARACTERS
         self.manage_characters.disabled = not bool(characters)
-        self.web_access.disabled = not bool(characters)
+        self.web_access.disabled = False
         if fellowship_member:
             from modules.consensus_web import consensus_web_entry_url
 

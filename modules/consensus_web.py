@@ -56,7 +56,6 @@ from modules.admission_web import register_admission_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
-from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from persistence import global_ban_repository as global_ban_storage
@@ -1607,15 +1606,6 @@ def create_consensus_web_app(
             int(result.credential.user_id),
         ):
             raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
-        characters = await asyncio.to_thread(
-            profile_storage.list_profile_characters,
-            int(guild_id),
-            int(result.credential.user_id),
-        )
-        if not characters:
-            raise web.HTTPSeeOther(
-                location=f"/login?{urlencode({'next': next_path, 'error': 'character_required'})}"
-            )
         guild = bot.get_guild(int(guild_id))
         member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
         if member is None and guild is not None:

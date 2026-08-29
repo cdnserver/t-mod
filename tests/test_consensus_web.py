@@ -1156,6 +1156,28 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(principal)
 
+    async def test_zero_account_session_does_not_require_character(self) -> None:
+        storage.configure_web_credential(77, 4242, "external.user", "12345678")
+        credential = storage.get_web_credential(77, 4242)
+        self.assertIsNotNone(credential)
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=4242,
+            session_version=int(credential.session_version),
+        )
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+
+        principal = await resolve_principal(  # type: ignore[arg-type]
+            request,
+            bot,
+            guild_id=77,
+        )
+
+        self.assertIsNotNone(principal)
+        self.assertEqual(principal.account_tier, "zero")
+        self.assertEqual(principal.user_id, 4242)
+
     async def test_shared_identity_does_not_bypass_admin_permissions(self) -> None:
         principal = self._principal(user_id=42)
         principal.member.guild_permissions.administrator = False

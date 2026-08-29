@@ -28,7 +28,6 @@ from aiohttp import web
 
 from persistence import activity_repository as meta_storage
 from persistence import web_auth_repository as credential_storage
-from persistence import profile_repository as profile_storage
 
 
 SESSION_COOKIE = "tmod_account_session"
@@ -365,12 +364,6 @@ async def resolve_principal(
         int(guild_id),
         user_id,
         int(session_version),
-    ):
-        return None
-    if session_version is not None and not await asyncio.to_thread(
-        profile_storage.list_profile_characters,
-        int(guild_id),
-        user_id,
     ):
         return None
     if user_id <= 0:

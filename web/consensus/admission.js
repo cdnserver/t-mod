@@ -2,15 +2,15 @@
 
 (() => {
   const byId = (id) => document.getElementById(id);
-  const state = { csrf: "", questions: [], characters: [], step: 0, busy: false, application: null };
-  const statusOrder = ["ovr_review", "ovr_approved", "consensus_queued", "membership_approved"];
+  const state = { csrf: "", questions: [], characters: [], step: 0, busy: false, application: null, viewer: null };
+  const statusStage = { ovr_review: 1, ovr_approved: 2, ovr_denied: 2, consensus_queued: 3, membership_approved: 4, membership_denied: 4 };
   const statusCopy = {
     ovr_review: ["Заявка находится в ОВР", "Сведения переданы в закрытый контур. Сотрудники ОВР проводят проверку и подготовят мотивированное решение в срок до 48 часов."],
     ovr_approved: ["ОВР одобрил допуск", "Проверка завершена положительно. T-Mod готовит инициативу для пленарного консенсуса."],
-    ovr_denied: ["Проверка ОВР завершена", "ОВР не допустил заявку к рассмотрению консенсусом. Решение сохранено в закрытом досье."],
+    ovr_denied: ["ОВР отказал в допуске", "Решение окончательно. Кандидат не передаётся на консенсус и не вступит в Сенат Majestic RP · Phoenix ни при каких обстоятельствах."],
     consensus_queued: ["Кандидатура передана на консенсус", "Инициатива находится в очереди пленарного консенсуса. После решения T-Mod сразу сообщит результат."],
-    membership_approved: ["Товарищество приняло вас", "Инициатива принята. Один из сопредседателей свяжется с вами и завершит процедуру вступления."],
-    membership_denied: ["Рассмотрение завершено", "Инициатива о вступлении не была принята пленарным консенсусом."],
+    membership_approved: ["Вы приняты в Сенат Phoenix", "Инициатива принята. Один из сопредседателей свяжется с вами и завершит IC-процедуру вступления."],
+    membership_denied: ["Консенсус не принял кандидатуру", "Инициатива о вступлении в Сенат Majestic RP · Phoenix не была принята."],
   };
   const eventCopy = {
     submitted: "Заявка зарегистрирована и передана в ОВР",
@@ -21,6 +21,39 @@
   };
 
   const show = (id, visible) => { const element = byId(id); if (element) element.hidden = !visible; };
+  const surfaces = ["account-gate", "senator-card", "status-card", "form-shell"];
+  function selectSurface(activeId) {
+    surfaces.forEach((id) => show(id, id === activeId));
+  }
+  function renderIdentity(payload) {
+    const authenticated = Boolean(payload.authenticated && payload.viewer);
+    state.viewer = authenticated ? payload.viewer : null;
+    show("top-login", !authenticated);
+    show("account-chip", authenticated);
+    if (authenticated) {
+      byId("account-name").textContent = payload.viewer.name || "T-Mod Account";
+    }
+  }
+  function renderAccountGate(payload) {
+    const authenticated = Boolean(payload.authenticated && payload.viewer);
+    const gate = byId("account-gate");
+    gate.dataset.mode = authenticated ? "character-required" : "login-required";
+    show("gate-login", !authenticated);
+    show("gate-session", authenticated);
+    if (authenticated) {
+      byId("gate-session-name").textContent = payload.viewer.name || "T-Mod Account";
+      byId("gate-eyebrow").textContent = "АККАУНТ ПОДКЛЮЧЁН · НУЖЕН ПЕРСОНАЖ";
+      byId("gate-title").innerHTML = "Завершите игровую<br>идентичность";
+      byId("gate-copy").textContent = "Вы уже авторизованы. Чтобы подать заявление в Сенат Phoenix, добавьте в /account хотя бы одного персонажа с ником и статиком — повторно входить не нужно.";
+      byId("discord-account-action").textContent = "Добавить персонажа в Discord";
+    } else {
+      byId("gate-eyebrow").textContent = "ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ";
+      byId("gate-title").innerHTML = "Сначала — ваш<br>T-Mod аккаунт";
+      byId("gate-copy").textContent = "Он связывает заявку с вами, защищает от повторной подачи и позволяет получать решения ОВР и консенсуса лично.";
+      byId("discord-account-action").textContent = "Открыть T-Mod в Discord";
+    }
+    selectSurface("account-gate");
+  }
   const formatMoment = (value) => {
     const date = new Date(value || 0);
     if (Number.isNaN(date.getTime())) return "—";
@@ -117,26 +150,25 @@
     byId("status-title").textContent = title; byId("status-copy").textContent = copy;
     byId("status-reference").textContent = application.ovr_case_number ? `ОВР-${String(application.ovr_case_number).padStart(3, "0")}` : `PHX-${String(application.id).padStart(4, "0")}`;
     const stages = [["Аккаунт", "Идентичность"], ["ОВР", "Проверка"], ["Допуск", "Решение ОВР"], ["Консенсус", "Голосование"], ["Вступление", "Итог"]];
-    let active = statusOrder.indexOf(application.status);
-    if (application.status === "ovr_denied") active = 2;
-    if (application.status === "membership_denied") active = 4;
+    const active = statusStage[application.status] ?? 0;
     byId("status-track").replaceChildren(...stages.map(([label, caption], index) => { const article = document.createElement("article"); article.dataset.state = index < active ? "done" : index === active ? "active" : "future"; article.innerHTML = `<b>${String(index + 1).padStart(2, "0")}</b><i></i><strong>${label}</strong><small>${caption}</small>`; return article; }));
     byId("status-characters").replaceChildren(...(application.characters || []).map((item) => { const row = document.createElement("div"); row.className = "status-character"; const initials = item.nickname.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase(); row.innerHTML = `<i>${escapeHtml(initials)}</i><span><strong>${escapeHtml(item.nickname)}</strong><small>Статик #${escapeHtml(item.static_id)}</small></span>`; return row; }));
     byId("status-events").replaceChildren(...events.slice().reverse().map((event) => { const row = document.createElement("article"); row.className = "event"; row.innerHTML = `<strong>${escapeHtml(eventCopy[event.action] || event.action)}</strong><p>${escapeHtml(event.note || "Статус зафиксирован.")}</p><time>${escapeHtml(formatMoment(event.created_at))}</time>`; return row; }));
     byId("status-updated").textContent = `Обновлено ${formatMoment(application.updated_at)}`;
-    show("status-card", true);
+    selectSurface("status-card");
   }
 
   async function bootstrap({ silent = false } = {}) {
     try {
       const payload = await api("/api/admission"); state.csrf = payload.csrf_token || ""; state.questions = payload.questions || [];
+      renderIdentity(payload);
       if (!silent) show("loading-card", false);
-      if (!payload.authenticated || payload.account_required) { show("account-gate", true); return; }
-      if (payload.already_senator) { show("senator-card", true); return; }
+      if (!payload.authenticated || payload.account_required) { renderAccountGate(payload); return; }
+      if (payload.already_senator) { selectSurface("senator-card"); return; }
       if (payload.application) { renderStatus(payload.application, payload.events || []); return; }
-      if (!silent) {
+      if (!silent || byId("form-shell").hidden) {
         state.characters = payload.characters || [];
-        byId("characters").replaceChildren(...(state.characters.length ? state.characters : [{}]).map(characterRow)); renumberCharacters(); renderQuestions(); show("form-shell", true); setStep(0);
+        byId("characters").replaceChildren(...(state.characters.length ? state.characters : [{}]).map(characterRow)); renumberCharacters(); renderQuestions(); selectSurface("form-shell"); setStep(0);
       }
     } catch (error) { if (!silent) { show("loading-card", false); show("account-gate", true); } toast(error.message, "error"); }
   }

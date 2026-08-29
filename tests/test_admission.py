@@ -371,6 +371,33 @@ class AdmissionWebTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()["n"]
         self.assertEqual(count, 1)
 
+    async def test_zero_account_is_authenticated_before_character_setup(self) -> None:
+        principal = SimpleNamespace(
+            user_id=405,
+            display_name="Новый пользователь",
+            account_tier="zero",
+            csrf_token="csrf-zero",
+            member=SimpleNamespace(roles=[]),
+        )
+        with (
+            patch(
+                "modules.admission_web.resolve_principal",
+                new=AsyncMock(return_value=principal),
+            ),
+            patch(
+                "modules.admission_web.profile_storage.list_profile_characters",
+                return_value=[],
+            ),
+        ):
+            response = await self.client.get("/api/admission")
+            payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["authenticated"])
+        self.assertTrue(payload["account_required"])
+        self.assertEqual(payload["viewer"]["tier"], "zero")
+        self.assertEqual(payload["viewer"]["name"], "Новый пользователь")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="theme-color" content="#07090d">
-    <title>Phoenix · путь в Сенат</title>
+    <title>Phoenix · Сенат Majestic RP</title>
     <link rel="icon" href="/favicon.ico">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/admission-assets/admission.css?v=1">
-    <script defer src="/admission-assets/admission.js?v=1"></script>
+    <link rel="stylesheet" href="/admission-assets/admission.css?v=2">
+    <script defer src="/admission-assets/admission.js?v=2"></script>
   </head>
   <body>
     <div class="sky" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
@@ -17,12 +17,13 @@
     <header class="topbar">
       <a class="brand" href="/admission" aria-label="Phoenix">
         <span class="brand-mark"><i></i></span>
-        <span><strong>PHOENIX</strong><small>T-Mod · Товарищество</small></span>
+        <span><strong>PHOENIX</strong><small>Majestic RP · Server 15</small></span>
       </a>
       <nav>
         <a href="#path">Порядок</a>
         <a href="#application">Заявка</a>
-        <a class="top-login" href="/login?next=/admission">Войти в T-Mod</a>
+        <a id="top-login" class="top-login" href="/login?next=/admission">Войти в T-Mod</a>
+        <span id="account-chip" class="account-chip" hidden><i></i><span><small>T-Mod подключён</small><strong id="account-name">—</strong></span></span>
       </nav>
     </header>
 
@@ -30,33 +31,52 @@
       <section class="hero">
         <div class="hero-orbit" aria-hidden="true"><i></i><b></b><span></span></div>
         <div class="hero-copy">
-          <p class="eyebrow"><i></i> ЕДИНЫЙ ПУТЬ ВСТУПЛЕНИЯ</p>
-          <h1>Ваш путь<br>в <em>Сенат</em></h1>
-          <p class="hero-lead">Одна прозрачная процедура: T-Mod аккаунт, анкета, проверка ОВР и решение пленарного консенсуса. Никаких потерянных сообщений и неизвестных статусов.</p>
+          <p class="eyebrow"><i></i> MAJESTIC RP · PHOENIX · SERVER 15</p>
+          <h1>Путь в<br><em>Сенат</em> Phoenix</h1>
+          <p class="hero-lead">Официальный IC-путь в Сенат Товарищества на сервере Phoenix: единый T-Mod аккаунт, персональная заявка, обязательная проверка ОВР и решение пленарного консенсуса.</p>
+          <div class="hero-facts" aria-label="Основные условия">
+            <span><b>01</b> одна заявка</span>
+            <span><b>48h</b> срок ОВР</span>
+            <span><b>15</b> Phoenix</span>
+          </div>
           <div class="hero-actions">
-            <a class="button primary" href="#application">Начать путь <span>↘</span></a>
+            <a class="button primary" href="#application">Открыть личную заявку <span>↘</span></a>
             <a class="button quiet" href="#path">Как всё устроено</a>
           </div>
         </div>
         <div class="hero-status" aria-label="Этапы вступления">
-          <span>PHX / ADMISSION</span>
-          <strong>01 — 05</strong>
-          <p>От первого шага до решения Товарищества</p>
+          <span>PHX / SENATE / IC</span>
+          <strong>SERVER 15</strong>
+          <p>Процедура действует только для Majestic RP · Phoenix</p>
         </div>
+      </section>
+
+      <section class="scope-section" aria-label="Область и обязательные условия">
+        <article class="scope-card primary-scope">
+          <small>КУДА ВЫ ВСТУПАЕТЕ</small>
+          <h2>Сенат Phoenix</h2>
+          <p>Это заявка именно в IC-Сенат Товарищества на сервере <strong>Majestic RP · Phoenix №15</strong>. Она не относится к другим серверам и не выдаёт общий доступ к Товариществу автоматически.</p>
+        </article>
+        <article class="scope-card ovr-rule">
+          <small>ОБЯЗАТЕЛЬНЫЙ ДОПУСК</small>
+          <h2>Решение ОВР окончательно</h2>
+          <p>Без допуска Отдела внешней разведки кандидат не передаётся на консенсус и <strong>не вступит в Сенат ни при каких обстоятельствах</strong>.</p>
+          <span><i></i> Обойти или пропустить проверку нельзя</span>
+        </article>
       </section>
 
       <section id="path" class="path-section">
         <header class="section-heading">
           <p>ПРОЦЕДУРА</p>
-          <h2>Пять этапов.<br>Одна история.</h2>
-          <span>Каждое решение сохраняется, а об изменениях T-Mod сообщает лично.</span>
+          <h2>Пять этапов.<br>Ни одного вслепую.</h2>
+          <span>Вы всегда видите текущий этап. Каждое решение фиксируется, а T-Mod сообщает об изменениях лично.</span>
         </header>
         <div class="path-grid">
-          <article><b>01</b><i></i><h3>T-Mod аккаунт</h3><p>Создайте веб-доступ в ЛС с ботом через <code>/account</code> и добавьте хотя бы одного персонажа.</p></article>
+          <article><b>01</b><i></i><h3>T-Mod аккаунт</h3><p>Создайте веб-доступ в ЛС с ботом через <code>/account</code>. Для подачи заявки добавьте хотя бы одного персонажа.</p></article>
           <article><b>02</b><i></i><h3>Заявка Phoenix</h3><p>Укажите персонажей, форумный профиль, мотивацию и пройдите ситуационный тест.</p></article>
-          <article><b>03</b><i></i><h3>Проверка ОВР</h3><p>Отдел внешней разведки изучает сведения и готовит мотивированное решение в срок до 48 часов.</p></article>
+          <article class="path-critical"><b>03</b><i></i><h3>Решение ОВР</h3><p>ОВР изучает сведения до 48 часов. Отказ закрывает путь в Сенат окончательно; без допуска консенсуса не будет.</p></article>
           <article><b>04</b><i></i><h3>Консенсус</h3><p>После допуска T-Mod сам создаёт инициативу. Решение принимает пленарный консенсус.</p></article>
-          <article><b>05</b><i></i><h3>Вступление</h3><p>При положительном решении с вами связывается сопредседатель и завершает IC-процедуру.</p></article>
+          <article><b>05</b><i></i><h3>Мандат Phoenix</h3><p>При положительном решении с вами связывается сопредседатель и завершает IC-процедуру вступления.</p></article>
         </div>
       </section>
 
@@ -70,25 +90,26 @@
         <article id="account-gate" class="account-gate" hidden>
           <div class="gate-visual" aria-hidden="true"><span>T</span><i></i><b></b></div>
           <div>
-            <p class="eyebrow">ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ</p>
-            <h2>Сначала — ваш<br>T-Mod аккаунт</h2>
-            <p>Он связывает заявку с вами, защищает от повторной подачи и позволяет получать решения ОВР и консенсуса лично.</p>
+            <p id="gate-eyebrow" class="eyebrow">ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ</p>
+            <h2 id="gate-title">Сначала — ваш<br>T-Mod аккаунт</h2>
+            <p id="gate-copy">Он связывает заявку с вами, защищает от повторной подачи и позволяет получать решения ОВР и консенсуса лично.</p>
+            <p id="gate-session" class="gate-session" hidden><i></i><span>Вы вошли как <strong id="gate-session-name">—</strong></span></p>
             <ol>
               <li><b>Откройте ЛС с T-Mod</b><span>Нажмите кнопку ниже или найдите T-Mod на сервере.</span></li>
-              <li><b>Введите <code>/account</code></b><span>Создайте логин и восьмизначный PIN.</span></li>
-              <li><b>Добавьте персонажа</b><span>Минимум один персонаж с ником и статиком.</span></li>
+              <li><b>Введите <code>/account</code></b><span>Логин и восьмизначный PIN можно создать даже на нулевом уровне.</span></li>
+              <li><b>Добавьте персонажа</b><span>Для заявления нужен минимум один персонаж с ником и статиком.</span></li>
             </ol>
             <div class="gate-actions">
-              <a class="button primary" href="https://discord.com/users/1500495112638038246" target="_blank" rel="noopener">Открыть T-Mod в Discord</a>
-              <a class="button quiet" href="/login?next=/admission">У меня уже есть аккаунт</a>
+              <a id="discord-account-action" class="button primary" href="https://discord.com/users/1500495112638038246" target="_blank" rel="noopener">Открыть T-Mod в Discord</a>
+              <a id="gate-login" class="button quiet" href="/login?next=/admission">У меня уже есть аккаунт</a>
             </div>
           </div>
         </article>
 
         <article id="senator-card" class="decision-card accepted" hidden>
           <span class="decision-seal">✓</span><p class="eyebrow">МАНДАТ АКТИВЕН</p>
-          <h2>Вы уже являетесь сенатором</h2>
-          <p>Повторная заявка не требуется. Ваш действующий мандат доступен в персональном Реакторе.</p>
+          <h2>Вы уже в Сенате Phoenix</h2>
+          <p>Повторная заявка не требуется. Ваш действующий IC-мандат Phoenix доступен в персональном Реакторе.</p>
           <a class="button primary" href="https://tvr.lat/reactor">Открыть Реактор</a>
         </article>
 
@@ -107,7 +128,7 @@
 
         <article id="form-shell" class="form-shell" hidden>
           <aside class="form-rail">
-            <p class="eyebrow">ЗАЯВКА PHOENIX</p>
+            <p class="eyebrow">SENATE · PHOENIX 15</p>
             <h2>Расскажите<br>о себе</h2>
             <p>Черновик живёт только в вашем браузере. После отправки данные зафиксируются и автоматически перейдут в ОВР.</p>
             <div id="step-nav" class="step-nav">
@@ -140,9 +161,9 @@
             </section>
 
             <section class="form-step review-step" data-step="3" hidden>
-              <header><small>04 / ФИКСАЦИЯ</small><h3>Последняя проверка</h3><p>После отправки создать вторую заявку нельзя. Дальнейшие этапы будут продолжаться в этой карточке.</p></header>
+              <header><small>04 / ФИКСАЦИЯ</small><h3>Последняя проверка</h3><p>После отправки создать вторую заявку нельзя. При отказе ОВР путь в Сенат закрывается окончательно.</p></header>
               <div id="review" class="review"></div>
-              <label class="consent"><input id="consent" type="checkbox" required><span><i></i><b>Подтверждаю достоверность сведений</b><small>Я понимаю, что заявка будет передана в закрытый контур ОВР и затем, при допуске, на консенсус.</small></span></label>
+              <label class="consent"><input id="consent" type="checkbox" required><span><i></i><b>Подтверждаю сведения и условия допуска</b><small>Я понимаю, что заявка относится к Сенату Majestic RP · Phoenix №15, передаётся в закрытый контур ОВР и только при допуске попадёт на консенсус. Отказ ОВР окончателен.</small></span></label>
             </section>
 
             <footer class="form-controls">
@@ -156,7 +177,7 @@
       </section>
     </main>
 
-    <footer class="site-footer"><span>Phoenix / T-Mod</span><p>Технологический контур Товарищества</p><span>Светлый круг · 2026</span></footer>
+    <footer class="site-footer"><span>Phoenix 15 / T-Mod</span><p>IC-Сенат Товарищества · Majestic RP</p><span>Светлый круг · 2026</span></footer>
     <div id="toast" class="toast" hidden></div>
   </body>
 </html>

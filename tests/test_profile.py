@@ -679,6 +679,15 @@ class ProfileUiTests(unittest.TestCase):
         self.assertEqual(str(modal.nickname.default), "Robert Test")
         self.assertEqual(str(modal.static_id.default), "321")
 
+    def test_zero_account_can_configure_web_access_before_character(self) -> None:
+        view = TModAccountView(10, 20, [], None)
+        web_access = next(
+            item
+            for item in view.children
+            if getattr(item, "label", None) == "Логин и PIN"
+        )
+        self.assertFalse(web_access.disabled)
+
     def test_reset_modal_creates_an_editable_ephemeral_response(self) -> None:
         class Response:
             def __init__(self) -> None:
@@ -712,10 +721,6 @@ class ProfileUiTests(unittest.TestCase):
                 patch(
                     "modules.profile.web_auth_storage.get_web_credential",
                     return_value=None,
-                ),
-                patch(
-                    "modules.profile.storage.list_profile_characters",
-                    return_value=[SimpleNamespace(id=1)],
                 ),
             ):
                 await modal.on_submit(interaction)

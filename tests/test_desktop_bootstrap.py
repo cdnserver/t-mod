@@ -138,7 +138,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_desktop_login_accepts_zero_account_with_character(self) -> None:
+    async def test_desktop_login_accepts_zero_account_without_character(self) -> None:
         credential = SimpleNamespace(user_id=99, session_version=1)
         result = SimpleNamespace(status="ok", credential=credential)
         app = create_consensus_web_app(self.bot, guild_id=77)
@@ -153,10 +153,6 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "modules.consensus_web.global_ban_storage.is_globally_banned",
                     return_value=False,
-                ),
-                patch(
-                    "modules.consensus_web.profile_storage.list_profile_characters",
-                    return_value=[SimpleNamespace(nickname="Zero User", static_id="99")],
                 ),
                 patch(
                     "modules.consensus_web.credential_storage.web_section_grants",

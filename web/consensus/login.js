@@ -6,14 +6,13 @@ const pin = document.querySelector("#credential-pin");
 const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
 const requestedNext = params.get("next");
-const next = ["/admin", "/reactor", "/atlas", "/games"].includes(requestedNext) ? requestedNext : "/";
+const next = ["/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"].includes(requestedNext) ? requestedNext : "/";
 const errors = {
   invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
   locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",
   reset_required: "После трёх неверных попыток вход заблокирован. Напишите боту /reset в личных сообщениях и задайте новый PIN.",
   administrator: "Эта учётная запись действует, но административных прав в Discord нет.",
-  character_required: "Сначала добавьте персонажа через команду /account в личных сообщениях T-Mod.",
-  atlas_access: "Для нулевого пользователя пока доступен только Atlas — после выдачи доступа администратором.",
+  atlas_access: "Для этого раздела нужен отдельный доступ администратора.",
 };
 
 form.action = `/auth/login?next=${encodeURIComponent(next)}`;
