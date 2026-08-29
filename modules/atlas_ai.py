@@ -30,6 +30,7 @@ _CREATIVE_REQUEST_RE = re.compile(
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
 _ATLAS_DIRECT_MODEL = "x-ai/grok-4.3"
+_ATLAS_INDEX_VERSION = 2
 _ATLAS_RETIRED_DIRECT_MODELS = frozenset({"x-ai/grok-4.1-fast"})
 _ATLAS_DIRECT_PREFIX_RE = re.compile(
     r"^\s*атлас\s*2\s*[,;:—–-]\s*",
@@ -63,6 +64,14 @@ _ATLAS_SEARCH_STOP_WORDS = frozenset(
         "об",
         "по",
         "про",
+        "покажи",
+        "показать",
+        "расскажи",
+        "напиши",
+        "найди",
+        "нужно",
+        "можно",
+        "мне",
         "такое",
         "что",
         "это",
@@ -584,7 +593,7 @@ async def atlas_probe_collection() -> dict[str, Any]:
             return {"status": "corrupted", "points_count": None}
         raise
     try:
-        await _json_request(
+        sample = await _json_request(
             "POST",
             f"{url}/points/scroll",
             headers=_qdrant_headers(config),
@@ -596,9 +605,22 @@ async def atlas_probe_collection() -> dict[str, Any]:
             return {"status": "corrupted", "points_count": None}
         raise
     result = details.get("result") if isinstance(details.get("result"), dict) else {}
+    sample_result = sample.get("result") if isinstance(sample.get("result"), dict) else {}
+    sample_points = sample_result.get("points") if isinstance(sample_result, dict) else []
+    sample_payload = (
+        sample_points[0].get("payload")
+        if isinstance(sample_points, list) and sample_points and isinstance(sample_points[0], dict)
+        else None
+    )
+    points_count = int(result.get("points_count") or 0)
+    if points_count and (
+        not isinstance(sample_payload, dict)
+        or str(sample_payload.get("index_version") or "") != str(_ATLAS_INDEX_VERSION)
+    ):
+        return {"status": "stale", "points_count": points_count}
     return {
         "status": "ok",
-        "points_count": int(result.get("points_count") or 0),
+        "points_count": points_count,
     }
 
 
@@ -691,6 +713,7 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                     "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                     "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                     "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+                    "index_version": _ATLAS_INDEX_VERSION,
                     "chunk": index,
                     "text": chunk,
                 },
@@ -787,6 +810,19 @@ def _atlas_query_variants(
     return list(dict.fromkeys(item for item in variants if item))[:6]
 
 
+def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
+    """Build stable title stems for the canonical-store rescue path."""
+
+    terms: list[str] = []
+    for token in re.findall(r"[a-zа-яё0-9-]{3,}", str(query or "").casefold()):
+        if token in _ATLAS_SEARCH_STOP_WORDS or token.isdigit():
+            continue
+        # Six characters preserve useful distinctions while matching common
+        # Russian endings: ``уголовный`` / ``уголовного`` and similar forms.
+        terms.append(token[:7] if len(token) >= 9 else token[:6])
+    return _ordered_distinct(terms, limit=12)
+
+
 def _atlas_lexical_candidates(
     query: str,
     sources: list[dict[str, Any]],
@@ -807,9 +843,21 @@ def _atlas_lexical_candidates(
         for token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE)
         if token not in _ATLAS_SEARCH_STOP_WORDS
     ]
+    # Exact substrings alone miss ordinary Russian morphology (for example,
+    # ``задержали`` versus ``задержание``).  Rank with conservative stems and
+    # retain dotted article numbers verbatim.
     terms = list(
-        dict.fromkeys(reversed(raw_terms))
-    )[:16]
+        dict.fromkeys(
+            token
+            if re.fullmatch(r"\d+(?:\.\d+)+", token)
+            else token[:7]
+            if len(token) >= 9
+            else token[:6]
+            if len(token) >= 7
+            else token
+            for token in reversed(raw_terms)
+        )
+    )[:18]
     phrases = [
         meaning
         for abbreviation, meaning in abbreviations.items()
@@ -879,6 +927,10 @@ def _atlas_legal_search_text(value: str) -> str:
     text = text.replace("\u200b", "").replace("\ufeff", "")
     text = text.replace("&nbsp;", " ").replace("&#160;", " ")
     text = _ATLAS_LEGAL_DECORATION_RE.sub("", text)
+    # Forum exports and manually pasted sources often retain Markdown bold
+    # markers around headings.  Leaving ``**Глава 16**`` intact prevents the
+    # exact legal parser from seeing a heading at the start of the line.
+    text = text.replace("**", "").replace("__", "")
     text = re.sub(
         r"</?(?:strong|b|em|i|u|span|font|center|p|div|h[1-6]|br)(?:\s+[^>]*)?>",
         "",
@@ -1227,16 +1279,6 @@ async def atlas_search(
     config = atlas_ai_config()
     clean_server = str(server_code or "phoenix-15")
     clean_faction = str(faction_code or "lspd")
-    try:
-        canonical_sources = await asyncio.to_thread(
-            atlas_storage.atlas_searchable_knowledge_sources,
-            int(organization_id),
-            server_code=clean_server,
-            faction_code=clean_faction,
-        )
-    except Exception:
-        canonical_sources = []
-    corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
     raw_queries = list(
         dict.fromkeys(
             item
@@ -1247,6 +1289,18 @@ async def atlas_search(
             if item.strip()
         )
     )[:6]
+    repository_terms = _atlas_repository_query_terms("\n".join(raw_queries))
+    try:
+        canonical_sources = await asyncio.to_thread(
+            atlas_storage.atlas_searchable_knowledge_sources,
+            int(organization_id),
+            server_code=clean_server,
+            faction_code=clean_faction,
+            query_terms=repository_terms,
+        )
+    except Exception:
+        canonical_sources = []
+    corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
     structured_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
     for query_index, raw_query in enumerate(raw_queries):
@@ -2262,6 +2316,7 @@ async def _prepare_atlas_answer(
                 int(organization_id),
                 server_code=server_code,
                 faction_code=faction_code,
+                query_terms=_atlas_repository_query_terms(clean_question),
             )
         except Exception:
             catalog_sources = []
@@ -2359,7 +2414,17 @@ async def _prepare_atlas_answer(
     context = "\n\n".join(context_parts) or (
         "Для обычного приветствия внешние источники не требуются."
         if task_profile.intent == "social"
-        else "Подходящих подтверждённых источников для этого запроса не найдено."
+        else (
+            "По текущему игровому правовому вопросу точный подтверждённый фрагмент не найден. "
+            "Не выдумывай номер нормы, но всё равно дай полезный анализ ситуации, безопасный "
+            "порядок действий и один действительно необходимый уточняющий вопрос. Не превращай "
+            "ответ в длинный отказ и не утверждай, что всей информации нет в Atlas."
+            if task_profile.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
+            else
+            "Внешний источник для этого запроса не требуется или не найден. Используй общие "
+            "знания, рассуждение и творческие способности; не выдавай неподтверждённые игровые "
+            "нормы за действующие и не отвечай шаблонным отказом о библиотеке."
+        )
     )
     agent_reports: list[dict[str, str]] = []
     if research_plan:

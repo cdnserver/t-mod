@@ -426,6 +426,36 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(timeline[0]["source_type"], "knowledge_source")
         self.assertEqual(timeline[0]["source_id"], str(first["id"]))
 
+    def test_searchable_corpus_keeps_old_reference_documents_ahead_of_recent_noise(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        law = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Уголовный кодекс штата San Andreas",
+            content="Старая, но действующая нормативная база с полным текстом статей.",
+            visibility_scope="server",
+        )
+        for index in range(4):
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Новость форума {index}",
+                content=f"Свежий информационный материал номер {index}, не являющийся кодексом.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("уголов",),
+            limit=2,
+        )
+
+        self.assertEqual(sources[0]["id"], law["id"])
+        self.assertEqual(sources[0]["title"], "Уголовный кодекс штата San Andreas")
+
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])
@@ -1143,6 +1173,62 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Нужная глава", result[0]["text"])
         self.assertNotIn("Следующая глава", result[0]["text"])
 
+    async def test_exact_chapter_survives_markdown_heading_decoration(self) -> None:
+        source = {
+            "id": 961,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "**ГЛАВА 16. ПРЕСТУПЛЕНИЯ ПРОТИВ ПРАВОСУДИЯ**\n"
+                "Статья 16.1. Точная норма.\n"
+                "**ГЛАВА 17. ИНЫЕ ПРЕСТУПЛЕНИЯ**\nСледующая глава."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.61/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Покажи главу 16 УК", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "chapter:16")
+        self.assertIn("Точная норма", result[0]["text"])
+        self.assertNotIn("Следующая глава", result[0]["text"])
+
+    async def test_lexical_fallback_matches_russian_word_forms(self) -> None:
+        source = {
+            "id": 962,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Процессуальный кодекс",
+            "content_text": "Порядок задержания требует разъяснить гражданину основание процедуры.",
+            "source_url": "https://forum.majestic-rp.ru/threads/process.62/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Меня задержали, что делать?", expanded=True)
+
+        self.assertEqual(result[0]["source_id"], 962)
+        self.assertIn("задержания", result[0]["text"])
+
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
             "id": 92,
@@ -1337,6 +1423,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(point["payload"]["visibility_scope"], "server")
         self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
         self.assertEqual(point["payload"]["corpus_kind"], "procedure")
+        self.assertEqual(point["payload"]["index_version"], 2)
         self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
         self.assertLess(
             request.await_args_list.index(put_call),
@@ -1419,6 +1506,24 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("modules.atlas_ai._json_request", corrupted):
             self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
+
+        stale = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"title": "Старый индекс"}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", stale):
+            self.assertEqual((await atlas_probe_collection())["status"], "stale")
+
+        current = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"index_version": 2}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", current):
+            self.assertEqual((await atlas_probe_collection())["status"], "ok")
 
     async def test_openrouter_answer_is_delivered_as_real_sse_deltas(self) -> None:
         async def completion(request: web.Request) -> web.StreamResponse:
@@ -1853,7 +1958,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["response_mode"], "creative")
         self.assertEqual(request.await_args.kwargs["payload"]["temperature"], 0.68)
         self.assertIn(
-            "источников для этого запроса не найдено",
+            "не отвечай шаблонным отказом о библиотеке",
             request.await_args.kwargs["payload"]["messages"][1]["content"],
         )
 

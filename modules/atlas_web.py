@@ -1699,7 +1699,7 @@ def register_atlas_web_routes(
             return
         async with index_lock:
             probe = await atlas_probe_collection()
-            reset = force_reset or probe["status"] == "corrupted"
+            reset = force_reset or probe["status"] in {"corrupted", "stale"}
             if reset:
                 await atlas_reset_collection()
             indexed_count = sum(item.get("status") == "indexed" for item in sources)

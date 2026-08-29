@@ -1185,41 +1185,118 @@ def atlas_searchable_knowledge_sources(
     *,
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
-    limit: int = 300,
+    query_terms: tuple[str, ...] | list[str] | None = None,
+    limit: int = 800,
 ) -> list[dict[str, Any]]:
-    """Return accessible canonical text for the local half of hybrid search."""
+    """Return a durable local retrieval corpus, not merely the newest rows.
+
+    Forum imports can contain hundreds of topics.  The former ``ORDER BY
+    updated_at LIMIT 300`` silently evicted older codices whenever a large
+    forum section was synchronized.  Qdrant then became a single point of
+    failure and Atlas incorrectly reported that its library was empty.
+
+    Keep the query bounded, but compose it from title matches, authoritative
+    reference documents and recent material.  This keeps old laws available
+    while avoiding a full read of every large forum post on each question.
+    """
 
     clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    clean_limit = max(1, min(2_000, int(limit)))
+    clean_terms = tuple(
+        dict.fromkeys(
+            str(term or "").strip().casefold()[:80]
+            for term in query_terms or ()
+            if len(str(term or "").strip()) >= 3
+        )
+    )[:12]
+    scope_sql = """
+        status != 'archived'
+        AND length(trim(content_text)) >= 20
+        AND (
+            visibility_scope = 'global'
+            OR (visibility_scope = 'server' AND server_code = ?)
+            OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
+            OR (visibility_scope = 'workspace' AND organization_id = ?
+                AND server_code = ? AND faction_code = ?)
+        )
+    """
+    scope_params = (
+        clean_server,
+        clean_server,
+        clean_faction,
+        int(organization_id),
+        clean_server,
+        clean_faction,
+    )
+    reference_markers = (
+        "кодекс",
+        "закон",
+        "правил",
+        "устав",
+        "регламент",
+        "порядок",
+        "положен",
+        "конституц",
+        "постановлен",
+        "судебн",
+    )
     with connect_readonly() as con:
-        rows = con.execute(
-            """
-            SELECT * FROM atlas_knowledge_sources
-            WHERE status != 'archived'
-              AND length(trim(content_text)) >= 20
-              AND (
-                visibility_scope = 'global'
-                OR (visibility_scope = 'server' AND server_code = ?)
-                OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
-                OR (visibility_scope = 'workspace' AND organization_id = ?
-                    AND server_code = ? AND faction_code = ?)
-              )
-            ORDER BY updated_at DESC, id DESC
-            LIMIT ?
-            """,
-            (
-                clean_server,
-                clean_server,
-                clean_faction,
-                int(organization_id),
-                clean_server,
-                clean_faction,
-                max(1, min(1_000, int(limit))),
-            ),
-        ).fetchall()
-    return [_row(row) for row in rows]
+        batches: list[list[Any]] = []
+        if clean_terms:
+            title_sql = " OR ".join("lower(title) LIKE ?" for _ in clean_terms)
+            batches.append(
+                con.execute(
+                    f"""
+                    SELECT * FROM atlas_knowledge_sources
+                    WHERE {scope_sql} AND ({title_sql})
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (*scope_params, *(f"%{term}%" for term in clean_terms), min(220, clean_limit)),
+                ).fetchall()
+            )
+        reference_sql = " OR ".join("lower(title) LIKE ?" for _ in reference_markers)
+        batches.append(
+            con.execute(
+                f"""
+                SELECT * FROM atlas_knowledge_sources
+                WHERE {scope_sql} AND ({reference_sql})
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (
+                    *scope_params,
+                    *(f"%{marker}%" for marker in reference_markers),
+                    min(520, clean_limit),
+                ),
+            ).fetchall()
+        )
+        batches.append(
+            con.execute(
+                f"""
+                SELECT * FROM atlas_knowledge_sources
+                WHERE {scope_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (*scope_params, min(360, clean_limit)),
+            ).fetchall()
+        )
+    result: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for batch in batches:
+        for row in batch:
+            source_id = int(row["id"])
+            if source_id in seen:
+                continue
+            result.append(_row(row))
+            seen.add(source_id)
+            if len(result) >= clean_limit:
+                return result
+    return result
 
 
-def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any]]:
+def atlas_indexable_knowledge_sources(*, limit: int = 5_000) -> list[dict[str, Any]]:
     """Return canonical source text for rebuilding the derived search index."""
 
     with connect_readonly() as con:
@@ -1231,7 +1308,7 @@ def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any
             ORDER BY id ASC
             LIMIT ?
             """,
-            (max(1, min(2_000, int(limit))),),
+            (max(1, min(10_000, int(limit))),),
         ).fetchall()
     return [_row(row) for row in rows]
 
