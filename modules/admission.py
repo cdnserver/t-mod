@@ -15,6 +15,7 @@ from modules.consensus_runtime import active_sessions
 from modules.delivery_outbox import DeliveryReceipt, OutboxMessage
 from modules.delivery_runtime import register_delivery_handler, wake_delivery_worker
 from modules.discord_delivery import raise_classified_discord_error
+from modules.links import DISCORD_TVRS_LINK
 from modules.technical_log import log_technical_event
 from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
 from modules.tvrs_delivery import TVRS_BILL_PUBLICATION_TOPIC
@@ -34,6 +35,10 @@ ADMISSION_LOG_CHANNEL_ID = int(
 ADMISSION_PUBLIC_URL = (
     os.getenv("ADMISSION_PUBLIC_URL", "https://phx.tvr.lat").strip().rstrip("/")
 )
+ADMISSION_BANNER_URL = os.getenv(
+    "ADMISSION_BANNER_URL",
+    f"{ADMISSION_PUBLIC_URL}/admission-assets/phoenix-senate-banner.webp",
+).strip()
 _PANEL_META_PREFIX = "admission:public-panel:v1"
 _reconcile_task: asyncio.Task[Any] | None = None
 
@@ -626,7 +631,7 @@ class AdmissionPublicView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(
             discord.ui.Button(
-                label="Открыть Phoenix",
+                label="Подать заявку",
                 style=discord.ButtonStyle.link,
                 url=ADMISSION_PUBLIC_URL,
                 emoji="🌐",
@@ -634,10 +639,18 @@ class AdmissionPublicView(discord.ui.View):
         )
         self.add_item(
             discord.ui.Button(
-                label="Создать T-Mod аккаунт",
+                label="Создать аккаунт",
                 style=discord.ButtonStyle.link,
                 url=f"https://discord.com/users/{int(bot_user_id)}",
                 emoji="👤",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Вступить в Discord",
+                style=discord.ButtonStyle.link,
+                url=DISCORD_TVRS_LINK,
+                emoji="✦",
             )
         )
 
@@ -664,33 +677,39 @@ async def ensure_admission_public_panel(
         except discord.DiscordException:
             message = None
     embed = discord.Embed(
-        title="Phoenix · путь в Сенат Majestic RP",
+        title="Стать сенатором · Phoenix №15",
         description=(
-            "Единая процедура вступления именно в IC-Сенат Товарищества "
-            "на сервере Majestic RP · Phoenix №15 начинается в защищённом портале. "
-            "T-Mod проведёт вас от анкеты и проверки ОВР до решения "
-            "пленарного консенсуса.\n\n"
-            "**Перед началом**\n"
-            "1. Откройте ЛС с T-Mod и используйте `/account`.\n"
-            "2. Создайте веб-доступ и добавьте хотя бы одного персонажа.\n"
-            "3. Вернитесь в Phoenix, заполните форму и ситуационный тест.\n\n"
-            "Повторная заявка не создаётся: весь процесс, статусы и решения "
-            "живут в одной карточке. Отказ ОВР окончателен: без допуска кандидат "
-            "не вступит в Сенат ни при каких обстоятельствах."
+            "Здесь начинается вступление именно в **Сенат Товарищества на "
+            "Majestic RP · Phoenix №15**.\n\n"
+            "**Как подать заявку**\n"
+            "1. Вступите на сервер Товарищества и откройте ЛС с T-Mod.\n"
+            "2. Введите `/account`, придумайте логин и PIN, добавьте персонажа.\n"
+            "3. Нажмите **«Подать заявку»**, заполните анкету и короткий тест.\n\n"
+            "После отправки вы сможете следить за каждым этапом на той же странице. "
+            "T-Mod лично сообщит обо всех решениях."
         ),
         color=0xD5B56E,
         url=ADMISSION_PUBLIC_URL,
     )
     embed.add_field(
-        name="Что произойдёт после отправки",
+        name="Что будет после заявки",
         value=(
-            "ОВР проведёт обязательную проверку сроком до 48 часов. При положительном решении "
-            "T-Mod автоматически подготовит инициативу для консенсуса. Все "
-            "изменения придут в ЛС."
+            "ОВР проведёт проверку сроком до 48 часов. При допуске кандидатуру "
+            "рассмотрит пленарный консенсус, а итог придёт в ЛС."
         ),
         inline=False,
     )
-    embed.set_footer(text="T-Mod Phoenix · единая история без потерянных этапов")
+    embed.add_field(
+        name="Важно",
+        value=(
+            "Решение ОВР окончательно. Без допуска кандидат не попадёт на "
+            "консенсус и не вступит в Сенат ни при каких обстоятельствах."
+        ),
+        inline=False,
+    )
+    if ADMISSION_BANNER_URL:
+        embed.set_image(url=ADMISSION_BANNER_URL)
+    embed.set_footer(text="T-Mod · Phoenix №15 · одна заявка на весь путь")
     view = AdmissionPublicView(int(bot.user.id))
     if message is not None:
         await message.edit(embed=embed, view=view)

@@ -23,6 +23,7 @@ from modules.profile import (
     ProfileStatusView,
     TModAccountCharacterModal,
     TModAccountView,
+    TModBugReportModal,
     WebAccessModal,
     _edit_profile_web_access,
     profile_embed,
@@ -667,7 +668,10 @@ class ProfileUiTests(unittest.TestCase):
         character = SimpleNamespace(id=7, nickname="Robert Test", static_id="321")
         view = TModAccountView(10, 20, [character], None)
         labels = {getattr(item, "label", None) for item in view.children}
-        self.assertEqual(labels, {"Добавить персонажа", "Персонажи", "Логин и PIN"})
+        self.assertEqual(
+            labels,
+            {"Добавить персонажа", "Персонажи", "Логин и PIN", "Баг-репорт"},
+        )
         add_character = next(
             item
             for item in view.children
@@ -687,6 +691,51 @@ class ProfileUiTests(unittest.TestCase):
             if getattr(item, "label", None) == "Логин и PIN"
         )
         self.assertFalse(web_access.disabled)
+
+    def test_bug_report_creates_durable_ticket_and_technical_thread(self) -> None:
+        async def verify() -> None:
+            modal = TModBugReportModal(10, 20)
+            modal.service._value = "Atlas"
+            modal.summary._value = "Не открывается ответ"
+            modal.details._value = "После отправки запроса окно остаётся пустым."
+            modal.steps._value = "Открыть Atlas и отправить вопрос."
+            thread = SimpleNamespace(send=AsyncMock())
+            message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+            channel = SimpleNamespace(send=AsyncMock(return_value=message))
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=20, mention="<@20>"),
+                client=SimpleNamespace(get_guild=lambda guild_id: object()),
+                response=SimpleNamespace(defer=AsyncMock()),
+                edit_original_response=AsyncMock(),
+            )
+            with (
+                patch(
+                    "modules.profile.capture_runtime_event",
+                    new=AsyncMock(return_value=True),
+                ) as capture,
+                patch(
+                    "modules.profile.resolve_registered_channel",
+                    new=AsyncMock(return_value=channel),
+                ),
+                patch("modules.profile.secrets.token_hex", return_value="abc123"),
+            ):
+                await modal.on_submit(interaction)
+
+            interaction.response.defer.assert_awaited_once_with(
+                ephemeral=True,
+                thinking=True,
+            )
+            capture.assert_awaited_once()
+            self.assertNotIn("Reporter:", capture.await_args.kwargs["details"])
+            channel.send.assert_awaited_once()
+            message.create_thread.assert_awaited_once()
+            thread.send.assert_awaited_once()
+            self.assertIn(
+                "тикет",
+                interaction.edit_original_response.await_args.kwargs["content"].lower(),
+            )
+
+        asyncio.run(verify())
 
     def test_reset_modal_creates_an_editable_ephemeral_response(self) -> None:
         class Response:

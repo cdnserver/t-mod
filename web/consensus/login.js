@@ -5,8 +5,20 @@ const form = document.querySelector("#credential-form");
 const pin = document.querySelector("#credential-pin");
 const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
+const context = document.querySelector("#login-context small");
 const requestedNext = params.get("next");
 const next = ["/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"].includes(requestedNext) ? requestedNext : "/";
+const destinations = {
+  "/admin": "После входа откроется Ядерный Реактор.",
+  "/reactor": "После входа откроется ваш личный Реактор.",
+  "/atlas": "После входа откроется контур Atlas.",
+  "/games": "После входа откроется T-Mod Games.",
+  "/sgl": "После входа откроется защищённый контур SGL.",
+  "/ovr": "После входа откроется портал ОВР.",
+  "/host": "После входа откроется пульт ведущего.",
+  "/tasks": "После входа откроется общий список задач.",
+  "/admission": "После входа вернём вас к заявке в Сенат Phoenix.",
+};
 const errors = {
   invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
   locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",
@@ -16,6 +28,7 @@ const errors = {
 };
 
 form.action = `/auth/login?next=${encodeURIComponent(next)}`;
+context.textContent = destinations[next] || "После входа сервис определит доступные вам возможности.";
 if (errors[params.get("error")]) {
   feedback.textContent = errors[params.get("error")];
   feedback.hidden = false;

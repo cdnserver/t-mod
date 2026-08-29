@@ -45,9 +45,16 @@ def register_admission_web_routes(
 
     async def asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
-        if name not in {"admission.css", "admission.js"}:
+        if name not in {
+            "admission.css",
+            "admission.js",
+            "phoenix-senate-banner.webp",
+        }:
             raise web.HTTPNotFound()
-        return web.FileResponse(asset_dir / name)
+        response = web.FileResponse(asset_dir / name)
+        if name.endswith(".webp"):
+            response.content_type = "image/webp"
+        return response
 
     async def bootstrap(request: web.Request) -> web.Response:
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))

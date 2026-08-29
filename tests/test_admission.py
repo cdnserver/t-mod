@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from modules.admission import (
     ADMISSION_QUESTIONS,
+    AdmissionPublicView,
     ensure_membership_bill,
     evaluate_answers,
     notify_ovr_desks,
@@ -276,6 +277,14 @@ class AdmissionQuestionTests(unittest.TestCase):
         self.assertTrue(traits)
         self.assertTrue(all(15 <= value <= 95 for value in traits.values()))
 
+    def test_public_panel_has_clear_application_account_and_discord_actions(self) -> None:
+        view = AdmissionPublicView(1500495112638038246)
+        labels = [getattr(item, "label", None) for item in view.children]
+        self.assertEqual(
+            labels,
+            ["Подать заявку", "Создать аккаунт", "Вступить в Discord"],
+        )
+
 
 class AdmissionWebTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -307,6 +316,12 @@ class AdmissionWebTests(unittest.IsolatedAsyncioTestCase):
         anonymous = await self.client.get("/api/admission")
         self.assertEqual(anonymous.status, 200)
         self.assertFalse((await anonymous.json())["authenticated"])
+
+        banner = await self.client.get(
+            "/admission-assets/phoenix-senate-banner.webp"
+        )
+        self.assertEqual(banner.status, 200)
+        self.assertEqual(banner.content_type, "image/webp")
 
         principal = SimpleNamespace(
             user_id=404,

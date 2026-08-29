@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -16,6 +17,8 @@ from persistence import profile_context as storage
 from persistence import web_auth_repository as web_auth_storage
 from persistence import voice_control_context as voice_storage
 from modules.technical_log import log_technical_event
+from modules.control_center_runtime import resolve_registered_channel
+from modules.error_inbox import capture_runtime_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
 from modules.voice_control_service import VoiceDiagnosticResult, get_voice_control
 from modules.profile_voice import ProfileMicrophoneView, profile_microphone_embed
@@ -1316,6 +1319,128 @@ class TModAccountCharacterDetailView(ProfileBaseView):
         )
 
 
+class TModBugReportModal(ProfileModal, title="Баг-репорт T-Mod"):
+    service = discord.ui.TextInput(
+        label="Где возникла проблема",
+        placeholder="Например: Atlas, Reactor, Consensus, Discord",
+        min_length=2,
+        max_length=80,
+    )
+    summary = discord.ui.TextInput(
+        label="Кратко",
+        placeholder="Что именно не работает?",
+        min_length=5,
+        max_length=120,
+    )
+    details = discord.ui.TextInput(
+        label="Что произошло",
+        placeholder="Ожидание и результат — без PIN, токенов и личных данных",
+        style=discord.TextStyle.paragraph,
+        min_length=15,
+        max_length=1800,
+    )
+    steps = discord.ui.TextInput(
+        label="Как повторить — если известно",
+        placeholder="Последовательность действий, устройство или браузер",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=800,
+    )
+
+    def __init__(self, guild_id: int, requester_id: int) -> None:
+        super().__init__(timeout=600)
+        self.guild_id = int(guild_id)
+        self.requester_id = int(requester_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Этот баг-репорт открыт для другого пользователя.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.edit_original_response(
+                content="Сервер Товарищества сейчас недоступен. Попробуйте ещё раз позже."
+            )
+            return
+        ticket_id = (
+            datetime.now(timezone.utc).strftime("%y%m%d")
+            + "-"
+            + secrets.token_hex(3).upper()
+        )
+        service = str(self.service.value).strip()
+        summary = str(self.summary.value).strip()
+        details = str(self.details.value).strip()
+        steps = str(self.steps.value).strip()
+        report = (
+            f"Ticket: {ticket_id}\n"
+            f"Service: {service}\n"
+            f"Summary: {summary}\n"
+            f"Details: {details}\n"
+            f"Steps: {steps or 'Не указаны'}"
+        )
+        await capture_runtime_event(
+            title=f"Пользовательский баг-репорт: {summary}",
+            details=report,
+            component=f"user-report.{service.lower()[:48] or 'tmod'}",
+            level="error",
+            fingerprint_hint=f"manual-bug:{ticket_id}",
+        )
+        channel = await resolve_registered_channel(guild, "tech_log")
+        if channel is None or not callable(getattr(channel, "send", None)):
+            await interaction.edit_original_response(
+                content=(
+                    f"Тикет `{ticket_id}` сохранён, но технический канал временно "
+                    "недоступен. Повторно отправлять отчёт не нужно."
+                )
+            )
+            return
+        embed = discord.Embed(
+            title=f"🪲 Баг-репорт · {ticket_id}",
+            description=details[:3900],
+            color=0xF0B232,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Сервис", value=service[:1024], inline=True)
+        embed.add_field(
+            name="Автор",
+            value=f"{interaction.user.mention}\n`{interaction.user.id}`",
+            inline=True,
+        )
+        embed.add_field(name="Кратко", value=summary[:1024], inline=False)
+        embed.add_field(
+            name="Как повторить",
+            value=(steps or "Не указано")[:1024],
+            inline=False,
+        )
+        embed.set_footer(text="T-Mod Technologies · пользовательский тикет")
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        create_thread = getattr(message, "create_thread", None)
+        if callable(create_thread):
+            try:
+                thread = await create_thread(
+                    name=f"bug-{ticket_id.lower()} · {summary[:55]}"
+                )
+                await thread.send(
+                    "Тикет открыт. Здесь можно фиксировать диагностику, решение и выпуск исправления.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.DiscordException:
+                pass
+        await interaction.edit_original_response(
+            content=(
+                f"Готово — тикет `{ticket_id}` создан и передан Технологиям "
+                "Товарищества. Не отправляйте PIN, токены и пароли в дополнениях."
+            )
+        )
+
+
 class TModAccountView(ProfileBaseView):
     def __init__(
         self,
@@ -1374,6 +1499,12 @@ class TModAccountView(ProfileBaseView):
     async def web_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(
             TModAccountCredentialModal(self.guild_id, self.requester_id, self.credential)
+        )
+
+    @discord.ui.button(label="Баг-репорт", emoji="🪲", style=discord.ButtonStyle.secondary, row=1)
+    async def bug_report(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            TModBugReportModal(self.guild_id, self.requester_id)
         )
 
 
@@ -2495,6 +2626,7 @@ __all__ = [
     "ProfileStatusView",
     "ProfileWebAccessView",
     "StatusNoteModal",
+    "TModBugReportModal",
     "WebAccessModal",
     "TModAccountView",
     "character_embed",
