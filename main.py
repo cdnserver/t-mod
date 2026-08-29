@@ -34,6 +34,8 @@ from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
 from modules.games_discord import setup_games_discord
 from modules.admission import setup_admission
+from modules.global_log_discord import setup_global_log_discord
+from modules.global_log_runtime import activity_event, emit_global_event, start_global_log_runtime
 from persistence.database_guard import ensure_startup_recovery_point
 
 
@@ -251,6 +253,7 @@ def queue_activity_write(payload: dict[str, Any]) -> None:
     3-second acknowledgement window and every command/modal appears to hang.
     """
     global _activity_dropped
+    emit_global_event(activity_event(payload))
     queue = _activity_queue
     if queue is None:
         try:
@@ -459,6 +462,17 @@ class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
         setup_error_inbox_runtime(self.loop)
+        try:
+            health = await start_global_log_runtime(self.loop)
+            print(f"Global log runtime: {health}", flush=True)
+        except Exception as exc:
+            # Observability must never become a single point of failure for the
+            # bot. The error remains visible in the console and /api/health.
+            print(
+                f"Global log runtime failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         # Expose the health endpoint before Discord READY and command sync.
         # Discord-dependent API routes already report a controlled temporary
         # unavailability while the guild cache is still warming up.
@@ -1065,6 +1079,8 @@ boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
 boot_module("Phoenix Admission")
 setup_admission(bot)
+boot_module("Global Log")
+setup_global_log_discord(bot)
 boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")

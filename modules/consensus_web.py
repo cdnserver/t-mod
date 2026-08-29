@@ -53,6 +53,8 @@ from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
+from modules.global_log_runtime import global_log_web_middleware, runtime_health as global_log_runtime_health
+from modules.global_log_web import register_global_log_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
@@ -156,6 +158,10 @@ OVR_WEB_PUBLIC_URL = _configured_surface_url(
 ADMISSION_WEB_PUBLIC_URL = _configured_surface_url(
     "ADMISSION_WEB_PUBLIC_URL",
     "https://phx.tvr.lat",
+)
+GLOBAL_LOG_WEB_PUBLIC_URL = _configured_surface_url(
+    "GLOBAL_LOG_WEB_PUBLIC_URL",
+    "https://log.global.tvr.lat",
 )
 
 
@@ -1008,6 +1014,11 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = ADMISSION_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
+    elif (
+        belongs_to("/global-log")
+        or (path.startswith("/api/global-log") and path != "/api/global-log/client")
+    ):
+        target_url = GLOBAL_LOG_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
         if next_path == "/admin":
             target_url = REACTOR_WEB_PUBLIC_URL
@@ -1043,6 +1054,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             SGL_WEB_PUBLIC_URL,
             OVR_WEB_PUBLIC_URL,
             ADMISSION_WEB_PUBLIC_URL,
+            GLOBAL_LOG_WEB_PUBLIC_URL,
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1150,6 +1162,8 @@ def create_consensus_web_app(
             allowed = (
                 request.path in {"/banned", "/api/banned", "/api/health", "/favicon.ico"}
                 or request.path.startswith("/assets/")
+                or request.path.startswith("/global-log")
+                or request.path.startswith("/api/global-log")
             )
             if not allowed:
                 if request.path.startswith("/api/"):
@@ -1164,7 +1178,7 @@ def create_consensus_web_app(
         return await handler(request)
 
     app = web.Application(
-        middlewares=[_security_middleware, global_ban_middleware],
+        middlewares=[global_log_web_middleware, _security_middleware, global_ban_middleware],
         client_max_size=client_max_size,
     )
     state_cache = AsyncSnapshotCache[
@@ -1329,6 +1343,9 @@ def create_consensus_web_app(
             "banned.css",
             "banned.js",
             "ban-seal.svg",
+            "global-log.css",
+            "global-log.js",
+            "global-log-client.js",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(_ASSET_DIR / name)
@@ -1365,7 +1382,7 @@ def create_consensus_web_app(
         require_ready = request.query.get("ready") == "1"
         status = "ok" if discord_ready or not require_ready else "starting"
         return web.json_response(
-            {"status": status, "discord_ready": discord_ready},
+            {"status": status, "discord_ready": discord_ready, "global_log": global_log_runtime_health()},
             status=200 if status == "ok" else 503,
         )
 
@@ -2018,6 +2035,11 @@ def create_consensus_web_app(
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_get("/api/reports/{session_key}/consensus.pdf", consensus_report)
     app.router.add_post("/api/command", command)
+    register_global_log_web_routes(
+        app,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+    )
     register_admin_web_routes(
         app,
         bot,

@@ -113,6 +113,16 @@ phx.tvr.lat {
 	}
 }
 
+log.global.tvr.lat {
+	handle / {
+		rewrite * /global-log
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 zigmund.tvr.lat {
 	handle / {
 		rewrite * /egg

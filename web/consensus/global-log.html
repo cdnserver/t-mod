@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>T-Mod · Global Log</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/assets/fonts.css">
+  <link rel="stylesheet" href="/assets/global-log.css">
+  <script src="/assets/global-log.js" defer></script>
+</head>
+<body>
+  <div class="auth-shell" id="authShell">
+    <section class="auth-card" aria-labelledby="authTitle">
+      <div class="security-mark" aria-hidden="true"><span></span></div>
+      <p class="eyebrow">T-Mod · Restricted system</p>
+      <h1 id="authTitle">Глобальный журнал</h1>
+      <p class="lead">Закрытая хронология действий экосистемы. Доступ выдаётся только одноразовым кодом через T-Mod.</p>
+      <form id="loginForm" autocomplete="off">
+        <label for="userId">Discord ID</label>
+        <input id="userId" name="user_id" inputmode="numeric" pattern="[0-9]+" required placeholder="902235631952998410">
+        <label for="accessCode">Одноразовый код</label>
+        <input id="accessCode" name="code" inputmode="numeric" pattern="[0-9]+" required autocomplete="one-time-code" placeholder="••••••••••">
+        <button class="btn btn-primary" type="submit"><span>Открыть защищённый контур</span></button>
+        <p class="form-note">Получить код: команда <code>/global-log</code> в Discord. Код действует 5 минут и погашается после входа.</p>
+        <div class="alert" id="loginAlert" role="alert" hidden></div>
+      </form>
+    </section>
+  </div>
+
+  <main class="app-shell" id="appShell" hidden>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">T-Mod · Intelligence ledger</p>
+        <h1>Глобальный журнал</h1>
+      </div>
+      <div class="top-actions">
+        <span class="health-pill" id="runtimeHealth"><i></i> Подключение</span>
+        <button class="btn btn-outline" id="integrityButton" type="button">Проверить цепочку</button>
+        <button class="btn btn-quiet" id="logoutButton" type="button">Выйти</button>
+      </div>
+    </header>
+
+    <section class="stats-grid" aria-label="Состояние журнала">
+      <article class="stat"><span>Событий</span><strong id="totalEvents">—</strong><small id="eventRange">Загрузка диапазона</small></article>
+      <article class="stat"><span>Поток</span><strong id="queueEvents">—</strong><small>событий ожидают записи</small></article>
+      <article class="stat"><span>Целостность</span><strong id="chainStatus">Не проверена</strong><small id="chainDetail">SHA-256 event chain</small></article>
+      <article class="stat"><span>Обновление</span><strong id="lastRefresh">—</strong><small>мягко, без перезагрузки страницы</small></article>
+    </section>
+
+    <section class="filter-card">
+      <div class="filter-heading">
+        <div><h2>Поиск</h2><p>Текст, Discord ID, сообщение, источник или точное событие.</p></div>
+        <div class="filter-actions">
+          <button class="btn btn-outline" id="exportCsv" type="button">CSV</button>
+          <button class="btn btn-outline" id="exportJson" type="button">JSON</button>
+          <button class="btn btn-quiet" id="resetFilters" type="button">Сбросить</button>
+        </div>
+      </div>
+      <form id="filterForm" class="filter-grid">
+        <label class="search-field"><span>Запрос</span><input name="q" type="search" placeholder="Например: 902235631952998410, veto, OVR…"></label>
+        <label><span>Сервис</span><select name="source"><option value="">Все сервисы</option></select></label>
+        <label><span>Тип</span><select name="source_type"><option value="">Все типы</option></select></label>
+        <label><span>Событие</span><select name="event_type"><option value="">Все события</option></select></label>
+        <label><span>Важность</span><select name="severity"><option value="">Любая</option></select></label>
+        <label><span>Discord ID</span><input name="actor" inputmode="numeric" placeholder="ID пользователя"></label>
+        <label><span>Канал</span><input name="channel" inputmode="numeric" placeholder="ID канала"></label>
+        <label><span>HTTP</span><input name="status" inputmode="numeric" placeholder="Код ответа"></label>
+        <label><span>С даты</span><input name="from" type="datetime-local"></label>
+        <label><span>До даты</span><input name="to" type="datetime-local"></label>
+        <button class="btn btn-primary filter-submit" type="submit">Найти события</button>
+      </form>
+    </section>
+
+    <section class="events-card">
+      <div class="events-heading"><h2>Хронология</h2><span id="resultLabel">Загрузка…</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Время</th><th>Источник</th><th>Событие</th><th>Участник</th><th>Сводка</th><th>Результат</th></tr></thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+        <div class="empty-state" id="emptyState" hidden><strong>События не найдены</strong><span>Измените фильтры или диапазон дат.</span></div>
+      </div>
+      <button class="btn btn-outline load-more" id="loadMore" type="button" hidden>Показать более ранние</button>
+    </section>
+  </main>
+
+  <dialog id="detailDialog">
+    <div class="dialog-head"><div><p class="eyebrow" id="detailMeta">Событие</p><h2 id="detailTitle">Детали</h2></div><button class="dialog-close" id="detailClose" aria-label="Закрыть">×</button></div>
+    <div class="detail-grid" id="detailFacts"></div>
+    <section class="detail-section"><h3>Содержимое</h3><pre id="detailContent"></pre></section>
+    <section class="detail-section"><h3>Данные</h3><pre id="detailJson"></pre></section>
+    <section class="chain-strip"><span>Предыдущая запись</span><code id="previousHash"></code><span>Хэш события</span><code id="eventHash"></code></section>
+  </dialog>
+</body>
+</html>
