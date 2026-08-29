@@ -42,9 +42,9 @@ T-Mod Desktop $Version · Beta
     Set-Content -Path $NotesPath -Value $Notes -Encoding utf8
     gh release view $Tag --repo $ReleaseRepository *> $null
     if ($LASTEXITCODE -eq 0) {
-        gh release edit $Tag --repo $ReleaseRepository --title "T-Mod Desktop $Version · Beta" --notes-file $NotesPath --latest
+        gh release edit $Tag --repo $ReleaseRepository --title "T-Mod Desktop $Version · Beta" --notes-file $NotesPath
     } else {
-        gh release create $Tag --repo $ReleaseRepository --title "T-Mod Desktop $Version · Beta" --notes-file $NotesPath --latest
+        gh release create $Tag --repo $ReleaseRepository --title "T-Mod Desktop $Version · Beta" --notes-file $NotesPath
     }
     $Files = @(
         Get-ChildItem "release\*.exe", "release\*.exe.blockmap", "release\latest.yml" -ErrorAction SilentlyContinue |
@@ -52,6 +52,7 @@ T-Mod Desktop $Version · Beta
     )
     if ($Files.Count -eq 0) { throw "No Windows installers were produced" }
     gh release upload $Tag @Files --repo $ReleaseRepository --clobber
+    gh release edit $Tag --repo $ReleaseRepository --latest
     Write-Host "[T-Mod Desktop] Windows Beta $Version published." -ForegroundColor Green
 } finally {
     Pop-Location

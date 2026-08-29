@@ -37,14 +37,14 @@ EOF
 
 if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
   gh release edit "$TAG" --repo "$REPOSITORY" \
-    --title "T-Mod Desktop $VERSION · Beta" --notes-file "$notes" --latest
+    --title "T-Mod Desktop $VERSION · Beta" --notes-file "$notes"
 else
   gh release create "$TAG" --repo "$REPOSITORY" \
-    --title "T-Mod Desktop $VERSION · Beta" --notes-file "$notes" --latest
+    --title "T-Mod Desktop $VERSION · Beta" --notes-file "$notes"
 fi
 
 shopt -s nullglob
 files=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
 ((${#files[@]})) || { echo "No macOS installers were produced" >&2; exit 1; }
 gh release upload "$TAG" "${files[@]}" --repo "$REPOSITORY" --clobber
-echo "[T-Mod Desktop] macOS Beta $VERSION published: https://github.com/$REPOSITORY/releases/tag/$TAG"
+echo "[T-Mod Desktop] macOS Beta $VERSION published. Mark it Latest after the native Windows build."
