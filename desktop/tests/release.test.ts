@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-dev\.\d+)?$/);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-(?:dev\.\d+|p\d+))?$/);
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -248,10 +248,12 @@ describe("desktop release contract", () => {
     expect([...readFileSync(iconPath).subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   });
 
-  it("publishes installers without consuming Actions artifact storage", () => {
+  it("keeps Actions manual and publishes installers without artifact storage", () => {
     const workflow = readFileSync(resolve(workspaceRoot, ".github/workflows/desktop-release.yml"), "utf8");
     expect(workflow).toContain("Prepare public release");
     expect(workflow).toContain("gh release upload");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("\n  push:");
     expect(workflow).not.toContain("actions/upload-artifact");
     expect(workflow).not.toContain("actions/download-artifact");
   });
