@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$script:ClientVersion = "1.1.1"
+$script:ClientVersion = "1.1.2"
 $script:AppDir = Join-Path $env:LOCALAPPDATA "TModRemote"
 $script:ConfigPath = Join-Path $script:AppDir "config.json"
 $script:UpdateStatePath = Join-Path $script:AppDir "update-state.json"
@@ -272,15 +272,45 @@ function Get-ServerCommand {
     $actionLiteral = Escape-PowerShellLiteral $RemoteAction
     $serviceLiteral = Escape-PowerShellLiteral $RemoteService
     $groupLiteral = Escape-PowerShellLiteral $RemoteGroup
+    # Do not emit `-Service ''` / `-Group ''`: Windows PowerShell can parse
+    # those as a parameter with no argument when the command is reconstructed
+    # through SSH.  Optional values must be omitted entirely for actions such
+    # as status, diagnostics and a full safe update.
+    $serviceArgument = if ($RemoteService) { " -Service '$serviceLiteral'" } else { "" }
+    $groupArgument = if ($RemoteGroup) { " -Group '$groupLiteral'" } else { "" }
     $jsonSwitch = if ($AsJson) { " -Json" } else { "" }
     return @"
 `$ErrorActionPreference = 'Stop'
 `$OutputEncoding = New-Object System.Text.UTF8Encoding
 [Console]::OutputEncoding = `$OutputEncoding
+# Docker Desktop stores interactive credentials in the Windows Credential
+# Manager.  An SSH/noninteractive logon cannot unlock that store, so Docker
+# can fail before a public image is even pulled with "specified logon session
+# does not exist".  Give only this remote command a fresh disposable config:
+# it contains no credentials and therefore cannot alter or expose the
+# operator's normal Docker Desktop session.  T-Mod's deployed images are
+# public; a future private registry needs an explicit noninteractive auth
+# design rather than silently borrowing the interactive credential helper.
+`$dockerConfig = Join-Path ([IO.Path]::GetTempPath()) ("tmod-docker-public-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path `$dockerConfig -Force | Out-Null
+`$dockerConfigPath = Join-Path `$dockerConfig "config.json"
+[IO.File]::WriteAllText(`$dockerConfigPath, '{"auths":{}}', (New-Object System.Text.UTF8Encoding(`$false)))
+`$env:DOCKER_CONFIG = `$dockerConfig
+`$env:TMOD_REMOTE_NONINTERACTIVE = "1"
 `$control = Join-Path '$project' 'tmod_control_windows.ps1'
-if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral' -Service '$serviceLiteral' -Group '$groupLiteral' -NoAnimation$jsonSwitch
-exit `$LASTEXITCODE
+`$exitCode = 1
+try {
+    if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral'$serviceArgument$groupArgument -NoAnimation$jsonSwitch
+    `$exitCode = `$LASTEXITCODE
+}
+finally {
+    # The directory only contains {"auths":{}}.  Remove it even if Docker or
+    # the control action failed so repeated SSH actions never accumulate
+    # temporary client state.
+    Remove-Item -LiteralPath `$dockerConfig -Force -Recurse -ErrorAction SilentlyContinue
+}
+exit `$exitCode
 "@
 }
 

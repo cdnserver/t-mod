@@ -150,11 +150,40 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn("TModRemoteClient", bundled_remote)
         self.assertIn("function Select-TModMenu", bundled_remote)
 
+    def test_remote_docker_commands_use_disposable_public_only_config(self) -> None:
+        """SSH must not invoke Docker Desktop's interactive credential helper.
+
+        Docker Desktop commonly stores ``credsStore=desktop`` in the user's
+        normal config.  That helper cannot be unlocked by a noninteractive
+        SSH logon and makes otherwise-public pulls/builds fail.  The remote
+        wrapper must instead create a per-command config with no helper and
+        no persisted credentials, then remove it when the action ends.
+        """
+        self.assertIn('"tmod-docker-public-"', self.remote)
+        self.assertIn('"config.json"', self.remote)
+        self.assertIn("'{\"auths\":{}}'", self.remote)
+        self.assertIn("TMOD_REMOTE_NONINTERACTIVE", self.remote)
+        self.assertIn("`$env:DOCKER_CONFIG = `$dockerConfig", self.remote)
+        self.assertIn('$serviceArgument = if ($RemoteService)', self.remote)
+        self.assertIn('$groupArgument = if ($RemoteGroup)', self.remote)
+        self.assertIn("-Action '$actionLiteral'$serviceArgument$groupArgument", self.remote)
+        self.assertIn(
+            "Remove-Item -LiteralPath `$dockerConfig -Force -Recurse -ErrorAction SilentlyContinue",
+            self.remote,
+        )
+
+        bundled_remote = read_bundle_payload(
+            ROOT / "tmod_remote_windows.bat", ":__TMOD_REMOTE_PAYLOAD__"
+        )
+        self.assertIn('"tmod-docker-public-"', bundled_remote)
+        self.assertIn("'{\"auths\":{}}'", bundled_remote)
+        self.assertIn("TMOD_REMOTE_NONINTERACTIVE", bundled_remote)
+
     def test_remote_client_has_bounded_atomic_self_update(self) -> None:
         manifest = json.loads((ROOT / "tmod_remote_version.json").read_text())
         remote_batch = (ROOT / "tmod_remote_windows.bat").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "1.1.1")
+        self.assertEqual(manifest["version"], "1.1.2")
         self.assertEqual(manifest["channel"], "stable")
         self.assertEqual(set(manifest["files"]), {"tmod_remote_windows.bat"})
         self.assertIn("cdnserver/t-mod/main", manifest["files"]["tmod_remote_windows.bat"])
