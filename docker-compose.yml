@@ -106,6 +106,8 @@ services:
       - "127.0.0.1:8787:8787"
     networks:
       - default
+    volumes:
+      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
     depends_on:
       tmod-discord-bot:
         condition: service_started

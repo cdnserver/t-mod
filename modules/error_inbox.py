@@ -299,6 +299,41 @@ def _record_safely(
 ) -> bool:
     if not config.capture_enabled or str(level).lower() not in {"error", "critical"}:
         return False
+    # The GitHub inbox is deduplicated and intentionally ignores operational
+    # noise. The private global ledger, however, keeps every redacted error so
+    # an operator can reconstruct the complete chain around it.
+    try:
+        from modules.global_log_runtime import emit_global_event
+
+        root = _root_exception(exception)
+        fingerprint = error_fingerprint(
+            hint=fingerprint_hint,
+            title=str(title),
+            component=str(component),
+            exception=root,
+        )
+        emit_global_event({
+            "source_service": str(component or "tmod"),
+            "source_type": "runtime_error",
+            "event_type": "runtime_error",
+            "severity": str(level).lower(),
+            "summary": sanitize_error_text(title, limit=1000),
+            "content_text": sanitize_error_text(details, limit=20_000),
+            "target_type": "component",
+            "target_id": sanitize_error_text(component, limit=200),
+            "details": {
+                "error_fingerprint": fingerprint,
+                "exception_type": type(root).__name__ if root is not None else None,
+                "traceback": sanitize_error_text(
+                    "".join(traceback.format_exception(type(exception), exception, exception.__traceback__)),
+                    limit=40_000,
+                ) if exception is not None else None,
+                "release": config.release,
+                "environment": config.environment,
+            },
+        })
+    except Exception:
+        pass
     try:
         classification = classify_runtime_error(
             title=title,

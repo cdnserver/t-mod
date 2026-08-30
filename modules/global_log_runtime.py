@@ -11,6 +11,10 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -37,6 +41,21 @@ _dropped = 0
 _written = 0
 _failed = 0
 _last_error: str | None = None
+_spool_lock = threading.Lock()
+_last_spool_replay = 0.0
+_trace_context: ContextVar[dict[str, Any]] = ContextVar("tmod_global_log_trace", default={})
+
+
+@contextmanager
+def global_log_context(**values: Any):
+    """Attach causal identifiers to every event emitted in this operation."""
+    merged = dict(_trace_context.get())
+    merged.update({key: value for key, value in values.items() if value not in (None, "")})
+    token = _trace_context.set(merged)
+    try:
+        yield
+    finally:
+        _trace_context.reset(token)
 
 
 def scrub_text(value: Any, *, limit: int = _MAX_STRING) -> str:
@@ -82,8 +101,18 @@ def hash_remote(value: str | None) -> str | None:
 
 def _normalized_event(event: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(redact_value(dict(event)))
-    value.setdefault("event_uuid", str(uuid4()))
-    value.setdefault("occurred_at", datetime.now(timezone.utc).isoformat())
+    context = _trace_context.get()
+    for key in ("request_id", "session_id", "actor_user_id", "guild_id", "channel_id"):
+        if value.get(key) in (None, "") and context.get(key) not in (None, ""):
+            value[key] = context[key]
+    if not value.get("details"):
+        value["details"] = {}
+    if isinstance(value.get("details"), dict) and context.get("trace_id"):
+        value["details"].setdefault("trace_id", context["trace_id"])
+    if not value.get("event_uuid"):
+        value["event_uuid"] = str(uuid4())
+    if not value.get("occurred_at"):
+        value["occurred_at"] = datetime.now(timezone.utc).isoformat()
     value["summary"] = scrub_text(value.get("summary") or value.get("event_type") or "event", limit=4000)
     if value.get("content_text") is not None:
         value["content_text"] = scrub_text(value["content_text"])
@@ -107,6 +136,11 @@ def emit_global_event(event: Mapping[str, Any]) -> bool:
             return True
         except Exception as exc:
             print(f"Global log startup write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            try:
+                _spool_events([value])
+                return True
+            except Exception:
+                pass
             return False
     try:
         running = asyncio.get_running_loop()
@@ -117,41 +151,131 @@ def emit_global_event(event: Mapping[str, Any]) -> bool:
             queue.put_nowait(value)
             return True
         except asyncio.QueueFull:
-            _dropped += 1
-            return False
+            try:
+                _spool_events([value])
+                return True
+            except Exception:
+                _dropped += 1
+                return False
 
     def enqueue() -> None:
         global _dropped
         try:
             queue.put_nowait(value)
         except asyncio.QueueFull:
-            _dropped += 1
+            try:
+                _spool_events([value])
+            except Exception:
+                _dropped += 1
 
-    loop.call_soon_threadsafe(enqueue)
-    return True
+    try:
+        loop.call_soon_threadsafe(enqueue)
+        return True
+    except RuntimeError:
+        try:
+            _spool_events([value])
+            return True
+        except Exception:
+            _dropped += 1
+            return False
+
+
+def _spool_path() -> Path:
+    explicit = os.getenv("GLOBAL_LOG_SPOOL_FILE", "").strip()
+    if explicit:
+        return Path(explicit)
+    process_name = re.sub(
+        r"[^a-z0-9_-]+",
+        "-",
+        os.getenv("POSTGRES_APPLICATION_NAME", "tmod-discord").strip().lower(),
+    ).strip("-") or "tmod"
+    return Path(f"/app/persistent/data/global-log-spool-{process_name}.jsonl")
+
+
+def _spool_events(events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    path = _spool_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _spool_lock, path.open("a", encoding="utf-8") as stream:
+        for event in events:
+            stream.write(json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _replay_spool() -> int:
+    path = _spool_path()
+    if not path.exists() or path.stat().st_size <= 0:
+        return 0
+    with _spool_lock:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        events: list[dict[str, Any]] = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                events.append(item)
+        if not events:
+            path.unlink(missing_ok=True)
+            return 0
+        # Keep transactions bounded while preserving the original queue order.
+        for offset in range(0, len(events), 250):
+            repository.append_events(events[offset: offset + 250])
+        path.unlink(missing_ok=True)
+        return len(events)
 
 
 async def _writer() -> None:
-    global _written, _failed, _last_error
+    global _written, _failed, _last_error, _last_spool_replay
     assert _queue is not None
     while True:
-        event = await _queue.get()
+        first = await _queue.get()
+        batch = [first]
+        deadline = asyncio.get_running_loop().time() + 0.075
+        while len(batch) < 250:
+            try:
+                batch.append(_queue.get_nowait())
+                continue
+            except asyncio.QueueEmpty:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(await asyncio.wait_for(_queue.get(), timeout=remaining))
+                except TimeoutError:
+                    break
         try:
-            await asyncio.to_thread(repository.append_event, event)
-            _written += 1
+            await asyncio.to_thread(repository.append_events, batch)
+            _written += len(batch)
             _last_error = None
+            now = time.monotonic()
+            if now - _last_spool_replay >= 60:
+                _last_spool_replay = now
+                _written += await asyncio.to_thread(_replay_spool)
         except asyncio.CancelledError:
+            try:
+                await asyncio.shield(asyncio.to_thread(_spool_events, batch))
+            except Exception:
+                traceback.print_exc()
             raise
         except Exception as exc:
-            _failed += 1
+            _failed += len(batch)
             _last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
             traceback.print_exc()
+            try:
+                await asyncio.to_thread(_spool_events, batch)
+            except Exception:
+                traceback.print_exc()
         finally:
-            _queue.task_done()
+            for _ in batch:
+                _queue.task_done()
 
 
 async def start_global_log_runtime(loop: asyncio.AbstractEventLoop | None = None) -> dict[str, Any]:
-    global _queue, _worker, _loop
+    global _queue, _worker, _loop, _written, _last_error
     if not repository.global_log_enabled():
         return runtime_health()
     selected_loop = loop or asyncio.get_running_loop()
@@ -160,7 +284,32 @@ async def start_global_log_runtime(loop: asyncio.AbstractEventLoop | None = None
             maxsize=max(1000, min(200_000, int(os.getenv("GLOBAL_LOG_QUEUE_MAXSIZE", "50000") or 50000)))
         )
     _loop = selected_loop
-    await asyncio.to_thread(repository.initialize_global_log)
+    from persistence.postgres_compat import set_postgres_audit_hook
+
+    def database_audit(payload: Mapping[str, Any]) -> None:
+        duration = float(payload.get("duration_ms") or 0)
+        outcome = str(payload.get("outcome") or "success")
+        emit_global_event({
+            "source_service": "postgresql",
+            "source_type": "database",
+            "event_type": "sql_error" if outcome == "error" else "sql_statement",
+            "severity": "error" if outcome == "error" else "warning" if duration >= 500 else "info",
+            "summary": f"SQL {payload.get('operation') or 'operation'} · {duration:.1f} ms",
+            "target_type": "database_table",
+            "target_id": ",".join(payload.get("tables") or []) or None,
+            "content_text": payload.get("statement"),
+            "duration_ms": duration,
+            "details": dict(payload),
+        })
+
+    set_postgres_audit_hook(database_audit)
+    try:
+        await asyncio.to_thread(repository.initialize_global_log)
+        _written += await asyncio.to_thread(_replay_spool)
+    except Exception as exc:
+        # Start the queue anyway. Until PostgreSQL recovers, the writer persists
+        # every redacted event into the durable local spool.
+        _last_error = f"{type(exc).__name__}: {str(exc)[:500]}"
     if _worker is None or _worker.done():
         _worker = selected_loop.create_task(_writer(), name="tmod-global-log-writer")
     emit_global_event({
@@ -171,6 +320,30 @@ async def start_global_log_runtime(loop: asyncio.AbstractEventLoop | None = None
         "details": {"queue_max": _queue.maxsize, "database": repository.global_log_database_name()},
     })
     return runtime_health()
+
+
+async def stop_global_log_runtime(*, timeout: float = 8.0) -> None:
+    """Flush queued telemetry and preserve the remainder during shutdown."""
+    global _worker, _loop
+    queue = _queue
+    worker = _worker
+    if queue is not None and worker is not None and not worker.done():
+        try:
+            await asyncio.wait_for(queue.join(), timeout=max(0.1, float(timeout)))
+        except TimeoutError:
+            pending: list[dict[str, Any]] = []
+            while True:
+                try:
+                    pending.append(queue.get_nowait())
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+            if pending:
+                await asyncio.to_thread(_spool_events, pending)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    _worker = None
+    _loop = None
 
 
 def runtime_health() -> dict[str, Any]:
@@ -232,6 +405,8 @@ def _response_payload(response: web.StreamResponse, path: str) -> Any:
     if not isinstance(response, web.Response) or response.body is None:
         return None
     body = response.body
+    if not isinstance(body, (bytes, bytearray)):
+        return {"payload_type": type(body).__name__}
     if len(body) > 65_536:
         return {"omitted": "response_too_large", "length": len(body)}
     content_type = str(response.content_type or "")
@@ -251,6 +426,8 @@ def _response_payload(response: web.StreamResponse, path: str) -> Any:
 async def global_log_web_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     if not repository.global_log_enabled():
         return await handler(request)
+    if request.path == "/api/global-log/internal":
+        return await handler(request)
     started = time.perf_counter()
     request_id = request.headers.get("X-Request-ID", "").strip()[:120] or str(uuid4())
     request_payload = await _request_payload(request)
@@ -269,6 +446,11 @@ async def global_log_web_middleware(request: web.Request, handler: Any) -> web.S
         # Authentication projection is enrichment only; it must not affect the
         # request being observed.
         actor_user_id = None
+    trace_token = _trace_context.set({
+        "trace_id": request_id,
+        "request_id": request_id,
+        "actor_user_id": actor_user_id,
+    })
     status = 500
     response: web.StreamResponse | None = None
     failure: BaseException | None = None
@@ -284,39 +466,51 @@ async def global_log_web_middleware(request: web.Request, handler: Any) -> web.S
         failure = exc
         raise
     finally:
-        elapsed = (time.perf_counter() - started) * 1000
-        forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
-        remote = forwarded or request.remote
-        severity = "error" if failure is not None or status >= 500 else "warning" if status >= 400 else "info"
-        emit_global_event({
-            "source_service": "web",
-            "source_type": "http",
-            "event_type": "http_request",
-            "severity": severity,
-            "request_id": request_id,
-            "actor_user_id": actor_user_id,
-            "summary": f"{request.method} {request.path} → {status}",
-            "target_type": "route",
-            "target_id": request.path,
-            "content_text": json.dumps(redact_value(request_payload), ensure_ascii=False, default=str) if request_payload is not None else None,
-            "details": {
-                "method": request.method,
-                "path": request.path,
-                "query": redact_value(dict(request.query)),
-                "request": request_payload,
-                "response": _response_payload(response, request.path) if response is not None else None,
-                "exception": f"{type(failure).__name__}: {failure}" if failure is not None else None,
-                "host": request.host,
-                "referer": request.headers.get("Referer"),
-            },
-            "ip_hash": hash_remote(remote),
-            "user_agent": request.headers.get("User-Agent", "")[:1000],
-            "status_code": status,
-            "duration_ms": elapsed,
-        })
+        # Observability is strictly fail-open. A malformed third-party payload,
+        # a closed event loop or an unavailable audit database may be recorded
+        # as a logging failure, but can never replace the real HTTP response.
+        try:
+            elapsed = (time.perf_counter() - started) * 1000
+            forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+            remote = forwarded or request.remote
+            severity = "error" if failure is not None or status >= 500 else "warning" if status >= 400 else "info"
+            emit_global_event({
+                "source_service": "web",
+                "source_type": "http",
+                "event_type": "http_request",
+                "severity": severity,
+                "request_id": request_id,
+                "actor_user_id": actor_user_id,
+                "summary": f"{request.method} {request.path} → {status}",
+                "target_type": "route",
+                "target_id": request.path,
+                "content_text": json.dumps(redact_value(request_payload), ensure_ascii=False, default=str) if request_payload is not None else None,
+                "details": {
+                    "method": request.method,
+                    "path": request.path,
+                    "query": redact_value(dict(request.query)),
+                    "request": request_payload,
+                    "response": _response_payload(response, request.path) if response is not None else None,
+                    "exception": f"{type(failure).__name__}: {failure}" if failure is not None else None,
+                    "host": request.host,
+                    "referer": request.headers.get("Referer"),
+                },
+                "ip_hash": hash_remote(remote),
+                "user_agent": request.headers.get("User-Agent", "")[:1000],
+                "status_code": status,
+                "duration_ms": elapsed,
+            })
+        except Exception as log_error:
+            print(
+                f"Global HTTP observation failed open: {type(log_error).__name__}: {log_error}",
+                file=sys.stderr,
+            )
+        finally:
+            _trace_context.reset(trace_token)
 
 
 __all__ = [
-    "activity_event", "emit_global_event", "global_log_web_middleware", "hash_remote",
+    "activity_event", "emit_global_event", "global_log_context", "global_log_web_middleware", "hash_remote",
     "redact_value", "runtime_health", "scrub_text", "start_global_log_runtime",
+    "stop_global_log_runtime",
 ]

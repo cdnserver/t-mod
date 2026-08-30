@@ -7,6 +7,9 @@
 
 (tmod_backend) {
 	encode zstd gzip
+	# Internal edge telemetry bypasses the public listener entirely.
+	@global_log_internal path /api/global-log/internal
+	respond @global_log_internal 404
 
 	@immutable_assets path /assets/*.woff2 /assets/*.mp3
 	header @immutable_assets Cache-Control "public, max-age=2592000, immutable"

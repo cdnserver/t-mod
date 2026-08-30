@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
+from uuid import UUID
 
 from modules.global_log_runtime import redact_value, scrub_text
 from persistence import global_log_repository as repository
@@ -68,3 +70,14 @@ def test_database_name_rejects_sql_identifiers(monkeypatch) -> None:
         assert str(exc) == "global_log_database_name_invalid"
     else:
         raise AssertionError("unsafe database identifier accepted")
+
+
+def test_event_projection_is_json_serializable() -> None:
+    names = ["id", "event_uuid", "occurred_at", "ingested_at", "details"]
+    now = datetime.now(timezone.utc)
+    projected = repository._event_dict(
+        (1, UUID("00000000-0000-0000-0000-000000000001"), now, now, {"ok": True}),
+        names,
+    )
+    assert projected["event_uuid"] == "00000000-0000-0000-0000-000000000001"
+    json.dumps(projected)

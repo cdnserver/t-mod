@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import time
+import ipaddress
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -69,7 +70,8 @@ def _filters(request: web.Request) -> dict[str, Any]:
         key: request.query.get(key)
         for key in (
             "q", "cursor", "source", "source_type", "event_type", "severity",
-            "actor", "channel", "status", "from", "to", "limit",
+            "actor", "channel", "status", "from", "to", "limit", "request_id",
+            "session_id", "target_type", "target_id", "message_id", "guild_id",
         )
         if request.query.get(key) not in (None, "")
     }
@@ -168,12 +170,39 @@ def register_global_log_web_routes(
 
     async def events(request: web.Request) -> web.Response:
         principal = await _require_principal(request)
-        result = await asyncio.to_thread(repository.search_events, _filters(request))
+        try:
+            result = await asyncio.to_thread(repository.search_events, _filters(request))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         emit_global_event({
             "source_service": "global-log", "source_type": "operator",
             "event_type": "events_searched", "actor_user_id": principal["user_id"],
             "summary": "Выполнен поиск по глобальному журналу",
             "details": {"filters": _filters(request), "returned": len(result["events"])},
+        })
+        return web.json_response(result)
+
+    async def related(request: web.Request) -> web.Response:
+        principal = await _require_principal(request)
+        raw_id = str(request.match_info.get("event_id") or "")
+        if not raw_id.isdigit():
+            return web.json_response({"error": "global_log_invalid_event_id"}, status=400)
+        try:
+            result = await asyncio.to_thread(
+                repository.related_events,
+                int(raw_id),
+                limit=int(request.query.get("limit") or 120),
+            )
+        except LookupError:
+            return web.json_response({"error": "global_log_event_not_found"}, status=404)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "global_log_invalid_limit"}, status=400)
+        emit_global_event({
+            "source_service": "global-log", "source_type": "operator",
+            "event_type": "event_relations_opened", "actor_user_id": principal["user_id"],
+            "target_type": "global_log_event", "target_id": raw_id,
+            "summary": f"Открыта связанная цепочка события #{raw_id}",
+            "details": {"related": result.get("relation_count", 0)},
         })
         return web.json_response(result)
 
@@ -266,16 +295,58 @@ def register_global_log_web_routes(
         })
         return web.json_response({"ok": True}, status=202)
 
+    async def internal_events(request: web.Request) -> web.Response:
+        try:
+            remote = ipaddress.ip_address(str(request.remote or ""))
+        except ValueError:
+            remote = None
+        if (
+            remote is None
+            or not (remote.is_private or remote.is_loopback)
+            or request.headers.get("X-TMod-Internal-Event") != "tmod-web/v1"
+        ):
+            raise web.HTTPNotFound()
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list) or len(events) > 500:
+            return web.json_response({"error": "invalid_payload"}, status=400)
+        accepted = 0
+        for raw in events:
+            if not isinstance(raw, dict):
+                continue
+            emit_global_event({
+                "event_uuid": raw.get("event_uuid"),
+                "occurred_at": raw.get("occurred_at"),
+                "source_service": str(body.get("service") or "internal")[:120],
+                "source_type": "edge",
+                "event_type": str(raw.get("event_type") or "gateway_event")[:180],
+                "severity": str(raw.get("severity") or "info")[:32],
+                "request_id": str(raw.get("request_id") or "")[:200] or None,
+                "summary": str(raw.get("summary") or "Gateway event")[:4000],
+                "target_type": "route",
+                "target_id": str(raw.get("target_id") or "")[:1000] or None,
+                "status_code": raw.get("status_code"),
+                "duration_ms": raw.get("duration_ms"),
+                "details": redact_value(raw.get("details") or {}),
+            })
+            accepted += 1
+        return web.json_response({"accepted": accepted}, status=202)
+
     app.router.add_get("/global-log", page)
     app.router.add_get("/global-log/", page)
     app.router.add_get("/api/global-log/session", session)
     app.router.add_post("/api/global-log/login", login)
     app.router.add_post("/api/global-log/logout", logout)
     app.router.add_get("/api/global-log/events", events)
+    app.router.add_get("/api/global-log/events/{event_id:\\d+}/related", related)
     app.router.add_get("/api/global-log/facets", event_facets)
     app.router.add_get("/api/global-log/integrity", integrity)
     app.router.add_get("/api/global-log/export", export)
     app.router.add_post("/api/global-log/client", client_event)
+    app.router.add_post("/api/global-log/internal", internal_events)
 
 
 __all__ = ["register_global_log_web_routes"]

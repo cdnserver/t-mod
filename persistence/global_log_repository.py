@@ -26,6 +26,15 @@ _pool_lock = threading.Lock()
 _schema_ready = False
 _CHAIN_LOCK_ID = 845_103_901
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
+_facet_cache_lock = threading.Lock()
+_facet_cache: tuple[float, dict[str, Any]] | None = None
+_EVENT_COLUMNS = [
+    "id", "event_uuid", "occurred_at", "ingested_at", "source_service",
+    "source_type", "event_type", "severity", "actor_user_id", "actor_display",
+    "guild_id", "channel_id", "message_id", "request_id", "session_id",
+    "target_type", "target_id", "summary", "content_text", "details",
+    "ip_hash", "user_agent", "status_code", "duration_ms", "previous_hash", "event_hash",
+]
 
 
 def global_log_enabled() -> bool:
@@ -181,11 +190,40 @@ def initialize_global_log() -> None:
             ON global_log_events (guild_id, channel_id, id DESC)
         """)
         cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_request_idx
+            ON global_log_events (request_id, id DESC) WHERE request_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_session_idx
+            ON global_log_events (session_id, id DESC) WHERE session_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_target_idx
+            ON global_log_events (target_type, target_id, id DESC) WHERE target_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_message_idx
+            ON global_log_events (message_id, id DESC) WHERE message_id IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_status_idx
+            ON global_log_events (status_code, id DESC) WHERE status_code >= 400
+        """)
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS global_log_events_search_idx
             ON global_log_events USING GIN (
                 to_tsvector('simple', coalesce(summary, '') || ' ' ||
                     coalesce(content_text, '') || ' ' || coalesce(actor_display, '') ||
                     ' ' || coalesce(target_id, ''))
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_events_search_v2_idx
+            ON global_log_events USING GIN (
+                to_tsvector('simple', coalesce(summary, '') || ' ' ||
+                    coalesce(content_text, '') || ' ' || coalesce(actor_display, '') ||
+                    ' ' || coalesce(target_id, '') || ' ' || coalesce(event_type, '') ||
+                    ' ' || coalesce(request_id, '') || ' ' || coalesce(details::text, ''))
             )
         """)
         cursor.execute("""
@@ -267,8 +305,10 @@ def canonical_event_payload(event: Mapping[str, Any], previous_hash: str) -> str
 
 def prepare_event(event: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(event)
-    value.setdefault("event_uuid", str(uuid4()))
-    value.setdefault("occurred_at", datetime.now(timezone.utc).isoformat())
+    if not value.get("event_uuid"):
+        value["event_uuid"] = str(uuid4())
+    if not value.get("occurred_at"):
+        value["occurred_at"] = datetime.now(timezone.utc).isoformat()
     value.setdefault("source_service", "tmod")
     value.setdefault("source_type", "system")
     value.setdefault("event_type", "event")
@@ -311,45 +351,74 @@ def prepare_event(event: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def append_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+def append_events(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     if not global_log_enabled():
-        return None
+        return []
+    if not events:
+        return []
     initialize_global_log()
-    value = prepare_event(event)
+    values = [prepare_event(event) for event in events]
     pool = _connection_pool()
+    inserted_events: list[dict[str, Any]] = []
     with pool.connection() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(%s)", (_CHAIN_LOCK_ID,))
         cursor.execute("SELECT event_hash FROM global_log_events ORDER BY id DESC LIMIT 1")
         row = cursor.fetchone()
         previous_hash = str(row[0]) if row else "0" * 64
-        canonical = canonical_event_payload(value, previous_hash)
-        event_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        cursor.execute("""
-            INSERT INTO global_log_events (
-                event_uuid, occurred_at, source_service, source_type, event_type,
-                severity, actor_user_id, actor_display, guild_id, channel_id,
-                message_id, request_id, session_id, target_type, target_id,
-                summary, content_text, details, ip_hash, user_agent, status_code,
-                duration_ms, previous_hash, event_hash
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s
-            ) RETURNING id, ingested_at
-        """, (
-            value["event_uuid"], value["occurred_at"], value["source_service"],
-            value["source_type"], value["event_type"], value["severity"],
-            value.get("actor_user_id"), value.get("actor_display"), value.get("guild_id"),
-            value.get("channel_id"), value.get("message_id"), value.get("request_id"),
-            value.get("session_id"), value.get("target_type"), value.get("target_id"),
-            value.get("summary") or "",
-            value.get("content_text"),
-            json.dumps(value.get("details") or {}, ensure_ascii=False, default=str),
-            value.get("ip_hash"), value.get("user_agent") or None,
-            value.get("status_code"), value.get("duration_ms"), previous_hash, event_hash,
-        ))
-        inserted = cursor.fetchone()
+        for value in values:
+            cursor.execute(
+                "SELECT id, event_hash, ingested_at FROM global_log_events WHERE event_uuid = %s",
+                (value["event_uuid"],),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                inserted_events.append({
+                    "id": int(existing[0]),
+                    "event_hash": str(existing[1]),
+                    "ingested_at": existing[2].isoformat(),
+                    "duplicate": True,
+                })
+                # The database tail selected above remains the correct parent
+                # for the first genuinely missing spooled event.
+                continue
+            canonical = canonical_event_payload(value, previous_hash)
+            event_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            cursor.execute("""
+                INSERT INTO global_log_events (
+                    event_uuid, occurred_at, source_service, source_type, event_type,
+                    severity, actor_user_id, actor_display, guild_id, channel_id,
+                    message_id, request_id, session_id, target_type, target_id,
+                    summary, content_text, details, ip_hash, user_agent, status_code,
+                    duration_ms, previous_hash, event_hash
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s
+                ) RETURNING id, ingested_at
+            """, (
+                value["event_uuid"], value["occurred_at"], value["source_service"],
+                value["source_type"], value["event_type"], value["severity"],
+                value.get("actor_user_id"), value.get("actor_display"), value.get("guild_id"),
+                value.get("channel_id"), value.get("message_id"), value.get("request_id"),
+                value.get("session_id"), value.get("target_type"), value.get("target_id"),
+                value.get("summary") or "", value.get("content_text"),
+                json.dumps(value.get("details") or {}, ensure_ascii=False, default=str),
+                value.get("ip_hash"), value.get("user_agent") or None,
+                value.get("status_code"), value.get("duration_ms"), previous_hash, event_hash,
+            ))
+            inserted = cursor.fetchone()
+            inserted_events.append({
+                "id": int(inserted[0]),
+                "event_hash": event_hash,
+                "ingested_at": inserted[1].isoformat(),
+            })
+            previous_hash = event_hash
         connection.commit()
-    return {"id": int(inserted[0]), "event_hash": event_hash, "ingested_at": inserted[1].isoformat()}
+    return inserted_events
+
+
+def append_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    inserted = append_events([event])
+    return inserted[0] if inserted else None
 
 
 def issue_login_code(user_id: int, *, requested_from: str = "discord") -> str:
@@ -465,10 +534,28 @@ def revoke_session(token: str) -> None:
 
 def _event_dict(row: Any, names: list[str]) -> dict[str, Any]:
     value = {name: row[index] for index, name in enumerate(names)}
+    # psycopg preserves PostgreSQL UUID values as uuid.UUID objects. aiohttp's
+    # JSON encoder intentionally rejects them, so normalize every externally
+    # visible identifier at the repository boundary.
+    if value.get("event_uuid") is not None:
+        value["event_uuid"] = str(value["event_uuid"])
     for name in ("occurred_at", "ingested_at"):
         if value.get(name) is not None:
             value[name] = value[name].isoformat()
     return value
+
+
+def _timestamp_filter(value: Any, name: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        selected = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"global_log_invalid_{name}") from exc
+    if selected.tzinfo is None:
+        selected = selected.replace(tzinfo=timezone.utc)
+    return selected.astimezone(timezone.utc)
 
 
 def search_events(filters: Mapping[str, Any]) -> dict[str, Any]:
@@ -482,8 +569,19 @@ def search_events(filters: Mapping[str, Any]) -> dict[str, Any]:
         params.append(int(cursor_id))
     q = str(filters.get("q") or "").strip()[:300]
     if q:
-        clauses.append("(to_tsvector('simple', coalesce(summary,'') || ' ' || coalesce(content_text,'') || ' ' || coalesce(actor_display,'') || ' ' || coalesce(target_id,'')) @@ plainto_tsquery('simple', %s) OR CAST(id AS TEXT) = %s OR CAST(actor_user_id AS TEXT) = %s OR CAST(message_id AS TEXT) = %s)")
-        params.extend([q, q, q, q])
+        # Full text handles natural-language queries; ILIKE keeps fragments,
+        # routes, UUIDs, case numbers and partially typed Discord identifiers
+        # discoverable as operators expect.
+        like = f"%{q}%"
+        clauses.append("("
+            "to_tsvector('simple', coalesce(summary,'') || ' ' || coalesce(content_text,'') || ' ' || "
+            "coalesce(actor_display,'') || ' ' || coalesce(target_id,'') || ' ' || coalesce(event_type,'') || ' ' || "
+            "coalesce(request_id,'') || ' ' || coalesce(details::text,'')) @@ websearch_to_tsquery('simple', %s) "
+            "OR summary ILIKE %s OR content_text ILIKE %s OR actor_display ILIKE %s "
+            "OR target_id ILIKE %s OR event_type ILIKE %s OR request_id ILIKE %s OR details::text ILIKE %s "
+            "OR CAST(id AS TEXT) = %s OR CAST(actor_user_id AS TEXT) = %s OR CAST(message_id AS TEXT) = %s)"
+        )
+        params.extend([q, like, like, like, like, like, like, like, q, q, q])
     for key, column in (
         ("source", "source_service"), ("source_type", "source_type"),
         ("event_type", "event_type"), ("severity", "severity"),
@@ -498,18 +596,21 @@ def search_events(filters: Mapping[str, Any]) -> dict[str, Any]:
             clauses.append(f"{column} = %s")
             params.append(int(value))
     for key, operator in (("from", ">="), ("to", "<=")):
-        value = str(filters.get(key) or "").strip()
-        if value:
+        value = _timestamp_filter(filters.get(key), key)
+        if value is not None:
             clauses.append(f"occurred_at {operator} %s")
             params.append(value)
+    for key, column in (
+        ("request_id", "request_id"), ("session_id", "session_id"),
+        ("target_type", "target_type"), ("target_id", "target_id"),
+        ("message_id", "message_id"), ("guild_id", "guild_id"),
+    ):
+        value = str(filters.get(key) or "").strip()[:1000]
+        if value:
+            clauses.append(f"CAST({column} AS TEXT) = %s")
+            params.append(value)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    names = [
-        "id", "event_uuid", "occurred_at", "ingested_at", "source_service",
-        "source_type", "event_type", "severity", "actor_user_id", "actor_display",
-        "guild_id", "channel_id", "message_id", "request_id", "session_id",
-        "target_type", "target_id", "summary", "content_text", "details",
-        "ip_hash", "user_agent", "status_code", "duration_ms", "previous_hash", "event_hash",
-    ]
+    names = _EVENT_COLUMNS
     sql = "SELECT " + ", ".join(names) + " FROM global_log_events" + where + " ORDER BY id DESC LIMIT %s"
     params.append(limit + 1)
     pool = _connection_pool()
@@ -525,8 +626,80 @@ def search_events(filters: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def facets() -> dict[str, Any]:
+def related_events(event_id: int, *, limit: int = 120) -> dict[str, Any]:
+    """Return a scored, chronological reconstruction around one event."""
     initialize_global_log()
+    selected_limit = max(10, min(300, int(limit)))
+    names = _EVENT_COLUMNS
+    pool = _connection_pool()
+    with pool.connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT " + ", ".join(names) + " FROM global_log_events WHERE id = %s",
+            (int(event_id),),
+        )
+        anchor_row = cursor.fetchone()
+        if anchor_row is None:
+            raise LookupError("global_log_event_not_found")
+        anchor = _event_dict(anchor_row, names)
+        relations: list[tuple[str, Any, int]] = []
+        for label, column, value, weight in (
+            ("request", "request_id", anchor.get("request_id"), 100),
+            ("session", "session_id", anchor.get("session_id"), 90),
+            ("message", "message_id", anchor.get("message_id"), 85),
+            ("target", "target_id", anchor.get("target_id"), 75),
+            ("actor", "actor_user_id", anchor.get("actor_user_id"), 55),
+            ("channel", "channel_id", anchor.get("channel_id"), 35),
+        ):
+            if value not in (None, ""):
+                relations.append((label, column, value, weight))
+        if not relations:
+            return {"anchor": anchor, "events": [], "relation_count": 0}
+        strong = [item for item in relations if item[0] in {"request", "session", "message", "target"}]
+        weak = [item for item in relations if item[0] in {"actor", "channel"}]
+        predicates: list[str] = []
+        params: list[Any] = []
+        if strong:
+            predicates.append("(" + " OR ".join(f"{column} = %s" for _, column, _, _ in strong) + ")")
+            params.extend(value for _, _, value, _ in strong)
+        if weak:
+            predicates.append("((" + " OR ".join(f"{column} = %s" for _, column, _, _ in weak) + ") "
+                "AND occurred_at BETWEEN %s::timestamptz - INTERVAL '30 minutes' "
+                "AND %s::timestamptz + INTERVAL '30 minutes')")
+            params.extend(value for _, _, value, _ in weak)
+            params.extend([anchor["occurred_at"], anchor["occurred_at"]])
+        cursor.execute(
+            "SELECT " + ", ".join(names) + " FROM global_log_events WHERE id <> %s AND (" +
+            " OR ".join(predicates) + ") ORDER BY id DESC LIMIT %s",
+            (int(event_id), *params, selected_limit * 3),
+        )
+        rows = cursor.fetchall()
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = _event_dict(row, names)
+        reasons: list[str] = []
+        score = 0
+        for label, column, value, weight in relations:
+            if item.get(column) == value:
+                reasons.append(label)
+                score += weight
+        if not reasons:
+            reasons.append("time")
+            score = 5
+        item["relation"] = {"reasons": reasons, "score": score}
+        enriched.append(item)
+    enriched.sort(key=lambda item: (-int(item["relation"]["score"]), abs(int(item["id"]) - int(event_id))))
+    selected = enriched[:selected_limit]
+    selected.sort(key=lambda item: (item["occurred_at"], int(item["id"])))
+    return {"anchor": anchor, "events": selected, "relation_count": len(selected)}
+
+
+def facets() -> dict[str, Any]:
+    global _facet_cache
+    initialize_global_log()
+    now = datetime.now(timezone.utc).timestamp()
+    with _facet_cache_lock:
+        if _facet_cache is not None and now - _facet_cache[0] < 8:
+            return json.loads(json.dumps(_facet_cache[1], default=str))
     pool = _connection_pool()
     result: dict[str, Any] = {}
     with pool.connection() as connection, connection.cursor() as cursor:
@@ -544,6 +717,8 @@ def facets() -> dict[str, Any]:
         result["total"] = int(row[0])
         result["first_at"] = row[1].isoformat() if row[1] else None
         result["last_at"] = row[2].isoformat() if row[2] else None
+    with _facet_cache_lock:
+        _facet_cache = (now, result)
     return result
 
 
@@ -575,8 +750,8 @@ def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
 
 
 __all__ = [
-    "allowed_user_ids", "append_event", "canonical_event_payload", "consume_login_code",
+    "allowed_user_ids", "append_event", "append_events", "canonical_event_payload", "consume_login_code",
     "facets", "global_log_database_name", "global_log_enabled", "initialize_global_log",
-    "issue_login_code", "prepare_event", "resolve_session", "revoke_session", "search_events",
+    "issue_login_code", "prepare_event", "related_events", "resolve_session", "revoke_session", "search_events",
     "user_is_allowed", "verify_chain",
 ]

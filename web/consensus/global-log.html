@@ -31,37 +31,74 @@
 
   <main class="app-shell" id="appShell" hidden>
     <header class="topbar">
-      <div>
-        <p class="eyebrow">T-Mod · Intelligence ledger</p>
-        <h1>Глобальный журнал</h1>
+      <div class="brand-block">
+        <span class="brand-sigil" aria-hidden="true"><i></i></span>
+        <div>
+          <p class="eyebrow">T-Mod · Intelligence ledger</p>
+          <h1>Глобальный журнал</h1>
+        </div>
       </div>
       <div class="top-actions">
-        <span class="health-pill" id="runtimeHealth"><i></i> Подключение</span>
+        <span class="health-pill" id="runtimeHealth"><i></i><span>Подключение</span></span>
+        <button class="btn btn-live" id="liveToggle" type="button" aria-pressed="true"><i></i><span>Поток включён</span></button>
         <button class="btn btn-outline" id="integrityButton" type="button">Проверить цепочку</button>
         <button class="btn btn-quiet" id="logoutButton" type="button">Выйти</button>
       </div>
     </header>
 
+    <div class="system-notice" id="systemNotice" role="status" hidden>
+      <span class="notice-icon">!</span><span id="systemNoticeText"></span>
+      <button type="button" id="noticeRetry">Повторить</button>
+      <button type="button" id="noticeClose" aria-label="Закрыть">×</button>
+    </div>
+
     <section class="stats-grid" aria-label="Состояние журнала">
       <article class="stat"><span>Событий</span><strong id="totalEvents">—</strong><small id="eventRange">Загрузка диапазона</small></article>
-      <article class="stat"><span>Поток</span><strong id="queueEvents">—</strong><small>событий ожидают записи</small></article>
+      <article class="stat"><span>Поток записи</span><strong id="queueEvents">—</strong><small>событий ожидают записи</small></article>
       <article class="stat"><span>Целостность</span><strong id="chainStatus">Не проверена</strong><small id="chainDetail">SHA-256 event chain</small></article>
-      <article class="stat"><span>Обновление</span><strong id="lastRefresh">—</strong><small>мягко, без перезагрузки страницы</small></article>
+      <article class="stat"><span>Синхронизация</span><strong id="lastRefresh">—</strong><small id="refreshDetail">обновление каждые 10 секунд</small></article>
     </section>
 
-    <section class="filter-card">
-      <div class="filter-heading">
-        <div><h2>Поиск</h2><p>Текст, Discord ID, сообщение, источник или точное событие.</p></div>
-        <div class="filter-actions">
+    <section class="investigation-card">
+      <div class="command-search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <label for="globalSearch">Найти в журнале</label>
+        <input id="globalSearch" form="filterForm" name="q" type="search" autocomplete="off" placeholder="Событие, текст, Discord ID, сообщение…">
+        <kbd>⌘ K</kbd>
+        <button class="search-submit" type="submit" form="filterForm">Искать</button>
+      </div>
+
+      <div class="quick-row" aria-label="Быстрые фильтры">
+        <span>Быстро:</span>
+        <button class="quick-chip" type="button" data-filter="severity" data-value="error"><i class="dot danger"></i>Ошибки</button>
+        <button class="quick-chip" type="button" data-filter="severity" data-value="critical"><i class="dot critical"></i>Критические</button>
+        <button class="quick-chip" type="button" data-filter="status" data-value="500">HTTP 500</button>
+        <button class="quick-chip" type="button" data-filter="status" data-value="504">HTTP 504</button>
+        <button class="quick-chip" type="button" data-filter="source_type" data-value="discord">Discord</button>
+        <button class="quick-chip" type="button" data-range="today">Сегодня</button>
+        <button class="quick-chip" type="button" data-range="hour">Последний час</button>
+      </div>
+
+      <div class="active-filters" id="activeFilters" aria-live="polite"></div>
+
+      <div class="filter-toolbar">
+        <div class="saved-view-control">
+          <label for="savedViews">Представление</label>
+          <select id="savedViews"><option value="">Текущий поиск</option></select>
+          <button class="icon-button" id="saveView" type="button" title="Сохранить представление" aria-label="Сохранить представление">＋</button>
+          <button class="icon-button" id="deleteView" type="button" title="Удалить представление" aria-label="Удалить представление" disabled>−</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="btn btn-quiet" id="advancedToggle" type="button" aria-expanded="false">Расширенные фильтры <span>⌄</span></button>
           <button class="btn btn-outline" id="exportCsv" type="button">CSV</button>
           <button class="btn btn-outline" id="exportJson" type="button">JSON</button>
-          <button class="btn btn-quiet" id="resetFilters" type="button">Сбросить</button>
+          <button class="btn btn-quiet" id="resetFilters" type="button">Очистить</button>
         </div>
       </div>
-      <form id="filterForm" class="filter-grid">
-        <label class="search-field"><span>Запрос</span><input name="q" type="search" placeholder="Например: 902235631952998410, veto, OVR…"></label>
+
+      <form id="filterForm" class="filter-grid" hidden>
         <label><span>Сервис</span><select name="source"><option value="">Все сервисы</option></select></label>
-        <label><span>Тип</span><select name="source_type"><option value="">Все типы</option></select></label>
+        <label><span>Тип источника</span><select name="source_type"><option value="">Все типы</option></select></label>
         <label><span>Событие</span><select name="event_type"><option value="">Все события</option></select></label>
         <label><span>Важность</span><select name="severity"><option value="">Любая</option></select></label>
         <label><span>Discord ID</span><input name="actor" inputmode="numeric" placeholder="ID пользователя"></label>
@@ -69,29 +106,77 @@
         <label><span>HTTP</span><input name="status" inputmode="numeric" placeholder="Код ответа"></label>
         <label><span>С даты</span><input name="from" type="datetime-local"></label>
         <label><span>До даты</span><input name="to" type="datetime-local"></label>
-        <button class="btn btn-primary filter-submit" type="submit">Найти события</button>
+        <button class="btn btn-primary filter-submit" type="submit">Применить</button>
       </form>
     </section>
 
     <section class="events-card">
-      <div class="events-heading"><h2>Хронология</h2><span id="resultLabel">Загрузка…</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Время</th><th>Источник</th><th>Событие</th><th>Участник</th><th>Сводка</th><th>Результат</th></tr></thead>
-          <tbody id="eventsBody"></tbody>
-        </table>
-        <div class="empty-state" id="emptyState" hidden><strong>События не найдены</strong><span>Измените фильтры или диапазон дат.</span></div>
+      <div class="events-heading">
+        <div>
+          <div class="title-line"><h2>Хронология</h2><span class="live-indicator" id="liveIndicator"><i></i>LIVE</span></div>
+          <span id="resultLabel">Загрузка…</span>
+        </div>
+        <div class="view-controls">
+          <label for="groupMode">Группировать</label>
+          <select id="groupMode">
+            <option value="none">Без группировки</option>
+            <option value="request_id">По запросу</option>
+            <option value="session_id">По сессии</option>
+            <option value="actor_user_id">По участнику</option>
+            <option value="message_id">По сообщению</option>
+            <option value="source_service">По сервису</option>
+          </select>
+          <div class="segmented" role="group" aria-label="Вид событий">
+            <button type="button" data-view="timeline" class="active" aria-pressed="true">Лента</button>
+            <button type="button" data-view="table" aria-pressed="false">Таблица</button>
+          </div>
+        </div>
       </div>
-      <button class="btn btn-outline load-more" id="loadMore" type="button" hidden>Показать более ранние</button>
+
+      <div class="events-surface" id="eventsSurface" aria-live="polite"></div>
+      <div class="empty-state" id="emptyState" hidden>
+        <span class="empty-orbit" aria-hidden="true"><i></i></span>
+        <strong>События не найдены</strong>
+        <span>Измените фильтры или снимите фокус со связанной цепочки.</span>
+      </div>
+      <button class="btn btn-outline load-more" id="loadMore" type="button" hidden>Загрузить более ранние события</button>
     </section>
   </main>
 
-  <dialog id="detailDialog">
-    <div class="dialog-head"><div><p class="eyebrow" id="detailMeta">Событие</p><h2 id="detailTitle">Детали</h2></div><button class="dialog-close" id="detailClose" aria-label="Закрыть">×</button></div>
-    <div class="detail-grid" id="detailFacts"></div>
+  <dialog id="detailDialog" class="detail-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow" id="detailMeta">Событие</p><h2 id="detailTitle">Детали</h2></div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="copyEventLink" type="button">Ссылка</button>
+        <button class="btn btn-quiet" id="copyEventJson" type="button">JSON</button>
+        <button class="dialog-close" id="detailClose" type="button" aria-label="Закрыть">×</button>
+      </div>
+    </div>
+    <div class="detail-hero">
+      <div class="detail-grid" id="detailFacts"></div>
+      <aside class="relation-panel">
+        <div class="relation-heading"><h3>Связанные цепочки</h3><span>по всей истории</span></div>
+        <div class="relation-actions" id="relationActions"></div>
+        <div class="relation-preview" id="relationPreview"></div>
+      </aside>
+    </div>
     <section class="detail-section"><h3>Содержимое</h3><pre id="detailContent"></pre></section>
-    <section class="detail-section"><h3>Данные</h3><pre id="detailJson"></pre></section>
+    <section class="detail-section"><h3>Структурированные данные</h3><pre id="detailJson"></pre></section>
     <section class="chain-strip"><span>Предыдущая запись</span><code id="previousHash"></code><span>Хэш события</span><code id="eventHash"></code></section>
   </dialog>
+
+  <dialog id="viewDialog" class="small-dialog">
+    <form id="saveViewForm" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">Персональная настройка</p><h2>Сохранить представление</h2></div><button class="dialog-close" id="viewClose" type="button" aria-label="Закрыть">×</button></div>
+      <div class="small-dialog-body">
+        <label for="viewName">Название</label>
+        <input id="viewName" maxlength="48" required placeholder="Например: Ошибки авторизации">
+        <p>Сохраняются запрос, фильтры, группировка и способ отображения. Данные остаются только в этом браузере.</p>
+      </div>
+      <div class="small-dialog-footer"><button class="btn btn-quiet" id="viewCancel" type="button">Отмена</button><button class="btn btn-primary" type="submit">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>
