@@ -79,6 +79,41 @@ class WebAuthRepositoryTests(unittest.TestCase):
         self.assertTrue(web_auth.delete_web_credential(10, 20))
         self.assertFalse(web_auth.web_session_version_matches(10, 20, second.session_version))
 
+    def test_logout_revokes_all_persistent_sessions_without_deleting_account(self) -> None:
+        credential = web_auth.configure_web_credential(10, 20, "senator", "12345678")
+        self.assertTrue(
+            web_auth.web_session_version_matches(10, 20, credential.session_version)
+        )
+
+        self.assertTrue(web_auth.invalidate_web_sessions(10, 20))
+        self.assertFalse(
+            web_auth.web_session_version_matches(10, 20, credential.session_version)
+        )
+        self.assertIsNotNone(web_auth.get_web_credential(10, 20))
+        self.assertFalse(web_auth.invalidate_web_sessions(10, 21))
+
+    def test_entry_ticket_nonce_is_atomic_and_expires_from_registry(self) -> None:
+        self.assertTrue(
+            web_auth.consume_web_entry_ticket_nonce(
+                10, "entry-once", expires_at=2_000, now_epoch=1_000
+            )
+        )
+        self.assertFalse(
+            web_auth.consume_web_entry_ticket_nonce(
+                10, "entry-once", expires_at=2_000, now_epoch=1_001
+            )
+        )
+        self.assertFalse(
+            web_auth.consume_web_entry_ticket_nonce(
+                10, "expired", expires_at=1_000, now_epoch=1_000
+            )
+        )
+        self.assertTrue(
+            web_auth.consume_web_entry_ticket_nonce(
+                10, "after-cleanup", expires_at=3_000, now_epoch=2_001
+            )
+        )
+
     def test_section_grants_are_idempotent_and_revocable(self) -> None:
         self.assertTrue(
             web_auth.web_set_section_grant(

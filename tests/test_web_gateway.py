@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import unittest
 from collections import deque
+import unittest
 from unittest.mock import AsyncMock, patch
 
 from aiohttp import ClientError, web
@@ -23,6 +23,22 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
             )
 
         backend.router.add_post("/api/echo", echo)
+
+        async def forwarded_headers(request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "host": request.headers.get("Host"),
+                    "forwarded_host": request.headers.get("X-TMod-Forwarded-Host"),
+                    "forwarded_proto": request.headers.get("X-TMod-Forwarded-Proto"),
+                }
+            )
+
+        backend.router.add_get("/api/forwarded-headers", forwarded_headers)
+
+        async def health(_: web.Request) -> web.Response:
+            return web.json_response({"status": "ok"})
+
+        backend.router.add_get("/api/health", health)
         self.backend = TestServer(backend)
         await self.backend.start_server()
         self.upstream_patch = patch.object(
@@ -53,6 +69,42 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"], "tmod_runtime_temporarily_unavailable")
+
+    async def test_gateway_ready_requires_healthy_upstream(self) -> None:
+        response = await self.gateway.get("/gateway-ready")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["status"], "ready")
+
+        await self.backend.close()
+        unavailable = await self.gateway.get("/gateway-ready")
+        self.assertEqual(unavailable.status, 503)
+        self.assertEqual((await unavailable.json())["status"], "degraded")
+
+    async def test_gateway_preserves_public_host_in_owned_marker(self) -> None:
+        response = await self.gateway.get(
+            "/api/forwarded-headers",
+            headers={"Host": "tmod-discord-bot:8788", "X-Forwarded-Host": "atlas.tvr.lat"},
+        )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["forwarded_host"], "atlas.tvr.lat")
+        self.assertEqual(payload["forwarded_proto"], "http")
+        self.assertNotEqual(payload["host"], "atlas.tvr.lat")
+
+    async def test_gateway_edge_queue_is_bounded_under_an_upstream_outage(self) -> None:
+        application = web.Application()
+        application[web_gateway.EDGE_QUEUE] = deque()
+        application[web_gateway.EDGE_DROPPED] = 0
+        with patch.object(web_gateway, "_edge_queue_maxsize", return_value=2):
+            for number in range(4):
+                web_gateway._queue_edge(application, {"number": number})
+
+        self.assertEqual(len(application[web_gateway.EDGE_QUEUE]), 2)
+        self.assertEqual(application[web_gateway.EDGE_DROPPED], 2)
+        self.assertEqual(
+            [item["number"] for item in application[web_gateway.EDGE_QUEUE]],
+            [2, 3],
+        )
 
     async def test_gateway_returns_bounded_503_on_upstream_timeout(self) -> None:
         session = self.gateway.app[web_gateway.UPSTREAM_SESSION]

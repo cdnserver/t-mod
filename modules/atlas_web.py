@@ -48,7 +48,12 @@ from modules.atlas_media import (
     atlas_media_scan,
 )
 from modules.atlas_tts import AtlasTTSResult, AtlasTTSService
-from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.consensus_web_auth import (
+    ConsensusWebPrincipal,
+    csrf_matches,
+    has_trusted_forwarded_host,
+    request_public_host,
+)
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
@@ -237,10 +242,28 @@ def register_atlas_web_routes(
         return selected
 
     def require_desktop_client(request: web.Request) -> None:
-        host = str(request.host or "").partition(":")[0].lower()
+        host = request_public_host(request).partition(":")[0].lower()
         # Local/internal calls remain available for diagnostics and automated
         # tests.  The product restriction is enforced on the public contour.
-        if host != "atlas.tvr.lat" or _is_tmod_desktop_request(request):
+        # A request carrying the gateway marker is a public request even when
+        # the upstream Host is an internal Docker name.  Unknown forwarded
+        # hosts are denied as well, rather than accidentally bypassing the
+        # desktop-only policy.
+        public_request = has_trusted_forwarded_host(request)
+        if public_request and host != "atlas.tvr.lat":
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "atlas_canonical_host_required",
+                        "message": "Откройте Atlas на официальном домене.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        if _is_tmod_desktop_request(request):
+            return
+        if host != "atlas.tvr.lat":
             return
         raise web.HTTPForbidden(
             text=json.dumps(

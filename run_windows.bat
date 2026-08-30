@@ -1,6 +1,14 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+rem Always resolve relative paths from the checked-out project, even when
+rem started from a shortcut, Task Scheduler, or another current directory.
+cd /d "%~dp0"
+if errorlevel 1 (
+  echo [FAIL] Could not enter the T-Mod project directory: %~dp0
+  exit /b 1
+)
+
 if not defined TMOD_SKIP_BUILD set TMOD_SKIP_BUILD=0
 if not defined TMOD_NONINTERACTIVE set TMOD_NONINTERACTIVE=0
 if not defined TMOD_TRANSACTIONAL_UPDATE set TMOD_TRANSACTIONAL_UPDATE=0
@@ -8,7 +16,8 @@ if not defined TMOD_TRANSACTIONAL_UPDATE set TMOD_TRANSACTIONAL_UPDATE=0
 title T-Mod Boot Console
 chcp 65001 >nul
 
-set PERSISTENT_DIR=C:\Users\Admin\Documents\SGLDiscordBot
+if not defined TMOD_PERSISTENT_DIR set "TMOD_PERSISTENT_DIR=%USERPROFILE%\Documents\SGLDiscordBot"
+set "PERSISTENT_DIR=%TMOD_PERSISTENT_DIR%"
 set "COMPOSE_ENV_FILES=%PERSISTENT_DIR%\.env"
 set DATA_DIR=%PERSISTENT_DIR%\data
 set BACKUP_DIR=%PERSISTENT_DIR%\backups
@@ -55,7 +64,7 @@ call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
 if not exist "%PERSISTENT_DIR%\.env" (
-  copy ".env.persistent.example" "%PERSISTENT_DIR%\.env" >nul
+  copy "%~dp0.env.persistent.example" "%PERSISTENT_DIR%\.env" >nul
   call :warn "Created %PERSISTENT_DIR%\.env"
   call :warn "Put your Discord token into this file, then run this bat again."
   echo.
@@ -93,7 +102,7 @@ call :ok "Minecraft port ready"
 
 call :stage "05" "Localization"
 if not exist "%PERSISTENT_DIR%\localization.json" (
-  copy "localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
+  copy "%~dp0localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
   call :ok "localization.json created"
 ) else (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0merge_localization_windows.ps1" -ExamplePath "%~dp0localization.example.json" -TargetPath "%PERSISTENT_DIR%\localization.json" -BackupDir "%BACKUP_DIR%"
@@ -226,6 +235,13 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
+call :stage "10B" "Minecraft runtime health"
+call :ensure_minecraft_runtime
+if errorlevel 1 (
+  call :pause_if_interactive
+  exit /b 1
+)
+
 call :stage "10A" "Split backend health"
 call :ensure_split_runtime
 if errorlevel 1 (
@@ -234,7 +250,31 @@ if errorlevel 1 (
 )
 
 rem A bind-mounted Caddyfile can change without Compose recreating Caddy.
-rem Validate it first, then restart so new subdomains receive certificates.
+rem Start it explicitly and wait for its healthcheck before validating.
+docker compose up -d tmod-caddy
+if errorlevel 1 (
+  call :fail "Caddy startup failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+set CADDY_READY=0
+for /l %%i in (1,1,30) do (
+  set CADDY_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-caddy 2^>nul') do set CADDY_HEALTH=%%H
+  if /I "!CADDY_HEALTH!"=="healthy" (
+    set CADDY_READY=1
+    goto :caddy_ready
+  )
+  timeout /t 2 /nobreak >nul
+)
+:caddy_ready
+if not "%CADDY_READY%"=="1" (
+  call :fail "Caddy did not become healthy within 60 seconds"
+  docker compose ps tmod-caddy
+  docker compose logs --no-color --tail 80 tmod-caddy
+  call :pause_if_interactive
+  exit /b 1
+)
 docker exec tmod-caddy caddy validate --config /etc/caddy/Caddyfile
 if errorlevel 1 (
   call :fail "Caddy configuration validation failed"
@@ -367,17 +407,56 @@ echo.
 call :ok "T-Mod Web and T-Mod Worker are healthy"
 exit /b 0
 
+:ensure_minecraft_runtime
+set MINECRAFT_RUNTIME_READY=0
+rem A cold Paper start routinely needs more than one minute on a Windows
+rem Docker host. Wait long enough for the image to initialize before using
+rem the stricter RCON verification below.
+for /l %%i in (1,1,90) do (
+  set MC_HEALTH=
+  set MC_SUPERVISOR_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft 2^>nul') do set MC_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft-supervisor 2^>nul') do set MC_SUPERVISOR_HEALTH=%%H
+  if /I "!MC_HEALTH!"=="healthy" if /I "!MC_SUPERVISOR_HEALTH!"=="healthy" (
+    set MINECRAFT_RUNTIME_READY=1
+    goto :minecraft_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+:minecraft_runtime_ready
+if "%MINECRAFT_RUNTIME_READY%"=="1" (
+  echo.
+  call :ok "Minecraft and lifecycle supervisor are healthy"
+  exit /b 0
+)
+echo.
+call :fail "Minecraft or lifecycle supervisor did not become healthy within 180 seconds"
+docker compose ps -a minecraft minecraft-supervisor
+echo.
+echo --- minecraft ---
+docker compose logs --no-color --tail 80 minecraft 2>&1
+echo.
+echo --- minecraft-supervisor ---
+docker compose logs --no-color --tail 80 minecraft-supervisor 2>&1
+exit /b 1
+
 :check_minecraft_rcon
 for /l %%i in (1,1,60) do (
   docker inspect --format "{{.State.Health.Status}}" minecraft 2>nul | findstr /I /X /C:"healthy" >nul
   if not errorlevel 1 (
-    docker exec minecraft rcon-cli list >nul 2>nul
-    if not errorlevel 1 (
-      call :ok "Minecraft RCON secret accepted"
-      exit /b 0
+    rem mc-health may become healthy before RCON finishes binding. Retry the
+    rem command for a bounded 60 seconds before declaring auth/config failure.
+    for /l %%r in (1,1,12) do (
+      docker exec minecraft rcon-cli list >nul 2>nul
+      if not errorlevel 1 (
+        call :ok "Minecraft RCON secret accepted"
+        exit /b 0
+      )
+      timeout /t 5 /nobreak >nul
     )
-    call :fail "Minecraft is healthy, but RCON authentication failed."
-    call :warn "The generated secret and server.properties are not synchronized."
+    call :fail "Minecraft is healthy, but RCON did not respond within 60 seconds."
+    call :warn "The generated secret and server.properties may be unsynchronized."
     docker logs --tail 80 minecraft
     exit /b 1
   )

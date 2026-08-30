@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
+from modules import global_log_runtime as runtime
 from modules.global_log_runtime import redact_value, scrub_text
 from persistence import global_log_repository as repository
 
@@ -81,3 +83,95 @@ def test_event_projection_is_json_serializable() -> None:
     )
     assert projected["event_uuid"] == "00000000-0000-0000-0000-000000000001"
     json.dumps(projected)
+
+
+def test_verify_chain_pages_through_complete_ledger(monkeypatch) -> None:
+    names = [
+        "event_uuid", "occurred_at", "source_service", "source_type", "event_type",
+        "severity", "actor_user_id", "actor_display", "guild_id", "channel_id",
+        "message_id", "request_id", "session_id", "target_type", "target_id",
+        "summary", "content_text", "details", "ip_hash", "user_agent", "status_code",
+        "duration_ms", "previous_hash", "event_hash", "id",
+    ]
+    rows = []
+    previous = "0" * 64
+    for identifier in range(1, 4):
+        event = repository.prepare_event({
+            "event_uuid": f"00000000-0000-0000-0000-{identifier:012d}",
+            "occurred_at": f"2026-08-30T12:00:0{identifier}+00:00",
+            "event_type": "test",
+            "summary": f"event {identifier}",
+            "details": {"identifier": identifier},
+        })
+        event["previous_hash"] = previous
+        event["event_hash"] = hashlib.sha256(
+            repository.canonical_event_payload(event, previous).encode()
+        ).hexdigest()
+        event["id"] = identifier
+        previous = event["event_hash"]
+        event["occurred_at"] = datetime.fromisoformat(event["occurred_at"])
+        rows.append(tuple(event.get(name) for name in names))
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.current = []
+            self.page_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params=()):
+            if str(query).startswith("SET TRANSACTION"):
+                return
+            if "COUNT(*)" in str(query):
+                self.current = [(len(rows),)]
+                return
+            self.page_calls += 1
+            start = int(params[0]) if "WHERE id >" in str(query) else 0
+            size = int(params[-1])
+            self.current = [row for row in rows if int(row[-1]) > start][:size]
+
+        def fetchone(self):
+            return self.current[0] if self.current else None
+
+        def fetchall(self):
+            return self.current
+
+    cursor = Cursor()
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return cursor
+
+    class Pool:
+        def connection(self):
+            return Connection()
+
+    monkeypatch.setattr(repository, "initialize_global_log", lambda: None)
+    monkeypatch.setattr(repository, "_connection_pool", lambda: Pool())
+    result = repository.verify_chain(limit=2)
+    assert result["ok"] is True
+    assert result["checked"] == 3
+    assert result["total"] == 3
+    assert cursor.page_calls == 2
+
+
+def test_global_log_spool_has_hard_ceiling_and_reports_overflow(monkeypatch, tmp_path: Path) -> None:
+    spool = tmp_path / "events.jsonl"
+    monkeypatch.setenv("GLOBAL_LOG_SPOOL_FILE", str(spool))
+    monkeypatch.setattr(runtime, "_spool_max_bytes", lambda: 256)
+    before = runtime._spool_overflow_dropped
+    runtime._spool_events([{"event": "old", "payload": "x" * 120}])
+    runtime._spool_events([{"event": "new", "payload": "y" * 120}])
+    assert spool.stat().st_size <= 256
+    assert runtime._spool_overflow_dropped > before
+    assert runtime.runtime_health()["spool_max_bytes"] == 256

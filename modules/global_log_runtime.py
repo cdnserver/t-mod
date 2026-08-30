@@ -38,6 +38,7 @@ _queue: asyncio.Queue[dict[str, Any]] | None = None
 _worker: asyncio.Task[Any] | None = None
 _loop: asyncio.AbstractEventLoop | None = None
 _dropped = 0
+_spool_overflow_dropped = 0
 _written = 0
 _failed = 0
 _last_error: str | None = None
@@ -192,16 +193,69 @@ def _spool_path() -> Path:
     return Path(f"/app/persistent/data/global-log-spool-{process_name}.jsonl")
 
 
+def _spool_max_bytes() -> int:
+    try:
+        value = int(os.getenv("GLOBAL_LOG_SPOOL_MAX_BYTES", str(64 * 1024 * 1024)) or 0)
+    except (TypeError, ValueError):
+        value = 64 * 1024 * 1024
+    return max(1 * 1024 * 1024, min(value, 2 * 1024 * 1024 * 1024))
+
+
 def _spool_events(events: list[dict[str, Any]]) -> None:
+    """Persist events with a hard byte ceiling.
+
+    The spool is a safety net for database outages, not an unbounded second
+    database.  Once full, the oldest records are discarded to keep the newest
+    operational context and the loss is exposed in runtime health.
+    """
+    global _spool_overflow_dropped
     if not events:
         return
     path = _spool_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _spool_lock, path.open("a", encoding="utf-8") as stream:
-        for event in events:
-            stream.write(json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    serialized = [
+        (json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+        for event in events
+    ]
+    max_bytes = _spool_max_bytes()
+    incoming_size = sum(len(line) for line in serialized)
+    with _spool_lock:
+        current_size = 0
+        try:
+            current_size = path.stat().st_size
+        except OSError:
+            pass
+        if current_size + incoming_size <= max_bytes:
+            with path.open("ab") as stream:
+                for line in serialized:
+                    stream.write(line)
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
+
+        try:
+            existing = path.read_bytes().splitlines(keepends=True)
+        except OSError:
+            existing = []
+        lines = existing + serialized
+        total = sum(len(line) for line in lines)
+        removed = 0
+        while lines and total > max_bytes:
+            total -= len(lines.pop(0))
+            removed += 1
+        if removed:
+            _spool_overflow_dropped += removed
+        if not lines:
+            path.unlink(missing_ok=True)
+            return
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("wb") as stream:
+            stream.write(b"".join(lines))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
 
 
 def _replay_spool() -> int:
@@ -347,6 +401,10 @@ async def stop_global_log_runtime(*, timeout: float = 8.0) -> None:
 
 
 def runtime_health() -> dict[str, Any]:
+    try:
+        spool_bytes = _spool_path().stat().st_size
+    except OSError:
+        spool_bytes = 0
     return {
         "enabled": repository.global_log_enabled(),
         "running": bool(_worker is not None and not _worker.done()),
@@ -354,6 +412,9 @@ def runtime_health() -> dict[str, Any]:
         "written": _written,
         "failed": _failed,
         "dropped": _dropped,
+        "spool_overflow_dropped": _spool_overflow_dropped,
+        "spool_bytes": spool_bytes,
+        "spool_max_bytes": _spool_max_bytes(),
         "last_error": _last_error,
     }
 

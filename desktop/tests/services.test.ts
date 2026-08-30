@@ -6,6 +6,7 @@ import {
   mergeServiceAccess,
   resolveNotificationServiceId,
   services,
+  TRUSTED_TMOD_HOSTS,
 } from "../src/shared/services";
 
 describe("desktop service boundary", () => {
@@ -20,7 +21,11 @@ describe("desktop service boundary", () => {
     expect(isTrustedTModUrl("https://consensus.tvr.lat/")).toBe(true);
     expect(isTrustedTModUrl("http://tvr.lat/reactor")).toBe(false);
     expect(isTrustedTModUrl("https://tvr.lat.attacker.example/")).toBe(false);
+    expect(isTrustedTModUrl("https://unknown.tvr.lat/")).toBe(false);
+    expect(isTrustedTModUrl("https://tvr.lat:8443/reactor")).toBe(false);
+    expect(isTrustedTModUrl("https://user:password@tvr.lat/reactor")).toBe(false);
     expect(isTrustedTModUrl("javascript:alert(1)")).toBe(false);
+    expect(TRUSTED_TMOD_HOSTS.has("atlas.tvr.lat")).toBe(true);
   });
 
   it("recognizes only canonical T-Mod authentication routes", () => {

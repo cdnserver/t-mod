@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectDir = $PSScriptRoot,
     [switch]$Quiet
 )

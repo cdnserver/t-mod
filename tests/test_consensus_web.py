@@ -42,6 +42,8 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_entry_ticket,
     create_session_token,
+    request_public_host,
+    request_public_secure,
     resolve_principal,
     set_session_cookie,
 )
@@ -146,11 +148,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "counts": Decimal("12"),
             "finance": {"balance": Decimal("1250.75")},
             "series": (Decimal("1"), Decimal("2.5")),
+            "checked_at": datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
         })
 
         self.assertEqual(payload["counts"], 12)
         self.assertEqual(payload["finance"]["balance"], 1250.75)
         self.assertEqual(payload["series"], [1, 2.5])
+        self.assertEqual(payload["checked_at"], "2026-08-30T12:00:00+00:00")
 
     async def test_state_exposes_progress_but_not_live_vote_directions(self) -> None:
         state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
@@ -846,6 +850,35 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             _canonical_surface_location(direct),  # type: ignore[arg-type]
             "https://atlas.tvr.lat/atlas?screen=ai",
         )
+
+        forwarded = SimpleNamespace(
+            path="/atlas",
+            query={},
+            host="tmod-discord-bot:8788",
+            rel_url="/atlas",
+            remote="127.0.0.1",
+            secure=False,
+            headers={
+                "X-TMod-Forwarded-Host": "tvr.lat",
+                "X-TMod-Forwarded-Proto": "https",
+            },
+        )
+        self.assertEqual(request_public_host(forwarded), "tvr.lat")  # type: ignore[arg-type]
+        self.assertTrue(request_public_secure(forwarded))  # type: ignore[arg-type]
+        self.assertEqual(
+            _canonical_surface_location(forwarded),  # type: ignore[arg-type]
+            "https://atlas.tvr.lat/atlas",
+        )
+
+        # A marker from a public/untrusted hop must not override the internal
+        # host, preventing clients from spoofing cookie scope or routing.
+        untrusted = SimpleNamespace(
+            host="tmod-discord-bot:8788",
+            remote="8.8.8.8",
+            secure=False,
+            headers={"X-TMod-Forwarded-Host": "atlas.tvr.lat"},
+        )
+        self.assertEqual(request_public_host(untrusted), "tmod-discord-bot:8788")  # type: ignore[arg-type]
 
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         client = TestClient(TestServer(app))

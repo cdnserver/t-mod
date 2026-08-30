@@ -92,6 +92,21 @@ export const serviceById = Object.fromEntries(
   services.map((service) => [service.id, service]),
 ) as Record<ServiceId, ServiceDefinition>;
 
+// Navigation is an explicit product boundary.  Do not broaden this to
+// `*.tvr.lat`: authenticated cookies are shared across the ecosystem and an
+// arbitrary subdomain must never become an embedded T-Mod surface.
+export const TRUSTED_TMOD_HOSTS = new Set([
+  "tvr.lat",
+  "reactor.tvr.lat",
+  "consensus.tvr.lat",
+  "atlas.tvr.lat",
+  "sgl.tvr.lat",
+  "ovr.tvr.lat",
+  "phx.tvr.lat",
+  "log.global.tvr.lat",
+  "zigmund.tvr.lat",
+]);
+
 export function isServiceId(value: unknown): value is ServiceId {
   return typeof value === "string" && services.some((service) => service.id === value);
 }
@@ -113,7 +128,10 @@ export function isTrustedTModUrl(value: string): boolean {
     const url = new URL(value);
     return (
       url.protocol === "https:" &&
-      (url.hostname === "tvr.lat" || url.hostname.endsWith(".tvr.lat"))
+      url.username === "" &&
+      url.password === "" &&
+      url.port === "" &&
+      TRUSTED_TMOD_HOSTS.has(url.hostname.toLowerCase())
     );
   } catch {
     return false;

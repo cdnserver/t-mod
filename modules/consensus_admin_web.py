@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from uuid import UUID
 from dataclasses import asdict
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -90,6 +91,10 @@ def _json_ready(value: Any) -> Any:
 
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -2442,7 +2447,7 @@ def register_admin_web_routes(
         )
         guild = bot.get_guild(int(guild_id))
         return web.json_response(
-            {
+            _json_ready({
                 **context(principal),
                 **system_data,
                 "reliability": reliability,
@@ -2458,7 +2463,7 @@ def register_admin_web_routes(
                     "members_cached": len(getattr(guild, "members", ()) or ()),
                     "channels_cached": len(getattr(guild, "channels", ()) or ()),
                 },
-            }
+            })
         )
 
     async def system_action(request: web.Request) -> web.Response:

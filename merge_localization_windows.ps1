@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ExamplePath,
     [string]$TargetPath,
     [string]$BackupDir

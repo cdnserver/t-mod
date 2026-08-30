@@ -10,7 +10,7 @@ services:
       PGDATA: "/var/lib/postgresql/data/pgdata"
     volumes:
       - "tmod-postgres-data:/var/lib/postgresql/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
     networks:
       - tmod-data
     expose:
@@ -43,7 +43,7 @@ services:
       DATABASE_FILE: "/app/persistent/data/tmod.db"
       DATA_DIR: "/app/persistent/data"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     networks:
       - tmod-data
     depends_on:
@@ -60,7 +60,7 @@ services:
     # SQLite and persistent output writable.
     user: "0:0"
     env_file:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/.env"
     environment:
       <<: *tmod_database_environment
       TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
@@ -72,10 +72,10 @@ services:
     expose:
       - "8788"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/data:/app/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - default
       - tmod-data
@@ -107,7 +107,7 @@ services:
     networks:
       - default
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     depends_on:
       tmod-discord-bot:
         condition: service_started
@@ -116,7 +116,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-health', timeout=2)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-ready', timeout=3)"
       interval: 10s
       timeout: 3s
       retries: 5
@@ -138,7 +138,7 @@ services:
       POSTGRES_APPLICATION_NAME: "tmod-worker"
       TMOD_DB_BACKUP_DIR: "/app/persistent/backups/database"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     networks:
       - tmod-data
     expose:
@@ -151,7 +151,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/health', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/ready', timeout=3)"
       interval: 30s
       timeout: 5s
       retries: 5
@@ -216,8 +216,14 @@ services:
     volumes:
       - "./Caddyfile:/etc/caddy/Caddyfile:ro"
       - "./web/consensus:/srv/tmod:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/data:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/config:/config"
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   minecraft:
     image: itzg/minecraft-server:java25-jdk
@@ -242,8 +248,8 @@ services:
       # password) synchronized while preserving properties without env values.
       OVERRIDE_SERVER_PROPERTIES: "true"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/minecraft:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
     tty: true
     stdin_open: true
     healthcheck:
@@ -257,7 +263,6 @@ services:
     build:
       context: ./minecraft-supervisor
     image: tmod-minecraft-supervisor:latest
-    container_name: minecraft-supervisor
     restart: unless-stopped
     environment:
       MINECRAFT_CONTAINER_NAME: "minecraft"
@@ -267,7 +272,7 @@ services:
       - "8791"
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - minecraft-control
     read_only: true

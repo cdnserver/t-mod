@@ -53,6 +53,31 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn('"Enter"', self.ui)
         self.assertIn('"Escape"', self.ui)
 
+    def test_all_powershell_sources_are_windows_powershell_safe_utf8(self) -> None:
+        """Windows PowerShell 5.1 reads UTF-8 without a BOM as ANSI.
+
+        The operator launchers contain Cyrillic text.  A missing BOM therefore
+        corrupts quoted strings before a launcher can even start.  Keep this
+        check repository-wide so a new maintenance script cannot reintroduce
+        that class of outage.
+        """
+        ignored_parts = {".git", ".venv", "node_modules", "release", "dist", "build"}
+        scripts = sorted(
+            [
+                path
+                for path in [*ROOT.rglob("*.ps1"), *ROOT.rglob("*.psm1")]
+                if not any(part in ignored_parts for part in path.relative_to(ROOT).parts)
+            ],
+            key=lambda path: path.as_posix(),
+        )
+        self.assertGreater(len(scripts), 0)
+        missing_bom = [
+            path.relative_to(ROOT).as_posix()
+            for path in scripts
+            if not path.read_bytes().startswith(b"\xef\xbb\xbf")
+        ]
+        self.assertEqual(missing_bom, [])
+
     def test_control_reuses_transactional_update_and_database_guard(self) -> None:
         self.assertIn("launch_tmod_guarded_windows.ps1", self.control)
         self.assertIn("safe update requested", self.control)
@@ -127,8 +152,9 @@ class TModControlWindowsTests(unittest.TestCase):
 
     def test_remote_client_has_bounded_atomic_self_update(self) -> None:
         manifest = json.loads((ROOT / "tmod_remote_version.json").read_text())
+        remote_batch = (ROOT / "tmod_remote_windows.bat").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(manifest["version"], "1.1.1")
         self.assertEqual(manifest["channel"], "stable")
         self.assertEqual(set(manifest["files"]), {"tmod_remote_windows.bat"})
         self.assertIn("cdnserver/t-mod/main", manifest["files"]["tmod_remote_windows.bat"])
@@ -143,6 +169,12 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn("Move-Item", self.remote)
         self.assertIn("TotalHours -ge 6", self.remote)
         self.assertIn("manifest.version", self.remote)
+        self.assertIn(".next.ready", remote_batch)
+        bootstrap = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", remote_batch)
+        self.assertIsNotNone(bootstrap)
+        bootstrap_script = base64.b64decode(bootstrap.group(1)).decode("utf-16le")
+        self.assertIn("[IO.File]::Replace", bootstrap_script)
+        self.assertIn("TModRemoteBundleApply", bootstrap_script)
 
     def test_no_number_driven_menu_is_reintroduced(self) -> None:
         combined = self.control + self.remote + self.ui

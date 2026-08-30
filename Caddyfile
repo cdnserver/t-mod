@@ -29,7 +29,7 @@
 	}
 	handle {
 		reverse_proxy tmod-web:8787 {
-			health_uri /gateway-health
+			health_uri /gateway-ready
 			health_interval 30s
 			health_timeout 5s
 			fail_duration 30s

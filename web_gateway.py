@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -39,16 +40,61 @@ HOP_HEADERS: Final = {
 UPSTREAM_SESSION = web.AppKey("upstream_session", ClientSession)
 EDGE_QUEUE = web.AppKey("edge_queue", deque)
 EDGE_TASK = web.AppKey("edge_task", asyncio.Task)
+EDGE_DROPPED = web.AppKey("edge_dropped", int)
+_FORWARDED_HOST_HEADER = "X-TMod-Forwarded-Host"
+_FORWARDED_PROTO_HEADER = "X-TMod-Forwarded-Proto"
+_HOST_RE = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?::[0-9]{1,5})?$"
+)
+
+
+def _safe_forwarded_host(value: object) -> str | None:
+    raw = str(value or "").strip().lower().rstrip(".")
+    if not raw or len(raw) > 255 or any(
+        char in raw for char in "/?#@\\, \t\r\n"
+    ):
+        return None
+    if not _HOST_RE.fullmatch(raw):
+        return None
+    host, separator, port = raw.partition(":")
+    if separator and int(port) > 65535:
+        return None
+    return raw
 
 
 def _edge_spool_path() -> Path:
     return Path(os.getenv("TMOD_EDGE_SPOOL_FILE", "/app/persistent/data/global-log-edge-spool.jsonl"))
 
 
+def _edge_queue_maxsize() -> int:
+    try:
+        value = int(os.getenv("TMOD_EDGE_QUEUE_MAX", "5000") or 0)
+    except (TypeError, ValueError):
+        value = 5000
+    return max(100, min(value, 50_000))
+
+
+def _edge_spool_max_bytes() -> int:
+    try:
+        value = int(os.getenv("TMOD_EDGE_SPOOL_MAX_BYTES", str(64 * 1024 * 1024)) or 0)
+    except (TypeError, ValueError):
+        value = 64 * 1024 * 1024
+    return max(1 * 1024 * 1024, min(value, 2 * 1024 * 1024 * 1024))
+
+
+def _trim_edge_queue(application: web.Application) -> None:
+    queue = application[EDGE_QUEUE]
+    maximum = _edge_queue_maxsize()
+    while len(queue) > maximum:
+        queue.popleft()
+        application[EDGE_DROPPED] += 1
+
+
 def _queue_edge(application: web.Application, event: dict[str, object]) -> None:
     event.setdefault("event_uuid", str(uuid4()))
     event.setdefault("occurred_at", datetime.now(timezone.utc).isoformat())
     application[EDGE_QUEUE].append(event)
+    _trim_edge_queue(application)
 
 
 def _store_edge_spool(queue: deque[dict[str, object]]) -> None:
@@ -58,10 +104,17 @@ def _store_edge_spool(queue: deque[dict[str, object]]) -> None:
         if not queue:
             path.unlink(missing_ok=True)
             return
+        lines = [
+            (json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n").encode("utf-8")
+            for event in queue
+        ]
+        total = sum(len(line) for line in lines)
+        maximum = _edge_spool_max_bytes()
+        while lines and total > maximum:
+            total -= len(lines.pop(0))
         temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            for event in queue:
-                stream.write(json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+        with temporary.open("wb") as stream:
+            stream.writelines(lines)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -73,7 +126,15 @@ def _store_edge_spool(queue: deque[dict[str, object]]) -> None:
 def _restore_edge_spool(queue: deque[dict[str, object]]) -> int:
     path = _edge_spool_path()
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            if size > _edge_spool_max_bytes():
+                stream.seek(-_edge_spool_max_bytes(), os.SEEK_END)
+                # The first partial JSON line is deliberately discarded.
+                stream.readline()
+            else:
+                stream.seek(0)
+            lines = stream.read().decode("utf-8", errors="replace").splitlines()
     except OSError:
         return 0
     restored = 0
@@ -85,6 +146,8 @@ def _restore_edge_spool(queue: deque[dict[str, object]]) -> int:
         if isinstance(item, dict):
             queue.append(item)
             restored += 1
+    while len(queue) > _edge_queue_maxsize():
+        queue.popleft()
     return restored
 
 
@@ -92,13 +155,28 @@ def _headers(source: web.BaseRequest | web.StreamResponse) -> dict[str, str]:
     headers = {
         key: value
         for key, value in source.headers.items()
-        if key.lower() not in HOP_HEADERS and key.lower() != "host"
+        if key.lower() not in HOP_HEADERS
+        and key.lower() not in {"host", "x-tmod-forwarded-host", "x-tmod-forwarded-proto"}
     }
     if isinstance(source, web.BaseRequest):
-        headers["X-Forwarded-Host"] = source.host
-        headers["X-Forwarded-Proto"] = source.headers.get(
-            "X-Forwarded-Proto", source.scheme
+        # Caddy supplies the browser-facing host in X-Forwarded-Host.  Keep
+        # that value in a gateway-owned header instead of replacing it with
+        # the internal upstream host (the old behaviour broke canonical
+        # redirects and cross-subdomain cookies).  Invalid/multiple values
+        # are ignored and fall back to the request host.
+        forwarded_host = _safe_forwarded_host(
+            source.headers.get("X-Forwarded-Host")
+        ) or _safe_forwarded_host(source.host)
+        if forwarded_host:
+            headers[_FORWARDED_HOST_HEADER] = forwarded_host
+            headers["X-Forwarded-Host"] = forwarded_host
+        forwarded_proto = str(
+            source.headers.get("X-Forwarded-Proto") or source.scheme
+        ).strip().lower()
+        headers[_FORWARDED_PROTO_HEADER] = (
+            forwarded_proto if forwarded_proto in {"http", "https"} else source.scheme
         )
+        headers["X-Forwarded-Proto"] = headers[_FORWARDED_PROTO_HEADER]
         headers["X-Forwarded-For"] = ", ".join(
             item
             for item in (
@@ -112,8 +190,48 @@ def _headers(source: web.BaseRequest | web.StreamResponse) -> dict[str, str]:
 
 async def gateway_health(_: web.Request) -> web.Response:
     return web.json_response(
-        {"status": "ok", "service": "tmod-web", "upstream": UPSTREAM}
+        {
+            "status": "ok",
+            "service": "tmod-web",
+            "upstream": UPSTREAM,
+        }
     )
+
+
+async def gateway_ready(request: web.Request) -> web.Response:
+    """Report readiness only when the application upstream answers health."""
+
+    session = request.app.get(UPSTREAM_SESSION)
+    if session is None:
+        return web.json_response(
+            {"status": "starting", "service": "tmod-web"},
+            status=503,
+            headers={"Retry-After": "2"},
+        )
+    try:
+        async with session.get(
+            f"{UPSTREAM}/api/health",
+            headers={"X-TMod-Internal-Health": "tmod-web/v1"},
+            allow_redirects=False,
+            timeout=ClientTimeout(total=4, connect=1, sock_connect=1, sock_read=2),
+        ) as upstream:
+            if upstream.status >= 500:
+                return web.json_response(
+                    {
+                        "status": "degraded",
+                        "service": "tmod-web",
+                        "upstream_status": upstream.status,
+                    },
+                    status=503,
+                    headers={"Retry-After": "3"},
+                )
+    except (ClientError, asyncio.TimeoutError):
+        return web.json_response(
+            {"status": "degraded", "service": "tmod-web"},
+            status=503,
+            headers={"Retry-After": "3"},
+        )
+    return web.json_response({"status": "ready", "service": "tmod-web"})
 
 
 async def proxy(request: web.Request) -> web.StreamResponse:
@@ -245,6 +363,7 @@ async def edge_reporter(application: web.Application) -> None:
         except Exception:
             for event in reversed(batch):
                 queue.appendleft(event)
+            _trim_edge_queue(application)
             await asyncio.to_thread(_store_edge_spool, queue)
             await asyncio.sleep(1.5)
 
@@ -255,6 +374,7 @@ async def create_app() -> web.Application:
     )
     app = web.Application(client_max_size=upload_mib * 1024 * 1024)
     app[EDGE_QUEUE] = deque()
+    app[EDGE_DROPPED] = 0
 
     async def start(application: web.Application) -> None:
         application[UPSTREAM_SESSION] = ClientSession(
@@ -277,6 +397,7 @@ async def create_app() -> web.Application:
     app.on_startup.append(start)
     app.on_cleanup.append(stop)
     app.router.add_get("/gateway-health", gateway_health)
+    app.router.add_get("/gateway-ready", gateway_ready)
     app.router.add_route("*", "/{tail:.*}", proxy)
     return app
 

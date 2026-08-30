@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 import json
+import os
 import time
 import ipaddress
 from collections import defaultdict, deque
@@ -15,14 +16,28 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from modules.consensus_web_auth import signed_session_identity
 from modules.global_log_runtime import emit_global_event, hash_remote, redact_value, runtime_health
+from persistence import global_ban_repository as global_ban_storage
 from persistence import global_log_repository as repository
 
 
 _COOKIE = "tmod_global_log_session"
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _client_events: dict[str, deque[float]] = defaultdict(deque)
+
+
+class _GlobalLogBlocked(web.HTTPException):
+    status_code = 423
+    reason = "Locked"
+
+    def __init__(self) -> None:
+        super().__init__(
+            text=json.dumps({
+                "error": "global_log_access_blocked",
+                "message": "Доступ к глобальному журналу заблокирован.",
+            }),
+            content_type="application/json",
+        )
 
 
 def _limited(bucket: dict[str, deque[float]], key: str, *, count: int, window: int) -> bool:
@@ -40,8 +55,36 @@ def _limited(bucket: dict[str, deque[float]], key: str, *, count: int, window: i
     return False
 
 
+def _trusted_proxy_addresses() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    configured = str(os.getenv("TMOD_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"))
+    result: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for value in configured.split(","):
+        try:
+            result.append(ipaddress.ip_network(value.strip(), strict=False))
+        except ValueError:
+            continue
+    return tuple(result)
+
+
+def _is_trusted_proxy(remote: object) -> bool:
+    try:
+        address = ipaddress.ip_address(str(remote or "").strip())
+    except ValueError:
+        return False
+    return any(address in network for network in _trusted_proxy_addresses())
+
+
 def _remote(request: web.Request) -> str:
-    return request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip() or str(request.remote or "unknown")
+    peer = str(request.remote or "unknown")
+    if _is_trusted_proxy(peer):
+        forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        try:
+            ipaddress.ip_address(forwarded)
+        except ValueError:
+            forwarded = ""
+        if forwarded:
+            return forwarded
+    return peer
 
 
 def _token(request: web.Request) -> str:
@@ -55,13 +98,23 @@ async def _principal(request: web.Request) -> dict[str, Any] | None:
     return await asyncio.to_thread(repository.resolve_session, token)
 
 
-async def _require_principal(request: web.Request) -> dict[str, Any]:
+async def _require_principal(
+    request: web.Request,
+    *,
+    guild_id: int | None = None,
+) -> dict[str, Any]:
     principal = await _principal(request)
     if principal is None:
         raise web.HTTPUnauthorized(
             text=json.dumps({"error": "global_log_auth_required"}),
             content_type="application/json",
         )
+    if guild_id is not None and await asyncio.to_thread(
+        global_ban_storage.is_globally_banned,
+        int(guild_id),
+        int(principal["user_id"]),
+    ):
+        raise _GlobalLogBlocked()
     return principal
 
 
@@ -99,10 +152,19 @@ def register_global_log_web_routes(
 
     async def session(request: web.Request) -> web.Response:
         principal = await _principal(request)
+        blocked = bool(
+            principal is not None
+            and await asyncio.to_thread(
+                global_ban_storage.is_globally_banned,
+                int(guild_id),
+                int(principal["user_id"]),
+            )
+        )
         return web.json_response({
-            "authenticated": principal is not None,
-            "principal": principal,
-            "runtime": runtime_health() if principal is not None else None,
+            "authenticated": principal is not None and not blocked,
+            "blocked": blocked,
+            "principal": None if blocked else principal,
+            "runtime": runtime_health() if principal is not None and not blocked else None,
         })
 
     async def login(request: web.Request) -> web.Response:
@@ -116,6 +178,15 @@ def register_global_log_web_routes(
         user_raw = str(body.get("user_id") or "").strip()
         code = str(body.get("code") or "").strip()
         user_id = int(user_raw) if user_raw.isdigit() else 0
+        if user_id > 0 and await asyncio.to_thread(
+            global_ban_storage.is_globally_banned,
+            int(guild_id),
+            user_id,
+        ):
+            return web.json_response(
+                {"error": "global_log_access_blocked"},
+                status=423,
+            )
         token = await asyncio.to_thread(
             repository.consume_login_code,
             user_id,
@@ -169,7 +240,7 @@ def register_global_log_web_routes(
         return response
 
     async def events(request: web.Request) -> web.Response:
-        principal = await _require_principal(request)
+        principal = await _require_principal(request, guild_id=int(guild_id))
         try:
             result = await asyncio.to_thread(repository.search_events, _filters(request))
         except ValueError as exc:
@@ -183,7 +254,7 @@ def register_global_log_web_routes(
         return web.json_response(result)
 
     async def related(request: web.Request) -> web.Response:
-        principal = await _require_principal(request)
+        principal = await _require_principal(request, guild_id=int(guild_id))
         raw_id = str(request.match_info.get("event_id") or "")
         if not raw_id.isdigit():
             return web.json_response({"error": "global_log_invalid_event_id"}, status=400)
@@ -207,11 +278,11 @@ def register_global_log_web_routes(
         return web.json_response(result)
 
     async def event_facets(request: web.Request) -> web.Response:
-        await _require_principal(request)
+        await _require_principal(request, guild_id=int(guild_id))
         return web.json_response(await asyncio.to_thread(repository.facets))
 
     async def integrity(request: web.Request) -> web.Response:
-        principal = await _require_principal(request)
+        principal = await _require_principal(request, guild_id=int(guild_id))
         result = await asyncio.to_thread(repository.verify_chain, limit=100_000)
         emit_global_event({
             "source_service": "global-log", "source_type": "operator",
@@ -223,7 +294,7 @@ def register_global_log_web_routes(
         return web.json_response(result)
 
     async def export(request: web.Request) -> web.Response:
-        principal = await _require_principal(request)
+        principal = await _require_principal(request, guild_id=int(guild_id))
         filters = _filters(request)
         filters["limit"] = 200
         gathered: list[dict[str, Any]] = []
@@ -268,6 +339,7 @@ def register_global_log_web_routes(
     async def client_event(request: web.Request) -> web.Response:
         if not _origin_allowed(request):
             return web.json_response({"error": "origin_required"}, status=403)
+        principal = await _require_principal(request, guild_id=int(guild_id))
         remote = _remote(request)
         if _limited(_client_events, remote, count=240, window=60):
             return web.json_response({"error": "rate_limited"}, status=429)
@@ -277,8 +349,7 @@ def register_global_log_web_routes(
             return web.json_response({"error": "invalid_payload"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "invalid_payload"}, status=400)
-        identity = signed_session_identity(request, expected_guild_id=int(guild_id))
-        actor_user_id = int(identity[1]) if identity is not None else None
+        actor_user_id = int(principal["user_id"])
         event_name = str(body.get("event") or "client_event")[:120]
         emit_global_event({
             "source_service": str(body.get("service") or "web-client")[:120],

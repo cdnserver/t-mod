@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import storage
+from modules import error_inbox
 from modules.error_inbox import (
     ErrorInboxConfig,
     GitHubIssuePublisher,
@@ -12,6 +14,7 @@ from modules.error_inbox import (
     classify_runtime_error,
     error_fingerprint,
     publish_error_inbox_once,
+    runtime_health,
     sanitize_error_text,
 )
 from persistence import error_repository
@@ -50,6 +53,34 @@ class ErrorInboxTests(unittest.TestCase):
         storage.DATA_DIR = self.old_data_dir
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
+
+    def test_health_exposes_disabled_github_publisher(self) -> None:
+        health = runtime_health(inbox_config(publish_enabled=False, token=""))
+        self.assertEqual(health["publisher"]["status"], "disabled")
+        self.assertFalse(health["publisher"]["ready"])
+
+    def test_logging_handler_uses_bounded_capture_queue(self) -> None:
+        async def exercise() -> int:
+            old_queue = error_inbox._capture_queue
+            old_dropped = error_inbox._capture_dropped
+            try:
+                error_inbox._capture_queue = asyncio.Queue(maxsize=1)
+                error_inbox._capture_dropped = 0
+                handler = error_inbox.ErrorInboxLoggingHandler(
+                    asyncio.get_running_loop(), inbox_config()
+                )
+                record = logging.LogRecord(
+                    "test", logging.ERROR, __file__, 1, "boom", (), None
+                )
+                handler.emit(record)
+                handler.emit(record)
+                await asyncio.sleep(0)
+                return error_inbox._capture_dropped
+            finally:
+                error_inbox._capture_queue = old_queue
+                error_inbox._capture_dropped = old_dropped
+
+        self.assertEqual(asyncio.run(exercise()), 1)
 
     def test_sanitizer_removes_tokens_passwords_and_private_keys(self) -> None:
         fake_discord_token = f"{'A' * 24}.{'B' * 6}.{'C' * 32}"

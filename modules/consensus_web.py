@@ -37,6 +37,8 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_session_token,
     csrf_matches,
+    request_public_host,
+    request_public_secure,
     resolve_principal,
     set_session_cookie,
     signed_session_identity,
@@ -1038,7 +1040,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         return None
 
     target = urlsplit(target_url)
-    current_host = str(request.host or "").strip().lower().rstrip(".")
+    current_host = request_public_host(request).strip().lower().rstrip(".")
     if current_host.startswith("["):
         current_hostname = current_host[1:].split("]", 1)[0]
     else:
@@ -1464,10 +1466,14 @@ def create_consensus_web_app(
                 request.query.get("ticket", ""),
                 expected_guild_id=int(guild_id),
             )
-        except ConsensusWebAuthError:
+        except ConsensusWebAuthError as exc:
+            if str(exc) == "ticket_storage_unavailable":
+                raise web.HTTPServiceUnavailable(
+                    text="T-Mod временно не может безопасно подтвердить ссылку. Повторите через минуту."
+                ) from exc
             raise web.HTTPUnauthorized(
                 text="Ссылка недействительна или уже использована. Откройте новую из Discord."
-            )
+            ) from exc
         if await asyncio.to_thread(
             global_ban_storage.is_globally_banned,
             int(guild_id),
@@ -1504,8 +1510,8 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=request_public_host(request),
         )
         return response
 
@@ -1663,14 +1669,22 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
-            request_host=request.host,
+            request_host=request_public_host(request),
         )
         return response
 
     async def logout(request: web.Request) -> web.Response:
-        host = str(request.host or "").split(":", 1)[0].lower()
+        public_host = request_public_host(request)
+        host = public_host.split(":", 1)[0].lower()
+        identity = signed_session_identity(request, expected_guild_id=int(guild_id))
+        if identity is not None:
+            await asyncio.to_thread(
+                credential_storage.invalidate_web_sessions,
+                int(identity[0]),
+                int(identity[1]),
+            )
         destination = (
             "/login?next=/admin"
             if host.startswith("reactor.")
@@ -1686,8 +1700,8 @@ def create_consensus_web_app(
         )
         clear_session_cookie(
             response,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=public_host,
         )
         return response
 

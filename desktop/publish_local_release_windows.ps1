@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ReleaseRepository = "cdnserver/t-mod-releases",
     [switch]$BuildOnly

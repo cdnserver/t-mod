@@ -723,6 +723,14 @@ def facets() -> dict[str, Any]:
 
 
 def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
+    """Verify the complete ledger without loading it into application memory.
+
+    ``limit`` is retained for API compatibility, but is now only the fetch page
+    size.  It must never limit the number of records verified: returning ``ok``
+    for a prefix of the chain gives operators a false sense of integrity.
+    A repeatable-read transaction makes the count and all keyset pages refer to
+    one consistent snapshot while keeping each application batch bounded.
+    """
     initialize_global_log()
     pool = _connection_pool()
     names = [
@@ -732,21 +740,66 @@ def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
         "summary", "content_text", "details", "ip_hash", "user_agent", "status_code",
         "duration_ms", "previous_hash", "event_hash", "id",
     ]
+    page_size = max(1, min(10_000, int(limit)))
+    columns = ", ".join(names)
     with pool.connection() as connection, connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT " + ", ".join(names) + " FROM global_log_events ORDER BY id ASC LIMIT %s",
-            (max(1, min(100_000, int(limit))),),
-        )
-        rows = cursor.fetchall()
-    previous = "0" * 64
-    for row in rows:
-        value = {name: row[index] for index, name in enumerate(names)}
-        value["occurred_at"] = value["occurred_at"].isoformat()
-        expected = hashlib.sha256(canonical_event_payload(value, previous).encode("utf-8")).hexdigest()
-        if str(value["previous_hash"]) != previous or not hmac.compare_digest(str(value["event_hash"]), expected):
-            return {"ok": False, "checked": int(value["id"]), "broken_at": int(value["id"])}
-        previous = str(value["event_hash"])
-    return {"ok": True, "checked": len(rows), "last_hash": previous if rows else None}
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        cursor.execute("SELECT COUNT(*) FROM global_log_events")
+        count_row = cursor.fetchone()
+        expected_total = int(count_row[0]) if count_row else 0
+        previous = "0" * 64
+        checked = 0
+        last_id = 0
+        while True:
+            if last_id:
+                cursor.execute(
+                    "SELECT " + columns + " FROM global_log_events "
+                    "WHERE id > %s ORDER BY id ASC LIMIT %s",
+                    (last_id, page_size),
+                )
+            else:
+                cursor.execute(
+                    "SELECT " + columns + " FROM global_log_events "
+                    "ORDER BY id ASC LIMIT %s",
+                    (page_size,),
+                )
+            rows = cursor.fetchall()
+            if not rows:
+                break
+            for row in rows:
+                value = {name: row[index] for index, name in enumerate(names)}
+                value["occurred_at"] = value["occurred_at"].isoformat()
+                expected = hashlib.sha256(
+                    canonical_event_payload(value, previous).encode("utf-8")
+                ).hexdigest()
+                if (
+                    str(value["previous_hash"]) != previous
+                    or not hmac.compare_digest(str(value["event_hash"]), expected)
+                ):
+                    return {
+                        "ok": False,
+                        "checked": checked,
+                        "broken_at": int(value["id"]),
+                        "total": expected_total,
+                    }
+                previous = str(value["event_hash"])
+                last_id = int(value["id"])
+                checked += 1
+            if len(rows) < page_size:
+                break
+    if checked != expected_total:
+        return {
+            "ok": False,
+            "checked": checked,
+            "total": expected_total,
+            "reason": "ledger_changed_or_page_incomplete",
+        }
+    return {
+        "ok": True,
+        "checked": checked,
+        "total": expected_total,
+        "last_hash": previous if checked else None,
+    }
 
 
 __all__ = [

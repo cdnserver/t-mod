@@ -43,7 +43,11 @@ call :log "Non-Git project folder moved to %OLD_PROJECT_DIR%"
 
 :clone_repository
 echo [GIT] Project is missing. Cloning %BRANCH% from GitHub...
-git clone --branch "%BRANCH%" --single-branch "%REPO_URL%" "%PROJECT_DIR%"
+set "CLONE_TARGET_CREATED=1"
+set "GIT_TERMINAL_PROMPT=0"
+rem A credential dialog or a dead network must not leave the launcher hanging
+rem forever.  Kill the complete child process tree after three minutes.
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$p=Start-Process -FilePath 'git.exe' -ArgumentList @('-c','credential.interactive=never','-c','http.lowSpeedLimit=1','-c','http.lowSpeedTime=20','clone','--branch',$env:BRANCH,'--single-branch',$env:REPO_URL,$env:PROJECT_DIR) -PassThru -NoNewWindow; if(-not $p.WaitForExit(180000)){ & taskkill.exe /PID $p.Id /T /F *> $null; exit 124 }; exit $p.ExitCode"
 if errorlevel 1 goto clone_failed
 call :log "Repository cloned from %REPO_URL%"
 goto repository_ready
@@ -93,6 +97,11 @@ call :log "Could not back up non-Git project folder"
 goto fatal_error
 
 :clone_failed
+if defined CLONE_TARGET_CREATED if exist "%PROJECT_DIR%" (
+  rem A partial clone is not a valid installed release.  Leaving it behind
+  rem makes the next start incorrectly treat its .git directory as usable.
+  rmdir /S /Q "%PROJECT_DIR%" >nul 2>nul
+)
 echo [FAIL] Could not clone the project from GitHub.
 echo [INFO] Repository: %REPO_URL%
 call :log "Repository clone failed"
@@ -128,7 +137,7 @@ exit /b 1
 
 :timestamp
 set "STAMP="
-for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss" 2^>nul') do set "STAMP=%%T"
+for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss_fffffff" 2^>nul') do set "STAMP=%%T"
 if not defined STAMP set "STAMP=manual_backup"
 exit /b 0
 

@@ -272,6 +272,20 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
 
+            -- Entry links are one-time credentials.  Their consumption must
+            -- survive a process restart, otherwise an already opened Discord
+            -- link could be replayed after a web-container restart.
+            CREATE TABLE IF NOT EXISTS web_entry_ticket_uses (
+                guild_id INTEGER NOT NULL,
+                nonce TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, nonce)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_entry_ticket_uses_expiry
+            ON web_entry_ticket_uses(expires_at);
+
             CREATE TABLE IF NOT EXISTS web_section_grants (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

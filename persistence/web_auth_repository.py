@@ -329,6 +329,72 @@ def web_session_version_matches(
     return row is not None and int(row["session_version"]) == int(session_version)
 
 
+def invalidate_web_sessions(guild_id: int, user_id: int) -> bool:
+    """Revoke every persistent T-Mod web session for an account.
+
+    Sessions are signed and intentionally stateless, so the account's version
+    is the durable revocation point.  Ticket-only sessions do not carry a
+    session version and remain governed by their short expiry; a durable ticket
+    registry is deliberately deferred until the schema for it is introduced.
+    """
+
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            UPDATE web_credentials
+            SET session_version = session_version + 1,
+                updated_at = ?
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (utc_now_iso(), int(guild_id), int(user_id)),
+        )
+        con.commit()
+    return cursor.rowcount > 0
+
+
+def consume_web_entry_ticket_nonce(
+    guild_id: int,
+    nonce: str,
+    *,
+    expires_at: int,
+    now_epoch: int,
+) -> bool:
+    """Persist atomically that a signed Discord entry link has been used.
+
+    A process-local set makes a ticket reusable after a web restart.  The
+    primary key below provides the same one-time guarantee across every
+    container and safely resolves concurrent clicks on the same link.
+    """
+
+    clean_nonce = str(nonce or "").strip()
+    if not clean_nonce or int(expires_at) <= int(now_epoch):
+        return False
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            "DELETE FROM web_entry_ticket_uses WHERE expires_at <= ?",
+            (int(now_epoch),),
+        )
+        try:
+            cursor = con.execute(
+                """
+                INSERT INTO web_entry_ticket_uses(guild_id, nonce, expires_at, used_at)
+                VALUES(?, ?, ?, ?)
+                """,
+                (
+                    int(guild_id),
+                    clean_nonce,
+                    int(expires_at),
+                    utc_now_iso(),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            con.rollback()
+            return False
+        con.commit()
+    return cursor.rowcount == 1
+
+
 def web_section_grants(guild_id: int, user_id: int | None = None) -> list[dict]:
     with connect_readonly() as con:
         if user_id is None:
@@ -389,7 +455,9 @@ __all__ = [
     "authenticate_web_credential",
     "configure_web_credential",
     "delete_web_credential",
+    "consume_web_entry_ticket_nonce",
     "get_web_credential",
+    "invalidate_web_sessions",
     "normalize_web_login",
     "normalize_web_pin",
     "web_session_version_matches",

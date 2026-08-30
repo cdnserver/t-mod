@@ -84,8 +84,23 @@ class ErrorInboxConfig:
             and bool(_REPOSITORY_PATTERN.fullmatch(self.repository))
         )
 
+    @property
+    def publisher_status(self) -> str:
+        if self.publisher_ready:
+            return "ready"
+        if not self.publish_enabled:
+            return "disabled"
+        if not self.token:
+            return "missing_token"
+        if not _REPOSITORY_PATTERN.fullmatch(self.repository):
+            return "invalid_repository"
+        return "misconfigured"
+
 
 _active_config: ErrorInboxConfig | None = None
+_capture_queue: asyncio.Queue[dict[str, Any]] | None = None
+_capture_worker_task: asyncio.Task[None] | None = None
+_capture_dropped = 0
 
 
 def _read_token_file(path: str) -> str:
@@ -397,6 +412,40 @@ async def capture_runtime_event(
     )
 
 
+def _capture_queue_maxsize() -> int:
+    return _env_int("ERROR_INBOX_CAPTURE_QUEUE_MAX", 1000, minimum=100, maximum=10_000)
+
+
+def _enqueue_capture(payload: dict[str, Any]) -> bool:
+    """Put a runtime capture on a bounded queue without blocking logging."""
+    global _capture_dropped
+    queue = _capture_queue
+    if queue is None:
+        _capture_dropped += 1
+        return False
+    try:
+        queue.put_nowait(payload)
+        return True
+    except asyncio.QueueFull:
+        _capture_dropped += 1
+        return False
+
+
+async def _capture_worker() -> None:
+    assert _capture_queue is not None
+    while True:
+        payload = await _capture_queue.get()
+        try:
+            await capture_runtime_event(**payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Capturing an error must never become another application error.
+            pass
+        finally:
+            _capture_queue.task_done()
+
+
 def capture_runtime_event_sync(
     *,
     title: str,
@@ -667,19 +716,17 @@ class ErrorInboxLoggingHandler(logging.Handler):
             exception = record.exc_info[1] if record.exc_info else None
             details = self.format(record)
             def schedule() -> None:
-                self.loop.create_task(
-                    capture_runtime_event(
-                        title=f"Ошибка журнала {record.name}",
-                        details=details,
-                        component=record.name,
-                        level="error",
-                        # The exception's application traceback is a much more stable
-                        # fingerprint than the line where a third-party logger emitted it.
-                        fingerprint_hint=None,
-                        exception=exception,
-                        config=self.config,
-                    )
-                )
+                _enqueue_capture({
+                    "title": f"Ошибка журнала {record.name}",
+                    "details": details,
+                    "component": record.name,
+                    "level": "error",
+                    # The exception's application traceback is a much more stable
+                    # fingerprint than the line where a third-party logger emitted it.
+                    "fingerprint_hint": None,
+                    "exception": exception,
+                    "config": self.config,
+                })
 
             self.loop.call_soon_threadsafe(schedule)
         except Exception:
@@ -693,8 +740,32 @@ _original_sys_excepthook = sys.excepthook
 _original_threading_excepthook = threading.excepthook
 
 
+def runtime_health(config: ErrorInboxConfig | None = None) -> dict[str, Any]:
+    """Return operational status, including a disabled publisher explicitly."""
+    selected = config or _active_config or load_error_inbox_config()
+    queue = _capture_queue
+    return {
+        "capture_enabled": selected.capture_enabled,
+        "publisher": {
+            "enabled": selected.publish_enabled,
+            "ready": selected.publisher_ready,
+            "status": selected.publisher_status,
+            "repository": selected.repository,
+        },
+        "capture_queue": {
+            "queued": queue.qsize() if queue is not None else 0,
+            "max": queue.maxsize if queue is not None else _capture_queue_maxsize(),
+            "dropped": _capture_dropped,
+            "running": bool(
+                _capture_worker_task is not None and not _capture_worker_task.done()
+            ),
+        },
+    }
+
+
 def setup_error_inbox_runtime(loop: asyncio.AbstractEventLoop) -> None:
     global _active_config, _logging_handler, _runtime_installed, _worker_task
+    global _capture_queue, _capture_worker_task
     if _runtime_installed:
         return
     _runtime_installed = True
@@ -704,21 +775,24 @@ def setup_error_inbox_runtime(loop: asyncio.AbstractEventLoop) -> None:
         print("Error Inbox: disabled", flush=True)
         return
 
+    _capture_queue = asyncio.Queue(maxsize=_capture_queue_maxsize())
+    _capture_worker_task = loop.create_task(
+        _capture_worker(), name="tmod-error-inbox-capture"
+    )
+
     previous_loop_handler = loop.get_exception_handler()
 
     def loop_exception_handler(active_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
         exception = context.get("exception")
         message = str(context.get("message") or "Unhandled asyncio exception")
-        active_loop.create_task(
-            capture_runtime_event(
-                title="Необработанная ошибка asyncio",
-                details=message,
-                component="asyncio",
-                fingerprint_hint=None,
-                exception=exception if isinstance(exception, BaseException) else None,
-                config=config,
-            )
-        )
+        _enqueue_capture({
+            "title": "Необработанная ошибка asyncio",
+            "details": message,
+            "component": "asyncio",
+            "fingerprint_hint": None,
+            "exception": exception if isinstance(exception, BaseException) else None,
+            "config": config,
+        })
         if previous_loop_handler is not None:
             previous_loop_handler(active_loop, context)
         else:
@@ -760,8 +834,13 @@ def setup_error_inbox_runtime(loop: asyncio.AbstractEventLoop) -> None:
     logging.getLogger().addHandler(_logging_handler)
     _worker_task = loop.create_task(error_inbox_worker(config), name="tmod-error-inbox")
 
-    state = "GitHub publisher ready" if config.publisher_ready else "local spool only"
-    print(f"Error Inbox: {state}; repository={config.repository}", flush=True)
+    state = config.publisher_status
+    print(
+        "Error Inbox: "
+        f"publisher={state}; repository={config.repository}; "
+        f"capture_queue_max={_capture_queue.maxsize}",
+        flush=True,
+    )
 
 
 __all__ = [
@@ -775,6 +854,7 @@ __all__ = [
     "error_inbox_worker",
     "load_error_inbox_config",
     "publish_error_inbox_once",
+    "runtime_health",
     "sanitize_error_text",
     "setup_error_inbox_runtime",
 ]

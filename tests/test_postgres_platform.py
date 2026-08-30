@@ -131,6 +131,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('TMOD_DATABASE_BACKEND: "postgresql"', compose)
         self.assertIn('condition: service_completed_successfully', compose)
         self.assertIn('TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"', compose)
+        self.assertIn("http://127.0.0.1:8787/gateway-ready", compose)
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
 
@@ -146,7 +147,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
             compose,
         )
         self.assertIn(
-            '"C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"',
+            '"${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"',
             bot_service,
         )
 
@@ -175,9 +176,9 @@ class PostgresCompatibilityTests(unittest.TestCase):
         active_path = updater[postgres_gate:legacy_gate]
 
         self.assertIn("Could not verify the active PostgreSQL database", active_path)
-        self.assertIn("docker exec tmod-postgres pg_dump", active_path)
-        self.assertIn("docker exec tmod-postgres pg_restore --list", active_path)
-        self.assertIn('docker cp "tmod-postgres:$containerPath"', active_path)
+        self.assertIn('"exec", "tmod-postgres", "pg_dump"', active_path)
+        self.assertIn('"exec", "tmod-postgres", "pg_restore", "--list"', active_path)
+        self.assertIn('"cp", "tmod-postgres:$containerPath", $hostPath', active_path)
         self.assertIn('backend = "postgresql"', active_path)
         self.assertIn('return "/app/persistent/backups/database/$name"', active_path)
 
