@@ -301,21 +301,18 @@ def clear_session_cookie(
     request_host: str | None = None,
 ) -> None:
     domain = account_cookie_domain(request_host)
+    # aiohttp's public ``del_cookie`` API accepts only name/domain/path across
+    # the supported 3.x line.  Secure/HttpOnly/SameSite describe a replacement
+    # cookie and are not required to expire the matching domain/path cookie.
     response.del_cookie(
         SESSION_COOKIE,
         path="/",
         domain=domain,
-        secure=bool(secure),
-        httponly=True,
-        samesite="Lax",
     )
     # Remove the previous host-only consensus cookie during the SSO migration.
     response.del_cookie(
         LEGACY_SESSION_COOKIE,
         path="/",
-        secure=bool(secure),
-        httponly=True,
-        samesite="Lax",
     )
 
 

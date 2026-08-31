@@ -52,6 +52,7 @@ from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from persistence import activity_repository as meta_storage
+from persistence import consensus_preparation_repository as preparation_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
 from persistence import profile_repository as profile_storage
@@ -61,6 +62,7 @@ from persistence import global_ban_repository as global_ban_storage
 from persistence import legislation_repository as legislation_storage
 from modules.consensus_schedule import public_schedule_payload
 from modules.consensus_artifacts import generate_session_report
+from modules.consensus_preparation_web import register_consensus_preparation_routes
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -78,7 +80,14 @@ except (TypeError, ValueError):
 CONSENSUS_WEB_PUBLIC_NAME = (
     os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip() or "t.consensus"
 )
-_GLOBAL_BAN_REQUEST_KEY = web.RequestKey("global_ban", object)
+# ``RequestKey`` arrived after the minimum aiohttp version supported by the
+# project.  A stable string remains a valid aiohttp request-mapping key on both
+# older local Windows installs and newer production images.
+_GLOBAL_BAN_REQUEST_KEY = (
+    web.RequestKey("global_ban", object)
+    if hasattr(web, "RequestKey")
+    else "tmod_global_ban"
+)
 
 
 def _configured_public_url() -> str:
@@ -1719,10 +1728,26 @@ def create_consensus_web_app(
             int(guild_id),
             200,
         )
+        preparation_markers: dict[int, dict[str, Any]] = {}
+        if principal is not None:
+            preparation_markers = await asyncio.to_thread(
+                preparation_storage.preparation_statuses,
+                int(guild_id),
+                int(principal.user_id),
+                [int(row.get("id") or 0) for row in rows],
+            )
+        items = []
+        for row in rows:
+            item = _catalog_bill_payload(row, int(guild_id))
+            if int(row.get("id") or 0) in preparation_markers:
+                # The library needs only a private progress marker.  The vote
+                # direction and all notes remain behind the preparation API.
+                item["preparation"] = {"prepared": True}
+            items.append(item)
         return web.json_response(
             {
                 "mode": "live",
-                "items": [_catalog_bill_payload(row, int(guild_id)) for row in rows],
+                "items": items,
             },
         )
 
@@ -1978,6 +2003,11 @@ def create_consensus_web_app(
     app.router.add_post("/api/tasks", tasks_api)
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/bills", bills)
+    register_consensus_preparation_routes(
+        app,
+        guild_id=int(guild_id),
+        authenticate=authenticated_request,
+    )
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_get("/api/reports/{session_key}/consensus.pdf", consensus_report)
     app.router.add_post("/api/command", command)

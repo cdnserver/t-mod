@@ -85,6 +85,12 @@ let senatorBillStartedAt = Date.now();
 let senatorBillKey = "";
 let previousScheduleSeconds = null;
 let countdownSoundProfile = "";
+let preparationBill = null;
+let preparationSheet = null;
+let preparationDirty = false;
+let preparationSaving = false;
+let preparationSaveTimer = null;
+let preparationReturnFocus = null;
 
 function text(id, value) {
   byId(id).textContent = String(value ?? "—");
@@ -1146,6 +1152,20 @@ function showBillDialog(bill, result = null) {
   dialogResult = result;
   const billId = Number(bill.id || bill.bill_id || 0);
   byId("copy-bill-link").disabled = !Number.isInteger(billId) || billId <= 0;
+  const preparationButton = byId("open-preparation-sheet");
+  const personalPreparationAvailable = Boolean(
+    state?.viewer?.authenticated
+    && !state?.viewer?.legacy_read_only
+    && selectedMode !== "simulation"
+    && Number.isInteger(billId)
+    && billId > 0,
+  );
+  preparationButton.disabled = !personalPreparationAvailable;
+  preparationButton.title = personalPreparationAvailable
+    ? "Открыть личный лист подготовки"
+    : selectedMode === "simulation"
+      ? "Лист подготовки доступен только для рабочего контура"
+      : "Откройте персональную ссылку из Discord, чтобы вести личный лист";
   if (Number.isInteger(billId) && billId > 0) {
     const url = new URL(window.location.href);
     url.searchParams.set("bill", String(billId));
@@ -1221,6 +1241,449 @@ async function copyBillLink() {
     showCommandMessage("Ссылка на законопроект скопирована.");
   } catch {
     showCommandMessage("Не удалось скопировать ссылку. Скопируйте адрес браузера.", "error");
+  }
+}
+
+const PREPARATION_MAX_QUESTIONS = 12;
+
+function preparationDefaultSheet() {
+  return {
+    questions: [],
+    notes: "",
+    preliminary_vote: null,
+    preliminary_vote_reason: "",
+    review_flags: {
+      read_text: false,
+      verify_sources: false,
+      need_discussion: false,
+    },
+    source_bill_updated_at: null,
+    revision: 0,
+    created_at: null,
+    updated_at: null,
+  };
+}
+
+function normalisePreparationSheet(candidate) {
+  const fallback = preparationDefaultSheet();
+  const source = candidate && typeof candidate === "object" ? candidate : {};
+  const questions = Array.isArray(source.questions)
+    ? source.questions
+      .filter((item) => item && typeof item === "object")
+      .slice(0, PREPARATION_MAX_QUESTIONS)
+      .map((item, index) => ({
+        id: String(item.id || `question-${index + 1}`),
+        text: String(item.text || ""),
+        resolved: Boolean(item.resolved),
+      }))
+    : [];
+  const vote = ["yes", "no", "abstain"].includes(String(source.preliminary_vote || ""))
+    ? String(source.preliminary_vote)
+    : null;
+  const flags = source.review_flags && typeof source.review_flags === "object"
+    ? source.review_flags
+    : {};
+  return {
+    ...fallback,
+    questions,
+    notes: String(source.notes || ""),
+    preliminary_vote: vote,
+    preliminary_vote_reason: String(source.preliminary_vote_reason || ""),
+    review_flags: {
+      read_text: Boolean(flags.read_text),
+      verify_sources: Boolean(flags.verify_sources),
+      need_discussion: Boolean(flags.need_discussion),
+    },
+    source_bill_updated_at: source.source_bill_updated_at || null,
+    revision: Math.max(0, Number(source.revision) || 0),
+    created_at: source.created_at || null,
+    updated_at: source.updated_at || null,
+  };
+}
+
+function preparationBillId(bill = preparationBill) {
+  const value = Number(bill?.id || bill?.bill_id || 0);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function preparationDraft() {
+  const sheet = preparationSheet || preparationDefaultSheet();
+  return {
+    // A newly added empty row is a local editing affordance.  Keep it on the
+    // screen until the senator either types a question or removes it, but do
+    // not turn it into a permanent blank record in the personal sheet.
+    questions: sheet.questions
+      .filter((item) => String(item?.text || "").trim())
+      .map((item) => ({
+        id: String(item.id || ""),
+        text: String(item.text || ""),
+        resolved: Boolean(item.resolved),
+      })),
+    notes: String(sheet.notes || ""),
+    preliminary_vote: sheet.preliminary_vote || null,
+    preliminary_vote_reason: String(sheet.preliminary_vote_reason || ""),
+    review_flags: {
+      read_text: Boolean(sheet.review_flags?.read_text),
+      verify_sources: Boolean(sheet.review_flags?.verify_sources),
+      need_discussion: Boolean(sheet.review_flags?.need_discussion),
+    },
+  };
+}
+
+function preparationDraftSignature() {
+  return JSON.stringify(preparationDraft());
+}
+
+function preparationDraftHasContent() {
+  const draft = preparationDraft();
+  return Boolean(
+    draft.questions.length
+    || draft.notes.trim()
+    || draft.preliminary_vote
+    || draft.preliminary_vote_reason.trim()
+    || Object.values(draft.review_flags).some(Boolean),
+  );
+}
+
+function preparationEmptyQuestionRows() {
+  return (preparationSheet?.questions || [])
+    .filter((item) => !String(item?.text || "").trim())
+    .map((item) => ({
+      id: String(item.id || ""),
+      text: "",
+      resolved: Boolean(item.resolved),
+    }));
+}
+
+function mergePreparationEmptyRows(savedSheet, emptyRows) {
+  if (!emptyRows.length) return savedSheet;
+  const knownIds = new Set(savedSheet.questions.map((item) => item.id));
+  return {
+    ...savedSheet,
+    questions: [
+      ...savedSheet.questions,
+      ...emptyRows.filter((item) => item.id && !knownIds.has(item.id)),
+    ],
+  };
+}
+
+function setPreparationStatus(label, kind = "") {
+  const status = byId("preparation-status");
+  status.textContent = label;
+  status.className = `preparation-status ${kind}`.trim();
+  text("preparation-last-saved", label);
+}
+
+function formatPreparationTimestamp(value) {
+  if (!value) return "ещё не сохранено";
+  const moment = new Date(value);
+  if (Number.isNaN(moment.getTime())) return "сохранено";
+  return `сохранено ${moment.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+function setPreparationNotice(sourceChanged) {
+  const notice = byId("preparation-notice");
+  const strong = notice.querySelector("strong");
+  const copy = notice.querySelector("span");
+  notice.classList.toggle("source-changed", sourceChanged);
+  if (sourceChanged) {
+    strong.textContent = "Текст обновлён";
+    copy.textContent = "Законопроект изменился после последней подготовки. Сверьте формулировки и сохраните лист ещё раз, когда закончите проверку.";
+    text("preparation-source-state", "есть новая редакция");
+    byId("preparation-source-state").classList.add("changed");
+    return;
+  }
+  strong.textContent = "Личный контур";
+  copy.textContent = "Предварительная позиция не является голосом: её не видят другие участники и она не попадёт в бюллетень без отдельного подтверждения.";
+  text("preparation-source-state", "актуальная редакция");
+  byId("preparation-source-state").classList.remove("changed");
+}
+
+function renderPreparationVote() {
+  const vote = preparationSheet?.preliminary_vote || "";
+  document.querySelectorAll("#preparation-dialog [data-preparation-vote]").forEach((button) => {
+    const selected = button.dataset.preparationVote === vote;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+}
+
+function renderPreparationQuestions() {
+  const list = byId("preparation-questions");
+  clearNode(list);
+  const questions = preparationSheet?.questions || [];
+  byId("preparation-questions-empty").hidden = questions.length > 0;
+  questions.forEach((question, index) => {
+    const item = document.createElement("article");
+    item.className = "preparation-question";
+    item.classList.toggle("resolved", Boolean(question.resolved));
+    item.dataset.questionId = question.id;
+
+    const number = document.createElement("span");
+    number.className = "question-number";
+    number.textContent = String(index + 1).padStart(2, "0");
+
+    const field = document.createElement("textarea");
+    field.maxLength = 1000;
+    field.placeholder = "Сформулируйте вопрос…";
+    field.value = question.text;
+    field.setAttribute("aria-label", `Вопрос ${index + 1}`);
+    field.addEventListener("input", () => {
+      const current = preparationSheet?.questions.find((entry) => entry.id === question.id);
+      if (!current) return;
+      current.text = field.value;
+      markPreparationDirty();
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "preparation-question-actions";
+    const resolve = document.createElement("button");
+    resolve.type = "button";
+    resolve.className = "question-resolve";
+    resolve.textContent = "✓";
+    resolve.title = question.resolved ? "Сделать вопрос открытым" : "Отметить как решённый";
+    resolve.setAttribute("aria-label", resolve.title);
+    resolve.classList.toggle("active", Boolean(question.resolved));
+    resolve.addEventListener("click", () => {
+      const current = preparationSheet?.questions.find((entry) => entry.id === question.id);
+      if (!current) return;
+      current.resolved = !current.resolved;
+      renderPreparationQuestions();
+      markPreparationDirty();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.title = "Удалить вопрос";
+    remove.setAttribute("aria-label", remove.title);
+    remove.addEventListener("click", () => {
+      if (!preparationSheet) return;
+      preparationSheet.questions = preparationSheet.questions.filter(
+        (entry) => entry.id !== question.id,
+      );
+      renderPreparationQuestions();
+      markPreparationDirty();
+    });
+    actions.append(resolve, remove);
+    item.append(number, field, actions);
+    list.append(item);
+  });
+}
+
+function renderPreparationSheet({ sourceChanged = false } = {}) {
+  const sheet = preparationSheet || preparationDefaultSheet();
+  byId("preparation-vote-reason").value = sheet.preliminary_vote_reason;
+  byId("preparation-notes").value = sheet.notes;
+  byId("preparation-read-text").checked = Boolean(sheet.review_flags.read_text);
+  byId("preparation-verify-sources").checked = Boolean(sheet.review_flags.verify_sources);
+  byId("preparation-need-discussion").checked = Boolean(sheet.review_flags.need_discussion);
+  text("preparation-notes-count", `${sheet.notes.length} / 16000`);
+  renderPreparationVote();
+  renderPreparationQuestions();
+  setPreparationNotice(sourceChanged);
+  setPreparationStatus(
+    sheet.updated_at ? formatPreparationTimestamp(sheet.updated_at) : "лист готов к первой записи",
+    sheet.updated_at ? "saved" : "",
+  );
+}
+
+function fillPreparationBill(bill) {
+  text("preparation-number", `ЛИЧНЫЙ ЛИСТ · ЗАКОНОПРОЕКТ №${formatNumber(bill.bill_number)}`);
+  text("preparation-title", bill.title || "Без названия");
+  text("preparation-subtitle", "Подготовка к следующему консенсусу · личный, неофициальный контур");
+  text("preparation-paper-title", bill.title || "Без названия");
+  text("preparation-paper-author", `Автор · ${bill.author?.name || "не указан"}`);
+  text("preparation-paper-category", categoryLabel(bill.decision_category));
+  text("preparation-summary", bill.summary || "Текст законопроекта не сохранён.");
+  const materials = String(bill.materials || "").trim();
+  byId("preparation-materials-wrap").hidden = !materials;
+  text("preparation-materials", materials || "Материалы не приложены.");
+  text("preparation-paper-date", bill.updated_at ? `редакция от ${formatDate(bill.updated_at)}` : "дата редакции не указана");
+}
+
+function markLibraryPrepared(billId) {
+  const item = libraryItems.find((candidate) => Number(candidate.id || 0) === Number(billId));
+  if (item) item.preparation = { prepared: true };
+  if (byId("bill-library-dialog").open) renderBillLibrary();
+}
+
+function schedulePreparationSave() {
+  clearTimeout(preparationSaveTimer);
+  preparationSaveTimer = setTimeout(() => {
+    void savePreparation({ silent: true });
+  }, 850);
+}
+
+function markPreparationDirty({ schedule = true } = {}) {
+  if (!preparationSheet) return;
+  preparationDirty = true;
+  setPreparationStatus("есть несохранённые изменения", "dirty");
+  if (schedule) schedulePreparationSave();
+}
+
+async function savePreparation({ silent = false } = {}) {
+  const billId = preparationBillId();
+  if (!billId || !preparationSheet || preparationSaving) return false;
+  if (!preparationDirty && preparationSheet.revision > 0) return true;
+  clearTimeout(preparationSaveTimer);
+  if (preparationSheet.revision === 0 && !preparationDraftHasContent()) {
+    preparationDirty = false;
+    setPreparationStatus("введите вопрос, чтобы сохранить", "");
+    return true;
+  }
+  preparationSaving = true;
+  const beforeSave = preparationDraftSignature();
+  const expectedRevision = preparationSheet.revision;
+  setPreparationStatus("сохраняем личный лист…", "saving");
+  try {
+    const csrfToken = state?.viewer?.csrf_token || "";
+    const response = await fetch(`/api/bills/${billId}/preparation`, {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        ...preparationDraft(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 409) {
+      setPreparationStatus("лист изменён в другой вкладке", "error");
+      if (!silent) showCommandMessage("Лист обновили в другой вкладке. Откройте его заново, чтобы не потерять новые заметки.", "error");
+      return false;
+    }
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || `HTTP ${response.status}`);
+    }
+    const saved = normalisePreparationSheet(payload.sheet);
+    if (preparationDraftSignature() === beforeSave) {
+      preparationSheet = mergePreparationEmptyRows(saved, preparationEmptyQuestionRows());
+      preparationDirty = false;
+      renderPreparationSheet({ sourceChanged: Boolean(payload.source_changed) });
+    } else {
+      // A keystroke landed while the request was in flight.  Keep it locally,
+      // advance its revision and let the debounce submit that newer draft.
+      preparationSheet.revision = saved.revision;
+      preparationSheet.updated_at = saved.updated_at;
+      preparationDirty = true;
+      setPreparationStatus("есть новые изменения после сохранения", "dirty");
+      schedulePreparationSave();
+    }
+    markLibraryPrepared(billId);
+    return true;
+  } catch (error) {
+    setPreparationStatus("не удалось сохранить лист", "error");
+    if (!silent) showCommandMessage("Не удалось сохранить личный лист. Проверьте соединение и повторите.", "error");
+    return false;
+  } finally {
+    preparationSaving = false;
+  }
+}
+
+async function openPreparationDialog(item = dialogBill) {
+  const billId = preparationBillId(item);
+  if (!billId) {
+    showCommandMessage("У этого законопроекта пока нет сохранённой карточки.", "error");
+    return;
+  }
+  if (!state?.viewer?.authenticated || state?.viewer?.legacy_read_only || selectedMode === "simulation") {
+    showCommandMessage("Лист подготовки доступен только в персональном рабочем контуре.", "error");
+    return;
+  }
+  preparationReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+  const billDialog = byId("bill-dialog");
+  const libraryDialog = byId("bill-library-dialog");
+  if (billDialog.open) {
+    if (typeof billDialog.close === "function") billDialog.close();
+    else billDialog.removeAttribute("open");
+  }
+  if (libraryDialog.open) {
+    if (typeof libraryDialog.close === "function") libraryDialog.close();
+    else libraryDialog.removeAttribute("open");
+  }
+  const dialog = byId("preparation-dialog");
+  preparationBill = { id: billId, ...item };
+  preparationSheet = preparationDefaultSheet();
+  preparationDirty = false;
+  fillPreparationBill(preparationBill);
+  renderPreparationSheet();
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  setPreparationStatus("загружаем личный лист…", "saving");
+  try {
+    const response = await fetch(`/api/bills/${billId}/preparation`, {
+      headers: authHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.bill) throw new Error(payload.message || `HTTP ${response.status}`);
+    preparationBill = payload.bill;
+    preparationSheet = normalisePreparationSheet(payload.sheet);
+    preparationDirty = false;
+    fillPreparationBill(preparationBill);
+    renderPreparationSheet({ sourceChanged: Boolean(payload.source_changed) });
+    byId("close-preparation-dialog").focus({ preventScroll: true });
+  } catch (error) {
+    setPreparationStatus("лист временно недоступен", "error");
+    showCommandMessage("Не удалось открыть личный лист подготовки. Обновите страницу и повторите.", "error");
+  }
+}
+
+function closePreparationDialog() {
+  if (preparationDirty && !preparationSaving) void savePreparation({ silent: true });
+  const dialog = byId("preparation-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  if (preparationReturnFocus?.isConnected) preparationReturnFocus.focus();
+  preparationReturnFocus = null;
+}
+
+async function downloadPreparationPdf() {
+  const billId = preparationBillId();
+  if (!billId) return;
+  if (preparationDirty) {
+    const saved = await savePreparation();
+    if (!saved) return;
+  }
+  const button = byId("preparation-download");
+  button.disabled = true;
+  button.textContent = "Собираем PDF…";
+  try {
+    const response = await fetch(`/api/bills/${billId}/preparation.pdf`, {
+      headers: authHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `consensus-preparation-${String(preparationBill?.bill_number || billId).padStart(3, "0")}.pdf`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setPreparationStatus("PDF подготовлен · файл можно редактировать офлайн", "saved");
+  } catch {
+    setPreparationStatus("не удалось собрать PDF", "error");
+    showCommandMessage("Не удалось скачать PDF. Попробуйте ещё раз через несколько секунд.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Скачать редактируемый PDF";
   }
 }
 
@@ -1314,14 +1777,14 @@ function renderBillLibrary() {
     return;
   }
   filtered.forEach((item) => {
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement("article");
     row.className = "library-row";
     const number = document.createElement("span");
     number.className = "library-number";
     number.textContent = `№${formatNumber(item.bill_number)}`;
-    const content = document.createElement("span");
-    content.className = "library-content";
+    const content = document.createElement("button");
+    content.type = "button";
+    content.className = "library-content library-open";
     const title = document.createElement("strong");
     const author = document.createElement("small");
     title.textContent = item.title || "Без названия";
@@ -1330,11 +1793,25 @@ function renderBillLibrary() {
     const status = document.createElement("span");
     status.className = `library-status ${item.result?.status || item.status || ""}`;
     status.textContent = catalogStatus(item);
-    row.append(number, content, status);
-    row.addEventListener("click", async () => {
+    content.addEventListener("click", async () => {
       closeBillLibrary();
       await openBillRecord(item);
     });
+    row.append(number, content, status);
+    const personalPreparationAvailable = Boolean(
+      state?.viewer?.authenticated
+      && !state?.viewer?.legacy_read_only
+      && selectedMode !== "simulation",
+    );
+    if (personalPreparationAvailable) {
+      const prepare = document.createElement("button");
+      prepare.type = "button";
+      prepare.className = "library-preparation-button";
+      prepare.textContent = item.preparation?.prepared ? "Подготовлено" : "Лист подготовки";
+      prepare.title = "Открыть личный лист подготовки";
+      prepare.addEventListener("click", () => void openPreparationDialog(item));
+      row.append(prepare);
+    }
     list.append(row);
   });
 }
@@ -2431,8 +2908,77 @@ byId("open-bill-dialog").addEventListener(
 byId("close-bill-dialog").addEventListener("click", closeBillDialog);
 byId("bill-dialog-done").addEventListener("click", closeBillDialog);
 byId("copy-bill-link").addEventListener("click", copyBillLink);
+byId("open-preparation-sheet").addEventListener("click", () => {
+  void openPreparationDialog(dialogBill);
+});
 byId("bill-dialog").addEventListener("click", (event) => {
   if (event.target === byId("bill-dialog")) closeBillDialog();
+});
+byId("close-preparation-dialog").addEventListener("click", closePreparationDialog);
+byId("preparation-dialog").addEventListener("click", (event) => {
+  if (event.target === byId("preparation-dialog")) closePreparationDialog();
+});
+document.querySelectorAll("#preparation-dialog [data-preparation-vote]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (!preparationSheet) return;
+    const selected = button.dataset.preparationVote || "";
+    preparationSheet.preliminary_vote = preparationSheet.preliminary_vote === selected
+      ? null
+      : selected;
+    renderPreparationVote();
+    markPreparationDirty();
+  });
+});
+byId("preparation-vote-reason").addEventListener("input", (event) => {
+  if (!preparationSheet) return;
+  preparationSheet.preliminary_vote_reason = event.currentTarget.value;
+  markPreparationDirty();
+});
+byId("preparation-notes").addEventListener("input", (event) => {
+  if (!preparationSheet) return;
+  preparationSheet.notes = event.currentTarget.value;
+  text("preparation-notes-count", `${preparationSheet.notes.length} / 16000`);
+  markPreparationDirty();
+});
+[
+  ["preparation-read-text", "read_text"],
+  ["preparation-verify-sources", "verify_sources"],
+  ["preparation-need-discussion", "need_discussion"],
+].forEach(([id, key]) => {
+  byId(id).addEventListener("change", (event) => {
+    if (!preparationSheet) return;
+    preparationSheet.review_flags[key] = event.currentTarget.checked;
+    markPreparationDirty();
+  });
+});
+byId("preparation-add-question").addEventListener("click", () => {
+  if (!preparationSheet) return;
+  if (preparationSheet.questions.length >= PREPARATION_MAX_QUESTIONS) {
+    showCommandMessage(`В одном листе можно подготовить до ${PREPARATION_MAX_QUESTIONS} вопросов.`, "error");
+    return;
+  }
+  const questionId = window.crypto?.randomUUID?.()
+    || `question-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  preparationSheet.questions.push({ id: questionId, text: "", resolved: false });
+  renderPreparationQuestions();
+  markPreparationDirty();
+  const fields = byId("preparation-questions").querySelectorAll("textarea");
+  fields[fields.length - 1]?.focus();
+});
+byId("preparation-reset").addEventListener("click", () => {
+  if (!preparationSheet) return;
+  if (!window.confirm("Очистить вопросы, заметки и предварительную позицию? Это действие можно отменить только до сохранения.")) return;
+  const revision = preparationSheet.revision;
+  preparationSheet = { ...preparationDefaultSheet(), revision };
+  preparationDirty = true;
+  renderPreparationSheet();
+  markPreparationDirty({ schedule: false });
+});
+byId("preparation-save").addEventListener("click", () => {
+  void savePreparation();
+});
+byId("preparation-download").addEventListener("click", () => {
+  void downloadPreparationPdf();
 });
 byId("open-bill-library").addEventListener("click", openBillLibrary);
 byId("close-bill-library").addEventListener("click", closeBillLibrary);

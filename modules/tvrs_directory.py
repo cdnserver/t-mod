@@ -378,7 +378,7 @@ async def _initialize_from_manual_message(
         if not state["initialized"] and not force:
             state["initialized"] = True
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
-            _tvrs_storage.tvrs_set_directory_state(guild_id, state)
+            await asyncio.to_thread(_tvrs_storage.tvrs_set_directory_state, guild_id, state)
         return state, None
     for slot, member_id in assignments.items():
         bucket = state["responsibles"] if _slot_kind(slot) == "responsible" else state["chairs"]
@@ -387,7 +387,7 @@ async def _initialize_from_manual_message(
     state["imported_from_message_id"] = _normalize_member_id(getattr(source, "id", None))
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     state["revision"] = int(state.get("revision") or 0) + 1
-    _tvrs_storage.tvrs_set_directory_state(guild_id, state)
+    await asyncio.to_thread(_tvrs_storage.tvrs_set_directory_state, guild_id, state)
     return state, state["imported_from_message_id"]
 
 
@@ -428,10 +428,13 @@ async def ensure_directory_message(
     lock = _lock_for(guild.id)
     async with lock:
         await _ensure_member_cache(guild)
-        state, _ = _load_state(guild.id)
+        state, _ = await asyncio.to_thread(_load_state, guild.id)
         state, _ = await _initialize_from_manual_message(channel, guild.id, state, force=False)
         content = _render_content(guild, state)
-        message_id = _tvrs_storage.tvrs_get_directory_message_id(guild.id)
+        message_id = await asyncio.to_thread(
+            _tvrs_storage.tvrs_get_directory_message_id,
+            guild.id,
+        )
         message = None
         if message_id and hasattr(channel, "fetch_message"):
             try:
@@ -457,7 +460,11 @@ async def ensure_directory_message(
                 )
         except (discord.DiscordException, OSError):
             return None
-        _tvrs_storage.tvrs_set_directory_message_id(guild.id, int(message.id))
+        await asyncio.to_thread(
+            _tvrs_storage.tvrs_set_directory_message_id,
+            guild.id,
+            int(message.id),
+        )
         return message
 
 
@@ -469,7 +476,7 @@ async def adopt_directory_from_channel(
     if channel is None:
         return None
     async with _lock_for(guild.id):
-        state, _ = _load_state(guild.id)
+        state, _ = await asyncio.to_thread(_load_state, guild.id)
         _, source_id = await _initialize_from_manual_message(
             channel,
             guild.id,

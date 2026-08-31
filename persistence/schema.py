@@ -1643,6 +1643,26 @@ def init_db() -> None:
                 UNIQUE(bill_id, voter_id)
             );
 
+            CREATE TABLE IF NOT EXISTS tvrs_bill_preparation_sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                bill_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_display TEXT,
+                questions_json TEXT NOT NULL DEFAULT '[]',
+                notes TEXT NOT NULL DEFAULT '',
+                preliminary_vote TEXT,
+                preliminary_vote_reason TEXT NOT NULL DEFAULT '',
+                review_flags_json TEXT NOT NULL DEFAULT '{}',
+                source_bill_updated_at TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, bill_id, user_id),
+                CHECK(preliminary_vote IS NULL OR preliminary_vote IN ('yes', 'no', 'abstain')),
+                FOREIGN KEY(bill_id) REFERENCES tvrs_bills(id) ON DELETE CASCADE
+            );
+
 
             CREATE TABLE IF NOT EXISTS tvrs_live_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2997,6 +3017,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tvrs_votes_bill
             ON tvrs_votes(guild_id, bill_id);
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_preparation_sheets_owner
+            ON tvrs_bill_preparation_sheets(guild_id, user_id, updated_at DESC);
 
 
             CREATE INDEX IF NOT EXISTS idx_tvrs_bills_queue
