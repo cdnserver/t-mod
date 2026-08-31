@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$script:ClientVersion = "1.1.2"
+$script:ClientVersion = "1.1.3"
 $script:AppDir = Join-Path $env:LOCALAPPDATA "TModRemote"
 $script:ConfigPath = Join-Path $script:AppDir "config.json"
 $script:UpdateStatePath = Join-Path $script:AppDir "update-state.json"
@@ -184,7 +184,7 @@ function Invoke-RemotePowerShell {
         [string]$Command,
         [switch]$AllowPassword,
         [switch]$Follow,
-        [ValidateRange(30, 1800)][int]$TimeoutSeconds = 300
+        [ValidateRange(30, 2400)][int]$TimeoutSeconds = 300
     )
     $bytes = [Text.Encoding]::Unicode.GetBytes($Command)
     $encoded = [Convert]::ToBase64String($bytes)
@@ -262,6 +262,22 @@ Write-Output 'TMOD_KEY_INSTALLED'
     Wait-RemoteKey
 }
 
+function Get-RemoteActionTimeoutSeconds {
+    param([string]$RemoteAction)
+    switch ($RemoteAction) {
+        "update" { return 1800 }
+        "service-update" { return 1800 }
+        "start" { return 900 }
+        "restart" { return 900 }
+        "group-start" { return 900 }
+        "group-restart" { return 900 }
+        "backup" { return 900 }
+        "db-check" { return 900 }
+        "docker-clean" { return 600 }
+        default { return 300 }
+    }
+}
+
 function Get-ServerCommand {
     param($Config, [string]$RemoteAction, [string]$RemoteService = "", [string]$RemoteGroup = "", [switch]$AsJson)
     if ($script:RemoteActions -notcontains $RemoteAction) { throw "Недопустимое удалённое действие" }
@@ -279,36 +295,102 @@ function Get-ServerCommand {
     $serviceArgument = if ($RemoteService) { " -Service '$serviceLiteral'" } else { "" }
     $groupArgument = if ($RemoteGroup) { " -Group '$groupLiteral'" } else { "" }
     $jsonSwitch = if ($AsJson) { " -Json" } else { "" }
-    return @"
+    $taskTimeoutSeconds = Get-RemoteActionTimeoutSeconds $RemoteAction
+    $taskWaitSeconds = $taskTimeoutSeconds + 90
+    $jsonRequest = if ($AsJson) { '$true' } else { '$false' }
+
+    # Live logs intentionally remain a direct SSH stream.  Docker logs do not
+    # call the credential helper, while an interactive task cannot be safely
+    # attached to or cancelled with Ctrl+C from this console.
+    if ($RemoteAction -eq "service-logs-follow") {
+        return @"
 `$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
 `$OutputEncoding = New-Object System.Text.UTF8Encoding
 [Console]::OutputEncoding = `$OutputEncoding
-# Docker Desktop stores interactive credentials in the Windows Credential
-# Manager.  An SSH/noninteractive logon cannot unlock that store, so Docker
-# can fail before a public image is even pulled with "specified logon session
-# does not exist".  Give only this remote command a fresh disposable config:
-# it contains no credentials and therefore cannot alter or expose the
-# operator's normal Docker Desktop session.  T-Mod's deployed images are
-# public; a future private registry needs an explicit noninteractive auth
-# design rather than silently borrowing the interactive credential helper.
-`$dockerConfig = Join-Path ([IO.Path]::GetTempPath()) ("tmod-docker-public-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path `$dockerConfig -Force | Out-Null
-`$dockerConfigPath = Join-Path `$dockerConfig "config.json"
-[IO.File]::WriteAllText(`$dockerConfigPath, '{"auths":{}}', (New-Object System.Text.UTF8Encoding(`$false)))
-`$env:DOCKER_CONFIG = `$dockerConfig
-`$env:TMOD_REMOTE_NONINTERACTIVE = "1"
 `$control = Join-Path '$project' 'tmod_control_windows.ps1'
+if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral'$serviceArgument$groupArgument -NoAnimation$jsonSwitch
+exit `$LASTEXITCODE
+"@
+    }
+
+    return @"
+`$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
+`$OutputEncoding = New-Object System.Text.UTF8Encoding
+[Console]::OutputEncoding = `$OutputEncoding
+`$control = Join-Path '$project' 'tmod_control_windows.ps1'
+`$runner = Join-Path '$project' 'scripts\tmod_remote_interactive_runner.ps1'
+if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
+if (-not (Test-Path -LiteralPath `$runner)) { throw 'Interactive T-Mod Remote runner отсутствует. Сначала обновите репозиторий.' }
+`$taskRoot = Join-Path '$persistent' 'control\remote-tasks'
+New-Item -ItemType Directory -Path `$taskRoot -Force | Out-Null
+`$requestId = [guid]::NewGuid().ToString('D')
+`$requestPath = Join-Path `$taskRoot ("`$requestId.request.json")
+`$resultPath = Join-Path `$taskRoot ("`$requestId.result.json")
+`$request = [ordered]@{
+    schema = 'tmod-remote-interactive-v1'
+    request_id = `$requestId
+    project_dir = '$project'
+    persistent_dir = '$persistent'
+    action = '$actionLiteral'
+    service = '$serviceLiteral'
+    group = '$groupLiteral'
+    timeout_seconds = $taskTimeoutSeconds
+    json = $jsonRequest
+}
+`$requestTemporary = "`$requestPath.`$PID.tmp"
+[IO.File]::WriteAllText(`$requestTemporary, (`$request | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding(`$false)))
+Move-Item -LiteralPath `$requestTemporary -Destination `$requestPath -Force
+`$taskUser = "{0}\{1}" -f `$env:COMPUTERNAME, `$env:USERNAME
+`$taskName = "T-Mod Remote `$requestId"
+`$powerShell = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+`$taskArguments = ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -RequestPath "{1}" -ResultPath "{2}"' -f `$runner, `$requestPath, `$resultPath)
+`$taskCreated = `$false
 `$exitCode = 1
 try {
-    if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral'$serviceArgument$groupArgument -NoAnimation$jsonSwitch
-    `$exitCode = `$LASTEXITCODE
+    # A no-trigger task can only be started explicitly below.  This avoids a
+    # second delayed run if the SSH connection disappears before cleanup.
+    # Interactive + Highest deliberately uses the logged-in desktop token:
+    # Docker Desktop's credential helper cannot work in the SSH token.
+    `$taskAction = New-ScheduledTaskAction -Execute `$powerShell -Argument `$taskArguments
+    `$taskPrincipal = New-ScheduledTaskPrincipal -UserId `$taskUser -LogonType Interactive -RunLevel Highest
+    `$taskDefinition = New-ScheduledTask -Action `$taskAction -Principal `$taskPrincipal
+    Register-ScheduledTask -TaskName `$taskName -InputObject `$taskDefinition -Force | Out-Null
+    `$taskCreated = `$true
+    Start-ScheduledTask -TaskName `$taskName
+    `$deadline = [DateTime]::UtcNow.AddSeconds($taskWaitSeconds)
+    `$result = `$null
+    while ([DateTime]::UtcNow -lt `$deadline) {
+        if (Test-Path -LiteralPath `$resultPath) {
+            try {
+                `$result = Get-Content -LiteralPath `$resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                break
+            }
+            catch {
+                # The runner publishes atomically; a retry only handles a
+                # short antivirus/file-indexing race on Windows.
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not `$result) {
+        Stop-ScheduledTask -TaskName `$taskName -ErrorAction SilentlyContinue
+        throw "Интерактивная задача T-Mod не вернула результат за $taskWaitSeconds секунд. Проверьте, что на сервере есть сеанс `$taskUser."
+    }
+    if ([string]`$result.schema -ne 'tmod-remote-interactive-v1' -or [string]`$result.request_id -ne `$requestId) {
+        throw "Интерактивная задача T-Mod вернула недействительный результат."
+    }
+    if (`$null -ne `$result.text -and [string]`$result.text) {
+        [Console]::Out.Write([string]`$result.text)
+        if (-not ([string]`$result.text).EndsWith("`n")) { [Console]::Out.WriteLine() }
+    }
+    `$exitCode = [int]`$result.exit_code
 }
 finally {
-    # The directory only contains {"auths":{}}.  Remove it even if Docker or
-    # the control action failed so repeated SSH actions never accumulate
-    # temporary client state.
-    Remove-Item -LiteralPath `$dockerConfig -Force -Recurse -ErrorAction SilentlyContinue
+    if (`$taskCreated) { Unregister-ScheduledTask -TaskName `$taskName -Confirm:`$false -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath `$requestTemporary, `$requestPath, `$resultPath -Force -ErrorAction SilentlyContinue
 }
 exit `$exitCode
 "@
@@ -317,7 +399,13 @@ exit `$exitCode
 function Invoke-ServerAction {
     param($Config, [string]$RemoteAction, [string]$RemoteService = "", [string]$RemoteGroup = "", [switch]$AsJson)
     $command = Get-ServerCommand $Config $RemoteAction $RemoteService $RemoteGroup -AsJson:$AsJson
-    return (Invoke-RemotePowerShell $Config $command -Follow:($RemoteAction -eq "service-logs-follow"))
+    if ($RemoteAction -eq "service-logs-follow") {
+        return (Invoke-RemotePowerShell $Config $command -Follow)
+    }
+    # The task itself owns the action budget.  SSH gets two short grace
+    # windows: one for task start/result publication and one for cleanup.
+    $sshTimeout = (Get-RemoteActionTimeoutSeconds $RemoteAction) + 180
+    return (Invoke-RemotePowerShell $Config $command -TimeoutSeconds $sshTimeout)
 }
 
 function Test-RemoteConnection {
