@@ -26,6 +26,7 @@ from modules import tvrs_control as _tvrs_control
 from modules import tvrs_decision as _tvrs_decision
 from modules import tvrs_recovery as _tvrs_recovery
 from modules import tvrs_setup as _tvrs_setup
+from modules import tvrs_directory as _tvrs_directory
 
 _TVRS_MODULES = (
     _tvrs_presentation,
@@ -37,6 +38,7 @@ _TVRS_MODULES = (
     _tvrs_decision,
     _tvrs_recovery,
     _tvrs_setup,
+    _tvrs_directory,
 )
 
 for _tvrs_module in _TVRS_MODULES:

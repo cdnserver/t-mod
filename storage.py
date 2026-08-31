@@ -19,6 +19,7 @@ from persistence import market_repository as _market_repository
 from persistence import profile_repository as _profile_repository
 from persistence import voice_control_repository as _voice_control_repository
 from persistence import bill_workspace_repository as _bill_workspace_repository
+from persistence import consensus_preparation_repository as _consensus_preparation_repository
 from persistence import broadcast_repository as _broadcast_repository
 from persistence import consensus_schedule_repository as _consensus_schedule_repository
 from persistence import web_auth_repository as _web_auth_repository
@@ -42,6 +43,7 @@ _PERSISTENCE_MODULES = (
     _profile_repository,
     _voice_control_repository,
     _bill_workspace_repository,
+    _consensus_preparation_repository,
     _broadcast_repository,
     _consensus_schedule_repository,
     _web_auth_repository,
