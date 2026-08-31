@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Технологии Товарищества">
+  <defs>
+    <linearGradient id="field" x1="68" y1="52" x2="448" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#121a30"/>
+      <stop offset=".55" stop-color="#090d17"/>
+      <stop offset="1" stop-color="#05070b"/>
+    </linearGradient>
+    <linearGradient id="monolith" x1="168" y1="99" x2="348" y2="395" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dce4ff" stop-opacity=".16"/>
+      <stop offset=".54" stop-color="#91a8ff" stop-opacity=".075"/>
+      <stop offset="1" stop-color="#91a8ff" stop-opacity=".025"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="42%" r="60%">
+      <stop stop-color="#91a8ff" stop-opacity=".20"/>
+      <stop offset="1" stop-color="#91a8ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#field)"/>
+  <rect x="10" y="10" width="492" height="492" rx="104" fill="none" stroke="#dce4ff" stroke-opacity=".075" stroke-width="2"/>
+  <circle cx="256" cy="236" r="198" fill="url(#halo)"/>
+  <path d="M62 256H450" stroke="#91a8ff" stroke-opacity=".17" stroke-width="2"/>
+  <rect x="170" y="105" width="172" height="278" rx="50" fill="url(#monolith)" stroke="#cbd6ff" stroke-opacity=".42" stroke-width="3"/>
+  <path d="M213 109V379M256 109V379M299 109V379" stroke="#91a8ff" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M204 183H308V218H273V329H239V218H204Z" fill="#f5f7fb"/>
+  <path d="M204 183H308" stroke="#fff" stroke-opacity=".52" stroke-width="3"/>
+  <path d="M194 352H232M280 352H318" stroke="#91a8ff" stroke-opacity=".36" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="256" cy="352" r="4" fill="#72cfbd"/>
+</svg>
