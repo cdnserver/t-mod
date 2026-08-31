@@ -25,6 +25,7 @@ from modules.consensus_core import (
     ConsensusStateError,
     session_from_snapshot,
 )
+from modules.consensus_health import assess_consensus_health
 from modules.consensus_runtime import active_sessions
 from modules.consensus_simulator import get_consensus_simulation
 from modules.consensus_web_auth import (
@@ -36,6 +37,8 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_session_token,
     csrf_matches,
+    request_public_host,
+    request_public_secure,
     resolve_principal,
     set_session_cookie,
     signed_session_identity,
@@ -51,11 +54,13 @@ from modules.reactor_web import register_reactor_web_routes
 from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
+from modules.admission_web import register_admission_web_routes
+from modules.global_log_runtime import global_log_web_middleware, runtime_health as global_log_runtime_health
+from modules.global_log_web import register_global_log_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import consensus_preparation_repository as preparation_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
-from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from persistence import global_ban_repository as global_ban_storage
@@ -161,6 +166,14 @@ OVR_WEB_PUBLIC_URL = _configured_surface_url(
     "OVR_WEB_PUBLIC_URL",
     "https://ovr.tvr.lat",
 )
+ADMISSION_WEB_PUBLIC_URL = _configured_surface_url(
+    "ADMISSION_WEB_PUBLIC_URL",
+    "https://phx.tvr.lat",
+)
+GLOBAL_LOG_WEB_PUBLIC_URL = _configured_surface_url(
+    "GLOBAL_LOG_WEB_PUBLIC_URL",
+    "https://log.global.tvr.lat",
+)
 
 
 def _configured_guild_id() -> int:
@@ -232,6 +245,8 @@ def consensus_web_entry_url(
         base_url = ATLAS_WEB_PUBLIC_URL
     elif destination == "/sgl" and SGL_WEB_PUBLIC_URL:
         base_url = SGL_WEB_PUBLIC_URL
+    elif destination == "/admission" and ADMISSION_WEB_PUBLIC_URL:
+        base_url = ADMISSION_WEB_PUBLIC_URL
     return _authenticated_entry_url(
         base_url,
         guild_id=guild_id,
@@ -443,6 +458,9 @@ def _session_payload(
     simulation: bool,
     current_bill_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Finished snapshots are intentionally used for the post-session screen;
+    # ``assess_consensus_health`` diagnoses active registry entries only.
+    health = None if session.finished else assess_consensus_health(session)
     participants = sorted(
         session.participants.values(),
         key=lambda item: (
@@ -495,6 +513,26 @@ def _session_payload(
         "leader": {
             "id": int(session.leader_id),
             "name": str(session.leader_display),
+        },
+        "integrity": {
+            "status": (
+                "critical"
+                if health is not None and health.critical
+                else (
+                    "warning"
+                    if health is not None and health.warnings
+                    else "nominal"
+                )
+            ),
+            "issues": [
+                {
+                    "code": item.code,
+                    "severity": item.severity,
+                    "message": item.message,
+                    "recovery": item.recovery,
+                }
+                for item in (health.issues if health is not None else ())
+            ],
         },
         "current_bill": _bill_payload(
             current_bill,
@@ -979,8 +1017,19 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = SGL_WEB_PUBLIC_URL
     elif belongs_to("/ovr") or path.startswith("/api/ovr"):
         target_url = OVR_WEB_PUBLIC_URL
+    elif (
+        belongs_to("/admission")
+        or path.startswith("/admission-assets/")
+        or path.startswith("/api/admission")
+    ):
+        target_url = ADMISSION_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
+    elif (
+        belongs_to("/global-log")
+        or (path.startswith("/api/global-log") and path != "/api/global-log/client")
+    ):
+        target_url = GLOBAL_LOG_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
         if next_path == "/admin":
             target_url = REACTOR_WEB_PUBLIC_URL
@@ -992,13 +1041,15 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             target_url = SGL_WEB_PUBLIC_URL
         elif next_path == "/ovr":
             target_url = OVR_WEB_PUBLIC_URL
+        elif next_path == "/admission":
+            target_url = ADMISSION_WEB_PUBLIC_URL
         else:
             target_url = consensus_url
     if not target_url:
         return None
 
     target = urlsplit(target_url)
-    current_host = str(request.host or "").strip().lower().rstrip(".")
+    current_host = request_public_host(request).strip().lower().rstrip(".")
     if current_host.startswith("["):
         current_hostname = current_host[1:].split("]", 1)[0]
     else:
@@ -1013,6 +1064,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             ZIGMUND_WEB_PUBLIC_URL,
             SGL_WEB_PUBLIC_URL,
             OVR_WEB_PUBLIC_URL,
+            ADMISSION_WEB_PUBLIC_URL,
+            GLOBAL_LOG_WEB_PUBLIC_URL,
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1032,6 +1085,11 @@ async def _security_middleware(
         if canonical_location is not None:
             raise web.HTTPPermanentRedirect(location=canonical_location)
         response = await handler(request)
+    except ConnectionResetError:
+        # The browser can close a request while navigating away or cancelling a
+        # stream. This is not an application failure and must not reach aiohttp's
+        # error logger (or the GitHub defect inbox).
+        response = web.Response(status=499)
     except web.HTTPException as exc:
         _apply_security_headers(exc, request_path=request.path)
         exc.headers["Server-Timing"] = (
@@ -1051,7 +1109,7 @@ def _apply_security_headers(
     request_path: str = "",
 ) -> None:
     path = str(request_path or "")
-    if path.startswith("/assets/"):
+    if path.startswith(("/assets/", "/sgl/assets/")):
         if path.endswith((".woff2", ".mp3")):
             response.headers["Cache-Control"] = (
                 "public, max-age=2592000, immutable"
@@ -1115,6 +1173,8 @@ def create_consensus_web_app(
             allowed = (
                 request.path in {"/banned", "/api/banned", "/api/health", "/favicon.ico"}
                 or request.path.startswith("/assets/")
+                or request.path.startswith("/global-log")
+                or request.path.startswith("/api/global-log")
             )
             if not allowed:
                 if request.path.startswith("/api/"):
@@ -1129,7 +1189,7 @@ def create_consensus_web_app(
         return await handler(request)
 
     app = web.Application(
-        middlewares=[_security_middleware, global_ban_middleware],
+        middlewares=[global_log_web_middleware, _security_middleware, global_ban_middleware],
         client_max_size=client_max_size,
     )
     state_cache = AsyncSnapshotCache[
@@ -1294,6 +1354,9 @@ def create_consensus_web_app(
             "banned.css",
             "banned.js",
             "ban-seal.svg",
+            "global-log.css",
+            "global-log.js",
+            "global-log-client.js",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(_ASSET_DIR / name)
@@ -1304,12 +1367,12 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
-            if not principal.guild_member and next_path != "/atlas":
+            if not principal.guild_member and next_path not in {"/atlas", "/admission"}:
                 raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
@@ -1330,7 +1393,7 @@ def create_consensus_web_app(
         require_ready = request.query.get("ready") == "1"
         status = "ok" if discord_ready or not require_ready else "starting"
         return web.json_response(
-            {"status": status, "discord_ready": discord_ready},
+            {"status": status, "discord_ready": discord_ready, "global_log": global_log_runtime_health()},
             status=200 if status == "ok" else 503,
         )
 
@@ -1412,10 +1475,14 @@ def create_consensus_web_app(
                 request.query.get("ticket", ""),
                 expected_guild_id=int(guild_id),
             )
-        except ConsensusWebAuthError:
+        except ConsensusWebAuthError as exc:
+            if str(exc) == "ticket_storage_unavailable":
+                raise web.HTTPServiceUnavailable(
+                    text="T-Mod временно не может безопасно подтвердить ссылку. Повторите через минуту."
+                ) from exc
             raise web.HTTPUnauthorized(
                 text="Ссылка недействительна или уже использована. Откройте новую из Discord."
-            )
+            ) from exc
         if await asyncio.to_thread(
             global_ban_storage.is_globally_banned,
             int(guild_id),
@@ -1440,7 +1507,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1452,8 +1519,8 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=request_public_host(request),
         )
         return response
 
@@ -1466,7 +1533,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1571,15 +1638,6 @@ def create_consensus_web_app(
             int(result.credential.user_id),
         ):
             raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
-        characters = await asyncio.to_thread(
-            profile_storage.list_profile_characters,
-            int(guild_id),
-            int(result.credential.user_id),
-        )
-        if not characters:
-            raise web.HTTPSeeOther(
-                location=f"/login?{urlencode({'next': next_path, 'error': 'character_required'})}"
-            )
         guild = bot.get_guild(int(guild_id))
         member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
         if member is None and guild is not None:
@@ -1595,7 +1653,9 @@ def create_consensus_web_app(
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
         if member is None and not desktop_client:
-            if next_path != "/atlas" or "atlas_ai" not in sections:
+            if next_path == "/admission":
+                pass
+            elif next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(
                     location="/login?next=%2Fatlas&error=atlas_access"
                 )
@@ -1618,14 +1678,22 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
-            request_host=request.host,
+            request_host=request_public_host(request),
         )
         return response
 
     async def logout(request: web.Request) -> web.Response:
-        host = str(request.host or "").split(":", 1)[0].lower()
+        public_host = request_public_host(request)
+        host = public_host.split(":", 1)[0].lower()
+        identity = signed_session_identity(request, expected_guild_id=int(guild_id))
+        if identity is not None:
+            await asyncio.to_thread(
+                credential_storage.invalidate_web_sessions,
+                int(identity[0]),
+                int(identity[1]),
+            )
         destination = (
             "/login?next=/admin"
             if host.startswith("reactor.")
@@ -1641,8 +1709,8 @@ def create_consensus_web_app(
         )
         clear_session_cookie(
             response,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=public_host,
         )
         return response
 
@@ -2011,6 +2079,11 @@ def create_consensus_web_app(
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_get("/api/reports/{session_key}/consensus.pdf", consensus_report)
     app.router.add_post("/api/command", command)
+    register_global_log_web_routes(
+        app,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+    )
     register_admin_web_routes(
         app,
         bot,
@@ -2045,6 +2118,12 @@ def create_consensus_web_app(
         guild_id=int(guild_id),
         asset_dir=Path(__file__).resolve().parents[1] / "web" / "sgl",
         authenticate=authenticated_request,
+    )
+    register_admission_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
     )
     return app
 
@@ -2162,7 +2241,7 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
     view.add_item(
         discord.ui.Button(
             label="Суфлёр ведущего",
-            emoji="🎙️",
+            emoji="🎤",
             style=discord.ButtonStyle.link,
             url=host_url,
         )

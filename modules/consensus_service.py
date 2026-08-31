@@ -15,6 +15,7 @@ from modules.consensus_core import (
     session_from_snapshot,
     session_to_snapshot,
     transition_session,
+    validate_consensus_roster,
 )
 
 
@@ -138,6 +139,24 @@ class ConsensusCoordinator:
 
     def __init__(self, repository: ConsensusRepository) -> None:
         self.repository = repository
+
+    @staticmethod
+    def _validated_bill(
+        session: LiveConsensusSession,
+        bill: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(bill, dict):
+            raise ConsensusStateError("Законопроект имеет некорректный формат.")
+        try:
+            bill_id = int(bill.get("id") or 0)
+            bill_number = int(bill.get("bill_number") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConsensusStateError("Законопроект содержит некорректный номер.") from exc
+        if bill_id <= 0 or bill_number <= 0:
+            raise ConsensusStateError("У законопроекта отсутствует устойчивый номер.")
+        if any(int(result.bill_id) == bill_id for result in session.results):
+            raise ConsensusStateError("Этот законопроект уже рассмотрен в текущем заседании.")
+        return dict(bill)
 
     @staticmethod
     def _restore_checkpoint(session: LiveConsensusSession, snapshot: dict[str, Any]) -> None:
@@ -337,6 +356,7 @@ class ConsensusCoordinator:
         *,
         actor: ConsensusActor | None = None,
     ) -> bool:
+        validate_consensus_roster(session)
         clean_vote = str(vote).strip().lower()
         if clean_vote not in VALID_VOTES:
             raise ConsensusStateError("Неизвестный вариант голоса.")
@@ -372,6 +392,7 @@ class ConsensusCoordinator:
     ) -> None:
         """Persist a voting deadline as one rollback-safe state mutation."""
 
+        validate_consensus_roster(session)
         if session.stage != "voting" or session.current_bill is None:
             raise ConsensusStateError("Таймер можно установить только во время голосования.")
         clean_seconds = max(0, int(seconds))
@@ -416,14 +437,16 @@ class ConsensusCoordinator:
             )
 
     def begin_bill(self, session: LiveConsensusSession, bill: dict[str, Any], *, actor: ConsensusActor) -> None:
+        validate_consensus_roster(session)
         if session.stage not in {"registration", "after_result"}:
             raise ConsensusStateError("Нельзя открыть следующий проект на текущем этапе.")
         if session.current_bill is not None:
             raise ConsensusStateError("Предыдущий проект ещё не закрыт.")
         if not session.quorum_ready():
             raise ConsensusStateError("Подтверждённый кворум не набран.")
+        clean_bill = self._validated_bill(session, bill)
         with self.mutation(session):
-            session.current_bill = dict(bill)
+            session.current_bill = clean_bill
             session.votes.clear()
             session.pending_action = None
             session.discussion_channel_id = None
@@ -449,6 +472,7 @@ class ConsensusCoordinator:
         actor: ConsensusActor,
         deliveries: Iterable[dict[str, Any]],
     ) -> dict[str, Any]:
+        validate_consensus_roster(session)
         if session.stage not in {"registration", "after_result"}:
             raise ConsensusStateError("Нельзя открыть следующий проект на текущем этапе.")
         if session.current_bill is not None:
@@ -456,8 +480,9 @@ class ConsensusCoordinator:
         if not session.quorum_ready():
             raise ConsensusStateError("Подтверждённый кворум не набран.")
 
+        clean_bill = self._validated_bill(session, bill)
         candidate = session_from_snapshot(session_to_snapshot(session))
-        candidate.current_bill = dict(bill)
+        candidate.current_bill = clean_bill
         candidate.votes.clear()
         candidate.pending_action = None
         candidate.discussion_channel_id = None
@@ -493,6 +518,7 @@ class ConsensusCoordinator:
     ) -> dict[str, Any]:
         """Bind the next bill without opening voting controls."""
 
+        validate_consensus_roster(session)
         if session.stage not in {"registration", "after_result"}:
             raise ConsensusStateError("Нельзя представить следующий проект на текущем этапе.")
         if session.current_bill is not None:
@@ -500,8 +526,9 @@ class ConsensusCoordinator:
         if not session.quorum_ready():
             raise ConsensusStateError("Подтверждённый кворум не набран.")
 
+        clean_bill = self._validated_bill(session, bill)
         candidate = session_from_snapshot(session_to_snapshot(session))
-        candidate.current_bill = dict(bill)
+        candidate.current_bill = clean_bill
         candidate.votes.clear()
         candidate.pending_action = None
         candidate.discussion_channel_id = None
@@ -536,6 +563,7 @@ class ConsensusCoordinator:
     ) -> dict[str, Any]:
         """Atomically open voting and publish all voting controls."""
 
+        validate_consensus_roster(session)
         if session.stage != "presentation" or session.current_bill is None:
             raise ConsensusStateError("Законопроект сейчас нельзя поставить на воут.")
         with self.mutation(session):
@@ -563,6 +591,7 @@ class ConsensusCoordinator:
         oral_authorized: bool = False,
         action_details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        validate_consensus_roster(session)
         if session.stage == "finalizing" and session.pending_action:
             if session.pending_action.get("kind") != kind:
                 raise ConsensusStateError("Голосование уже фиксируется другим способом.")
@@ -614,10 +643,15 @@ class ConsensusCoordinator:
             session.timer_added_seconds = 0
             session.timer_last_added_seconds = None
             session.timer_last_adjusted_at = None
+            event_type = {
+                "vote": "vote_finalization_claimed",
+                "veto": "veto_claimed",
+                "oral": "oral_result_claimed",
+            }[kind]
             self.transition(
                 session,
                 "finalizing",
-                "vote_finalization_claimed" if kind == "vote" else "veto_claimed",
+                event_type,
                 actor=actor,
                 details=dict(session.pending_action),
             )
@@ -643,6 +677,7 @@ class ConsensusCoordinator:
         *,
         details: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
+        validate_consensus_roster(session)
         if session.stage != "finalizing":
             raise ConsensusStateError("Результат можно зафиксировать только после блокировки голосования.")
         if session.current_bill is None or int(session.current_bill.get("id") or 0) != int(result.bill_id):
@@ -718,6 +753,7 @@ class ConsensusCoordinator:
         return receipt
 
     def request_discussion(self, session: LiveConsensusSession, initiator: LiveParticipant) -> None:
+        validate_consensus_roster(session)
         if session.stage != "voting" or session.current_bill is None:
             raise ConsensusStateError("Дискуссию можно начать только во время голосования.")
         if not initiator.confirmed:
@@ -753,13 +789,23 @@ class ConsensusCoordinator:
         allowed_user_ids: Iterable[int],
         deliveries: Iterable[dict[str, Any]] = (),
     ) -> None:
+        validate_consensus_roster(session)
         if session.stage != "discussion_type":
             raise ConsensusStateError("Тип дискуссии сейчас выбрать нельзя.")
+        clean_type = str(discussion_type).strip()[:80]
+        if not clean_type:
+            raise ConsensusStateError("Укажите тип дискуссии.")
+        clean_allowed = {int(user_id) for user_id in allowed_user_ids}
+        confirmed_ids = {item.user_id for item in session.confirmed_participants()}
+        if not clean_allowed.issubset(confirmed_ids):
+            raise ConsensusStateError(
+                "В дискуссию нельзя добавить участника вне подтверждённого состава."
+            )
         delivery_jobs = tuple(deliveries)
         with self.mutation(session):
-            session.discussion_type = str(discussion_type).strip()[:80]
+            session.discussion_type = clean_type
             session.discussion_channel_id = int(channel_id) if channel_id else None
-            session.discussion_allowed_user_ids = {int(user_id) for user_id in allowed_user_ids}
+            session.discussion_allowed_user_ids = clean_allowed
             previous, _ = transition_session(session, "discussion")
             details = {
                 "type": session.discussion_type,
@@ -782,6 +828,7 @@ class ConsensusCoordinator:
                 )
 
     def end_discussion(self, session: LiveConsensusSession, *, actor: ConsensusActor) -> None:
+        validate_consensus_roster(session)
         if session.stage not in {"discussion_type", "discussion"}:
             raise ConsensusStateError("Активной дискуссии сейчас нет.")
         with self.mutation(session):
@@ -833,6 +880,7 @@ class ConsensusCoordinator:
             )
 
     def resume(self, session: LiveConsensusSession, *, actor: ConsensusActor) -> str:
+        validate_consensus_roster(session)
         if session.stage != "paused":
             raise ConsensusStateError("Консенсус не находится на паузе.")
         target = str(session.previous_stage or "")

@@ -1,5 +1,6 @@
 discord.py[voice]>=2.7.1,<2.8
-aiohttp>=3.10.0,<4
+aiohttp>=3.14.3,<4
+psycopg[binary,pool]>=3.2.9,<4
 davey>=0.1.6,<0.2
 discord-ext-voice-recv==0.5.2a179
 yt-dlp>=2026.7.4,<2027
@@ -12,6 +13,7 @@ selenium>=4.35.0,<5
 Pillow>=11.0.0,<13
 reportlab>=4.2.0,<5
 pypdf[crypto]>=6.0.0,<7
+cryptography>=50.0.0,<51
 
 # 6.1 changes unsafe entity resolution defaults and includes current libxml2/
 # libxslt security fixes. Contract templates remain API-compatible.

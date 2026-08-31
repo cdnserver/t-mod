@@ -12,6 +12,10 @@ from discord.ext import commands
 from persistence import bureau_context as storage
 from localization import safe_command_description, safe_command_name, t
 from modules.sgcontract import SGLContractModal
+from modules.discord_interactions import (
+    is_expired_interaction_error,
+    safe_interaction_error_message,
+)
 from modules.sgl_messages import (
     capture_discord_case_message,
     mark_discord_case_message_deleted,
@@ -2475,6 +2479,22 @@ class SGCasePanelView(discord.ui.View):
             await interaction.response.send_message(t("sgbureau.case.errors.not_case_participant"), ephemeral=True)
             return False
         return True
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        del item
+        if not is_expired_interaction_error(error):
+            import traceback
+
+            traceback.print_exception(type(error), error, error.__traceback__)
+        await safe_interaction_error_message(
+            interaction,
+            "Действие не завершилось. Откройте панель ещё раз и повторите.",
+        )
 
     def _case(self, interaction: discord.Interaction) -> storage.SGLCase | None:
         if interaction.guild is None:

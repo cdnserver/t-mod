@@ -23,7 +23,9 @@ from modules.profile import (
     ProfileStatusView,
     TModAccountCharacterModal,
     TModAccountView,
+    TModBugReportModal,
     WebAccessModal,
+    _safe_component_emoji,
     _edit_profile_web_access,
     profile_embed,
     profile_settings_embed,
@@ -62,6 +64,20 @@ class ProfileStorageTests(unittest.TestCase):
 
         other_guild = storage.add_profile_character(11, 200, "Other Server", "00123")
         self.assertEqual(other_guild.static_id, "123")
+
+    def test_profile_component_emoji_normalizer_rejects_invalid_markup(self) -> None:
+        self.assertEqual(_safe_component_emoji("🌙"), "🌙")
+        self.assertEqual(
+            _safe_component_emoji("<:shield:123456789012345678>"),
+            "<:shield:123456789012345678>",
+        )
+        self.assertEqual(
+            _safe_component_emoji("<a:shield:123456789012345678>"),
+            "<a:shield:123456789012345678>",
+        )
+        self.assertIsNone(_safe_component_emoji("not-an-emoji"))
+        self.assertIsNone(_safe_component_emoji("<:broken>"))
+        self.assertIsNone(_safe_component_emoji("\u0000"))
 
     def test_update_delete_and_position_compaction(self) -> None:
         first = storage.add_profile_character(10, 100, "First Hero", "100")
@@ -667,11 +683,74 @@ class ProfileUiTests(unittest.TestCase):
         character = SimpleNamespace(id=7, nickname="Robert Test", static_id="321")
         view = TModAccountView(10, 20, [character], None)
         labels = {getattr(item, "label", None) for item in view.children}
-        self.assertEqual(labels, {"Добавить персонажа", "Персонажи", "Логин и PIN"})
+        self.assertEqual(
+            labels,
+            {"Добавить персонажа", "Персонажи", "Логин и PIN", "Баг-репорт"},
+        )
+        add_character = next(
+            item
+            for item in view.children
+            if getattr(item, "label", None) == "Добавить персонажа"
+        )
+        self.assertEqual(str(add_character.emoji), "➕")
         modal = TModAccountCharacterModal(10, 20, character)
         self.assertEqual(modal.character_id, 7)
         self.assertEqual(str(modal.nickname.default), "Robert Test")
         self.assertEqual(str(modal.static_id.default), "321")
+
+    def test_zero_account_can_configure_web_access_before_character(self) -> None:
+        view = TModAccountView(10, 20, [], None)
+        web_access = next(
+            item
+            for item in view.children
+            if getattr(item, "label", None) == "Логин и PIN"
+        )
+        self.assertFalse(web_access.disabled)
+
+    def test_bug_report_creates_durable_ticket_and_technical_thread(self) -> None:
+        async def verify() -> None:
+            modal = TModBugReportModal(10, 20)
+            modal.service._value = "Atlas"
+            modal.summary._value = "Не открывается ответ"
+            modal.details._value = "После отправки запроса окно остаётся пустым."
+            modal.steps._value = "Открыть Atlas и отправить вопрос."
+            thread = SimpleNamespace(send=AsyncMock())
+            message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+            channel = SimpleNamespace(send=AsyncMock(return_value=message))
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(id=20, mention="<@20>"),
+                client=SimpleNamespace(get_guild=lambda guild_id: object()),
+                response=SimpleNamespace(defer=AsyncMock()),
+                edit_original_response=AsyncMock(),
+            )
+            with (
+                patch(
+                    "modules.profile.capture_runtime_event",
+                    new=AsyncMock(return_value=True),
+                ) as capture,
+                patch(
+                    "modules.profile.resolve_registered_channel",
+                    new=AsyncMock(return_value=channel),
+                ),
+                patch("modules.profile.secrets.token_hex", return_value="abc123"),
+            ):
+                await modal.on_submit(interaction)
+
+            interaction.response.defer.assert_awaited_once_with(
+                ephemeral=True,
+                thinking=True,
+            )
+            capture.assert_awaited_once()
+            self.assertNotIn("Reporter:", capture.await_args.kwargs["details"])
+            channel.send.assert_awaited_once()
+            message.create_thread.assert_awaited_once()
+            thread.send.assert_awaited_once()
+            self.assertIn(
+                "тикет",
+                interaction.edit_original_response.await_args.kwargs["content"].lower(),
+            )
+
+        asyncio.run(verify())
 
     def test_reset_modal_creates_an_editable_ephemeral_response(self) -> None:
         class Response:
@@ -706,10 +785,6 @@ class ProfileUiTests(unittest.TestCase):
                 patch(
                     "modules.profile.web_auth_storage.get_web_credential",
                     return_value=None,
-                ),
-                patch(
-                    "modules.profile.storage.list_profile_characters",
-                    return_value=[SimpleNamespace(id=1)],
                 ),
             ):
                 await modal.on_submit(interaction)

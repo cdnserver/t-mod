@@ -255,7 +255,7 @@ def remember_activity(
             INSERT INTO activity_counters(guild_id, user_id, event_type, count, updated_at)
             VALUES(?, ?, ?, 1, ?)
             ON CONFLICT(guild_id, user_id, event_type) DO UPDATE SET
-                count = count + 1,
+                count = activity_counters.count + 1,
                 updated_at = excluded.updated_at
             """,
             (guild_id, user_id, event_type, now),

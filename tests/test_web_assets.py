@@ -82,6 +82,7 @@ class WebAssetContractTests(unittest.TestCase):
 
     def test_atlas_dom_contract_and_assets(self) -> None:
         html = (ATLAS_WEB / "index.html").read_text(encoding="utf-8")
+        install = (ATLAS_WEB / "install.html").read_text(encoding="utf-8")
         source = (ATLAS_WEB / "app.js").read_text(encoding="utf-8")
         id_values = re.findall(r'\bid=["\']([^"\']+)', html)
         ids = set(id_values)
@@ -94,16 +95,28 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertRegex(html, r'id="desktop-overlay-settings"[^>]*\bhidden\b')
         self.assertIn("TModDesktop", source)
         self.assertIn("https://tvr.lat/desktop/atlas-overlay-settings", source)
+        self.assertIn("Только T-Mod Desktop", install)
+        self.assertIn("https://www.virustotal.com/gui/home/upload", install)
+        self.assertIn("https://github.com/cdnserver/t-mod-releases/releases/latest", install)
+        self.assertTrue((ATLAS_WEB / "install.css").is_file())
 
     def test_sgl_case_os_redesign_contract(self) -> None:
         html = (SGL_WEB / "index.html").read_text(encoding="utf-8")
         styles = (SGL_WEB / "admin-v2.css").read_text(encoding="utf-8")
+        public_styles = (SGL_WEB / "site.css").read_text(encoding="utf-8")
+        public_script = (SGL_WEB / "site.js").read_text(encoding="utf-8")
         id_values = re.findall(r'\bid=["\']([^"\']+)', html)
 
         self.assertEqual(sorted(item for item in set(id_values) if id_values.count(item) > 1), [])
         self.assertIn("/sgl/assets/admin-v2.css?v=20260821-case-os-r16", html)
         self.assertIn('id="sgl-sidebar-toggle"', html)
         self.assertIn('id="sgl-sync-status"', html)
+        self.assertIn('id="sx-mobile-nav"', html)
+        self.assertIn('id="sx-mobile-nav" class="sx-mobile-nav" aria-label="Мобильное меню" aria-hidden="true"', html)
+        self.assertIn("/sgl/assets/fonts.css", html)
+        self.assertIn("Playfair Display", public_styles)
+        self.assertIn("z-index:55", public_styles)
+        self.assertIn('menu.setAttribute("aria-hidden"', public_script)
         self.assertNotIn("font-size: 9px", styles)
         self.assertNotIn("font-size: 8px", styles)
         self.assertNotIn("font-size: 7px", styles)

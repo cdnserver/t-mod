@@ -162,6 +162,11 @@ def _integrity_result(
 def check_live_database(*, full: bool = False) -> dict[str, Any]:
     """Check the live DB deliberately; never called by a hot request path."""
 
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import check_live_database as implementation
+
+        return implementation(full=full)
+
     config = database_guard_config()
     config.backup_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -189,6 +194,13 @@ def create_database_backup(
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Create, validate and atomically publish one consistent snapshot."""
+
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import create_database_backup as implementation
+
+        return implementation(
+            kind, note=note, now=now, timeout_seconds=timeout_seconds
+        )
 
     selected_kind = _validate_kind(kind)
     config = database_guard_config()
@@ -278,6 +290,11 @@ def ensure_startup_recovery_point(
 ) -> dict[str, Any]:
     """Reuse a fresh validated snapshot or create one with a hard time budget."""
 
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import ensure_startup_recovery_point as implementation
+
+        return implementation(note=note, now=now)
+
     current = (now or _utc_now()).astimezone(timezone.utc)
     reuse_minutes = _env_int(
         "TMOD_DB_STARTUP_REUSE_MINUTES",
@@ -319,6 +336,10 @@ def ensure_startup_recovery_point(
 
 
 def list_database_backups(*, limit: int = 50) -> list[dict[str, Any]]:
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import list_database_backups as implementation
+
+        return implementation(limit=limit)
     config = database_guard_config()
     if not config.backup_dir.exists():
         return []
@@ -343,6 +364,10 @@ def list_database_backups(*, limit: int = 50) -> list[dict[str, Any]]:
 
 @_serialized
 def prune_database_backups() -> dict[str, int]:
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import prune_database_backups as implementation
+
+        return implementation()
     config = database_guard_config()
     limits = {
         "hourly": config.hourly_retention,
@@ -372,6 +397,11 @@ def run_scheduled_database_protection(
     *, now: datetime | None = None
 ) -> dict[str, Any]:
     """Create due hourly/daily snapshots and periodically validate the source."""
+
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import run_scheduled_database_protection as implementation
+
+        return implementation(now=now)
 
     current = (now or _utc_now()).astimezone(timezone.utc)
     backups = list_database_backups(limit=200)
@@ -410,6 +440,10 @@ def run_scheduled_database_protection(
 
 
 def database_protection_snapshot() -> dict[str, Any]:
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import database_protection_snapshot as implementation
+
+        return implementation()
     config = database_guard_config()
     backups = list_database_backups(limit=50)
     state = _read_json(_state_path(config))
@@ -459,6 +493,11 @@ def database_protection_snapshot() -> dict[str, Any]:
 @_serialized
 def restore_database_backup(path: str | Path, *, offline_confirmed: bool = False) -> dict[str, Any]:
     """Restore a validated snapshot.  Caller must stop the bot first."""
+
+    if _core.postgres_enabled():
+        from persistence.postgres_guard import restore_database_backup as implementation
+
+        return implementation(path, offline_confirmed=offline_confirmed)
 
     if not offline_confirmed:
         raise PermissionError("database_restore_requires_offline_confirmation")

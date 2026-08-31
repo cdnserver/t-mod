@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseAtlasOverlayForegroundProbe,
+  resolveAtlasOverlayDisplayArea,
   resolveAtlasOverlayForegroundGame,
 } from "../src/main/atlas-overlay-foreground";
 
@@ -70,5 +71,43 @@ describe("Atlas Overlay foreground guard", () => {
       workArea: { x: 0, y: 0, width: 1920, height: 1080 },
     }));
     expect(resolveAtlasOverlayForegroundGame(missingProcess)).toBeUndefined();
+  });
+
+  it("accepts current Enhanced, BattlEye and Majestic launcher process variants", () => {
+    for (const processName of [
+      "GTA5_Enhanced_BE.exe",
+      "GTA5_BE.exe",
+      "RAGEMP_launcher.exe",
+      "MajesticLauncher.exe",
+    ]) {
+      const probe = parseAtlasOverlayForegroundProbe(JSON.stringify({
+        available: true,
+        title: "Majestic RP",
+        processName,
+        processId: 4040,
+        visible: true,
+        minimized: false,
+        workArea: { x: 0, y: 0, width: 2560, height: 1440 },
+      }));
+      expect(resolveAtlasOverlayForegroundGame(probe), processName).toBeDefined();
+    }
+  });
+
+  it("maps a native monitor rectangle onto Electron DPI coordinates", () => {
+    expect(resolveAtlasOverlayDisplayArea(
+      { x: 0, y: 0, width: 2560, height: 1440 },
+      [
+        { x: 0, y: 0, width: 1707, height: 920 },
+        { x: 1707, y: 0, width: 1920, height: 1040 },
+      ],
+    )).toEqual({ x: 0, y: 0, width: 1707, height: 920 });
+
+    expect(resolveAtlasOverlayDisplayArea(
+      { x: 2560, y: 0, width: 1920, height: 1080 },
+      [
+        { x: 0, y: 0, width: 2560, height: 1400 },
+        { x: 2560, y: 0, width: 1920, height: 1040 },
+      ],
+    )).toEqual({ x: 2560, y: 0, width: 1920, height: 1040 });
   });
 });

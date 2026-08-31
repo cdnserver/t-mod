@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import secrets
 import traceback
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -16,6 +19,8 @@ from persistence import profile_context as storage
 from persistence import web_auth_repository as web_auth_storage
 from persistence import voice_control_context as voice_storage
 from modules.technical_log import log_technical_event
+from modules.control_center_runtime import resolve_registered_channel
+from modules.error_inbox import capture_runtime_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
 from modules.voice_control_service import VoiceDiagnosticResult, get_voice_control
 from modules.profile_voice import ProfileMicrophoneView, profile_microphone_embed
@@ -91,11 +96,51 @@ PROFILE_ERROR_MESSAGES = {
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
 MEMBER_ONBOARDING_REMINDER_SECONDS = 24 * 60 * 60
 MEMBER_ONBOARDING_WORKER_SECONDS = 60 * 60
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:[A-Za-z0-9_~]{1,32}:\d{15,25}>$")
 
 
 def _clean_display(value: Any, *, fallback: str = "Не указано") -> str:
     text = " ".join(str(value or "").strip().split())
     return discord.utils.escape_markdown(text) if text else fallback
+
+
+def _safe_component_emoji(value: Any, fallback: str | None = None) -> str | None:
+    """Return an emoji Discord can serialize, or omit it safely.
+
+    Profile menus contain a few values assembled dynamically (select options,
+    preference buttons and persisted profile data). Discord rejects malformed
+    custom-emoji markup with HTTP 400 ``Invalid emoji``. Keep valid Unicode and
+    Discord custom emoji, while dropping arbitrary/control text before a
+    component can reach the API.
+    """
+
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if not text:
+        return fallback
+    if text.startswith("<"):
+        return text if _CUSTOM_EMOJI_RE.fullmatch(text) else fallback
+    if len(text) > 8:
+        return fallback
+    for character in text:
+        category = unicodedata.category(character)
+        if category.startswith("C") and character not in ("\ufe0f", "\u200d"):
+            return fallback
+    # Plain words/punctuation are not Unicode emoji and produce Invalid emoji.
+    if all(unicodedata.category(character)[0] in {"L", "N", "P", "Z"} for character in text):
+        return fallback
+    return text
+
+
+def _normalize_profile_component(item: discord.ui.Item[Any]) -> None:
+    """Sanitize a profile button/select and all of its select options."""
+
+    if hasattr(item, "emoji"):
+        item.emoji = _safe_component_emoji(getattr(item, "emoji", None))
+    if isinstance(item, discord.ui.Select):
+        for option in item.options:
+            option.emoji = _safe_component_emoji(option.emoji)
 
 
 def _discord_time(value: datetime | str | None, style: str = "R") -> str:
@@ -837,6 +882,13 @@ class ProfileBaseView(discord.ui.View):
     def __init__(self, requester_id: int) -> None:
         super().__init__(timeout=PROFILE_TIMEOUT_SECONDS)
         self.requester_id = int(requester_id)
+        for item in self.children:
+            _normalize_profile_component(item)
+
+    def add_item(self, item: discord.ui.Item[Any]) -> "ProfileBaseView":
+        _normalize_profile_component(item)
+        super().add_item(item)
+        return self
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
@@ -903,17 +955,6 @@ class WebAccessModal(ProfileModal, title="Веб-доступ T-Mod"):
         if str(self.pin.value) != str(self.pin_repeat.value):
             await interaction.response.send_message(
                 PROFILE_ERROR_MESSAGES["web_pin_mismatch"],
-                ephemeral=True,
-            )
-            return
-        characters = await asyncio.to_thread(
-            storage.list_profile_characters,
-            self.member.guild.id,
-            self.member.id,
-        )
-        if not characters:
-            await interaction.response.send_message(
-                "Сначала добавьте хотя бы одного персонажа через `/account`.",
                 ephemeral=True,
             )
             return
@@ -1056,13 +1097,13 @@ def _tmod_account_embed(
     characters: list[Any],
     credential: Any | None,
 ) -> discord.Embed:
-    active = bool(characters and credential)
+    active = bool(credential)
     embed = discord.Embed(
         title="T-Mod Account",
         description=(
             "Единая учётная запись активна. Она узнаёт вас в сервисах T-Mod."
             if active
-            else "Создайте персонажа, затем задайте логин и восьмизначный PIN."
+            else "Задайте логин и восьмизначный PIN. Персонажа можно добавить до подачи заявок в сервисах."
         ),
         color=0x57F2C8 if active else 0x5865F2,
     )
@@ -1191,12 +1232,6 @@ class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"
             return
         if str(self.pin.value) != str(self.pin_repeat.value):
             await interaction.response.send_message(PROFILE_ERROR_MESSAGES["web_pin_mismatch"], ephemeral=True)
-            return
-        characters = await asyncio.to_thread(
-            storage.list_profile_characters, self.guild_id, self.requester_id
-        )
-        if not characters:
-            await interaction.response.send_message("Сначала добавьте хотя бы одного персонажа.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1333,6 +1368,128 @@ class TModAccountCharacterDetailView(ProfileBaseView):
         )
 
 
+class TModBugReportModal(ProfileModal, title="Баг-репорт T-Mod"):
+    service = discord.ui.TextInput(
+        label="Где возникла проблема",
+        placeholder="Например: Atlas, Reactor, Consensus, Discord",
+        min_length=2,
+        max_length=80,
+    )
+    summary = discord.ui.TextInput(
+        label="Кратко",
+        placeholder="Что именно не работает?",
+        min_length=5,
+        max_length=120,
+    )
+    details = discord.ui.TextInput(
+        label="Что произошло",
+        placeholder="Ожидание и результат — без PIN, токенов и личных данных",
+        style=discord.TextStyle.paragraph,
+        min_length=15,
+        max_length=1800,
+    )
+    steps = discord.ui.TextInput(
+        label="Как повторить — если известно",
+        placeholder="Последовательность действий, устройство или браузер",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=800,
+    )
+
+    def __init__(self, guild_id: int, requester_id: int) -> None:
+        super().__init__(timeout=600)
+        self.guild_id = int(guild_id)
+        self.requester_id = int(requester_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message(
+                "Этот баг-репорт открыт для другого пользователя.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.edit_original_response(
+                content="Сервер Товарищества сейчас недоступен. Попробуйте ещё раз позже."
+            )
+            return
+        ticket_id = (
+            datetime.now(timezone.utc).strftime("%y%m%d")
+            + "-"
+            + secrets.token_hex(3).upper()
+        )
+        service = str(self.service.value).strip()
+        summary = str(self.summary.value).strip()
+        details = str(self.details.value).strip()
+        steps = str(self.steps.value).strip()
+        report = (
+            f"Ticket: {ticket_id}\n"
+            f"Service: {service}\n"
+            f"Summary: {summary}\n"
+            f"Details: {details}\n"
+            f"Steps: {steps or 'Не указаны'}"
+        )
+        await capture_runtime_event(
+            title=f"Пользовательский баг-репорт: {summary}",
+            details=report,
+            component=f"user-report.{service.lower()[:48] or 'tmod'}",
+            level="error",
+            fingerprint_hint=f"manual-bug:{ticket_id}",
+        )
+        channel = await resolve_registered_channel(guild, "tech_log")
+        if channel is None or not callable(getattr(channel, "send", None)):
+            await interaction.edit_original_response(
+                content=(
+                    f"Тикет `{ticket_id}` сохранён, но технический канал временно "
+                    "недоступен. Повторно отправлять отчёт не нужно."
+                )
+            )
+            return
+        embed = discord.Embed(
+            title=f"🪲 Баг-репорт · {ticket_id}",
+            description=details[:3900],
+            color=0xF0B232,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Сервис", value=service[:1024], inline=True)
+        embed.add_field(
+            name="Автор",
+            value=f"{interaction.user.mention}\n`{interaction.user.id}`",
+            inline=True,
+        )
+        embed.add_field(name="Кратко", value=summary[:1024], inline=False)
+        embed.add_field(
+            name="Как повторить",
+            value=(steps or "Не указано")[:1024],
+            inline=False,
+        )
+        embed.set_footer(text="T-Mod Technologies · пользовательский тикет")
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        create_thread = getattr(message, "create_thread", None)
+        if callable(create_thread):
+            try:
+                thread = await create_thread(
+                    name=f"bug-{ticket_id.lower()} · {summary[:55]}"
+                )
+                await thread.send(
+                    "Тикет открыт. Здесь можно фиксировать диагностику, решение и выпуск исправления.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.DiscordException:
+                pass
+        await interaction.edit_original_response(
+            content=(
+                f"Готово — тикет `{ticket_id}` создан и передан Технологиям "
+                "Товарищества. Не отправляйте PIN, токены и пароли в дополнениях."
+            )
+        )
+
+
 class TModAccountView(ProfileBaseView):
     def __init__(
         self,
@@ -1350,7 +1507,7 @@ class TModAccountView(ProfileBaseView):
         self.credential = credential
         self.add_character.disabled = len(characters) >= storage.PROFILE_MAX_CHARACTERS
         self.manage_characters.disabled = not bool(characters)
-        self.web_access.disabled = not bool(characters)
+        self.web_access.disabled = False
         if fellowship_member:
             from modules.consensus_web import consensus_web_entry_url
 
@@ -1372,7 +1529,7 @@ class TModAccountView(ProfileBaseView):
                 )
             )
 
-    @discord.ui.button(label="Добавить персонажа", emoji="＋", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Добавить персонажа", emoji="➕", style=discord.ButtonStyle.primary)
     async def add_character(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(TModAccountCharacterModal(self.guild_id, self.requester_id))
 
@@ -1391,6 +1548,12 @@ class TModAccountView(ProfileBaseView):
     async def web_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(
             TModAccountCredentialModal(self.guild_id, self.requester_id, self.credential)
+        )
+
+    @discord.ui.button(label="Баг-репорт", emoji="🪲", style=discord.ButtonStyle.secondary, row=1)
+    async def bug_report(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            TModBugReportModal(self.guild_id, self.requester_id)
         )
 
 
@@ -1523,7 +1686,7 @@ class ProfileStatusSelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=description,
                 default=key == current_status,
             )
@@ -1576,7 +1739,7 @@ class ProfileVisibilitySelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=description,
                 default=key == current,
             )
@@ -1602,7 +1765,7 @@ class ProfileThemeSelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=f"Цвет карточки: {label.lower()}",
                 default=key == current,
             )
@@ -1675,7 +1838,7 @@ class ProfilePreferenceToggle(discord.ui.Button):
     ) -> None:
         super().__init__(
             label=label,
-            emoji=emoji,
+            emoji=_safe_component_emoji(emoji),
             style=discord.ButtonStyle.success if current else discord.ButtonStyle.secondary,
             row=row,
         )
@@ -2050,7 +2213,7 @@ class CharacterDetailView(ProfileBaseView):
         self.character = character
         is_public = bool(getattr(character, "is_public", True))
         self.visibility.label = "Скрыть" if is_public else "Показывать"
-        self.visibility.emoji = "🔒" if is_public else "🌐"
+        self.visibility.emoji = _safe_component_emoji("🔒" if is_public else "🌐")
 
     @discord.ui.button(label="Изменить", emoji="✏️", style=discord.ButtonStyle.primary)
     async def edit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -2512,6 +2675,7 @@ __all__ = [
     "ProfileStatusView",
     "ProfileWebAccessView",
     "StatusNoteModal",
+    "TModBugReportModal",
     "WebAccessModal",
     "TModAccountView",
     "character_embed",

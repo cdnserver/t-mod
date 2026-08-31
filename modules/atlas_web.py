@@ -30,7 +30,6 @@ from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
 from modules.atlas_forum_sync import (
-    AtlasForumManualActionRequired,
     AtlasForumSyncError,
     AtlasForumSyncRunner,
 )
@@ -49,7 +48,12 @@ from modules.atlas_media import (
     atlas_media_scan,
 )
 from modules.atlas_tts import AtlasTTSResult, AtlasTTSService
-from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.consensus_web_auth import (
+    ConsensusWebPrincipal,
+    csrf_matches,
+    has_trusted_forwarded_host,
+    request_public_host,
+)
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
@@ -82,6 +86,18 @@ _ATLAS_OVERLAY_AUDIO_TYPES = {
     "audio/x-wav",
     "application/octet-stream",
 }
+
+
+def _is_tmod_desktop_request(request: web.Request) -> bool:
+    """Recognise the product shell without treating it as authentication.
+
+    Account, grants and CSRF remain authoritative.  This marker only keeps the
+    browser product surface closed while allowing the signed-in Desktop shell.
+    """
+
+    user_agent = str(request.headers.get("User-Agent") or "").lower()
+    version = str(request.headers.get("X-TMod-Desktop-Version") or "").strip()
+    return "tmoddesktop/" in user_agent or bool(version)
 
 
 async def _decode_overlay_audio(audio: bytes) -> bytes:
@@ -195,12 +211,16 @@ def register_atlas_web_routes(
     # preventing a voice burst from exhausting worker threads/OpenRouter.
     overlay_transcription_slots = asyncio.Semaphore(3)
 
-    async def atlas_index(_: web.Request) -> web.FileResponse:
-        return web.FileResponse(asset_dir / "index.html")
+    async def atlas_index(request: web.Request) -> web.FileResponse:
+        page = "index.html" if _is_tmod_desktop_request(request) else "install.html"
+        response = web.FileResponse(asset_dir / page)
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Vary"] = "User-Agent, X-TMod-Desktop-Version"
+        return response
 
     async def atlas_asset(request: web.Request) -> web.FileResponse:
         name = str(request.match_info.get("name") or "")
-        if name not in {"app.js", "style.css", "favicon.svg"}:
+        if name not in {"app.js", "style.css", "install.css", "favicon.svg"}:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
@@ -220,6 +240,42 @@ def register_atlas_web_routes(
                 content_type="application/json",
             )
         return selected
+
+    def require_desktop_client(request: web.Request) -> None:
+        host = request_public_host(request).partition(":")[0].lower()
+        # Local/internal calls remain available for diagnostics and automated
+        # tests.  The product restriction is enforced on the public contour.
+        # A request carrying the gateway marker is a public request even when
+        # the upstream Host is an internal Docker name.  Unknown forwarded
+        # hosts are denied as well, rather than accidentally bypassing the
+        # desktop-only policy.
+        public_request = has_trusted_forwarded_host(request)
+        if public_request and host != "atlas.tvr.lat":
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "atlas_canonical_host_required",
+                        "message": "Откройте Atlas на официальном домене.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        if _is_tmod_desktop_request(request):
+            return
+        if host != "atlas.tvr.lat":
+            return
+        raise web.HTTPForbidden(
+            text=json.dumps(
+                {
+                    "error": "atlas_desktop_required",
+                    "message": "Atlas AI доступен в приложении T-Mod Desktop.",
+                    "desktop_url": "https://github.com/cdnserver/t-mod-releases/releases/latest",
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json",
+        )
 
     async def body(request: web.Request, selected: ConsensusWebPrincipal) -> dict[str, Any]:
         if not csrf_matches(request, selected):
@@ -361,11 +417,13 @@ def register_atlas_web_routes(
         }
 
     async def bootstrap(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         payload = await dashboard_for(request, selected)
         return web.json_response(payload)
 
     async def overlay_context_get(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         context = await asyncio.to_thread(
@@ -400,6 +458,7 @@ def register_atlas_web_routes(
         return response
 
     async def overlay_context_set(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         payload = await body(request, selected)
@@ -429,6 +488,7 @@ def register_atlas_web_routes(
         return web.json_response({"ok": True, **context})
 
     async def overlay_transcribe(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if not csrf_matches(request, selected):
@@ -566,6 +626,7 @@ def register_atlas_web_routes(
         )
 
     async def overlay_tts_voices(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         response = web.json_response(overlay_tts.voices_payload())
@@ -573,6 +634,7 @@ def register_atlas_web_routes(
         return response
 
     async def overlay_tts_preview(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if (
@@ -594,6 +656,7 @@ def register_atlas_web_routes(
         return tts_response(result)
 
     async def overlay_tts_synthesize(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         if (
@@ -709,6 +772,7 @@ def register_atlas_web_routes(
         return key, saved[1] if saved else None
 
     async def threads(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         dashboard = await user_dashboard(request, selected)
@@ -737,6 +801,7 @@ def register_atlas_web_routes(
         return web.json_response(result)
 
     async def chat(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         reject_oversized_chat(request)
@@ -944,6 +1009,7 @@ def register_atlas_web_routes(
         return web.json_response(response)
 
     async def chat_stream(request: web.Request) -> web.StreamResponse | web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         reject_oversized_chat(request)
@@ -1460,6 +1526,7 @@ def register_atlas_web_routes(
         return web.json_response({"link": link}, status=201)
 
     async def message_feedback(request: web.Request) -> web.Response:
+        require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
         payload = await body(request, selected)
@@ -1654,7 +1721,7 @@ def register_atlas_web_routes(
             return
         async with index_lock:
             probe = await atlas_probe_collection()
-            reset = force_reset or probe["status"] == "corrupted"
+            reset = force_reset or probe["status"] in {"corrupted", "stale"}
             if reset:
                 await atlas_reset_collection()
             indexed_count = sum(item.get("status") == "indexed" for item in sources)
@@ -1831,7 +1898,79 @@ def register_atlas_web_routes(
             )
             raise
 
+    async def run_forum_thread_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Read one forum topic without holding an HTTP request open."""
+
+        payload = dict(job.get("payload") or {})
+        source_url = str(payload.get("source_url") or "").strip()
+        organization_id = int(job["organization_id"])
+        actor_user_id = int(job.get("created_by_id") or 0)
+        if forum_sync_runner is None:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        try:
+            await report({"percent": 8, "stage": "opening_forum"})
+            snapshot = await forum_sync_runner.fetch_thread(source_url)
+            await report({"percent": 62, "stage": "saving_topic"})
+            source = await asyncio.to_thread(
+                storage.atlas_add_knowledge,
+                organization_id,
+                actor_user_id,
+                title=snapshot.title,
+                content=snapshot.content,
+                source_kind="forum",
+                source_url=snapshot.url,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+                visibility_scope=str(payload.get("visibility_scope") or "server"),
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                metadata={
+                    "author": snapshot.author,
+                    "source_updated_at": snapshot.source_updated_at,
+                    "import_mode": "authenticated_forum_thread",
+                },
+            )
+            index_job = await queue_knowledge_index(source)
+            taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+            await report({"percent": 92, "stage": "index_queued"})
+            await asyncio.to_thread(
+                storage.atlas_record_event,
+                organization_id,
+                actor_user_id,
+                "forum_thread_imported",
+                f"Atlas прочитал тему форума: {snapshot.title}",
+                target_type="knowledge_source",
+                target_id=int(source["id"]),
+                details={"source_url": snapshot.url, "taxonomy": taxonomy},
+            )
+            return {
+                "source_id": int(source["id"]),
+                "title": str(source.get("title") or snapshot.title),
+                "taxonomy": taxonomy,
+                "index_job_id": int(index_job["id"]),
+            }
+        except Exception as exc:
+            await atlas_log(
+                "не удалось прочитать тему форума",
+                (
+                    f"Ссылка: `{source_url[:800]}`\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
+                    "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
+                ),
+                level="warning",
+                exception=exc,
+                dedupe_key=(
+                    "atlas-forum-thread-error:"
+                    + hashlib.sha256(source_url.casefold().encode("utf-8")).hexdigest()[:20]
+                ),
+            )
+            raise
+
     job_worker.register("atlas.forum.listing.v1", run_forum_listing_job)
+    job_worker.register("atlas.forum.thread.v1", run_forum_thread_job)
 
     async def queue_forum_listing_import(
         *,
@@ -1868,6 +2007,45 @@ def register_atlas_web_routes(
                 "corpus_kind": corpus_kind,
             },
             subject_type="forum_listing",
+            subject_id=source_url,
+            max_attempts=4,
+        )
+        job_worker.wake()
+        return queued
+
+    async def queue_forum_thread_import(
+        *,
+        source_url: str,
+        organization_id: int,
+        actor_user_id: int,
+        server_code: str,
+        faction_code: str,
+        visibility_scope: str,
+        knowledge_domain: str | None,
+        corpus_kind: str | None,
+        request_key: str | None = None,
+    ) -> dict[str, Any]:
+        request_fingerprint = hashlib.sha256(
+            str(request_key or f"{actor_user_id}:{time.time_ns()}").encode("utf-8")
+        ).hexdigest()[:20]
+        source_fingerprint = hashlib.sha256(
+            source_url.strip().casefold().encode("utf-8")
+        ).hexdigest()[:20]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(organization_id),
+            int(actor_user_id),
+            job_type="atlas.forum.thread.v1",
+            dedupe_key=f"{source_fingerprint}:{request_fingerprint}",
+            payload={
+                "source_url": source_url,
+                "server_code": server_code,
+                "faction_code": faction_code,
+                "visibility_scope": visibility_scope,
+                "knowledge_domain": knowledge_domain,
+                "corpus_kind": corpus_kind,
+            },
+            subject_type="forum_thread",
             subject_id=source_url,
             max_attempts=4,
         )
@@ -2598,62 +2776,34 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
-            snapshot = await forum_sync_runner.fetch_thread(source_url)
             dashboard = await user_dashboard(request, selected)
-            source = await asyncio.to_thread(
-                storage.atlas_add_knowledge,
-                int(dashboard["organization"]["id"]),
-                int(selected.user_id),
-                title=snapshot.title,
-                content=snapshot.content,
-                source_kind="forum",
-                source_url=snapshot.url,
-                server_code=server_code,
-                faction_code=faction_code,
-                visibility_scope=visibility_scope,
-                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
-                corpus_kind=str(payload.get("corpus_kind") or "") or None,
-                metadata={
-                    "author": snapshot.author,
-                    "source_updated_at": snapshot.source_updated_at,
-                    "import_mode": "authenticated_forum_thread",
-                },
-            )
-        except (AtlasForumSyncError, TypeError, ValueError) as exc:
-            code = str(exc)
-            if isinstance(exc, AtlasForumManualActionRequired):
-                message = (
-                    f"{code} Откройте живой Chromium на домашнем сервере, завершите вход "
-                    "и повторите импорт."
-                )
-            elif "thread_body_missing" in code or "content_too_short" in code:
-                message = (
-                    "Страница открылась, но Atlas не нашёл в ней текст первого сообщения. "
-                    "Проверьте, что это ссылка на тему и аккаунт видит её содержимое."
-                )
-            elif "browser_unavailable" in code or "page_failed" in code:
-                message = "Chromium Atlas не смог открыть страницу. Повторите через несколько секунд."
-            elif "url_invalid" in code:
-                message = "Нужна ссылка Majestic Forum на тему /threads/... или раздел /forums/... ."
-            else:
-                message = f"Не удалось прочитать тему: {code[:300]}"
+        except (TypeError, ValueError) as exc:
             return web.json_response(
                 {
-                    "error": code,
-                    "message": message,
-                    "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                    "error": str(exc),
+                    "message": "Проверьте сервер, организацию и доступ материала.",
                 },
                 status=400,
             )
-        queued_job = await queue_knowledge_index(source)
-        taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+        queued_job = await queue_forum_thread_import(
+            source_url=source_url,
+            organization_id=int(dashboard["organization"]["id"]),
+            actor_user_id=int(selected.user_id),
+            server_code=server_code,
+            faction_code=faction_code,
+            visibility_scope=visibility_scope,
+            knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+            corpus_kind=str(payload.get("corpus_kind") or "") or None,
+            request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
+        )
         return web.json_response(
             {
-                "source": source,
                 "job": queued_job,
-                "taxonomy": taxonomy,
                 "queued": True,
-                "message": "Тема прочитана, классифицирована и добавлена в библиотеку.",
+                "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                "message": (
+                    "Тема принята. Atlas прочитает её в фоне, классифицирует и добавит в поиск."
+                ),
             },
             status=202,
         )

@@ -93,7 +93,8 @@ class ConsensusSimulationTests(unittest.TestCase):
         self.assertEqual(result.resolution_method, "oral")
         self.assertEqual(simulation.session.stage, "after_result")
         event_types = [event["event_type"] for event in simulation.repository.events]
-        self.assertIn("veto_claimed", event_types)
+        self.assertIn("oral_result_claimed", event_types)
+        self.assertNotIn("veto_claimed", event_types)
         self.assertIn("oral_result_recorded", event_types)
 
     def test_veto_is_isolated_and_terminal_for_only_current_fake_bill(self) -> None:

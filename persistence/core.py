@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from persistence.postgres_compat import connect_postgres, postgres_enabled
+
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/persistent/data"))
 DATABASE_FILE = Path(os.getenv("DATABASE_FILE", str(DATA_DIR / "tmod.db")))
@@ -301,6 +303,8 @@ def utc_now_iso() -> str:
 
 
 def connect() -> sqlite3.Connection:
+    if postgres_enabled():
+        return connect_postgres()  # type: ignore[return-value]
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DATABASE_FILE, timeout=30)
@@ -326,6 +330,14 @@ def connect_readonly() -> Iterator[sqlite3.Connection]:
     query stall every Reactor request.  ``query_only`` also makes accidental
     writes from a projection fail immediately.
     """
+
+    if postgres_enabled():
+        con = connect_postgres(readonly=True)
+        try:
+            yield con  # type: ignore[misc]
+        finally:
+            con.close()
+        return
 
     con = sqlite3.connect(DATABASE_FILE, timeout=3)
     con.row_factory = sqlite3.Row
@@ -417,4 +429,4 @@ def _tvrs_bill_from_row(row: sqlite3.Row | None) -> TVRSBill | None:
         updated_at=str(row["updated_at"]),
     )
 
-__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'MemberProfile', 'ProfileCharacter', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', 'connect_readonly', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row']
+__all__ = ['DATA_DIR', 'DATABASE_FILE', 'LEGACY_ACTIVITY_FILE', 'CONSENSUS_V2_RESET_ID', 'CONSENSUS_RESULT_DEDUP_ID', '_db_lock', 'ActivitySummary', 'ActivityEvent', 'MemberProfile', 'ProfileCharacter', 'SGLReceipt', 'SGLCase', 'SGLCaseArchive', 'SGLArchiveMessage', 'SGLArchiveRestoration', 'ClientProfile', 'LawyerProfile', 'TVRSBill', 'utc_now_iso', 'connect', 'connect_readonly', '_table_columns', '_add_column_if_missing', '_client_profile_from_row', '_lawyer_profile_from_row', '_tvrs_bill_from_row', 'postgres_enabled']

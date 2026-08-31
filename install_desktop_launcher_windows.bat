@@ -1,22 +1,19 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-title Install T-Mod Desktop Launcher
+title Install T-Mod Control Center
 chcp 65001 >nul
 
-set "SOURCE_FILE=%~dp0start_tmod_windows.bat"
-for %%D in ("%~dp0..") do set "DESKTOP_DIR=%%~fD"
-set "TARGET_FILE=%DESKTOP_DIR%\Start T-Mod.bat"
+set "INSTALLER=%~dp0install_tmod_control_windows.ps1"
 
 echo.
 echo ============================================================
-echo   T-Mod Desktop Launcher Installer
+echo   T-Mod Control Center / Native EXE
 echo ============================================================
 echo.
 
-if not exist "%SOURCE_FILE%" goto source_missing
-
-copy /y "%SOURCE_FILE%" "%TARGET_FILE%" >nul
+if not exist "%INSTALLER%" goto source_missing
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER%" -ProjectDir "%~dp0"
 if errorlevel 1 goto copy_failed
 
 if exist "%~dp0configure_auto_update_windows.ps1" (
@@ -24,24 +21,22 @@ if exist "%~dp0configure_auto_update_windows.ps1" (
   if errorlevel 1 echo [WARN] Automatic update watcher will be installed by the next T-Mod start.
 )
 
-echo [OK] Desktop launcher installed:
-echo      %TARGET_FILE%
+echo [OK] Native Control Center installed on the Desktop.
 echo.
-echo Double-click "Start T-Mod.bat" on the Desktop to update and
-echo start the bot. The project folder must be named "esgiel".
-echo Future commits from origin/main will be installed automatically.
+echo Open "T-Mod Control.exe" on the Desktop. Use arrow keys to
+echo update, start, diagnose and manage individual services.
+echo Safe automatic updates from origin/main remain enabled.
 echo.
 pause
 exit /b 0
 
 :source_missing
-echo [FAIL] Source launcher was not found:
-echo        %SOURCE_FILE%
+echo [FAIL] Native installer was not found:
+echo        %INSTALLER%
 goto failed
 
 :copy_failed
-echo [FAIL] Could not create:
-echo        %TARGET_FILE%
+echo [FAIL] Could not install T-Mod Control.exe.
 
 :failed
 echo.

@@ -1,6 +1,14 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+rem Always resolve relative paths from the checked-out project, even when
+rem started from a shortcut, Task Scheduler, or another current directory.
+cd /d "%~dp0"
+if errorlevel 1 (
+  echo [FAIL] Could not enter the T-Mod project directory: %~dp0
+  exit /b 1
+)
+
 if not defined TMOD_SKIP_BUILD set TMOD_SKIP_BUILD=0
 if not defined TMOD_NONINTERACTIVE set TMOD_NONINTERACTIVE=0
 if not defined TMOD_TRANSACTIONAL_UPDATE set TMOD_TRANSACTIONAL_UPDATE=0
@@ -8,7 +16,8 @@ if not defined TMOD_TRANSACTIONAL_UPDATE set TMOD_TRANSACTIONAL_UPDATE=0
 title T-Mod Boot Console
 chcp 65001 >nul
 
-set PERSISTENT_DIR=C:\Users\Admin\Documents\SGLDiscordBot
+if not defined TMOD_PERSISTENT_DIR set "TMOD_PERSISTENT_DIR=%USERPROFILE%\Documents\SGLDiscordBot"
+set "PERSISTENT_DIR=%TMOD_PERSISTENT_DIR%"
 set "COMPOSE_ENV_FILES=%PERSISTENT_DIR%\.env"
 set DATA_DIR=%PERSISTENT_DIR%\data
 set BACKUP_DIR=%PERSISTENT_DIR%\backups
@@ -19,6 +28,7 @@ set MINECRAFT_DIR=%PERSISTENT_DIR%\minecraft
 set SECRETS_DIR=%PERSISTENT_DIR%\secrets
 set MINECRAFT_RCON_SECRET=%SECRETS_DIR%\minecraft-rcon-password.txt
 set MINECRAFT_SUPERVISOR_SECRET=%SECRETS_DIR%\minecraft-supervisor-token.txt
+set POSTGRES_SECRET=%SECRETS_DIR%\postgres-password.txt
 set MINECRAFT_SECRETS_MARKER=%TEMP%\tmod-minecraft-secrets-changed.flag
 set MINECRAFT_SECRETS_CHANGED=0
 set DOCKER_DESKTOP_EXE=C:\Program Files\Docker\Docker\Docker Desktop.exe
@@ -43,11 +53,18 @@ if errorlevel 1 (
 )
 if exist "%MINECRAFT_SECRETS_MARKER%" set MINECRAFT_SECRETS_CHANGED=1
 call :ok "Minecraft control secrets verified outside Git"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0ensure_postgres_secret_windows.ps1" -SecretPath "%POSTGRES_SECRET%"
+if errorlevel 1 (
+  call :fail "Failed to verify PostgreSQL secret"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :ok "PostgreSQL secret verified outside Git"
 call :ok "Storage path: %PERSISTENT_DIR%"
 
 call :stage "02" "Environment"
 if not exist "%PERSISTENT_DIR%\.env" (
-  copy ".env.persistent.example" "%PERSISTENT_DIR%\.env" >nul
+  copy "%~dp0.env.persistent.example" "%PERSISTENT_DIR%\.env" >nul
   call :warn "Created %PERSISTENT_DIR%\.env"
   call :warn "Put your Discord token into this file, then run this bat again."
   echo.
@@ -85,7 +102,7 @@ call :ok "Minecraft port ready"
 
 call :stage "05" "Localization"
 if not exist "%PERSISTENT_DIR%\localization.json" (
-  copy "localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
+  copy "%~dp0localization.example.json" "%PERSISTENT_DIR%\localization.json" >nul
   call :ok "localization.json created"
 ) else (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0merge_localization_windows.ps1" -ExamplePath "%~dp0localization.example.json" -TargetPath "%PERSISTENT_DIR%\localization.json" -BackupDir "%BACKUP_DIR%"
@@ -106,7 +123,10 @@ call :module "SGL Audio"
 call :module "T-Mod Music"
 call :module "Zigmund AI"
 call :module "SGL Contracts"
-call :module "SQLite Migrator"
+call :module "PostgreSQL 17"
+call :module "SQLite to PostgreSQL Migrator"
+call :module "T-Mod Web Gateway"
+call :module "T-Mod Maintenance Worker"
 call :module "Minecraft Paper 26.1.2-74"
 call :module "Minecraft Lifecycle Supervisor"
 
@@ -143,6 +163,49 @@ if "%TMOD_SKIP_BUILD%"=="1" (
 )
 
 call :stage "10" "Starting T-Mod and Minecraft"
+rem Start the database first and detect the one-time SQLite import.  The old
+rem Discord container must be stopped before the importer opens SQLite, or a
+rem message arriving during COPY could exist only in the legacy database.
+docker compose up -d tmod-postgres
+if errorlevel 1 (
+  call :fail "PostgreSQL startup failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+set POSTGRES_READY=0
+for /l %%i in (1,1,60) do (
+  docker inspect --format "{{.State.Health.Status}}" tmod-postgres 2>nul | findstr /I /X /C:"healthy" >nul
+  if not errorlevel 1 (
+    set POSTGRES_READY=1
+    goto :postgres_ready
+  )
+  timeout /t 2 /nobreak >nul
+)
+:postgres_ready
+if not "%POSTGRES_READY%"=="1" (
+  call :fail "PostgreSQL did not become healthy within 120 seconds"
+  docker logs --tail 100 tmod-postgres
+  call :pause_if_interactive
+  exit /b 1
+)
+rem Verify the application-side secret path through the effective Compose
+rem configuration. This catches stale or missing Docker Desktop bind mounts
+rem before Python starts and emits a clear boot-stage failure.
+docker compose run --rm --no-deps tmod-db-migrate python -c "from pathlib import Path; p=Path('/app/persistent/secrets/postgres-password.txt'); assert p.is_file() and len(p.read_text(encoding='utf-8').strip()) >= 32, p"
+if errorlevel 1 (
+  call :fail "PostgreSQL secret is not visible inside application containers"
+  call :warn "Expected host file: %POSTGRES_SECRET%"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :ok "PostgreSQL secret mount verified inside Docker"
+set POSTGRES_MIGRATION_REQUIRED=1
+docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'" 2>nul | findstr /X /C:"1" >nul
+if not errorlevel 1 set POSTGRES_MIGRATION_REQUIRED=0
+if "%POSTGRES_MIGRATION_REQUIRED%"=="1" (
+  call :warn "First PostgreSQL import detected; freezing the SQLite writer"
+  docker stop tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+)
 if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
   call :warn "Minecraft control secret changed; one controlled restart is required"
   docker compose up -d --force-recreate minecraft minecraft-supervisor
@@ -152,6 +215,11 @@ if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
     exit /b 1
   )
 )
+rem Always replace the application containers. A failed transactional update
+rem can otherwise leave a stopped bot carrying the previous Compose mounts and
+rem environment even after the repository was updated. Persistent data and the
+rem PostgreSQL volume are not removed.
+docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-worker >nul 2>nul
 docker compose up -d --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"
@@ -167,8 +235,46 @@ if errorlevel 1 (
 )
 call :ok "Container started"
 
+call :stage "10B" "Minecraft runtime health"
+call :ensure_minecraft_runtime
+if errorlevel 1 (
+  call :pause_if_interactive
+  exit /b 1
+)
+
+call :stage "10A" "Split backend health"
+call :ensure_split_runtime
+if errorlevel 1 (
+  call :pause_if_interactive
+  exit /b 1
+)
+
 rem A bind-mounted Caddyfile can change without Compose recreating Caddy.
-rem Validate it first, then restart so new subdomains receive certificates.
+rem Start it explicitly and wait for its healthcheck before validating.
+docker compose up -d tmod-caddy
+if errorlevel 1 (
+  call :fail "Caddy startup failed"
+  call :pause_if_interactive
+  exit /b 1
+)
+set CADDY_READY=0
+for /l %%i in (1,1,30) do (
+  set CADDY_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-caddy 2^>nul') do set CADDY_HEALTH=%%H
+  if /I "!CADDY_HEALTH!"=="healthy" (
+    set CADDY_READY=1
+    goto :caddy_ready
+  )
+  timeout /t 2 /nobreak >nul
+)
+:caddy_ready
+if not "%CADDY_READY%"=="1" (
+  call :fail "Caddy did not become healthy within 60 seconds"
+  docker compose ps tmod-caddy
+  docker compose logs --no-color --tail 80 tmod-caddy
+  call :pause_if_interactive
+  exit /b 1
+)
 docker exec tmod-caddy caddy validate --config /etc/caddy/Caddyfile
 if errorlevel 1 (
   call :fail "Caddy configuration validation failed"
@@ -200,12 +306,16 @@ if errorlevel 1 if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
 call :stage "13" "Status"
 docker compose ps
 
-for %%D in ("%~dp0..") do set "DESKTOP_LAUNCHER=%%~fD\Start T-Mod.bat"
-copy /y "%~dp0start_tmod_windows.bat" "%DESKTOP_LAUNCHER%" >nul 2>nul
-if errorlevel 1 (
-  call :warn "Desktop launcher could not be refreshed"
+set "CONTROL_INSTALLER=%~dp0install_tmod_control_windows.ps1"
+if exist "%CONTROL_INSTALLER%" (
+  powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%CONTROL_INSTALLER%" -ProjectDir "%~dp0" -Quiet
+  if errorlevel 1 (
+    call :warn "Native T-Mod Control could not be refreshed; server startup remains successful"
+  ) else (
+    call :ok "T-Mod Control refreshed: native EXE is current"
+  )
 ) else (
-  call :ok "Desktop launcher refreshed: %DESKTOP_LAUNCHER%"
+  call :warn "Native T-Mod Control installer is missing"
 )
 
 if exist "%~dp0configure_auto_update_windows.ps1" (
@@ -220,7 +330,8 @@ if exist "%~dp0configure_auto_update_windows.ps1" (
 echo.
 echo ============================================================
 echo   T-Mod startup finished.
-echo   Database: %PERSISTENT_DIR%\data\tmod.db
+echo   Database: PostgreSQL 17 ^(private Docker volume^)
+echo   Archive:  %PERSISTENT_DIR%\data\tmod.db ^(original SQLite, preserved^)
 echo   Config:   %PERSISTENT_DIR%\.env
 echo   Locale:   %PERSISTENT_DIR%\localization.json
 echo   Reactor:  https://reactor.tvr.lat
@@ -240,22 +351,112 @@ docker logs --tail 60 tmod-discord-bot
 echo ------------------------------------------------------------
 echo.
 echo Live logs: docker logs -f tmod-discord-bot
+echo Web gateway logs: docker logs -f tmod-web
+echo Database logs: docker logs -f tmod-postgres
 echo Minecraft logs: docker logs -f minecraft
 echo.
 call :pause_if_interactive
 exit /b 0
 
+:ensure_split_runtime
+set SPLIT_RUNTIME_READY=0
+for /l %%i in (1,1,30) do (
+  set WEB_HEALTH=
+  set WORKER_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+    set SPLIT_RUNTIME_READY=1
+    goto :split_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+
+echo.
+call :warn "Web or worker health did not converge; performing one controlled repair"
+docker compose up -d --no-deps --force-recreate tmod-web tmod-worker
+if errorlevel 1 goto :split_runtime_failed
+for /l %%i in (1,1,30) do (
+  set WEB_HEALTH=
+  set WORKER_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+    set SPLIT_RUNTIME_READY=1
+    goto :split_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+
+:split_runtime_failed
+echo.
+call :fail "The split backend did not become healthy after automatic repair"
+docker compose ps -a tmod-web tmod-worker
+echo.
+echo --- tmod-web ---
+docker logs --tail 100 tmod-web 2>&1
+echo.
+echo --- tmod-worker ---
+docker logs --tail 100 tmod-worker 2>&1
+exit /b 1
+
+:split_runtime_ready
+echo.
+call :ok "T-Mod Web and T-Mod Worker are healthy"
+exit /b 0
+
+:ensure_minecraft_runtime
+set MINECRAFT_RUNTIME_READY=0
+rem A cold Paper start routinely needs more than one minute on a Windows
+rem Docker host. Wait long enough for the image to initialize before using
+rem the stricter RCON verification below.
+for /l %%i in (1,1,90) do (
+  set MC_HEALTH=
+  set MC_SUPERVISOR_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft 2^>nul') do set MC_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft-supervisor 2^>nul') do set MC_SUPERVISOR_HEALTH=%%H
+  if /I "!MC_HEALTH!"=="healthy" if /I "!MC_SUPERVISOR_HEALTH!"=="healthy" (
+    set MINECRAFT_RUNTIME_READY=1
+    goto :minecraft_runtime_ready
+  )
+  <nul set /p "=."
+  timeout /t 2 /nobreak >nul
+)
+:minecraft_runtime_ready
+if "%MINECRAFT_RUNTIME_READY%"=="1" (
+  echo.
+  call :ok "Minecraft and lifecycle supervisor are healthy"
+  exit /b 0
+)
+echo.
+call :fail "Minecraft or lifecycle supervisor did not become healthy within 180 seconds"
+docker compose ps -a minecraft minecraft-supervisor
+echo.
+echo --- minecraft ---
+docker compose logs --no-color --tail 80 minecraft 2>&1
+echo.
+echo --- minecraft-supervisor ---
+docker compose logs --no-color --tail 80 minecraft-supervisor 2>&1
+exit /b 1
+
 :check_minecraft_rcon
 for /l %%i in (1,1,60) do (
   docker inspect --format "{{.State.Health.Status}}" minecraft 2>nul | findstr /I /X /C:"healthy" >nul
   if not errorlevel 1 (
-    docker exec minecraft rcon-cli list >nul 2>nul
-    if not errorlevel 1 (
-      call :ok "Minecraft RCON secret accepted"
-      exit /b 0
+    rem mc-health may become healthy before RCON finishes binding. Retry the
+    rem command for a bounded 60 seconds before declaring auth/config failure.
+    for /l %%r in (1,1,12) do (
+      docker exec minecraft rcon-cli list >nul 2>nul
+      if not errorlevel 1 (
+        call :ok "Minecraft RCON secret accepted"
+        exit /b 0
+      )
+      timeout /t 5 /nobreak >nul
     )
-    call :fail "Minecraft is healthy, but RCON authentication failed."
-    call :warn "The generated secret and server.properties are not synchronized."
+    call :fail "Minecraft is healthy, but RCON did not respond within 60 seconds."
+    call :warn "The generated secret and server.properties may be unsynchronized."
     docker logs --tail 80 minecraft
     exit /b 1
   )

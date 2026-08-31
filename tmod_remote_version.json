@@ -1,0 +1,11 @@
+{
+  "version": "1.1.3",
+  "channel": "stable",
+  "released_at": "2026-08-26",
+  "files": {
+    "tmod_remote_windows.bat": "https://raw.githubusercontent.com/cdnserver/t-mod/main/tmod_remote_windows.bat"
+  },
+  "sha256": {
+    "tmod_remote_windows.bat": "e1f5a5d66b1e4a0b9752ec9c3f86f86ccc9c4c2f9025acef57fa259178799742"
+  }
+}

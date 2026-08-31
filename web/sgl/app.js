@@ -370,7 +370,7 @@ function showPublic(data) {
   document.body.classList.add("public-mode");
   document.body.classList.remove("sgl-admin-mode");
   const info = data.public || {};
-  ["public-discord-top", "public-discord", "public-discord-bottom"].forEach((id) => {
+  ["public-discord-top", "public-discord", "public-discord-bottom", "public-discord-mobile"].forEach((id) => {
     if ($(id) && info.discord_url) $(id).href = info.discord_url;
   });
   ["public-secretary", "public-secretary-bottom"].forEach((id) => {
@@ -379,7 +379,7 @@ function showPublic(data) {
   app.hidden = true;
   $("public-site").hidden = false;
   $("loading").hidden = true;
-  publicScript("/sgl/assets/site.js?v=20260820-public");
+  publicScript("/sgl/assets/site.js?v=20260825-sgl-a11y-v3");
   publicScript("/sgl/assets/app-ui.js?v=20260820-public");
 }
 

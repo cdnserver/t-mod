@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$ProjectDir,
     [string]$PersistentDir = "$env:USERPROFILE\Documents\SGLDiscordBot",
     [string]$Branch = "main",
@@ -58,25 +58,33 @@ function Start-InstalledRuntime {
     $previousSkip = $env:TMOD_SKIP_BUILD
     $previousNonInteractive = $env:TMOD_NONINTERACTIVE
     $previousTransactional = $env:TMOD_TRANSACTIONAL_UPDATE
+    $previousPersistentDir = $env:TMOD_PERSISTENT_DIR
     try {
         # Rebuild from the installed Git revision. This prevents an interrupted
         # candidate build from ever becoming the image that is started.
         $env:TMOD_SKIP_BUILD = "0"
         $env:TMOD_NONINTERACTIVE = "1"
         $env:TMOD_TRANSACTIONAL_UPDATE = "1"
-        Push-Location $ProjectDir
-        try {
-            return Invoke-BoundedProcess `
-                -File "cmd.exe" `
-                -Arguments '/d /c "call run_windows.bat"' `
-                -TimeoutSeconds $FallbackTimeoutSeconds
+        # Keep an explicitly configured data root when falling back. Without
+        # this, a custom -PersistentDir silently falls back to USERPROFILE.
+        $env:TMOD_PERSISTENT_DIR = $PersistentDir
+        $runtimePath = Join-Path $ProjectDir "run_windows.bat"
+        if (-not (Test-Path -LiteralPath $runtimePath)) {
+            throw "Installed runtime launcher is missing: $runtimePath"
         }
-        finally { Pop-Location }
+        # A spawned Process does not reliably inherit PowerShell's temporary
+        # Push-Location on Windows. Pass an absolute batch path to cmd instead.
+        $runtimeArguments = '/d /s /c ""{0}""' -f $runtimePath.Replace('"', '""')
+        return Invoke-BoundedProcess `
+            -File "cmd.exe" `
+            -Arguments $runtimeArguments `
+            -TimeoutSeconds $FallbackTimeoutSeconds
     }
     finally {
         $env:TMOD_SKIP_BUILD = $previousSkip
         $env:TMOD_NONINTERACTIVE = $previousNonInteractive
         $env:TMOD_TRANSACTIONAL_UPDATE = $previousTransactional
+        $env:TMOD_PERSISTENT_DIR = $previousPersistentDir
     }
 }
 
@@ -105,7 +113,11 @@ try {
         exit 0
     }
 
-    $reason = if ($update.timed_out) {
+    $busy = (-not $update.timed_out -and $update.exit_code -eq 75)
+    $reason = if ($busy) {
+        "Другой запуск уже выполняет обновление; запускаю установленную версию параллельно."
+    }
+    elseif ($update.timed_out) {
         "Обновление превысило ${UpdateTimeoutSeconds} секунд и было остановлено."
     }
     else {

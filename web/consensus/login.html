@@ -4,45 +4,68 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#080b0c">
-    <style>html,body{background:#080b0c;color:#edf1eb}</style>
+    <meta name="theme-color" content="#07090a">
+    <style>html,body{background:#07090a;color:#f4f2eb}</style>
     <title>T-Mod Account — единый вход</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
     <meta name="description" content="Единый защищённый аккаунт для сервисов T-Mod.">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/assets/login.css">
-    <script src="/assets/login.js" defer></script>
+    <link rel="stylesheet" href="/assets/login.css?v=2">
+    <script src="/assets/login.js?v=2" defer></script>
   </head>
   <body>
     <div class="auth-atmosphere" aria-hidden="true">
-      <span></span><span></span><i></i>
+      <div class="aurora aurora-one"></div>
+      <div class="aurora aurora-two"></div>
+      <div class="orbit orbit-one"></div>
+      <div class="orbit orbit-two"></div>
+      <i class="auth-star star-one"></i><i class="auth-star star-two"></i><i class="auth-star star-three"></i>
     </div>
     <main class="login-shell">
       <section class="identity-panel">
-        <a class="identity-brand" href="/">
-          <span>T</span>
-          <strong>T·ID</strong>
-        </a>
+        <header class="identity-header">
+          <a class="identity-brand" href="/">
+            <span>T</span>
+            <span><strong>T·ID</strong><small>Единая личность T-Mod</small></span>
+          </a>
+          <span class="identity-live"><i></i> СИСТЕМА ДОСТУПНА</span>
+        </header>
         <div class="identity-copy">
-          <p>ЕДИНАЯ УЧЁТНАЯ ЗАПИСЬ</p>
-          <h1>Один вход.<br>Вся система.</h1>
+          <p>T-MOD ECOSYSTEM · ACCESS</p>
+          <h1>Одна личность.<br><em>Вся экосистема.</em></h1>
           <span>
-            Войдите один раз — Reactor, Consensus, Atlas и T-Mod Games узнают
-            вас автоматически на этом устройстве.
+            Reactor, Consensus, Atlas, SGL и T-Mod Games узнают вас через один
+            защищённый аккаунт — без отдельных регистраций и потерянного контекста.
           </span>
         </div>
-        <div class="identity-status">
-          <i></i>
-          <span><b>Права Discord</b><small>проверяются при каждом защищённом действии</small></span>
+        <div class="ecosystem-map" aria-label="Сервисы единого аккаунта">
+          <span class="ecosystem-core">T</span>
+          <span class="service service-reactor">REACTOR</span>
+          <span class="service service-atlas">ATLAS</span>
+          <span class="service service-consensus">CONSENSUS</span>
+          <span class="service service-sgl">SGL</span>
         </div>
+        <section class="community-card">
+          <span class="community-symbol">✦</span>
+          <div>
+            <small>ЕЩЁ НЕТ T-MOD ACCOUNT?</small>
+            <strong>Начните в Discord Товарищества</strong>
+            <p>Вступите на сервер, откройте ЛС с T-Mod и используйте <code>/account</code>. Веб-доступ можно создать даже на нулевом уровне.</p>
+          </div>
+          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Вступить <span>↗</span></a>
+        </section>
       </section>
 
       <section class="credential-panel" aria-labelledby="login-title">
+        <div class="credential-topline">
+          <span>SECURE GATEWAY</span>
+          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Discord Товарищества ↗</a>
+        </div>
         <div class="credential-head">
           <span class="credential-mark" aria-hidden="true">T</span>
-          <p>ЗАЩИЩЁННАЯ СЕССИЯ</p>
-          <h2 id="login-title">Войти в T-Mod Account</h2>
-          <span>Используйте данные, заданные лично через <b>/account</b> в Discord.</span>
+          <p>ЗАЩИЩЁННАЯ СЕССИЯ · T·ID</p>
+          <h2 id="login-title">С возвращением.</h2>
+          <span>Используйте логин и восьмизначный PIN, заданные лично через <b>/account</b> в Discord.</span>
         </div>
         <form id="credential-form" action="/auth/login" method="post">
           <label>
@@ -82,14 +105,18 @@
           </label>
           <output id="login-feedback" class="login-feedback" aria-live="polite" hidden></output>
           <button class="login-submit" type="submit">
-            <span>ПОДТВЕРДИТЬ ЛИЧНОСТЬ</span><i>→</i>
+            <span>ВОЙТИ В T-MOD</span><i>→</i>
           </button>
         </form>
-        <footer>
+        <div id="login-context" class="login-context" aria-live="polite">
+          <i></i><span><b>Единая сессия</b><small>После входа вернём вас в выбранный сервис.</small></span>
+        </div>
+        <footer class="credential-footer">
           <span>Нет данных для входа?</span>
-          <span>Напишите T-Mod в ЛС → /account</span>
+          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Вступить в Discord и создать аккаунт <i>↗</i></a>
         </footer>
       </section>
     </main>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

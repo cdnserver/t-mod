@@ -28,7 +28,10 @@ export interface AtlasOverlayActiveGameWindow {
 }
 
 const GAME_WINDOW_TITLE_PATTERN = /(?:grand theft auto(?:\s*v)?|gta\s*5|gta5|rage\s*(?:multiplayer|mp)|ragemp|majestic)/i;
-const GAME_PROCESS_PATTERN = /^(?:gta5(?:_enhanced)?|playgtav|ragemp(?:_v)?|majestic(?:rp)?)$/i;
+// RAGE MP, GTA V Enhanced and BattlEye use different executable names across
+// launcher generations. Keep the boundary explicit while accepting the real
+// variants seen on current Majestic installations.
+const GAME_PROCESS_PATTERN = /^(?:gta5(?:_enhanced)?(?:_be)?|playgtav|ragemp(?:_v|_launcher|_game_ui)?|majestic(?:rp|launcher)?)$/i;
 const MAX_DESKTOP_COORDINATE = 100_000;
 
 function boundedString(value: unknown, maximum = 260): string {
@@ -113,4 +116,53 @@ export function resolveAtlasOverlayForegroundGame(
     processId: probe.processId,
     workArea: probe.workArea,
   };
+}
+
+function intersectionArea(first: AtlasOverlayRect, second: AtlasOverlayRect): number {
+  const width = Math.max(
+    0,
+    Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x),
+  );
+  const height = Math.max(
+    0,
+    Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y),
+  );
+  return width * height;
+}
+
+/**
+ * Converts the monitor rectangle returned by Win32/PowerShell into Electron's
+ * device-independent coordinate system. This prevents the overlay from being
+ * positioned off-screen on 125–200% DPI and mixed-scale multi-monitor PCs.
+ */
+export function resolveAtlasOverlayDisplayArea(
+  nativeArea: AtlasOverlayRect,
+  electronAreas: readonly AtlasOverlayRect[],
+): AtlasOverlayRect {
+  if (!electronAreas.length) return { ...nativeArea };
+  let best = electronAreas[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const nativeCenterX = nativeArea.x + nativeArea.width / 2;
+  const nativeCenterY = nativeArea.y + nativeArea.height / 2;
+  for (const candidate of electronAreas) {
+    const overlap = intersectionArea(nativeArea, candidate);
+    const candidateCenterX = candidate.x + candidate.width / 2;
+    const candidateCenterY = candidate.y + candidate.height / 2;
+    const distance = Math.hypot(
+      nativeCenterX - candidateCenterX,
+      nativeCenterY - candidateCenterY,
+    );
+    const containsOrigin = (
+      nativeArea.x >= candidate.x &&
+      nativeArea.x < candidate.x + candidate.width &&
+      nativeArea.y >= candidate.y &&
+      nativeArea.y < candidate.y + candidate.height
+    );
+    const score = overlap * 10 + (containsOrigin ? 1_000_000_000 : 0) - distance;
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return { ...best };
 }

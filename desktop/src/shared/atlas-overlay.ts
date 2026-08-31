@@ -1,4 +1,5 @@
 export const atlasOverlayStages = [
+  "initializing",
   "idle",
   "listening",
   "transcribing",
@@ -13,6 +14,10 @@ export type AtlasOverlayStage = (typeof atlasOverlayStages)[number];
 export type AtlasOverlayAnchor = "top-right" | "right" | "bottom-right";
 export type AtlasOverlayResponseMode = "quick" | "balanced";
 export type AtlasOverlaySpeechProvider = "ai" | "system";
+export type AtlasOverlayIdleStyle = "orb" | "bar" | "full";
+export type AtlasOverlayTheme = "cosmos" | "graphite" | "emerald" | "amber" | "crimson";
+export type AtlasOverlayMotion = "cinematic" | "balanced" | "minimal";
+export type AtlasOverlayAnswerHold = "brief" | "auto" | "pinned";
 export type AtlasOverlayPttPhase = "down" | "up" | "cancel";
 
 export interface AtlasOverlayCharacter {
@@ -79,6 +84,16 @@ export interface AtlasOverlayConfig {
   anchor: AtlasOverlayAnchor;
   opacity: number;
   scale: number;
+  panelWidth: number;
+  answerHeight: number;
+  idleStyle: AtlasOverlayIdleStyle;
+  theme: AtlasOverlayTheme;
+  motion: AtlasOverlayMotion;
+  initializationAnimation: boolean;
+  showCitations: boolean;
+  showLatency: boolean;
+  answerHold: AtlasOverlayAnswerHold;
+  cueVolume: number;
   /** Enables the in-game calibration HUD. This is opt-in and only active over GTA. */
   calibrationMode: boolean;
   /** Independent typography scale for a legible field overlay. */
@@ -106,9 +121,19 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   responseMode: "quick",
   anchor: "right",
   opacity: 0.94,
-  scale: 0.88,
+  scale: 1,
+  panelWidth: 480,
+  answerHeight: 160,
+  idleStyle: "bar",
+  theme: "cosmos",
+  motion: "cinematic",
+  initializationAnimation: true,
+  showCitations: true,
+  showLatency: false,
+  answerHold: "auto",
+  cueVolume: 0.58,
   calibrationMode: false,
-  fontScale: 1,
+  fontScale: 1.12,
   positionX: 1,
   positionY: 0.5,
   screenContextEnabled: false,
@@ -123,6 +148,7 @@ export interface AtlasOverlayCitation {
 
 export type AtlasOverlayEvent =
   | { type: "show" | "hide" | "idle" }
+  | { type: "initialized"; name: string }
   | { type: "config"; config: AtlasOverlayConfig }
   | { type: "manual-query" }
   | { type: "speech"; audio?: ArrayBuffer; mimeType?: string; fallbackText?: string }
@@ -190,6 +216,7 @@ export interface AtlasOverlayApi {
   cancel(): Promise<void>;
   hide(): Promise<void>;
   openAtlas(): Promise<void>;
+  reportSpeech(active: boolean): Promise<void>;
   onEvent(listener: (event: AtlasOverlayEvent) => void): () => void;
   onPtt(listener: (phase: AtlasOverlayPttPhase) => void): () => void;
 }
@@ -217,6 +244,7 @@ export const initialAtlasOverlayState: Readonly<AtlasOverlayViewState> = {
 };
 
 const stageLabels: Record<AtlasOverlayStage, string> = {
+  initializing: "Atlas инициализирован",
   idle: "Atlas готов",
   listening: "Слушаю",
   transcribing: "Распознаю речь",
@@ -239,6 +267,14 @@ export function reduceAtlasOverlayState(
       return {
         ...initialAtlasOverlayState,
         visible: state.visible,
+      };
+    case "initialized":
+      return {
+        ...initialAtlasOverlayState,
+        visible: true,
+        stage: "initializing",
+        statusLabel: stageLabels.initializing,
+        transcript: event.name.trim(),
       };
     case "config":
       return state;
@@ -352,7 +388,10 @@ export function normalizeAtlasOverlayConfig(
   const speechVolume = Number(source.speechVolume);
   const opacity = Number(source.opacity);
   const scale = Number(source.scale);
+  const panelWidth = Number(source.panelWidth);
+  const answerHeight = Number(source.answerHeight);
   const fontScale = Number(source.fontScale);
+  const cueVolume = Number(source.cueVolume);
   const anchor = ["top-right", "right", "bottom-right"].includes(String(source.anchor))
     ? source.anchor as AtlasOverlayAnchor
     : "right";
@@ -385,9 +424,31 @@ export function normalizeAtlasOverlayConfig(
     responseMode: source.responseMode === "balanced" ? "balanced" : "quick",
     anchor,
     opacity: Number.isFinite(opacity) ? Math.max(0.68, Math.min(1, opacity)) : 0.94,
-    scale: Number.isFinite(scale) ? Math.max(0.72, Math.min(1.18, scale)) : 0.88,
+    scale: Number.isFinite(scale) ? Math.max(0.78, Math.min(1.3, scale)) : 1,
+    panelWidth: Number.isFinite(panelWidth)
+      ? Math.max(380, Math.min(620, panelWidth))
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.panelWidth,
+    answerHeight: Number.isFinite(answerHeight)
+      ? Math.max(96, Math.min(300, answerHeight))
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.answerHeight,
+    idleStyle: ["orb", "bar", "full"].includes(String(source.idleStyle))
+      ? source.idleStyle as AtlasOverlayIdleStyle
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.idleStyle,
+    theme: ["cosmos", "graphite", "emerald", "amber", "crimson"].includes(String(source.theme))
+      ? source.theme as AtlasOverlayTheme
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.theme,
+    motion: ["cinematic", "balanced", "minimal"].includes(String(source.motion))
+      ? source.motion as AtlasOverlayMotion
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.motion,
+    initializationAnimation: source.initializationAnimation !== false,
+    showCitations: source.showCitations !== false,
+    showLatency: source.showLatency === true,
+    answerHold: ["brief", "auto", "pinned"].includes(String(source.answerHold))
+      ? source.answerHold as AtlasOverlayAnswerHold
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.answerHold,
+    cueVolume: Number.isFinite(cueVolume) ? Math.max(0, Math.min(1, cueVolume)) : 0.58,
     calibrationMode: source.calibrationMode === true,
-    fontScale: Number.isFinite(fontScale) ? Math.max(0.82, Math.min(1.28, fontScale)) : 1,
+    fontScale: Number.isFinite(fontScale) ? Math.max(0.9, Math.min(1.6, fontScale)) : 1.12,
     positionX: Number.isFinite(positionX) ? Math.max(0, Math.min(1, positionX)) : 1,
     positionY: Number.isFinite(positionY)
       ? Math.max(0, Math.min(1, positionY))

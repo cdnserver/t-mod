@@ -24,10 +24,10 @@ function AtlasMark() {
           <stop offset="1" stopColor="#9f67ff" />
         </linearGradient>
       </defs>
-      <circle cx="28" cy="29" r="17" fill="none" stroke="url(#atlas-overlay-globe)" strokeWidth="2.2" />
-      <ellipse cx="28" cy="29" rx="8" ry="17" fill="none" stroke="currentColor" strokeOpacity=".55" />
-      <path d="M11 29h34M14.7 20.5h26.6M14.7 37.5h26.6" fill="none" stroke="currentColor" strokeOpacity=".45" />
-      <path d="m43 7 1.8 4.6L49 13.5l-4.2 1.8-1.8 4.6-1.8-4.6-4.2-1.8 4.2-1.9L43 7Z" fill="#dff7ff" />
+      <circle className="atlas-mark-globe" cx="28" cy="29" r="17" fill="none" stroke="url(#atlas-overlay-globe)" strokeWidth="2.2" />
+      <ellipse className="atlas-mark-meridian" cx="28" cy="29" rx="8" ry="17" fill="none" stroke="currentColor" strokeOpacity=".55" />
+      <path className="atlas-mark-grid" d="M11 29h34M14.7 20.5h26.6M14.7 37.5h26.6" fill="none" stroke="currentColor" strokeOpacity=".45" />
+      <path className="atlas-mark-star" d="m43 7 1.8 4.6L49 13.5l-4.2 1.8-1.8 4.6-1.8-4.6-4.2-1.8 4.2-1.9L43 7Z" fill="#dff7ff" />
     </svg>
   );
 }
@@ -46,7 +46,20 @@ function ThinkingField() {
   return (
     <div className="atlas-thinking-field" aria-hidden="true">
       <i /><i /><i />
+      <b /><b /><b /><b />
       <span />
+    </div>
+  );
+}
+
+function InitializationField() {
+  return (
+    <div className="atlas-initialization-field" aria-hidden="true">
+      <div className="atlas-init-sky"><i/><i/><i/><i/><i/></div>
+      <span className="atlas-init-axis" />
+      <span className="atlas-init-sweep" />
+      <span className="atlas-init-glyph"><AtlasMark /></span>
+      <div className="atlas-init-sequence"><b/><b/><b/><b/></div>
     </div>
   );
 }
@@ -59,13 +72,14 @@ function captureError(error: unknown): string {
   return "Не удалось записать голосовую команду.";
 }
 
-function playOverlayCue(kind: "listen" | "release" | "ready" | "error"): void {
+function playOverlayCue(kind: "listen" | "release" | "ready" | "error", level = 0.58): void {
   if (typeof AudioContext === "undefined") return;
   const context = new AudioContext();
   const now = context.currentTime;
   const master = context.createGain();
   master.gain.setValueAtTime(.0001, now);
-  master.gain.exponentialRampToValueAtTime(kind === "error" ? .035 : .048, now + .025);
+  const volume = clamp(level, 0, 1);
+  master.gain.exponentialRampToValueAtTime((kind === "error" ? .035 : .048) * volume, now + .025);
   master.gain.exponentialRampToValueAtTime(.0001, now + .46);
   master.connect(context.destination);
   const notes = kind === "listen"
@@ -131,8 +145,9 @@ function manualTextFromEvent(event: Event): string {
 
 export function AtlasOverlay() {
   const api = window.tmodAtlasOverlay;
+  const previewParams = new URLSearchParams(location.search);
   const preview = (import.meta.env.DEV || location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname))
-    ? new URLSearchParams(location.search).get("preview")
+    ? previewParams.get("preview")
     : null;
   const previewEnabled = Boolean(preview && !api);
   const [state, dispatch] = useReducer(
@@ -160,6 +175,9 @@ export function AtlasOverlay() {
           { type: "idle" },
         );
       }
+      if (preview === "initializing") {
+        return reduceAtlasOverlayState(initial, { type: "initialized", name: "Иван" });
+      }
       const withQuestion = reduceAtlasOverlayState(initial, {
         type: "transcript",
         text: "Могу ли я проводить обыск без ордера?",
@@ -181,6 +199,12 @@ export function AtlasOverlay() {
         enabled: true,
         characterName: "S. Goodman",
         factionCode: "gov",
+        idleStyle: (["orb", "bar", "full"].includes(String(previewParams.get("idle")))
+          ? previewParams.get("idle")
+          : "bar") as AtlasOverlayConfig["idleStyle"],
+        theme: (["cosmos", "graphite", "emerald", "amber", "crimson"].includes(String(previewParams.get("theme")))
+          ? previewParams.get("theme")
+          : "cosmos") as AtlasOverlayConfig["theme"],
       }
     : { ...DEFAULT_ATLAS_OVERLAY_CONFIG });
   const capture = useMemo(() => new OverlayVoiceCapture(), []);
@@ -206,6 +230,7 @@ export function AtlasOverlay() {
     aiAudioGeneration.current += 1;
     aiAudioQueue.current = [];
     aiSpeechActive.current = false;
+    void api?.reportSpeech(false);
     const current = aiAudio.current;
     if (!current) return;
     current.audio.onended = null;
@@ -215,7 +240,7 @@ export function AtlasOverlay() {
     current.audio.load();
     URL.revokeObjectURL(current.url);
     aiAudio.current = undefined;
-  }, []);
+  }, [api]);
 
   const playNextAiAudio = useCallback(() => {
     if (aiSpeechActive.current) return;
@@ -233,7 +258,8 @@ export function AtlasOverlay() {
     aiSpeechActive.current = true;
     const advance = () => {
       aiSpeechActive.current = false;
-      playNextAiAudioRef.current();
+      if (aiAudioQueue.current.length) playNextAiAudioRef.current();
+      else void api?.reportSpeech(false);
     };
     if (!event.audio || !event.mimeType) {
       if (event.fallbackText) {
@@ -279,7 +305,7 @@ export function AtlasOverlay() {
     audio.onerror = () => settle(true);
     aiAudio.current = { audio, url };
     void audio.play().catch(() => settle(true));
-  }, [speech]);
+  }, [api, speech]);
 
   playNextAiAudioRef.current = playNextAiAudio;
 
@@ -294,10 +320,16 @@ export function AtlasOverlay() {
     // A request can now deliver a sentence at a time. The queue ensures that
     // sentence N never cuts off N-1, regardless of AI or explicit fallback.
     if (!aiSpeechActive.current && !aiAudioQueue.current.length) speech.cancel();
+    void api?.reportSpeech(true);
     aiAudioQueue.current.push(event);
     playNextAiAudioRef.current();
     return true;
-  }, [speech]);
+  }, [api, speech]);
+
+  useEffect(() => {
+    speech.setActivityListener((active) => void api?.reportSpeech(active));
+    return () => speech.setActivityListener(undefined);
+  }, [api, speech]);
 
   useEffect(() => {
     mounted.current = true;
@@ -336,7 +368,7 @@ export function AtlasOverlay() {
 
   const experienceConfig = config as OverlayExperienceConfig;
   const calibrationMode = experienceConfig.calibrationMode === true;
-  const fontScale = clamp(Number(experienceConfig.fontScale) || 1, 0.82, 1.35);
+  const fontScale = clamp(Number(experienceConfig.fontScale) || 1, 0.82, 1.4);
   const normalizedManualQuery = useMemo(
     () => normalizeRussianKeyboardInput(manualQuery),
     [manualQuery],
@@ -385,7 +417,7 @@ export function AtlasOverlay() {
       dispatch({ type: "transcript", text: question });
       setManualQuery("");
       setManualQueryOpen(false);
-      playOverlayCue("release");
+      playOverlayCue("release", configRef.current.cueVolume);
     } catch {
       setManualQueryError("Не удалось отправить вопрос. Проверьте подключение Atlas.");
     } finally {
@@ -518,7 +550,7 @@ export function AtlasOverlay() {
         speech.append(event.text);
       } else if (event.type === "done") {
         if (currentConfig.speakAnswers && currentConfig.speechProvider === "system") speech.finish();
-        playOverlayCue("ready");
+        playOverlayCue("ready", currentConfig.cueVolume);
       } else if (["hide", "idle", "error"].includes(event.type)) {
         speech.cancel();
         stopAiAudio();
@@ -526,7 +558,7 @@ export function AtlasOverlay() {
           setManualQueryOpen(false);
           setManualQueryError("");
         }
-        if (event.type === "error") playOverlayCue("error");
+        if (event.type === "error") playOverlayCue("error", currentConfig.cueVolume);
       }
       dispatch(event);
     };
@@ -542,7 +574,7 @@ export function AtlasOverlay() {
         setManualQueryError("");
         speech.cancel();
         stopAiAudio();
-        playOverlayCue("listen");
+        playOverlayCue("listen", configRef.current.cueVolume);
         try {
           await capture.start(configRef.current.microphoneId);
         } catch (error) {
@@ -559,7 +591,7 @@ export function AtlasOverlay() {
         return;
       }
       try {
-        playOverlayCue("release");
+        playOverlayCue("release", configRef.current.cueVolume);
         const recording = await capture.stop();
         if (!recording) {
           dispatch({ type: "error", message: "Голос не записан. Удерживайте клавиши чуть дольше.", retryable: true });
@@ -585,6 +617,8 @@ export function AtlasOverlay() {
     "--overlay-opacity": config.opacity,
     "--overlay-scale": config.scale,
     "--overlay-font-scale": fontScale,
+    "--overlay-panel-width": config.panelWidth + "px",
+    "--overlay-answer-height": config.answerHeight + "px",
     "--calibration-drag-x": dragOffset.x + "px",
     "--calibration-drag-y": dragOffset.y + "px",
   } as CSSProperties;
@@ -602,6 +636,9 @@ export function AtlasOverlay() {
         (dragOffset.x || dragOffset.y) && "is-dragging",
       ].filter(Boolean).join(" ")}
       data-stage={state.stage}
+      data-idle-style={config.idleStyle}
+      data-theme={config.theme}
+      data-motion={config.motion}
       data-horizontal={horizontal}
       data-vertical={vertical}
       style={style}
@@ -642,31 +679,8 @@ export function AtlasOverlay() {
             aria-label="Настройка Atlas Overlay"
           >
             <span className="atlas-overlay-calibration-title"><i /> Режим настройки</span>
-            <span className="atlas-overlay-calibration-hint">Перетащите панель</span>
-            <div className="atlas-overlay-calibration-actions">
-              <button
-                type="button"
-                aria-label="Уменьшить размер панели"
-                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale - .04, .72, 1.18) })}
-              >−</button>
-              <button
-                type="button"
-                aria-label="Увеличить размер панели"
-                onClick={() => void saveCalibration({ scale: clamp(configRef.current.scale + .04, .72, 1.18) })}
-              >+</button>
-              <button
-                type="button"
-                className="atlas-overlay-calibration-font"
-                aria-label="Уменьшить шрифт"
-                onClick={() => void saveCalibration({ fontScale: clamp(fontScale - .04, .82, 1.28) })}
-              >A−</button>
-              <button
-                type="button"
-                className="atlas-overlay-calibration-font"
-                aria-label="Увеличить шрифт"
-                onClick={() => void saveCalibration({ fontScale: clamp(fontScale + .04, .82, 1.28) })}
-              >A+</button>
-            </div>
+            <span className="atlas-overlay-calibration-hint">Стрелки — позиция · +/− — размер · [ ] — ширина · Enter — готово</span>
+            <div className="atlas-overlay-calibration-keys"><kbd>← ↑ ↓ →</kbd><kbd>+ −</kbd><kbd>[ ]</kbd><kbd>ENTER</kbd></div>
             {calibrationFeedback && <span className="atlas-overlay-calibration-feedback">{calibrationFeedback}</span>}
           </aside>
         )}
@@ -728,6 +742,17 @@ export function AtlasOverlay() {
             </form>
           ) : (
             <>
+          {state.stage === "initializing" && (
+            <div className="atlas-overlay-initializing">
+              <InitializationField />
+              <div>
+                <small>SECURE FIELD LINK · ONLINE</small>
+                <strong>{state.transcript || "Atlas"}, система готова</strong>
+                <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()} · Atlas подключён к полевому контуру</span>
+              </div>
+            </div>
+          )}
+
           {state.stage === "listening" && (
             <div className="atlas-overlay-listening">
               <VoiceField active />
@@ -748,7 +773,7 @@ export function AtlasOverlay() {
             <article className="atlas-overlay-answer">
               {state.transcript && <p className="atlas-overlay-question">{state.transcript}</p>}
               <p className="atlas-overlay-copy">{state.answer}<span className="atlas-overlay-caret" /></p>
-              {state.citations.length > 0 && (
+              {config.showCitations && state.citations.length > 0 && (
                 <div className="atlas-overlay-sources">
                   {state.citations.slice(0, 2).map((citation, index) => (
                     <span key={`${citation.index || index}-${citation.title}`}>
@@ -769,7 +794,8 @@ export function AtlasOverlay() {
 
           {state.stage === "idle" && (
             <div className="atlas-overlay-idle">
-              <span>{config.characterName || "Atlas готов к работе"}</span>
+              <i className="atlas-idle-signal"><b /><em /></i>
+              <span><strong>ATLAS</strong><small>{config.characterName || "Готов к работе"}</small></span>
               <kbd>{config.hotkey.replaceAll("+", "  +  ")}</kbd>
             </div>
           )}
@@ -779,7 +805,7 @@ export function AtlasOverlay() {
 
         <footer className="atlas-overlay-foot">
           <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()}</span>
-          {state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
+          {config.showLatency && state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
           <span className="atlas-overlay-mode">T-MOD DESKTOP</span>
         </footer>
       </section>

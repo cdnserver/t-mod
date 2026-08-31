@@ -17,6 +17,8 @@ from persistence.activity_repository import set_meta
 
 def _backup_before_consensus_reset() -> Path | None:
     """Create a consistent SQLite backup before the one-time destructive reset."""
+    if _core.postgres_enabled():
+        return None
     if not _core.DATABASE_FILE.exists() or _core.DATABASE_FILE.stat().st_size == 0:
         return None
     source = sqlite3.connect(_core.DATABASE_FILE, timeout=30)
@@ -70,6 +72,9 @@ def _consensus_result_dedup_meta_key(migration_id: str) -> str:
 
 def _backup_before_consensus_result_dedup() -> Path | None:
     """Back up a previously reset live DB before removing legacy duplicates."""
+
+    if _core.postgres_enabled():
+        return None
 
     if not _core.DATABASE_FILE.exists() or _core.DATABASE_FILE.stat().st_size == 0:
         return None
@@ -266,6 +271,20 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
+
+            -- Entry links are one-time credentials.  Their consumption must
+            -- survive a process restart, otherwise an already opened Discord
+            -- link could be replayed after a web-container restart.
+            CREATE TABLE IF NOT EXISTS web_entry_ticket_uses (
+                guild_id INTEGER NOT NULL,
+                nonce TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, nonce)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_entry_ticket_uses_expiry
+            ON web_entry_ticket_uses(expires_at);
 
             CREATE TABLE IF NOT EXISTS web_section_grants (
                 guild_id INTEGER NOT NULL,
@@ -1731,7 +1750,7 @@ def init_db() -> None:
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tvrs_bill_workspaces_one_open
             ON tvrs_bill_workspaces(guild_id, author_id)
-            WHERE status IN ('draft', 'review', 'changes_requested');
+            WHERE status IN ('draft', 'review');
 
             CREATE TABLE IF NOT EXISTS tvrs_bill_moderation_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1888,6 +1907,58 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ovr_case_tasks_case
             ON ovr_case_tasks(case_id, status, priority, id DESC);
+
+            -- One durable admission dossier connects the public Phoenix
+            -- application, the private OVR investigation and the eventual
+            -- consensus bill.  The unique applicant key is intentional: an
+            -- application can be resumed and reviewed, but never duplicated
+            -- by a double click, reconnect or second browser tab.
+            CREATE TABLE IF NOT EXISTS membership_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_display TEXT NOT NULL,
+                forum_url TEXT NOT NULL,
+                characters_json TEXT NOT NULL DEFAULT '[]',
+                answers_json TEXT NOT NULL DEFAULT '{}',
+                traits_json TEXT NOT NULL DEFAULT '{}',
+                motivation TEXT,
+                contribution TEXT,
+                availability TEXT,
+                status TEXT NOT NULL DEFAULT 'ovr_review',
+                ovr_case_id INTEGER,
+                submitted_bill_id INTEGER,
+                submitted_bill_number INTEGER,
+                decision_note TEXT,
+                consensus_result TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ovr_decided_at TEXT,
+                consensus_decided_at TEXT,
+                UNIQUE(guild_id, user_id),
+                UNIQUE(ovr_case_id),
+                UNIQUE(submitted_bill_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_membership_applications_pipeline
+            ON membership_applications(guild_id, status, updated_at, id);
+
+            CREATE TABLE IF NOT EXISTS membership_application_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                application_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                actor_display TEXT,
+                action TEXT NOT NULL,
+                from_status TEXT,
+                to_status TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_membership_application_events
+            ON membership_application_events(application_id, id ASC);
 
             CREATE TABLE IF NOT EXISTS admin_broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2616,7 +2687,7 @@ def init_db() -> None:
             """
             CREATE UNIQUE INDEX idx_tvrs_bill_workspaces_one_open
             ON tvrs_bill_workspaces(guild_id, author_id)
-            WHERE status IN ('draft', 'review', 'changes_requested')
+            WHERE status IN ('draft', 'review')
             """
         )
         con.executescript(

@@ -10,7 +10,8 @@
   var raf = window.requestAnimationFrame;
 
   function init() {
-    if (reduce) return; // leave everything static & visible
+    mobileNav(); // navigation must work regardless of motion preference
+    if (reduce) return; // leave everything else static & visible
     root.classList.add("sx-anim");
 
     prepTitle();
@@ -24,6 +25,29 @@
     cardGlow();
     spotlight();
     processLine();
+  }
+
+  /* burger menu — toggle the fullscreen overlay */
+  function mobileNav() {
+    var burger = root.querySelector(".sx-burger");
+    var menu = root.querySelector("#sx-mobile-nav");
+    if (!burger || !menu) return;
+    var set = function (open) {
+      menu.classList.toggle("open", open);
+      menu.setAttribute("aria-hidden", open ? "false" : "true");
+      burger.setAttribute("aria-expanded", open ? "true" : "false");
+      burger.setAttribute("aria-label", open ? "Закрыть меню" : "Открыть меню");
+      document.body.style.overflow = open ? "hidden" : "";
+    };
+    burger.addEventListener("click", function () {
+      set(burger.getAttribute("aria-expanded") !== "true");
+    });
+    menu.querySelectorAll("a").forEach(function (link) {
+      link.addEventListener("click", function () { set(false); });
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && menu.classList.contains("open")) set(false);
+    });
   }
 
   /* split hero title words for staggered reveal */
@@ -139,11 +163,17 @@
   function cardGlow() {
     if (window.matchMedia("(pointer: coarse)").matches) return;
     root.querySelectorAll(".sx-services article").forEach(function (card) {
+      var mx = 0, my = 0, queued = false;
+      var apply = function () {
+        queued = false;
+        card.style.setProperty("--mx", mx + "px");
+        card.style.setProperty("--my", my + "px");
+      };
       card.addEventListener("pointermove", function (e) {
         var r = card.getBoundingClientRect();
-        card.style.setProperty("--mx", (e.clientX - r.left) + "px");
-        card.style.setProperty("--my", (e.clientY - r.top) + "px");
-      });
+        mx = e.clientX - r.left; my = e.clientY - r.top;
+        if (!queued) { queued = true; raf(apply); }
+      }, { passive: true });
     });
   }
 
@@ -153,10 +183,15 @@
     var spot = document.createElement("div");
     spot.className = "sx-spot";
     root.appendChild(spot);
-    var shown = false;
-    document.addEventListener("pointermove", function (e) {
-      spot.style.transform = "translate(" + e.clientX + "px," + e.clientY + "px)";
+    var x = 0, y = 0, shown = false, queued = false;
+    var apply = function () {
+      queued = false;
+      spot.style.transform = "translate(" + x + "px," + y + "px)";
       if (!shown) { shown = true; spot.style.opacity = "1"; }
+    };
+    document.addEventListener("pointermove", function (e) {
+      x = e.clientX; y = e.clientY;
+      if (!queued) { queued = true; raf(apply); }
     }, { passive: true });
   }
 

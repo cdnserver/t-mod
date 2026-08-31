@@ -1,4 +1,55 @@
 services:
+  tmod-postgres:
+    image: postgres:17-alpine
+    container_name: tmod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "tmod"
+      POSTGRES_USER: "tmod"
+      POSTGRES_PASSWORD_FILE: "/run/secrets/postgres_password"
+      PGDATA: "/var/lib/postgresql/data/pgdata"
+    volumes:
+      - "tmod-postgres-data:/var/lib/postgresql/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
+    networks:
+      - tmod-data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tmod -d tmod"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 15s
+
+  tmod-db-migrate:
+    build: .
+    image: tmod-discord-bot:latest
+    container_name: tmod-db-migrate
+    user: "0:0"
+    restart: "no"
+    command: ["python", "/app/scripts/migrate_sqlite_to_postgres.py"]
+    environment: &tmod_database_environment
+      TMOD_DATABASE_BACKEND: "postgresql"
+      POSTGRES_HOST: "tmod-postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "tmod"
+      POSTGRES_USER: "tmod"
+      # Every application container already receives the persistent root. Read
+      # the password through that stable mount instead of a second file bind,
+      # which Docker Desktop can omit when restoring an older container.
+      POSTGRES_PASSWORD_FILE: "/app/persistent/secrets/postgres-password.txt"
+      POSTGRES_PASSWORD_FALLBACK_FILE: "/run/secrets/postgres_password"
+      DATABASE_FILE: "/app/persistent/data/tmod.db"
+      DATA_DIR: "/app/persistent/data"
+    volumes:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    networks:
+      - tmod-data
+    depends_on:
+      tmod-postgres:
+        condition: service_healthy
+
   tmod-discord-bot:
     build: .
     image: tmod-discord-bot:latest
@@ -9,31 +60,102 @@ services:
     # SQLite and persistent output writable.
     user: "0:0"
     env_file:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/.env"
     environment:
+      <<: *tmod_database_environment
       TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
+      POSTGRES_APPLICATION_NAME: "tmod-discord"
+      CONSENSUS_WEB_PORT: "8788"
+      TMOD_DB_PROTECTION_OWNER: "worker"
       ATLAS_QDRANT_URL: "http://atlas-qdrant:6333"
       ATLAS_FORUM_SELENIUM_URL: "http://atlas-forum-browser:4444/wd/hub"
-    ports:
-      - "127.0.0.1:8787:8787"
+    expose:
+      - "8788"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/data:/app/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - default
+      - tmod-data
       - minecraft-control
+    depends_on:
+      tmod-db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=2)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/health', timeout=2)"
       interval: 15s
       timeout: 4s
       retries: 10
       start_period: 90s
+
+  tmod-web:
+    image: tmod-discord-bot:latest
+    container_name: tmod-web
+    restart: unless-stopped
+    command: ["python", "/app/web_gateway.py"]
+    environment:
+      TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"
+      TMOD_WEB_GATEWAY_PORT: "8787"
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      - default
+    volumes:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    depends_on:
+      tmod-discord-bot:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-ready', timeout=3)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  tmod-worker:
+    image: tmod-discord-bot:latest
+    container_name: tmod-worker
+    restart: unless-stopped
+    command: ["python", "/app/worker_main.py"]
+    user: "0:0"
+    environment:
+      <<: *tmod_database_environment
+      POSTGRES_APPLICATION_NAME: "tmod-worker"
+      TMOD_DB_BACKUP_DIR: "/app/persistent/backups/database"
+    volumes:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    networks:
+      - tmod-data
+    expose:
+      - "8792"
+    depends_on:
+      tmod-db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/ready', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   atlas-qdrant:
     image: qdrant/qdrant:v1.16.2
@@ -85,8 +207,8 @@ services:
     container_name: tmod-caddy
     restart: unless-stopped
     depends_on:
-      tmod-discord-bot:
-        condition: service_started
+      tmod-web:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -94,8 +216,14 @@ services:
     volumes:
       - "./Caddyfile:/etc/caddy/Caddyfile:ro"
       - "./web/consensus:/srv/tmod:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/data:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/config:/config"
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   minecraft:
     image: itzg/minecraft-server:java25-jdk
@@ -120,8 +248,8 @@ services:
       # password) synchronized while preserving properties without env values.
       OVERRIDE_SERVER_PROPERTIES: "true"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/minecraft:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
     tty: true
     stdin_open: true
     healthcheck:
@@ -135,7 +263,6 @@ services:
     build:
       context: ./minecraft-supervisor
     image: tmod-minecraft-supervisor:latest
-    container_name: minecraft-supervisor
     restart: unless-stopped
     environment:
       MINECRAFT_CONTAINER_NAME: "minecraft"
@@ -145,7 +272,7 @@ services:
       - "8791"
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - minecraft-control
     read_only: true
@@ -166,9 +293,13 @@ services:
 
 networks:
   default:
+  tmod-data:
+    internal: true
   minecraft-control:
     internal: true
 
 volumes:
+  tmod-postgres-data:
+    name: tmod-postgres-data
   atlas-qdrant-data:
     name: tmod-atlas-qdrant-data

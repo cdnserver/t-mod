@@ -353,6 +353,7 @@ export function App() {
     || globalThis.location.hostname === "localhost";
   const cinematicParams = new URLSearchParams(globalThis.location.search);
   const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
+  const atlasSettingsQa = cinematicQaEnabled && cinematicParams.get("settings-preview") === "atlas";
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const cinematicPreviewName = cinematicQaEnabled
     ? String(cinematicParams.get("name") || "").trim()
@@ -365,7 +366,7 @@ export function App() {
   });
   const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable);
   const [desktopState, setDesktopState] = useState<DesktopState>({
-    activeService: "home",
+    activeService: atlasSettingsQa ? "atlas" : "home",
     loading: false,
     canGoBack: false,
     canGoForward: false,
@@ -374,17 +375,23 @@ export function App() {
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [atlasSettingsOpen, setAtlasSettingsOpen] = useState(false);
+  const [atlasSettingsOpen, setAtlasSettingsOpen] = useState(atlasSettingsQa);
   const [atlasSettingsFocusRequest, setAtlasSettingsFocusRequest] = useState(0);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
   const [overlayConfig, setOverlayConfig] = useState<AtlasOverlayConfig>({
     ...DEFAULT_ATLAS_OVERLAY_CONFIG,
+    ...(atlasSettingsQa ? {
+      enabled: true,
+      characterId: "qa-1",
+      characterName: "S. Goodman",
+      factionCode: "lspd",
+    } : {}),
   });
-  const [overlayCatalog, setOverlayCatalog] = useState<AtlasOverlayCatalog>({
-    characters: [],
-    servers: [],
-    factions: [],
-  });
+  const [overlayCatalog, setOverlayCatalog] = useState<AtlasOverlayCatalog>(atlasSettingsQa ? {
+    characters: [{ id: "qa-1", name: "S. Goodman", staticId: "263345", serverCode: "phoenix-15", factionCode: "lspd" }],
+    servers: [{ code: "phoenix-15", name: "Phoenix", number: 15 }],
+    factions: [{ code: "lspd", name: "LSPD", serverCode: "phoenix-15", kind: "government" }, { code: "gov", name: "GOV", serverCode: "phoenix-15", kind: "government" }],
+  } : { characters: [], servers: [], factions: [] });
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayError, setOverlayError] = useState<string>();
   const [toast, setToast] = useState<string>();
@@ -394,12 +401,14 @@ export function App() {
     channel: "beta",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
-  const [launchVisible, setLaunchVisible] = useState(cinematicQa !== "lock");
+  const [launchVisible, setLaunchVisible] = useState(!atlasSettingsQa && cinematicQa !== "lock");
   const [locked, setLocked] = useState(cinematicQa === "lock");
   const [unlocking, setUnlocking] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
+  const bootstrapRefreshPending = useRef(false);
+  const bootstrapRevision = useRef(0);
   const hasLoadedBootstrap = useRef(false);
   const unlockInFlight = useRef(false);
   const unlockTimer = useRef<number | undefined>(undefined);
@@ -421,7 +430,12 @@ export function App() {
   }, []);
 
   const loadBootstrap = useCallback(async () => {
-    if (bootstrapInFlight.current) return;
+    if (bootstrapInFlight.current) {
+      // Cookie, resume and service-navigation events can arrive while an older
+      // projection is in flight. Never lose the newest refresh request.
+      bootstrapRefreshPending.current = true;
+      return;
+    }
     const api = browserApi();
     if (!api) {
       setBootstrapLoading(false);
@@ -435,7 +449,12 @@ export function App() {
     bootstrapInFlight.current = true;
     if (!hasLoadedBootstrap.current) setBootstrapLoading(true);
     try {
-      setBootstrap(await api.bootstrap());
+      do {
+        bootstrapRefreshPending.current = false;
+        const revision = ++bootstrapRevision.current;
+        const result = await api.bootstrap();
+        if (bootstrapRevision.current === revision) setBootstrap(result);
+      } while (bootstrapRefreshPending.current);
     } finally {
       hasLoadedBootstrap.current = true;
       bootstrapInFlight.current = false;
@@ -677,8 +696,17 @@ export function App() {
   const login = async (credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> => {
     const api = browserApi();
     if (!api) return { ok: false, error: "login_failed" };
+    // Any periodic bootstrap that started before this click is now stale.
+    // Its late offline result must not replace the authenticated projection.
+    bootstrapRevision.current += 1;
     const result = await api.login(credentials);
-    if (result.ok) await loadBootstrap();
+    if (result.ok && result.bootstrap) {
+      hasLoadedBootstrap.current = true;
+      setBootstrapLoading(false);
+      setBootstrap(result.bootstrap);
+    } else if (result.ok) {
+      await loadBootstrap();
+    }
     return result;
   };
 
@@ -696,7 +724,7 @@ export function App() {
     const api = overlayApi();
     if (!api || overlayBusy) return;
     const previous = overlayConfig;
-    setOverlayConfig(normalizeAtlasOverlayConfig({ ...overlayConfig, ...patch }));
+    setOverlayConfig((current) => normalizeAtlasOverlayConfig({ ...current, ...patch }));
     setOverlayBusy(true);
     setOverlayError(undefined);
     try {
@@ -709,6 +737,10 @@ export function App() {
     } finally {
       setOverlayBusy(false);
     }
+  };
+
+  const previewOverlay = (patch: Partial<AtlasOverlayConfig>) => {
+    setOverlayConfig((current) => normalizeAtlasOverlayConfig({ ...current, ...patch }));
   };
 
   const openAtlasSettings = () => {
@@ -827,8 +859,20 @@ export function App() {
         {desktopState.loading && <div className="load-line"/>}
       </header>
 
-      <main className={`content ${desktopState.activeService !== "home" ? "service-open" : ""}`}>
-        {desktopState.activeService === "home" ? (
+      <main className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
+        {atlasSettingsOpen ? (
+          <AtlasSettingsPage
+            overlayConfig={overlayConfig}
+            overlayCatalog={overlayCatalog}
+            overlayAllowed={atlasSettingsQa || bootstrap.data?.atlas_overlay?.allowed === true}
+            overlayBusy={overlayBusy}
+            overlayError={overlayError}
+            onOverlayChange={saveOverlay}
+            onOverlayPreview={previewOverlay}
+            onClose={() => setAtlasSettingsOpen(false)}
+            focusRequest={atlasSettingsFocusRequest}
+          />
+        ) : desktopState.activeService === "home" ? (
           <Home
             name={userName}
             bootstrap={bootstrap}
@@ -869,18 +913,6 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
           onReconnect={loadBootstrap}
           onLock={lockNow}
-        />
-      )}
-      {atlasSettingsOpen && (
-        <AtlasSettingsDrawer
-          overlayConfig={overlayConfig}
-          overlayCatalog={overlayCatalog}
-          overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
-          overlayBusy={overlayBusy}
-          overlayError={overlayError}
-          onOverlayChange={saveOverlay}
-          onClose={() => setAtlasSettingsOpen(false)}
-          focusRequest={atlasSettingsFocusRequest}
         />
       )}
       {paletteOpen && (
@@ -962,19 +994,6 @@ function Home({
     );
   }
 
-  if (bridgeAvailable && !bootstrap.authenticated && !bootstrap.online) {
-    return (
-      <section className="offline-stage" aria-live="polite">
-        <div className="offline-signal"><span/><i/><i/></div>
-        <p className="kicker">ДАННЫЕ В БЕЗОПАСНОСТИ</p>
-        <h1>T-Mod временно<br/>не отвечает</h1>
-        <p>Приложение продолжает восстанавливать соединение в фоне. Если вы уже входили, повторная авторизация не потребуется.</p>
-        <button className="primary" onClick={() => void onRetry()}><Icon name="refresh"/> Проверить сейчас</button>
-        <small>Это может быть краткий перезапуск сервиса или нестабильная сеть.</small>
-      </section>
-    );
-  }
-
   if (!bootstrap.authenticated) {
     const messages: Record<NonNullable<DesktopLoginResult["error"]>, string> = {
       invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
@@ -983,8 +1002,8 @@ function Home({
       character_required: "Сначала добавьте персонажа через /account в Discord.",
       atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
-      network_unavailable: "Нет связи с T-Mod. Проверьте интернет и повторите вход.",
-      login_failed: "Сессию не удалось подтвердить. Повторите вход.",
+      network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
+      login_failed: "Вход принят, но подтверждение сессии задержалось. Повторите нажатие — PIN вводить заново не потребуется.",
       invalid_input: "Логин — от 3 символов, PIN — ровно 8 цифр.",
     };
     const submit = async (event: FormEvent) => {
@@ -1014,8 +1033,8 @@ function Home({
           <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
           {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
           {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите T-Mod из последнего релиза.</output>}
-          <button className="primary" type="submit" disabled={loginBusy || !bridgeAvailable}>{loginBusy ? "Проверяем аккаунт…" : "Войти в T-Mod"}<span>→</span></button>
-          <footer><i className={bootstrap.online ? "online" : ""}/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Нет соединения с сервером"}</span></footer>
+          <button className={`primary ${loginBusy ? "busy" : ""}`} type="submit" disabled={loginBusy || !bridgeAvailable} aria-busy={loginBusy}>{loginBusy ? "Устанавливаем защищённую сессию…" : "Войти в T-Mod"}<span>{loginBusy ? "•••" : "→"}</span></button>
+          <footer className={bootstrap.online ? "online" : "reconnecting"}><i/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Восстанавливаем соединение с T-Mod…"}</span>{!bootstrap.online && <button type="button" onClick={() => void onRetry()} aria-label="Повторить подключение"><Icon name="refresh"/></button>}</footer>
         </form>
       </section>
     );
@@ -1135,7 +1154,7 @@ function SettingsDrawer({
   </aside></>;
 }
 
-function AtlasSettingsDrawer({
+function AtlasSettingsPage({
   onClose,
   overlayConfig,
   overlayCatalog,
@@ -1143,6 +1162,7 @@ function AtlasSettingsDrawer({
   overlayBusy,
   overlayError,
   onOverlayChange,
+  onOverlayPreview,
   focusRequest,
 }: {
   onClose: () => void;
@@ -1152,9 +1172,9 @@ function AtlasSettingsDrawer({
   overlayBusy: boolean;
   overlayError?: string;
   onOverlayChange: (patch: Partial<AtlasOverlayConfig>) => Promise<void>;
+  onOverlayPreview: (patch: Partial<AtlasOverlayConfig>) => void;
   focusRequest: number;
 }) {
-  const overlaySectionRef = useRef<HTMLElement>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [aiVoices, setAiVoices] = useState<AtlasOverlayVoiceCatalog>({
     configured: false,
@@ -1184,10 +1204,9 @@ function AtlasSettingsDrawer({
         : "До восстановления Atlas автоматически использует системный голос Windows.");
 
   useEffect(() => {
-    const timer = window.setTimeout(
-      () => overlaySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
-      40,
-    );
+    const timer = window.setTimeout(() => {
+      document.querySelector<HTMLElement>(".content.atlas-settings-open")?.scrollTo({ top: 0, behavior: "smooth" });
+    }, 40);
     return () => window.clearTimeout(timer);
   }, [focusRequest]);
 
@@ -1289,10 +1308,33 @@ function AtlasSettingsDrawer({
       void context?.close();
     }
   };
-  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть настройки Atlas"/><aside className="settings-drawer atlas-settings-drawer" role="dialog" aria-modal="true" aria-label="Настройки Atlas">
-    <header><div><p className="kicker">ATLAS · FIELD MODE</p><h2>Настройки Atlas</h2><small>Игровой помощник для GTA V</small></div><button onClick={onClose} aria-label="Закрыть настройки Atlas">×</button></header>
-    <div className="settings-scroll atlas-settings-scroll">
-      <section ref={overlaySectionRef} className={`overlay-settings ${overlayBusy ? "is-busy" : ""}`}>
+  const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  return <section className="atlas-settings-page" aria-label="Настройки Atlas Overlay">
+    <header className="atlas-settings-page-hero">
+      <div className="atlas-settings-page-orbit" aria-hidden="true"><i/><i/><span><Icon name="atlas"/></span></div>
+      <div><p className="kicker">ATLAS · FIELD SYSTEM</p><h1>Пульт полевого интерфейса</h1><p>Настройте поведение Atlas поверх GTA V: от формы ожидания и голоса до управления без курсора.</p></div>
+      <div className="atlas-settings-page-state"><i className={overlayConfig.enabled && overlayAllowed ? "active" : ""}/><span><small>СОСТОЯНИЕ</small><strong>{overlayConfig.enabled && overlayAllowed ? "Готов к игре" : "Отключён"}</strong></span></div>
+      <button className="atlas-settings-page-close" onClick={onClose}><Icon name="back"/> Вернуться в Atlas</button>
+    </header>
+    <div className="atlas-settings-telemetry" aria-label="Сводка Atlas Overlay">
+      <span><small>ПРОФИЛЬ</small><strong>{overlayConfig.responseMode === "quick" ? "Точный полевой" : "Контекстный"}</strong></span>
+      <span><small>ФОРМА</small><strong>{{ orb: "Импульс", bar: "Строка", full: "Панель" }[overlayConfig.idleStyle]}</strong></span>
+      <span><small>ДВИЖЕНИЕ</small><strong>{{ cinematic: "Кинематографично", balanced: "Сбалансировано", minimal: "Производительно" }[overlayConfig.motion]}</strong></span>
+      <span><small>ОТВЕТ</small><strong>{{ brief: "Кратко", auto: "До конца речи", pinned: "Закреплён" }[overlayConfig.answerHold]}</strong></span>
+    </div>
+    <div className="atlas-settings-page-layout">
+      <nav className="atlas-settings-page-nav" aria-label="Разделы настроек">
+        <p>Конфигурация</p>
+        <button onClick={() => scrollTo("atlas-settings-core")}><span>01</span><b>Основа</b><small>Запуск и статус</small></button>
+        <button onClick={() => scrollTo("atlas-settings-persona")}><span>02</span><b>Контекст</b><small>Персонаж и фракция</small></button>
+        <button onClick={() => scrollTo("atlas-settings-controls")}><span>03</span><b>Управление</b><small>Голос и клавиатура</small></button>
+        <button onClick={() => scrollTo("atlas-settings-voice")}><span>04</span><b>Голос Atlas</b><small>Микрофон и озвучка</small></button>
+        <button onClick={() => scrollTo("atlas-settings-visual")}><span>05</span><b>Внешний вид</b><small>Форма, тема, размер</small></button>
+        <button onClick={() => scrollTo("atlas-settings-intelligence")}><span>06</span><b>Интеллект</b><small>Ответы и приватность</small></button>
+        <div className="atlas-settings-keymap"><small>БЕЗ КУРСОРА В GTA</small><strong>{overlayConfig.hotkey.replaceAll("Control", "CTRL")} + TAB</strong><span>Стрелки · + − · [ ] · Enter</span></div>
+      </nav>
+      <main className="atlas-settings-workspace">
+      <section id="atlas-settings-core" className={`overlay-settings atlas-settings-work-card ${overlayBusy ? "is-busy" : ""}`}>
         <p className="settings-label">Atlas Overlay · GTA V</p>
         <div className="overlay-setting-hero">
           <span className="overlay-setting-globe"><Icon name="atlas"/><i/></span>
@@ -1305,10 +1347,13 @@ function AtlasSettingsDrawer({
           <div className="overlay-access-note warning"><Icon name="atlas"/><span><strong>Добавьте персонажа</strong><small>Создайте хотя бы одного персонажа через T‑Mod Account, затем обновите приложение.</small></span></div>
         ) : (
           <fieldset disabled={overlayBusy}>
+            <div className="atlas-settings-section-heading"><span>01</span><div><strong>Запуск и присутствие</strong><small>Когда Atlas появляется поверх игры</small></div></div>
             <SettingToggle label="Оверлей в игре" hint="Запускается вместе с T‑Mod и не забирает управление у GTA" active={overlayConfig.enabled} onClick={() => void onOverlayChange({ enabled: !overlayConfig.enabled })}/>
             <SettingToggle label="Показывать статус в игре" hint="Компактная строка появляется при запуске GTA V, Majestic или RAGE Multiplayer" active={overlayConfig.showGameStatus} onClick={() => void onOverlayChange({ showGameStatus: !overlayConfig.showGameStatus })}/>
+            <SettingToggle label="Инициализация при входе в игру" hint="Показывается только один раз за запуск T-Mod — при первом фокусе GTA V" active={overlayConfig.initializationAnimation} onClick={() => void onOverlayChange({ initializationAnimation: !overlayConfig.initializationAnimation })}/>
             <SettingToggle label="Показывать в записи и трансляции" hint="Сохраняет стабильный источник Atlas Overlay для OBS" active={overlayConfig.captureInRecordings} onClick={() => void onOverlayChange({ captureInRecordings: !overlayConfig.captureInRecordings })}/>
-            <div className="overlay-setting-block">
+            <div className="atlas-settings-section-heading"><span>02</span><div><strong>Игровой контекст</strong><small>Кто обращается к Atlas и в каком контуре</small></div></div>
+            <div id="atlas-settings-persona" className="overlay-setting-block atlas-settings-anchor">
               <span className="overlay-setting-title">Персонаж</span>
               <div className="overlay-character-grid">
                 {overlayCatalog.characters.map((character) => (
@@ -1341,7 +1386,7 @@ function AtlasSettingsDrawer({
                 ))}
               </div>
             </div>
-            <div className="overlay-setting-block split">
+            <div id="atlas-settings-controls" className="overlay-setting-block split atlas-settings-anchor">
               <div><span className="overlay-setting-title">Клавиша голоса</span><small>Удерживать в Windows</small></div>
               <div className="overlay-preset-grid overlay-hotkey-grid">
                 {["Control+Shift+A", "F9", "F10"].map((hotkey) => (
@@ -1359,7 +1404,8 @@ function AtlasSettingsDrawer({
                 />
               </div>
             </div>
-            <div className="overlay-setting-block split overlay-device-row">
+            <div className="atlas-settings-section-heading"><span>03</span><div><strong>Голос и управление</strong><small>Запрос без курсора и спокойная озвучка</small></div></div>
+            <div id="atlas-settings-voice" className="overlay-setting-block split overlay-device-row atlas-settings-anchor">
               <div><span className="overlay-setting-title">Микрофон</span><small>{microphoneStatus === "testing" ? "Слушаю 1 секунду…" : microphoneStatus === "ready" ? "Сигнал отличный" : microphoneStatus === "silent" ? "Сигнал слишком тихий" : microphoneStatus === "error" ? "Нет доступа к микрофону" : "Выберите вход и проверьте сигнал"}</small></div>
               <div className="overlay-device-controls">
                 <select value={overlayConfig.microphoneId} onChange={(event) => void onOverlayChange({ microphoneId: event.target.value })}>
@@ -1370,10 +1416,10 @@ function AtlasSettingsDrawer({
               </div>
             </div>
             <div className="overlay-setting-block split">
-              <div><span className="overlay-setting-title">Скорость ответа</span><small>Быстро — короче, баланс — подробнее</small></div>
+              <div><span className="overlay-setting-title">Профиль полевого ответа</span><small>Оба режима ограничены коротким форматом; точный быстрее выходит к применимой норме</small></div>
               <div className="overlay-preset-grid compact">
-                <button className={overlayConfig.responseMode === "quick" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "quick" })}>Быстро</button>
-                <button className={overlayConfig.responseMode === "balanced" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "balanced" })}>Баланс</button>
+                <button className={overlayConfig.responseMode === "quick" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "quick" })}>Точный</button>
+                <button className={overlayConfig.responseMode === "balanced" ? "active" : ""} onClick={() => void onOverlayChange({ responseMode: "balanced" })}>Контекст</button>
               </div>
             </div>
             <SettingToggle label="Озвучивать ответ" hint="AI‑голос включается сразу после короткого ответа; системный голос умеет читать поток" active={overlayConfig.speakAnswers} onClick={() => void onOverlayChange({ speakAnswers: !overlayConfig.speakAnswers })}/>
@@ -1403,32 +1449,148 @@ function AtlasSettingsDrawer({
                 {[.55, .78, 1].map((volume) => <button key={volume} className={overlayConfig.speechVolume === volume ? "active" : ""} onClick={() => void onOverlayChange({ speechVolume: volume })}>{Math.round(volume * 100)}%</button>)}
               </div>
             </div>
+            <OverlayRange label="Системные сигналы" value={overlayConfig.cueVolume} min={0} max={1} step={.02} display={`${Math.round(overlayConfig.cueVolume * 100)}%`} onPreview={(value) => onOverlayPreview({ cueVolume: value })} onCommit={(value) => onOverlayChange({ cueVolume: value })}/>
             <div className="overlay-setting-block split">
               <div><span className="overlay-setting-title">Положение</span><small>На активном мониторе</small></div>
               <div className="overlay-preset-grid compact">
                 {(["top-right", "right", "bottom-right"] as const).map((anchor, index) => <button key={anchor} className={overlayConfig.anchor === anchor && overlayConfig.positionX === 1 ? "active" : ""} onClick={() => void onOverlayChange({ anchor, positionX: 1, positionY: [0, .5, 1][index] })}>{["Сверху", "Центр", "Снизу"][index]}</button>)}
               </div>
             </div>
-            <div className="overlay-setting-block overlay-visual-controls">
-              <div className="overlay-range-row"><span><b>Размер</b><small>{Math.round(overlayConfig.scale * 100)}%</small></span><input type="range" min="0.72" max="1.18" step="0.05" value={overlayConfig.scale} onChange={(event) => void onOverlayChange({ scale: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Размер текста</b><small>{Math.round(overlayConfig.fontScale * 100)}%</small></span><input type="range" min="0.82" max="1.28" step="0.04" value={overlayConfig.fontScale} onChange={(event) => void onOverlayChange({ fontScale: Number(event.target.value) })}/></div>
-              <div className="overlay-range-row"><span><b>Прозрачность</b><small>{Math.round(overlayConfig.opacity * 100)}%</small></span><input type="range" min="0.68" max="1" step="0.04" value={overlayConfig.opacity} onChange={(event) => void onOverlayChange({ opacity: Number(event.target.value) })}/></div>
+            <div className="atlas-position-presets" aria-label="Быстрый выбор положения">
+              <span className="overlay-setting-title">Точка привязки на экране</span>
+              <div>{([
+                [0, 0, "↖"], [.5, 0, "↑"], [1, 0, "↗"],
+                [0, .5, "←"], [.5, .5, "•"], [1, .5, "→"],
+                [0, 1, "↙"], [.5, 1, "↓"], [1, 1, "↘"],
+              ] as const).map(([x, y, label]) => <button key={`${x}-${y}`} className={Math.abs(overlayConfig.positionX - x) < .06 && Math.abs(overlayConfig.positionY - y) < .06 ? "active" : ""} onClick={() => void onOverlayChange({ positionX: x, positionY: y, anchor: y === 0 ? "top-right" : y === 1 ? "bottom-right" : "right" })}>{label}</button>)}</div>
+            </div>
+            <div className="atlas-settings-section-heading"><span>04</span><div><strong>Визуальный профиль</strong><small>Форма, цвет, движение и плотность интерфейса</small></div></div>
+            <div id="atlas-settings-visual" className="overlay-setting-block overlay-visual-controls atlas-settings-anchor">
+              <span className="overlay-setting-title">Готовые профили</span>
+              <div className="atlas-visual-preset-grid">
+                <button onClick={() => void onOverlayChange({ idleStyle: "orb", theme: "graphite", motion: "minimal", scale: .84, panelWidth: 410, answerHeight: 130, fontScale: 1, opacity: .98, showCitations: false, showLatency: false })}><b>Невидимый</b><small>Максимум FPS · минимум шума</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "bar", theme: "cosmos", motion: "balanced", scale: 1, panelWidth: 480, answerHeight: 160, fontScale: 1.12, opacity: .96, showCitations: true, showLatency: false })}><b>Полевой</b><small>Чёткий ежедневный режим</small></button>
+                <button onClick={() => void onOverlayChange({ idleStyle: "full", theme: "emerald", motion: "cinematic", scale: 1.08, panelWidth: 560, answerHeight: 220, fontScale: 1.24, opacity: .98, showCitations: true, showLatency: true })}><b>Командный</b><small>Крупная информативная панель</small></button>
+              </div>
+              <span className="overlay-setting-title">Форма в режиме ожидания</span>
+              <div className="atlas-idle-style-grid">
+                {([
+                  ["orb", "Импульс", "Минимальный квадрат"],
+                  ["bar", "Строка", "Статус и горячая клавиша"],
+                  ["full", "Панель", "Всегда полный интерфейс"],
+                ] as const).map(([value, label, hint]) => <button key={value} className={overlayConfig.idleStyle === value ? "active" : ""} onClick={() => void onOverlayChange({ idleStyle: value })}><i className={`idle-shape ${value}`}/><span><b>{label}</b><small>{hint}</small></span></button>)}
+              </div>
+              <span className="overlay-setting-title">Цветовой контур</span>
+              <div className="atlas-theme-grid">
+                {([
+                  ["cosmos", "Космос"], ["graphite", "Графит"], ["emerald", "Изумруд"], ["amber", "Янтарь"], ["crimson", "Кармин"],
+                ] as const).map(([value, label]) => <button key={value} className={`${value} ${overlayConfig.theme === value ? "active" : ""}`} onClick={() => void onOverlayChange({ theme: value })}><i/><span>{label}</span></button>)}
+              </div>
+              <div className="overlay-setting-block split atlas-motion-setting">
+                <div><span className="overlay-setting-title">Характер движения</span><small>Кинематографичный, спокойный или статичный</small></div>
+                <div className="overlay-preset-grid compact">
+                  {([['cinematic', 'Кино'], ['balanced', 'Мягко'], ['minimal', 'Минимум']] as const).map(([value, label]) => <button key={value} className={overlayConfig.motion === value ? "active" : ""} onClick={() => void onOverlayChange({ motion: value })}>{label}</button>)}
+                </div>
+              </div>
+              <OverlayRange label="Размер" value={overlayConfig.scale} min={.78} max={1.3} step={.01} display={`${Math.round(overlayConfig.scale * 100)}%`} onPreview={(value) => onOverlayPreview({ scale: value })} onCommit={(value) => onOverlayChange({ scale: value })}/>
+              <OverlayRange label="Ширина панели" value={overlayConfig.panelWidth} min={380} max={620} step={10} display={`${overlayConfig.panelWidth}px`} onPreview={(value) => onOverlayPreview({ panelWidth: value })} onCommit={(value) => onOverlayChange({ panelWidth: value })}/>
+              <OverlayRange label="Высота ответа" value={overlayConfig.answerHeight} min={96} max={300} step={4} display={`${overlayConfig.answerHeight}px`} onPreview={(value) => onOverlayPreview({ answerHeight: value })} onCommit={(value) => onOverlayChange({ answerHeight: value })}/>
+              <OverlayRange label="Размер текста" value={overlayConfig.fontScale} min={.9} max={1.6} step={.01} display={`${Math.round(overlayConfig.fontScale * 100)}%`} onPreview={(value) => onOverlayPreview({ fontScale: value })} onCommit={(value) => onOverlayChange({ fontScale: value })}/>
+              <OverlayRange label="Прозрачность" value={overlayConfig.opacity} min={.68} max={1} step={.01} display={`${Math.round(overlayConfig.opacity * 100)}%`} onPreview={(value) => onOverlayPreview({ opacity: value })} onCommit={(value) => onOverlayChange({ opacity: value })}/>
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
-            <SettingToggle label="Настройка прямо в GTA" hint="При активной GTA перетащите панель и используйте кнопки размера/шрифта на самом оверлее" active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
-            <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
+            <SettingToggle label="Настройка прямо в GTA" hint={`${overlayConfig.hotkey.replaceAll("Control", "CTRL")} + Tab — режим; стрелки — позиция; +/− — размер; [ ] — ширина; Enter — готово`} active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
+            <div className="atlas-settings-section-heading"><span>05</span><div><strong>Ответ и интеллект</strong><small>Что остаётся на экране и какие данные получает Atlas</small></div></div>
+            <div id="atlas-settings-intelligence" className="atlas-settings-anchor">
+              <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
+            </div>
+            <SettingToggle label="Показывать источники" hint="До двух коротких ссылок на использованные документы под ответом" active={overlayConfig.showCitations} onClick={() => void onOverlayChange({ showCitations: !overlayConfig.showCitations })}/>
+            <SettingToggle label="Показывать время ответа" hint="Техническая задержка отображается в нижней строке оверлея" active={overlayConfig.showLatency} onClick={() => void onOverlayChange({ showLatency: !overlayConfig.showLatency })}/>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Когда сворачивать ответ</span><small>Atlas в любом случае дождётся конца озвучки</small></div>
+              <div className="overlay-preset-grid compact">
+                <button className={overlayConfig.answerHold === "brief" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "brief" })}>Быстро</button>
+                <button className={overlayConfig.answerHold === "auto" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "auto" })}>Авто</button>
+                <button className={overlayConfig.answerHold === "pinned" ? "active" : ""} onClick={() => void onOverlayChange({ answerHold: "pinned" })}>Закрепить</button>
+              </div>
+            </div>
             {overlayConfig.screenContextEnabled && <div className="overlay-privacy-note"><Icon name="shield"/><p><strong>Приватный режим.</strong> Кадр уменьшается, отправляется только вместе с вашим запросом и не сохраняется T‑Mod.</p></div>}
             <div className="overlay-borderless-note"><i/><p><strong>Для GTA V выберите «Полноэкранный без рамки».</strong> Для OBS добавьте «Захват окна» → T‑Mod Atlas Overlay или используйте «Захват экрана»: обычный Game Capture GTA не видит внешние окна.</p></div>
           </fieldset>
         )}
         {overlayError && <output className="overlay-setting-error">{overlayError}</output>}
       </section>
+      </main>
     </div>
-  </aside></>;
+  </section>;
 }
 
 function SettingToggle({ label, hint, active, onClick }: { label: string; hint: string; active: boolean; onClick: () => void }) {
   return <button className="setting-row" onClick={onClick}><span><strong>{label}</strong><small>{hint}</small></span><i className={`toggle ${active ? "active" : ""}`}><b/></i></button>;
+}
+
+function OverlayRange({
+  label,
+  value,
+  min,
+  max,
+  step,
+  display,
+  onPreview,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  const dragging = useRef(false);
+  const committed = useRef(value);
+
+  useEffect(() => {
+    if (dragging.current) return;
+    draftRef.current = value;
+    committed.current = value;
+    setDraft(value);
+  }, [value]);
+
+  const update = (next: number) => {
+    const safe = Math.max(min, Math.min(max, next));
+    draftRef.current = safe;
+    setDraft(safe);
+    onPreview(safe);
+  };
+  const commit = () => {
+    const next = draftRef.current;
+    if (Math.abs(next - committed.current) < Number.EPSILON) return;
+    committed.current = next;
+    void onCommit(next);
+  };
+  const progress = ((draft - min) / Math.max(Number.EPSILON, max - min)) * 100;
+
+  return <label className="overlay-range-row">
+    <span><b>{label}</b><small>{display}</small></span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      style={{ "--range-progress": `${progress}%` } as CSSProperties}
+      onPointerDown={() => { dragging.current = true; }}
+      onChange={(event) => update(Number(event.currentTarget.value))}
+      onPointerUp={() => { dragging.current = false; commit(); }}
+      onPointerCancel={() => { dragging.current = false; commit(); }}
+      onKeyUp={commit}
+      onBlur={() => { dragging.current = false; commit(); }}
+    />
+  </label>;
 }
 
 function OverlayPlacementPreview({
@@ -1482,14 +1644,16 @@ function OverlayPlacementPreview({
       >
         <i/><i/><i/>
         <span
-          className="overlay-placement-chip"
+          className={`overlay-placement-chip theme-${config.theme} idle-${config.idleStyle}`}
           style={{
             left: `${draft.x * 100}%`,
             top: `${draft.y * 100}%`,
             transform: `translate(${-draft.x * 100}%, ${-draft.y * 100}%) scale(${config.scale})`,
             opacity: config.opacity,
+            width: config.idleStyle === "orb" ? 34 : config.idleStyle === "full" ? Math.min(190, Math.max(138, config.panelWidth * .34)) : 120,
+            height: config.idleStyle === "full" ? 56 : 32,
           }}
-        ><Icon name="atlas"/><b>ATLAS</b><small>{config.hotkey.replaceAll("Control", "CTRL")}</small></span>
+        ><Icon name="atlas"/>{config.idleStyle !== "orb" && <><b>ATLAS</b><small>{config.hotkey.replaceAll("Control", "CTRL")}</small></>}</span>
       </div>
     </div>
   );

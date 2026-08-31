@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$DatabasePath = "C:\Users\Admin\Documents\SGLDiscordBot\data\tmod.db"
 )
 

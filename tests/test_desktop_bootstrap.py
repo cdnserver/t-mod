@@ -133,12 +133,44 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             services = {item["id"]: item for item in payload["services"]}
             self.assertEqual(payload["viewer"]["account_tier"], "zero")
             self.assertFalse(services["reactor"]["enabled"])
-            self.assertTrue(services["atlas"]["enabled"])
+            self.assertFalse(services["atlas"]["enabled"])
             self.assertTrue(services["sgl"]["enabled"])
+            self.assertFalse(services["admin"]["enabled"])
         finally:
             await client.close()
 
-    async def test_desktop_login_accepts_zero_account_with_character(self) -> None:
+    async def test_atlas_entitlement_does_not_unlock_nuclear_reactor(self) -> None:
+        identity = TModAccountIdentity(id=99, display_name="Внешний пользователь")
+        principal = ConsensusWebPrincipal(
+            user_id=99,
+            guild_id=77,
+            display_name=identity.display_name,
+            csrf_token="csrf-zero",
+            member=identity,
+        )
+        storage.web_set_section_grant(
+            77,
+            99,
+            "atlas_ai",
+            enabled=True,
+            granted_by_id=1,
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                response = await client.get("/api/desktop/v1/bootstrap")
+            services = {item["id"]: item for item in (await response.json())["services"]}
+            self.assertTrue(services["atlas"]["enabled"])
+            self.assertFalse(services["admin"]["enabled"])
+        finally:
+            await client.close()
+
+    async def test_desktop_login_accepts_zero_account_without_character(self) -> None:
         credential = SimpleNamespace(user_id=99, session_version=1)
         result = SimpleNamespace(status="ok", credential=credential)
         app = create_consensus_web_app(self.bot, guild_id=77)
@@ -153,10 +185,6 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "modules.consensus_web.global_ban_storage.is_globally_banned",
                     return_value=False,
-                ),
-                patch(
-                    "modules.consensus_web.profile_storage.list_profile_characters",
-                    return_value=[SimpleNamespace(nickname="Zero User", static_id="99")],
                 ),
                 patch(
                     "modules.consensus_web.credential_storage.web_section_grants",

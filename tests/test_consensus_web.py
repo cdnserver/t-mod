@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from decimal import Decimal
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from pypdf import PdfReader
 
 import storage
+from modules.consensus_admin_web import _json_ready
 from modules.consensus_core import (
     LiveConsensusSession,
     LiveParticipant,
@@ -40,6 +42,8 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_entry_ticket,
     create_session_token,
+    request_public_host,
+    request_public_secure,
     resolve_principal,
     set_session_cookie,
 )
@@ -107,6 +111,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 "created_at": "2026-07-28T12:00:00+00:00",
             },
             stage="voting",
+            revision=3,
         )
         self.session.votes = {1: "yes", 4: "no"}
         active_sessions[77] = self.session
@@ -138,6 +143,19 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             member=member,  # type: ignore[arg-type]
         )
 
+    async def test_admin_json_boundary_normalizes_postgres_decimals(self) -> None:
+        payload = _json_ready({
+            "counts": Decimal("12"),
+            "finance": {"balance": Decimal("1250.75")},
+            "series": (Decimal("1"), Decimal("2.5")),
+            "checked_at": datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+        })
+
+        self.assertEqual(payload["counts"], 12)
+        self.assertEqual(payload["finance"]["balance"], 1250.75)
+        self.assertEqual(payload["series"], [1, 2.5])
+        self.assertEqual(payload["checked_at"], "2026-08-30T12:00:00+00:00")
+
     async def test_state_exposes_progress_but_not_live_vote_directions(self) -> None:
         state = await build_consensus_web_state(self.bot, 77)  # type: ignore[arg-type]
 
@@ -145,6 +163,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["session"]["voting"]["received"], 2)
         self.assertEqual(state["session"]["voting"]["expected"], 4)
         self.assertEqual(state["session"]["blocks"]["first"], "hidden")
+        self.assertEqual(state["session"]["integrity"]["status"], "nominal")
         self.assertEqual(len(state["queue"]), 1)
         rendered = str(state["session"]["participants"])
         self.assertNotIn("'vote':", rendered)
@@ -385,9 +404,25 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "paused": {"resume", "finish_session"},
             "after_result": {"next_bill", "finish_session"},
         }
+        bill = dict(self.session.current_bill or {})
         for stage, actions in expected.items():
             with self.subTest(stage=stage):
                 self.session.stage = stage  # type: ignore[assignment]
+                self.session.current_bill = None if stage in {"registration", "after_result"} else dict(bill)
+                self.session.pending_action = (
+                    {
+                        "kind": "vote",
+                        "forced": True,
+                        "actor_id": 1,
+                        "bill_id": int(bill["id"]),
+                        "claimed_at": "2026-07-28T12:00:00+00:00",
+                    }
+                    if stage == "finalizing"
+                    else None
+                )
+                self.session.previous_stage = "voting" if stage == "paused" else None
+                self.session.discussion_type = "Правовая" if stage == "discussion" else None
+                self.session.discussion_initiator_id = 4 if stage == "discussion" else None
                 self.assertTrue(
                     actions.issubset(
                         set(
@@ -401,6 +436,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.session.stage = "voting"
+        self.session.current_bill = dict(bill)
+        self.session.previous_stage = None
         observer = self._principal(user_id=4)
         self.assertEqual(
             consensus_web_capabilities(
@@ -410,6 +447,34 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             ),
             ["participant_vote", "request_discussion"],
         )
+
+    async def test_corrupt_roster_is_read_only_in_web_console(self) -> None:
+        self.session.participants[2].voting_block = "first"
+        principal = self._principal()
+
+        self.assertEqual(
+            consensus_web_capabilities(
+                mode="live",
+                session=self.session,
+                principal=principal,
+            ),
+            [],
+        )
+        with self.assertRaises(ConsensusWebCommandError) as raised:
+            await execute_consensus_web_command(  # type: ignore[arg-type]
+                self.bot,
+                SimpleNamespace(id=77),
+                principal,
+                mode="live",
+                action="finalize_vote",
+                session_key=self.session.session_key,
+                revision=self.session.revision,
+                bill_id=self.bill.id,
+                payload={"confirm": True},
+            )
+
+        self.assertEqual(raised.exception.code, "consensus_integrity_locked")
+        self.assertIn("voting_blocks_invalid", raised.exception.details["issues"])
 
     async def test_host_timer_accepts_custom_duration_and_replace_mode(self) -> None:
         timer = AsyncMock()
@@ -581,6 +646,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_discussion_composer_uses_current_allowed_roster(self) -> None:
         self.session.stage = "discussion"
         self.session.discussion_channel_id = 555
+        self.session.discussion_type = "Правовая"
+        self.session.discussion_initiator_id = 4
         self.session.discussion_allowed_user_ids = {4}
         principal = self._principal(user_id=4)
         self.assertEqual(
@@ -784,6 +851,35 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "https://atlas.tvr.lat/atlas?screen=ai",
         )
 
+        forwarded = SimpleNamespace(
+            path="/atlas",
+            query={},
+            host="tmod-discord-bot:8788",
+            rel_url="/atlas",
+            remote="127.0.0.1",
+            secure=False,
+            headers={
+                "X-TMod-Forwarded-Host": "tvr.lat",
+                "X-TMod-Forwarded-Proto": "https",
+            },
+        )
+        self.assertEqual(request_public_host(forwarded), "tvr.lat")  # type: ignore[arg-type]
+        self.assertTrue(request_public_secure(forwarded))  # type: ignore[arg-type]
+        self.assertEqual(
+            _canonical_surface_location(forwarded),  # type: ignore[arg-type]
+            "https://atlas.tvr.lat/atlas",
+        )
+
+        # A marker from a public/untrusted hop must not override the internal
+        # host, preventing clients from spoofing cookie scope or routing.
+        untrusted = SimpleNamespace(
+            host="tmod-discord-bot:8788",
+            remote="8.8.8.8",
+            secure=False,
+            headers={"X-TMod-Forwarded-Host": "atlas.tvr.lat"},
+        )
+        self.assertEqual(request_public_host(untrusted), "tmod-discord-bot:8788")  # type: ignore[arg-type]
+
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -818,6 +914,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Host": "reactor.tvr.lat"},
                 allow_redirects=False,
             )
+            admission = await client.get(
+                "/admission",
+                headers={"Host": "tvr.lat"},
+                allow_redirects=False,
+            )
         finally:
             await client.close()
 
@@ -832,6 +933,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
         self.assertEqual(ovr.status, 308)
         self.assertEqual(ovr.headers["Location"], "https://ovr.tvr.lat/ovr")
+        self.assertEqual(admission.status, 308)
+        self.assertEqual(
+            admission.headers["Location"],
+            "https://phx.tvr.lat/admission",
+        )
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)
@@ -992,8 +1098,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             payload = await registry.json()
             redesigned_assets = {
                 name: await client.get(f"/sgl/assets/{name}")
-                for name in ("site.css", "app-ui.css", "site.js", "app-ui.js")
+                for name in ("site.css", "app-ui.css", "site.js", "app-ui.js", "fonts.css")
             }
+            sgl_font = await client.get("/sgl/assets/fonts/inter-400-cyrillic.woff2")
+            rejected_font = await client.get("/sgl/assets/fonts/not-a-font.ttf")
 
         self.assertEqual(page.status, 200)
         self.assertIn("T-Mod SGL", page_text)
@@ -1002,6 +1110,10 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("discord.com", payload["public"]["discord_url"])
         self.assertIn("discord.com/users/", payload["public"]["secretary_url"])
         self.assertTrue(all(response.status == 200 for response in redesigned_assets.values()))
+        self.assertEqual(sgl_font.status, 200)
+        self.assertEqual(sgl_font.content_type, "font/woff2")
+        self.assertIn("immutable", sgl_font.headers.get("Cache-Control", ""))
+        self.assertEqual(rejected_font.status, 404)
 
     async def test_sgl_registry_uses_shared_administrator_identity(self) -> None:
         principal = self._principal(user_id=42)
@@ -1076,6 +1188,28 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNone(principal)
+
+    async def test_zero_account_session_does_not_require_character(self) -> None:
+        storage.configure_web_credential(77, 4242, "external.user", "12345678")
+        credential = storage.get_web_credential(77, 4242)
+        self.assertIsNotNone(credential)
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=4242,
+            session_version=int(credential.session_version),
+        )
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+
+        principal = await resolve_principal(  # type: ignore[arg-type]
+            request,
+            bot,
+            guild_id=77,
+        )
+
+        self.assertIsNotNone(principal)
+        self.assertEqual(principal.account_tier, "zero")
+        self.assertEqual(principal.user_id, 4242)
 
     async def test_shared_identity_does_not_bypass_admin_permissions(self) -> None:
         principal = self._principal(user_id=42)

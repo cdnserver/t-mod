@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-dev\.\d+)?$/);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-(?:dev\.\d+|p\d+))?$/);
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -55,6 +55,25 @@ describe("desktop release contract", () => {
     expect(main).toContain('ipcMain.handle("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
+  });
+
+  it("keeps login authoritative across transient network and bootstrap races", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    expect(main).toContain("Promise.any(requests)");
+    expect(main).toContain("bootstrapRevision += 1");
+    expect(main).toContain("return { ok: true, bootstrap: result }");
+    expect(main).toContain("AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length]");
+    expect(main).toContain('networkSession.cookies.on("changed"');
+    expect(main).toContain("scheduleAuthProjectionRefresh");
+    expect(main).toContain("isTModAuthenticationUrl(url)");
+    expect(main).toContain("reconcileActiveServiceAccess");
+    expect(renderer).toContain("result.ok && result.bootstrap");
+    expect(renderer).toContain("bootstrapRefreshPending.current = true");
+    expect(renderer).toContain("while (bootstrapRefreshPending.current)");
+    expect(renderer).toContain("Устанавливаем защищённую сессию");
+    expect(renderer).toContain("Восстанавливаем соединение с T-Mod");
+    expect(renderer).not.toContain("Нет соединения с сервером");
   });
 
   it("locks the complete service surface and supports Beta or Dev updates", () => {
@@ -125,7 +144,58 @@ describe("desktop release contract", () => {
     expect(main).toContain("atlasOverlay = undefined;");
     expect(controller).toContain('this.csrfToken = "";');
     expect(controller).toContain("this.activeThreadId = undefined;");
+    expect(controller).toContain("invalidateAccountSession(): void");
+    expect(main).toContain("atlasOverlay?.invalidateAccountSession()");
     expect(controller).toContain("this.clearHideTimer();");
+  });
+
+  it("ships cursor-free Atlas calibration and background animation protection", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const helper = readFileSync(resolve(root, "resources/atlas-overlay-hotkey.ps1"), "utf8");
+    const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
+    expect(main).toContain('appendSwitch("disable-renderer-backgrounding")');
+    expect(main).toContain('appendSwitch("disable-background-timer-throttling")');
+    expect(helper).toContain('[Console]::Out.WriteLine("edit")');
+    expect(helper).toContain('"move:left" = 0x25');
+    expect(helper).toContain('"width:up" = 0xDD');
+    expect(controller).toContain('line === "edit-done"');
+    expect(controller).toContain("reportSpeech(active: boolean)");
+    expect(controller).toContain("scheduleForegroundProbeRestart");
+    expect(controller).toContain("healOverlayVisibility");
+    expect(controller).toContain("scheduleOverlayWindowRecovery");
+    expect(controller).toContain("POST_SPEECH_HOLD_MS");
+    expect(controller).toContain("resolveAtlasOverlayDisplayArea");
+    expect(controller).toContain("GetProcessName(uint processId)");
+    expect(controller).toContain("if (!this.foregroundProbe) this.startForegroundProbe()");
+  });
+
+  it("shows Atlas initialization once per app launch and avoids expensive overlay blur", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const controller = readFileSync(resolve(root, "src/main/atlas-overlay-controller.ts"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/overlay/atlas-overlay.css"), "utf8");
+    expect(controller).toContain("private initializationPresented = false");
+    expect(controller).toContain("!this.initializationPresented");
+    expect(controller).not.toContain("initializedGameProcessId");
+    expect(controller).toContain("speechSynthesisPending");
+    expect(styles).not.toContain("backdrop-filter:");
+    expect(styles).toContain("contain: layout paint style");
+    expect(styles).toContain("zoom: var(--overlay-scale)");
+    expect(styles).not.toContain("transform: scale(var(--overlay-scale))");
+    expect(main).toContain("networkSession.setUserAgent(desktopUserAgent)");
+  });
+
+  it("keeps Atlas state transitions cinematic, legible, and GPU-friendly", () => {
+    const renderer = readFileSync(resolve(root, "src/renderer/overlay/AtlasOverlay.tsx"), "utf8");
+    const styles = readFileSync(resolve(root, "src/renderer/overlay/atlas-overlay.css"), "utf8");
+    expect(renderer).toContain('className="atlas-mark-star"');
+    expect(renderer).toContain('<i className="atlas-idle-signal"><b /><em /></i>');
+    expect(styles).toContain("@keyframes atlas-card-listening");
+    expect(styles).toContain("@keyframes atlas-card-answer");
+    expect(styles).toContain("@keyframes atlas-stage-searching");
+    expect(styles).toContain("@keyframes atlas-idle-ring");
+    expect(styles).toContain("transform: scaleY(var(--amplitude))");
+    expect(styles).toContain('[data-motion="minimal"] .atlas-overlay-body > *');
+    expect(styles).not.toContain("filter: blur(");
   });
 
   it("permits only in-memory Atlas voice audio inside the hardened overlay", () => {
@@ -186,10 +256,12 @@ describe("desktop release contract", () => {
     expect([...readFileSync(iconPath).subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   });
 
-  it("publishes installers without consuming Actions artifact storage", () => {
+  it("keeps Actions manual and publishes installers without artifact storage", () => {
     const workflow = readFileSync(resolve(workspaceRoot, ".github/workflows/desktop-release.yml"), "utf8");
     expect(workflow).toContain("Prepare public release");
     expect(workflow).toContain("gh release upload");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("\n  push:");
     expect(workflow).not.toContain("actions/upload-artifact");
     expect(workflow).not.toContain("actions/download-artifact");
   });

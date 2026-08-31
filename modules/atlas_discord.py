@@ -24,7 +24,10 @@ try:
     ATLAS_CHANNEL_ID = int(os.getenv("ATLAS_DISCORD_CHANNEL_ID", "1494602485485277194") or 0)
 except (TypeError, ValueError):
     ATLAS_CHANNEL_ID = 1494602485485277194
-_ATLAS_CALL_RE = re.compile(r"^\s*атлас\s*[,;:—–-]\s*(.+)$", re.IGNORECASE | re.DOTALL)
+_ATLAS_CALL_RE = re.compile(
+    r"^\s*атлас(?P<variant>\s*2)?\s*[,;:—–-]\s*(?P<question>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _chunks(value: str, limit: int = 3900) -> list[str]:
@@ -244,7 +247,9 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
             matched = _ATLAS_CALL_RE.match(str(message.content or ""))
             if matched is None:
                 return
-            question = matched.group(1).strip()
+            question = matched.group("question").strip()
+            if matched.group("variant"):
+                question = f"Атлас 2, {question}"
             if not await _atlas_access(message.guild.id, message.author):
                 await message.reply(
                     "Доступ к Atlas AI пока не выдан. Обратитесь к администратору.",

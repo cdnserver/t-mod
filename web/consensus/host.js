@@ -618,6 +618,12 @@ function renderTelemetry(data) {
   text("host-session-key", session?.key ? String(session.key).slice(0, 10) : "—");
   text("host-cache-state", String(data.cache_state || "live"));
   text("host-leader-name", session?.leader?.name || data.schedule?.host?.name || "—");
+  const integrity = String(session?.integrity?.status || "nominal");
+  text(
+    "host-integrity-state",
+    integrity === "critical" ? "СТОП" : integrity === "warning" ? "внимание" : "норма",
+  );
+  byId("host-integrity-state").dataset.status = integrity;
   const canSettings = Boolean((data.capabilities || []).includes("update_session_settings") && data.schedule);
   byId("host-session-settings").disabled = commanding || !canSettings;
 }

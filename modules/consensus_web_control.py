@@ -13,6 +13,7 @@ import discord
 from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_core import ConsensusStateError, LiveConsensusSession
 from modules.consensus_finalization_recovery import retry_pending_finalization_once
+from modules.consensus_health import assess_consensus_health
 from modules.consensus_runtime import (
     active_sessions,
     coordinator,
@@ -159,6 +160,10 @@ def consensus_web_capabilities(
     principal: ConsensusWebPrincipal | None,
 ) -> list[str]:
     if principal is None:
+        return []
+    if session is not None and assess_consensus_health(session).critical:
+        # A corrupt generation is read-only in the ordinary console. Recovery
+        # remains available through the dedicated audited administration path.
         return []
     stage = str(getattr(session, "stage", "") or "")
     if mode == "simulation":
@@ -420,6 +425,14 @@ async def _execute_live(
             "session_missing",
             "Активный консенсус не найден.",
             status=409,
+        )
+    health = assess_consensus_health(session)
+    if health.critical:
+        raise ConsensusWebCommandError(
+            "consensus_integrity_locked",
+            "Управление остановлено проверкой целостности. Откройте пульт восстановления.",
+            status=409,
+            details={"issues": [item.code for item in health.critical]},
         )
     if action == "participant_vote":
         _validate_ballot_generation(
@@ -934,6 +947,14 @@ async def _execute_simulation(
             status=409,
         )
     session = simulation.session
+    health = assess_consensus_health(session)
+    if health.critical:
+        raise ConsensusWebCommandError(
+            "consensus_integrity_locked",
+            "Симуляция остановлена проверкой целостности. Запустите её заново.",
+            status=409,
+            details={"issues": [item.code for item in health.critical]},
+        )
     _validate_generation(
         session,
         session_key=session_key,

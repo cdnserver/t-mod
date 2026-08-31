@@ -142,6 +142,20 @@
             </div>
 
             <aside class="case-side-column">
+              <article id="case-admission-card" class="intel-card admission-source-card" hidden>
+                <header>
+                  <div><small>PHOENIX · ПЕРВОИСТОЧНИК</small><h2>Заявка кандидата</h2></div>
+                  <span id="case-admission-status">ОВР</span>
+                </header>
+                <div id="case-admission-characters" class="admission-characters"></div>
+                <dl class="admission-copy">
+                  <div><dt>Мотивация</dt><dd id="case-admission-motivation">—</dd></div>
+                  <div><dt>Предполагаемый вклад</dt><dd id="case-admission-contribution">—</dd></div>
+                  <div><dt>Доступность</dt><dd id="case-admission-availability">—</dd></div>
+                </dl>
+                <div id="case-admission-traits" class="admission-traits"></div>
+                <a id="case-admission-forum" class="admission-forum" href="#" target="_blank" rel="noopener">Открыть форумный профиль ↗</a>
+              </article>
               <article class="intel-card control-card">
                 <small>УПРАВЛЕНИЕ РАССЛЕДОВАНИЕМ</small>
                 <div id="case-stage" class="case-stage"></div>
@@ -259,5 +273,6 @@
 
     <div id="ovr-busy" class="ovr-busy" hidden><div><i></i><strong>Синхронизируем защищённый контур</strong><span>Не закрывайте страницу</span></div></div>
     <div id="ovr-toast" class="ovr-toast" hidden></div>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

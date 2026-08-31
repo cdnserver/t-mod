@@ -27,11 +27,15 @@ from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
 from modules.error_inbox import setup_error_inbox_runtime
+from modules.discord_interactions import is_expired_interaction_error
 from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
 from modules.games_discord import setup_games_discord
+from modules.admission import setup_admission
+from modules.global_log_discord import setup_global_log_discord
+from modules.global_log_runtime import activity_event, emit_global_event, start_global_log_runtime
 from persistence.database_guard import ensure_startup_recovery_point
 
 
@@ -250,6 +254,7 @@ def queue_activity_write(payload: dict[str, Any]) -> None:
     3-second acknowledgement window and every command/modal appears to hang.
     """
     global _activity_dropped
+    emit_global_event(activity_event(payload))
     queue = _activity_queue
     if queue is None:
         try:
@@ -458,6 +463,17 @@ class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
         setup_error_inbox_runtime(self.loop)
+        try:
+            health = await start_global_log_runtime(self.loop)
+            print(f"Global log runtime: {health}", flush=True)
+        except Exception as exc:
+            # Observability must never become a single point of failure for the
+            # bot. The error remains visible in the console and /api/health.
+            print(
+                f"Global log runtime failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         # Expose the health endpoint before Discord READY and command sync.
         # Discord-dependent API routes already report a controlled temporary
         # unavailability while the guild cache is still warming up.
@@ -748,6 +764,16 @@ async def activity(
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    if is_expired_interaction_error(error):
+        # Discord can expire an interaction before a packet reaches the bot during
+        # reconnects. There is no valid response channel left and retrying only
+        # creates a second exception. The command can safely be invoked again.
+        print(
+            f"Expired Discord interaction ignored: "
+            f"{getattr(interaction.command, 'qualified_name', 'unknown')}",
+            file=sys.stderr,
+        )
+        return
     error_id = int(utc_now().timestamp())
     print(t("console.interaction_failed", error=f"interaction_error_{error_id}: {error}"), file=sys.stderr)
     traceback.print_exception(type(error), error, error.__traceback__)
@@ -1009,7 +1035,8 @@ async def on_ready() -> None:
 
     print(t("console.ready", user=user, user_id=user.id))
     print(t("console.persistent_localization", path=LOCALIZATION_FILE))
-    print(t("console.db_path", path=storage.DATABASE_FILE))
+    database_label = "PostgreSQL (private service)" if storage.postgres_enabled() else storage.DATABASE_FILE
+    print(t("console.db_path", path=database_label))
     print(f"Activity queue max size: {ACTIVITY_QUEUE_MAXSIZE}; dropped: {_activity_dropped}")
     print(t("console.tracking_scope", track_all=TRACK_ALL_MEMBERS, role_id=TRACK_ONLY_ROLE_ID))
     print(
@@ -1052,6 +1079,10 @@ boot_module("RU15 Market")
 setup_market(bot, remember_command_activity)
 boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
+boot_module("Phoenix Admission")
+setup_admission(bot)
+boot_module("Global Log")
+setup_global_log_discord(bot)
 boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")
@@ -1071,7 +1102,9 @@ setup_zigmund(bot, remember_command_activity)
 
 if __name__ == "__main__":
     runtime_token = require_discord_token()
-    if storage.DATABASE_FILE.exists() and storage.DATABASE_FILE.stat().st_size > 0:
+    if storage.postgres_enabled() or (
+        storage.DATABASE_FILE.exists() and storage.DATABASE_FILE.stat().st_size > 0
+    ):
         boot_line("[DB] Creating validated startup recovery point ...")
         try:
             startup_backup = ensure_startup_recovery_point(
@@ -1092,9 +1125,10 @@ if __name__ == "__main__":
                 f"the safety budget ({type(exc).__name__}: {exc}). "
                 "Startup will continue; scheduled protection will retry later."
             )
-    boot_line("[DB] SQLite migration check ...")
+    backend_name = "PostgreSQL" if storage.postgres_enabled() else "SQLite"
+    boot_line(f"[DB] {backend_name} migration check ...")
     storage.init_db()
-    boot_line(f"[DB] Ready: {storage.DATABASE_FILE}")
+    boot_line(f"[DB] Ready: {backend_name}")
     migration = storage.migrate_legacy_activity_json()
     if migration.get("status") == "imported":
         print(t("console.db_migration", events=migration.get("events", 0), users=migration.get("users", 0), counters=migration.get("counters", 0)))

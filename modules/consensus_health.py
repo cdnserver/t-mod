@@ -94,6 +94,52 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "Подтвердить ведущего или передать ведение подтверждённому председателю.",
         )
 
+    mismatched_roster_ids = {
+        int(roster_id)
+        for roster_id, participant in session.participants.items()
+        if int(roster_id) != int(participant.user_id)
+    }
+    if mismatched_roster_ids:
+        add(
+            "roster_identity_mismatch",
+            "critical",
+            "Идентификаторы участников не совпадают с замороженным составом.",
+            "Не принимать голоса; восстановить состав из последнего корректного снимка.",
+        )
+    invalid_participant_roles = {
+        int(participant.user_id)
+        for participant in session.participants.values()
+        if participant.kind not in {"chair", "senator"}
+        or (participant.permanent and participant.kind != "chair")
+        or (participant.voting_block is not None and participant.kind != "chair")
+    }
+    if invalid_participant_roles:
+        add(
+            "roster_role_invalid",
+            "critical",
+            "В составе найдена несовместимая роль, блок голоса или право вето.",
+            "Не продолжать заседание до сверки состава и прав участников.",
+        )
+    occupied_blocks: dict[str, int] = {}
+    duplicate_blocks: set[str] = set()
+    for participant in session.participants.values():
+        block = participant.voting_block
+        if block is None:
+            continue
+        if block not in {"first", "second", "third"}:
+            duplicate_blocks.add(str(block))
+        elif block in occupied_blocks:
+            duplicate_blocks.add(block)
+        else:
+            occupied_blocks[block] = int(participant.user_id)
+    if duplicate_blocks:
+        add(
+            "voting_blocks_invalid",
+            "critical",
+            "Личные блоки председателей назначены неоднозначно.",
+            "Остановить подсчёт и восстановить закрепление трёх блоков из состава заседания.",
+        )
+
     needs_bill = session.stage in {
         "presentation",
         "voting",
@@ -203,6 +249,13 @@ def assess_consensus_health(session: LiveConsensusSession) -> ConsensusHealthRep
             "critical",
             "Один законопроект присутствует в итогах несколько раз.",
             "Не публиковать сводку; сверить идемпотентную транзакцию результата.",
+        )
+    if current_bill_id is not None and current_bill_id in valid_result_ids:
+        add(
+            "current_bill_already_resolved",
+            "critical",
+            "Текущий законопроект уже присутствует среди результатов заседания.",
+            "Не открывать повторный воут; сверить очередь и последний атомарный итог.",
         )
     for result in session.results:
         result_bill_id = as_int(result.bill_id)

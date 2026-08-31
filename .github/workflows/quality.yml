@@ -13,6 +13,78 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container:
+    name: Production container · build and runtime smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build --pull --tag tmod-production:test .
+
+      - name: Verify split runtime and PostgreSQL tools
+        run: |
+          docker run --rm --entrypoint python tmod-production:test -c "import web_gateway, worker_main"
+          docker run --rm --entrypoint sh tmod-production:test -c 'pg_dump --version | grep -F "PostgreSQL) 17." && pg_restore --version | grep -F "PostgreSQL) 17."'
+
+  control-center:
+    name: Native Control Center · build and self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.424"
+
+      - name: Generate embedded backend
+        run: python scripts/build_tmod_windows_bundles.py
+
+      - name: Validate Windows launch scripts
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "launch_tmod_guarded_windows.ps1",
+            "safe_update_windows.ps1",
+            "watch_tmod_updates_windows.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "${script}: $($_.Message)" }
+              throw "PowerShell parse failed: $script"
+            }
+          }
+
+      - name: Build and run native self-test
+        shell: pwsh
+        run: |
+          dotnet build control-center/TMod.Control/TMod.Control.csproj -c Release --nologo
+          dotnet run --project control-center/TMod.Control/TMod.Control.csproj -c Release --no-build -- --self-test
+
+      - name: Publish one self-contained Windows EXE
+        shell: pwsh
+        run: |
+          dotnet publish control-center/TMod.Control/TMod.Control.csproj -c Release -r win-x64 --self-contained true -o control-center/publish --nologo
+          $files = @(Get-ChildItem control-center/publish -File)
+          if ($files.Count -ne 1 -or $files[0].Extension -ne '.exe') { throw 'Expected exactly one EXE' }
+
   test:
     name: Python 3.12 · security, lint and test
     runs-on: ubuntu-latest
@@ -58,7 +130,7 @@ jobs:
           python -m pip_audit --local --progress-spinner off --ignore-vuln CVE-2025-69277
 
       - name: Compile production and tests
-        run: python -m compileall -q main.py storage.py localization.py modules persistence scripts minecraft-supervisor tests
+        run: python -m compileall -q main.py web_gateway.py worker_main.py storage.py localization.py modules persistence scripts minecraft-supervisor tests
 
       - name: Lint Python
         run: python -m ruff check .
@@ -71,3 +143,43 @@ jobs:
 
       - name: Run unit, contract and architecture tests
         run: python -m unittest discover -s tests -v
+
+  postgres:
+    name: PostgreSQL 17 · schema and SQLite migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: tmod_ci
+          POSTGRES_USER: tmod
+          POSTGRES_PASSWORD: tmod-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tmod -d tmod_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TMOD_POSTGRES_INTEGRATION: "1"
+      TMOD_DATABASE_BACKEND: postgresql
+      DATABASE_URL: postgresql://tmod:tmod-ci-password@127.0.0.1:5432/tmod_ci
+      DISCORD_TOKEN: test-token-not-used
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Validate schema, repositories and lossless SQLite import
+        run: python scripts/postgres_integration_test.py

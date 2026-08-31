@@ -114,6 +114,8 @@ export class IncrementalRussianSpeech {
   private rate = 1.08;
   private volume = 0.86;
   private voiceName = "";
+  private pendingUtterances = 0;
+  private activityListener?: (active: boolean) => void;
   private readonly synthesis: SpeechSynthesis | undefined;
 
   constructor(synthesis = globalThis.speechSynthesis) {
@@ -126,6 +128,11 @@ export class IncrementalRussianSpeech {
     this.volume = Math.max(0, Math.min(1, options.volume));
     this.voiceName = String(options.voiceName || "");
     if (!this.enabled) this.cancel();
+  }
+
+  setActivityListener(listener?: (active: boolean) => void): void {
+    this.activityListener = listener;
+    listener?.(this.pendingUtterances > 0);
   }
 
   append(delta: string): void {
@@ -141,6 +148,8 @@ export class IncrementalRussianSpeech {
 
   cancel(): void {
     this.buffer = "";
+    this.pendingUtterances = 0;
+    this.activityListener?.(false);
     this.synthesis?.cancel();
   }
 
@@ -156,11 +165,7 @@ export class IncrementalRussianSpeech {
     return new Promise((resolve) => {
       phrases.forEach((phrase, index) => {
         const utterance = this.createUtterance(phrase);
-        if (index === phrases.length - 1) {
-          utterance.onend = () => resolve();
-          utterance.onerror = () => resolve();
-        }
-        this.synthesis?.speak(utterance);
+        this.queueUtterance(utterance, index === phrases.length - 1 ? resolve : undefined);
       });
     });
   }
@@ -176,7 +181,7 @@ export class IncrementalRussianSpeech {
       if (!boundary) return;
       const phrase = sanitizeOverlaySpeech(this.buffer.slice(0, boundary));
       this.buffer = this.buffer.slice(boundary);
-      if (phrase) this.synthesis?.speak(this.createUtterance(phrase.slice(0, MAX_STREAMING_PHRASE_LENGTH)));
+      if (phrase) this.queueUtterance(this.createUtterance(phrase.slice(0, MAX_STREAMING_PHRASE_LENGTH)));
       if (!force) return;
     }
   }
@@ -225,5 +230,25 @@ export class IncrementalRussianSpeech {
       voice.voiceURI === this.voiceName || voice.name === this.voiceName,
     ) || voices.find((voice) => /^ru(?:-|_)/i.test(voice.lang)) || null;
     return utterance;
+  }
+
+  private queueUtterance(utterance: SpeechSynthesisUtterance, settled?: () => void): void {
+    if (!this.synthesis) {
+      settled?.();
+      return;
+    }
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      this.pendingUtterances = Math.max(0, this.pendingUtterances - 1);
+      if (!this.pendingUtterances) this.activityListener?.(false);
+      settled?.();
+    };
+    utterance.onend = finish;
+    utterance.onerror = finish;
+    this.pendingUtterances += 1;
+    if (this.pendingUtterances === 1) this.activityListener?.(true);
+    this.synthesis.speak(utterance);
   }
 }

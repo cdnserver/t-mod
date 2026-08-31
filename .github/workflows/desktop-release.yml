@@ -1,11 +1,8 @@
 name: T-Mod Desktop release
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "desktop-v*"
+  # Installers are built on trusted T-Mod machines.  Keep this workflow as an
+  # explicit emergency fallback; ordinary commits and tags consume no Actions.
   workflow_dispatch:
     inputs:
       tag:

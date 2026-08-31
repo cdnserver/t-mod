@@ -55,6 +55,7 @@ from modules.ovr_artifacts import (
     generate_investigation_report,
 )
 from modules.technical_log import log_technical_event
+from modules.admission import process_ovr_decision
 from modules.reactor_legislation import (
     ReactorLegislationError,
     cancel_workspace,
@@ -75,6 +76,7 @@ from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
 from persistence import market_repository as market_storage
 from persistence import ovr_repository as ovr_storage
+from persistence import admission_repository as admission_storage
 from persistence import outbox_repository as outbox_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
@@ -1089,6 +1091,29 @@ def register_reactor_web_routes(
                         ),
                         route="#my-bills",
                     )
+                    guild = bot.get_guild(int(guild_id))
+                    if guild is not None:
+                        asyncio.create_task(
+                            log_technical_event(
+                                bot,
+                                guild,
+                                title="Модерация законопроекта",
+                                details=(
+                                    f"Проект: **{workspace.get('title') or 'Без названия'}**\n"
+                                    f"Решение: **{moderation_state or 'обновлено'}**\n"
+                                    f"Модератор: **{actor_display}** (`{int(principal.user_id)}`)\n"
+                                    f"Комментарий: {str((workspace.get('moderation') or {}).get('note') or '—')[:1200]}"
+                                ),
+                                level="info",
+                                dedupe_key=(
+                                    f"bill-moderation:{int(workspace['id'])}:"
+                                    f"{int((workspace.get('moderation') or {}).get('round') or 0)}"
+                                ),
+                                cooldown_seconds=0,
+                                component="legislation",
+                            ),
+                            name=f"bill-moderation-audit-{int(workspace['id'])}",
+                        )
                 member_home_cache.invalidate()
                 legislation_cache.invalidate()
                 return web.json_response({"ok": True, "workspace": workspace})
@@ -1157,6 +1182,11 @@ def register_reactor_web_routes(
                     int(requested_case_id),
                     guild_id=int(guild_id),
                 )
+                detail["admission"] = await asyncio.to_thread(
+                    admission_storage.application_for_case,
+                    int(requested_case_id),
+                    guild_id=int(guild_id),
+                )
             except ValueError as exc:
                 return web.json_response(
                     {"error": str(exc), "message": "Расследование не найдено."},
@@ -1199,6 +1229,50 @@ def register_reactor_web_routes(
         actor_display = str(
             getattr(actor_profile, "preferred_name", "") or principal.display_name
         )
+
+        async def enriched(detail: dict[str, Any]) -> dict[str, Any]:
+            selected_case = detail.get("case") or {}
+            selected_case_id = int(selected_case.get("id") or 0)
+            if selected_case_id > 0:
+                detail["admission"] = await asyncio.to_thread(
+                    admission_storage.application_for_case,
+                    selected_case_id,
+                    guild_id=int(guild_id),
+                )
+            return detail
+
+        def audit_ovr(
+            *,
+            selected_action: str,
+            selected_case_id: int,
+            revision: int = 0,
+            extra: str = "",
+            level: str = "info",
+        ) -> None:
+            guild = bot.get_guild(int(guild_id))
+            if guild is None:
+                return
+            asyncio.create_task(
+                log_technical_event(
+                    bot,
+                    guild,
+                    title="ОВР · действие в расследовании",
+                    details=(
+                        f"Дело: **{int(selected_case_id)}**\n"
+                        f"Действие: **{selected_action}**\n"
+                        f"Сотрудник: **{actor_display}** (`{int(principal.user_id)}`)"
+                        + (f"\n{extra}" if extra else "")
+                    ),
+                    level=level,
+                    dedupe_key=(
+                        f"ovr:{int(selected_case_id)}:{selected_action}:"
+                        f"{int(revision)}"
+                    ),
+                    cooldown_seconds=0,
+                    component="ovr",
+                ),
+                name=f"ovr-audit-{int(selected_case_id)}-{selected_action}",
+            )
         try:
             if action == "create":
                 case = await asyncio.to_thread(
@@ -1222,6 +1296,12 @@ def register_reactor_web_routes(
                     actor_id=int(principal.user_id),
                     actor_display=actor_display,
                 )
+                audit_ovr(
+                    selected_action="create",
+                    selected_case_id=int(case["id"]),
+                    revision=int(case.get("revision") or 1),
+                    extra=f"Кандидат: **{case.get('first_name')} {case.get('last_name')}**",
+                )
                 return web.json_response({"ok": True, "case": case})
             case_id = int(body.get("case_id") or 0)
             expected_revision = int(body.get("expected_revision") or 0)
@@ -1242,6 +1322,8 @@ def register_reactor_web_routes(
                     source_url=str(body.get("source_url") or ""),
                     reliability=str(body.get("reliability") or "unrated"),
                 )
+                detail = await enriched(detail)
+                audit_ovr(selected_action=action, selected_case_id=case_id, revision=int(detail["case"]["revision"]))
                 return web.json_response({"ok": True, "detail": detail})
             if action == "material_status":
                 detail = await asyncio.to_thread(
@@ -1251,6 +1333,8 @@ def register_reactor_web_routes(
                     material_id=int(body.get("material_id") or 0),
                     status=str(body.get("status") or "new"),
                 )
+                detail = await enriched(detail)
+                audit_ovr(selected_action=action, selected_case_id=case_id, revision=int(detail["case"]["revision"]))
                 return web.json_response({"ok": True, "detail": detail})
             if action == "relation_add":
                 detail = await asyncio.to_thread(
@@ -1264,6 +1348,8 @@ def register_reactor_web_routes(
                     details=str(body.get("details") or ""),
                     confidence=str(body.get("confidence") or "unrated"),
                 )
+                detail = await enriched(detail)
+                audit_ovr(selected_action=action, selected_case_id=case_id, revision=int(detail["case"]["revision"]))
                 return web.json_response({"ok": True, "detail": detail})
             if action == "task_add":
                 assignee_id = (
@@ -1282,6 +1368,8 @@ def register_reactor_web_routes(
                     assignee_display=str(body.get("assignee_display") or ""),
                     due_at=str(body.get("due_at") or ""),
                 )
+                detail = await enriched(detail)
+                audit_ovr(selected_action=action, selected_case_id=case_id, revision=int(detail["case"]["revision"]))
                 return web.json_response({"ok": True, "detail": detail})
             if action == "task_status":
                 detail = await asyncio.to_thread(
@@ -1291,6 +1379,8 @@ def register_reactor_web_routes(
                     task_id=int(body.get("task_id") or 0),
                     status=str(body.get("status") or "todo"),
                 )
+                detail = await enriched(detail)
+                audit_ovr(selected_action=action, selected_case_id=case_id, revision=int(detail["case"]["revision"]))
                 return web.json_response({"ok": True, "detail": detail})
             case = await asyncio.to_thread(
                 ovr_storage.update_case,
@@ -1323,12 +1413,65 @@ def register_reactor_web_routes(
                     if "classification" in body else None
                 ),
             )
+            pipeline_sync = "not_applicable"
+            if action in {"approve", "deny"}:
+                guild = bot.get_guild(int(guild_id))
+                if guild is None:
+                    pipeline_sync = "pending"
+                else:
+                    try:
+                        application = await process_ovr_decision(
+                            bot,
+                            guild,
+                            case_id=case_id,
+                            approved=action == "approve",
+                            actor_id=int(principal.user_id),
+                            actor_display=actor_display,
+                            note=str(body.get("note") or ""),
+                        )
+                        pipeline_sync = "complete" if application is not None else "not_applicable"
+                    except Exception as exc:  # noqa: BLE001 - OVR decision is already durable
+                        pipeline_sync = "pending"
+                        await log_technical_event(
+                            bot,
+                            guild,
+                            title="Phoenix · решение ОВР ожидает синхронизации",
+                            details=(
+                                f"Дело: **{case_id}**\n"
+                                f"Решение ОВР сохранено. Цепочка вступления будет "
+                                f"повторена автоматически.\n"
+                                f"Ошибка: `{type(exc).__name__}: {str(exc)[:900]}`"
+                            ),
+                            dedupe_key=f"admission-ovr-sync:{case_id}",
+                            cooldown_seconds=300,
+                            exception=exc,
+                            component="admission",
+                        )
             detail = await asyncio.to_thread(
                 ovr_storage.case_detail,
                 int(case["id"]),
                 guild_id=int(guild_id),
             )
-            return web.json_response({"ok": True, "case": case, "detail": detail})
+            detail = await enriched(detail)
+            audit_ovr(
+                selected_action=action,
+                selected_case_id=case_id,
+                revision=int(case.get("revision") or 0),
+                extra=(
+                    f"Решение: **{'допущен' if action == 'approve' else 'не допущен'}**\n"
+                    f"Синхронизация Phoenix: **{pipeline_sync}**"
+                    if action in {"approve", "deny"}
+                    else ""
+                ),
+            )
+            return web.json_response(
+                {
+                    "ok": True,
+                    "case": case,
+                    "detail": detail,
+                    "pipeline_sync": pipeline_sync,
+                }
+            )
         except (TypeError, ValueError) as exc:
             code = str(exc)
             messages = {
@@ -1538,7 +1681,9 @@ def register_reactor_web_routes(
                 if str(row.get("section") or "").strip()
             }
         )
-        admin_access = administrator or bool(granted_sections)
+        # Atlas AI is a product entitlement, not a grant to the Nuclear
+        # Reactor. Only actual administrative section grants expose it.
+        admin_access = administrator or bool(set(granted_sections) - {"atlas_ai"})
         ovr_access = administrator or "ovr" in granted_sections
         atlas_access = administrator or "atlas_ai" in granted_sections
 
@@ -1580,7 +1725,13 @@ def register_reactor_web_routes(
                     reason=member_reason,
                 ),
                 service("consensus", "Consensus", "https://consensus.tvr.lat/"),
-                service("atlas", "Atlas", "https://atlas.tvr.lat/"),
+                service(
+                    "atlas",
+                    "Atlas",
+                    "https://atlas.tvr.lat/",
+                    enabled=atlas_access,
+                    reason="Доступ к Atlas AI выдаётся администраторами.",
+                ),
                 service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
                 service(
                     "ovr",

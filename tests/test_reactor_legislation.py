@@ -181,6 +181,59 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(closed["status"], "submitted")
         self.assertEqual(approved["moderation"]["status"], "approved")
 
+    async def test_approval_does_not_conflict_with_authors_new_draft(self) -> None:
+        """An author may start a new draft while an older one is in moderation.
+
+        The partial one-open-workspace index must not make the moderator's
+        transition of the old workspace to ``submitted`` fail in that case.
+        """
+
+        reviewed, _ = create_workspace(77, 101, "Автор")
+        reviewed = save_workspace(77, 101, self.complete_payload(reviewed))
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+
+        with (
+            patch.dict(active_sessions, {}, clear=True),
+            patch(
+                "modules.reactor_legislation.refresh_bill_workspace_panel",
+                AsyncMock(),
+            ),
+            patch("modules.reactor_legislation.wake_delivery_worker"),
+        ):
+            queued, _ = await publish_workspace(
+                bot,
+                77,
+                101,
+                "Автор",
+                {
+                    "workspace_id": reviewed["id"],
+                    "expected_revision": reviewed["revision"],
+                    "confirmed": True,
+                },
+            )
+            new_draft, created = create_workspace(77, 101, "Автор")
+            approved = await moderate_workspace(
+                bot,
+                77,
+                999,
+                "Модератор",
+                {
+                    "workspace_id": queued["id"],
+                    "expected_revision": queued["revision"],
+                    "decision": "approved",
+                    "note": "Проверено",
+                },
+            )
+
+        self.assertTrue(created)
+        self.assertEqual(approved["moderation"]["status"], "approved")
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(queued["id"])["status"], "submitted"
+        )
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(new_draft["id"])["status"], "draft"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

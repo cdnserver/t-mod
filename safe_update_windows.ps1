@@ -1,10 +1,15 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$ProjectDir,
-    [string]$PersistentDir = "C:\Users\Admin\Documents\SGLDiscordBot",
+    [string]$PersistentDir = $(if ($env:TMOD_PERSISTENT_DIR) {
+        $env:TMOD_PERSISTENT_DIR
+    } else {
+        Join-Path $env:USERPROFILE "Documents\SGLDiscordBot"
+    }),
     [string]$Branch = "main",
     [string]$Remote = "origin",
     [ValidateRange(15, 600)][int]$GitTimeoutSeconds = 90,
-    [ValidateRange(60, 3600)][int]$BackupTimeoutSeconds = 600
+    [ValidateRange(60, 3600)][int]$BackupTimeoutSeconds = 600,
+    [ValidateRange(30, 7200)][int]$CommandTimeoutSeconds = 900
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +27,9 @@ $UpdateMutex = New-Object System.Threading.Mutex($false, "Local\TModSafeUpdate")
 $MutexAcquired = $UpdateMutex.WaitOne(0)
 if (-not $MutexAcquired) {
     Write-Host "[SAFE UPDATE] Another T-Mod update or startup is already running." -ForegroundColor Yellow
-    exit 0
+    # 75 is EX_TEMPFAIL: the guarded launcher must start the installed
+    # runtime instead of interpreting contention as a successful update.
+    exit 75
 }
 
 function Write-UpdateStatus {
@@ -57,6 +64,68 @@ function Invoke-Native {
     if ($LASTEXITCODE -ne 0) {
         throw "$File failed with exit code $LASTEXITCODE"
     }
+}
+
+function ConvertTo-ProcessArgument([string]$Value) {
+    if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    # All current paths are ordinary Windows paths (no trailing slash), so
+    # this quoting is compatible with cmd.exe, Docker CLI and PowerShell 5.1.
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Invoke-BoundedNative {
+    <#
+      Run a native command without inheriting the caller's unbounded wait.
+      taskkill /T /F is deliberately used on timeout because Docker/Compose
+      and test runners spawn child processes that must be terminated together.
+      This avoids ProcessStartInfo.ArgumentList, which is unavailable on
+      Windows PowerShell 5.1/.NET Framework.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$File,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $process.StartInfo.FileName = $File
+    $process.StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $false
+    if ($WorkingDirectory) { $process.StartInfo.WorkingDirectory = $WorkingDirectory }
+    try {
+        if (-not $process.Start()) {
+            return [pscustomobject]@{ exit_code = 125; timed_out = $false }
+        }
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Write-Host "[SAFE UPDATE] $File exceeded ${TimeoutSeconds}s; terminating its process tree." -ForegroundColor Yellow
+            & taskkill.exe /PID $process.Id /T /F *> $null
+            $process.WaitForExit(5000) | Out-Null
+            return [pscustomobject]@{ exit_code = 124; timed_out = $true }
+        }
+        return [pscustomobject]@{ exit_code = $process.ExitCode; timed_out = $false }
+    }
+    catch {
+        Write-Host "[SAFE UPDATE] Could not start $File`: $($_.Exception.Message)" -ForegroundColor Yellow
+        return [pscustomobject]@{ exit_code = 125; timed_out = $false }
+    }
+    finally { $process.Dispose() }
+}
+
+function Invoke-BoundedNativeOrThrow {
+    param(
+        [Parameter(Mandatory = $true)][string]$File,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [string]$FailureMessage = "Native command failed"
+    )
+    $result = Invoke-BoundedNative -File $File -Arguments $Arguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
+    if ($result.timed_out) { throw "${FailureMessage}: timeout after ${TimeoutSeconds}s" }
+    if ($result.exit_code -ne 0) { throw "$FailureMessage (exit code $($result.exit_code))" }
+    return $result
 }
 
 function Invoke-GitFetchBounded {
@@ -106,10 +175,15 @@ function Invoke-CurrentRuntime {
     $previousSkip = $env:TMOD_SKIP_BUILD
     $previousNonInteractive = $env:TMOD_NONINTERACTIVE
     $previousTransactional = $env:TMOD_TRANSACTIONAL_UPDATE
+    $previousPersistentDir = $env:TMOD_PERSISTENT_DIR
     try {
         $env:TMOD_SKIP_BUILD = if ($SkipBuild) { "1" } else { "0" }
         $env:TMOD_NONINTERACTIVE = "1"
         $env:TMOD_TRANSACTIONAL_UPDATE = "1"
+        # Candidate, fallback and installed launches must use the same data
+        # root selected by the operator; never silently fall back to another
+        # Windows account's Documents folder.
+        $env:TMOD_PERSISTENT_DIR = $PersistentDir
         Push-Location $Directory
         try {
             & cmd.exe /d /c "call run_windows.bat"
@@ -121,6 +195,7 @@ function Invoke-CurrentRuntime {
         $env:TMOD_SKIP_BUILD = $previousSkip
         $env:TMOD_NONINTERACTIVE = $previousNonInteractive
         $env:TMOD_TRANSACTIONAL_UPDATE = $previousTransactional
+        $env:TMOD_PERSISTENT_DIR = $previousPersistentDir
     }
 }
 
@@ -128,6 +203,68 @@ function New-PreUpdateBackup {
     param([string]$Note)
     $output = $null
     Write-Host "[SAFE UPDATE] Creating a consistent database backup (limit ${BackupTimeoutSeconds}s) ..."
+    # Once PostgreSQL migration is active, the SQLite file is an immutable
+    # archive and must never satisfy the production backup gate. Use the
+    # matching v17 tools already present in the database container so this
+    # remains reliable even while upgrading an older application image.
+    & docker inspect tmod-postgres *> $null
+    if ($LASTEXITCODE -eq 0) {
+        $migrationTable = (& docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT CASE WHEN to_regclass('public.tmod_platform_migrations') IS NULL THEN 0 ELSE 1 END" 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify the active PostgreSQL database before update"
+        }
+        $migrationMarker = "0"
+        if ($migrationTable -eq "1") {
+            $migrationMarker = (& docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT CASE WHEN EXISTS (SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1') THEN 1 ELSE 0 END" 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not verify the PostgreSQL migration marker before update"
+            }
+        }
+        if ($migrationMarker -eq "1") {
+            $backupDirectory = Join-Path $PersistentDir "backups\database"
+            New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+            $created = [DateTime]::UtcNow
+            $stamp = $created.ToString("yyyyMMddTHHmmssffffffZ")
+            $name = "tmod-pre-update-$stamp.dump"
+            $hostPath = Join-Path $backupDirectory $name
+            $containerPath = "/tmp/$name"
+            try {
+                Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+                    "exec", "tmod-postgres", "pg_dump", "-U", "tmod", "-d", "tmod",
+                    "--format=custom", "--compress=6", "--no-owner", "--no-privileges",
+                    "--file=$containerPath"
+                ) -TimeoutSeconds $BackupTimeoutSeconds -FailureMessage "PostgreSQL pre-update pg_dump failed"
+                Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+                    "exec", "tmod-postgres", "pg_restore", "--list", $containerPath
+                ) -TimeoutSeconds $BackupTimeoutSeconds -FailureMessage "PostgreSQL pre-update dump validation failed"
+                Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+                    "cp", "tmod-postgres:$containerPath", $hostPath
+                ) -TimeoutSeconds $BackupTimeoutSeconds -FailureMessage "PostgreSQL pre-update dump copy failed"
+                if (-not (Test-Path -LiteralPath $hostPath)) { throw "PostgreSQL pre-update dump copy failed" }
+                $size = (Get-Item -LiteralPath $hostPath).Length
+                if ($size -lt 1024) { throw "PostgreSQL pre-update dump is unexpectedly small" }
+                $metadata = [ordered]@{
+                    name = $name
+                    path = "/app/persistent/backups/database/$name"
+                    kind = "pre-update"
+                    backend = "postgresql"
+                    created_at = $created.ToString("o")
+                    size_bytes = $size
+                    integrity = [ordered]@{ ok = $true; result = "pg_restore_list_ok" }
+                    note = $Note
+                } | ConvertTo-Json -Depth 5
+                $metadataPath = [IO.Path]::ChangeExtension($hostPath, ".json")
+                $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+                [IO.File]::WriteAllText($metadataPath, $metadata, $utf8NoBom)
+                return "/app/persistent/backups/database/$name"
+            }
+            finally {
+                Invoke-BoundedNative -File "docker.exe" -Arguments @(
+                    "exec", "tmod-postgres", "rm", "-f", $containerPath
+                ) -TimeoutSeconds 30 | Out-Null
+            }
+        }
+    }
     & docker inspect tmod-discord-bot *> $null
     if ($LASTEXITCODE -eq 0) {
         $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note --timeout-seconds $BackupTimeoutSeconds 2>&1
@@ -204,8 +341,21 @@ function Restore-DatabaseIfCorrupt {
         $relativeBackup = $BackupPath.Substring($PersistentDir.Length).TrimStart("\", "/").Replace("\", "/")
         $containerBackupPath = "/app/persistent/$relativeBackup"
     }
+    if ([IO.Path]::GetExtension($BackupPath) -eq ".dump") {
+        & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py check --full *> $null
+        if ($LASTEXITCODE -eq 0) { return $false }
+        Push-Location $ProjectDir
+        try {
+            & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null
+            & docker compose run --rm --no-deps tmod-worker `
+                python /app/scripts/tmod_db_guard.py restore $containerBackupPath --offline-confirmed
+            if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore failed" }
+        }
+        finally { Pop-Location }
+        return $true
+    }
     Push-Location $ProjectDir
-    try { & docker compose stop tmod-discord-bot *> $null }
+    try { & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null }
     finally { Pop-Location }
     & docker run --rm --user 0:0 `
         --env "DATA_DIR=/app/persistent/data" `
@@ -297,25 +447,54 @@ try {
     Invoke-Native git -C $ProjectDir worktree add --detach $CandidateDir $TargetCommit
     Push-Location $CandidateDir
     try {
-        Invoke-Native docker compose config --quiet
-        Invoke-Native docker compose build
-        Invoke-Native docker run --rm --entrypoint python tmod-discord-bot:latest -m unittest discover -s tests -p "test_*.py"
+        Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+            "compose", "config", "--quiet"
+        ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
+            -FailureMessage "Candidate Docker Compose validation failed"
+        Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+            "compose", "build"
+        ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
+            -FailureMessage "Candidate Docker Compose build failed"
+        # Candidate test command: unittest discover (kept as separate argv so
+        # PowerShell 5.1 does not reinterpret the test pattern).
+        Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+            "run", "--rm", "--entrypoint", "python", "tmod-discord-bot:latest",
+            "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"
+        ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
+            -FailureMessage "Candidate test suite failed"
         $hostBackupPath = Resolve-HostBackupPath $BackupPath
         if (-not (Test-Path -LiteralPath $hostBackupPath)) {
             throw "Pre-update database backup is unavailable for migration validation"
         }
-        $CandidateDbDir = Join-Path $UpdateRoot "db-validation-$shortTarget-$(Get-Date -Format yyyyMMddHHmmss)"
-        New-Item -ItemType Directory -Path (Join-Path $CandidateDbDir "data") -Force | Out-Null
-        Copy-Item -LiteralPath $hostBackupPath -Destination (Join-Path $CandidateDbDir "data\tmod.db") -Force
-        Invoke-Native docker run --rm --user 0:0 --entrypoint python `
-            --env "DATA_DIR=/app/persistent/data" `
-            --env "DATABASE_FILE=/app/persistent/data/tmod.db" `
-            --mount "type=bind,source=$CandidateDbDir,target=/app/persistent" `
-            tmod-discord-bot:latest `
-            -c "import sqlite3, storage; storage.init_db(); con=sqlite3.connect(storage.DATABASE_FILE); result=con.execute('PRAGMA integrity_check').fetchone()[0]; con.close(); assert result == 'ok', result"
-        Invoke-Native docker run --rm `
-            --mount "type=bind,source=$CandidateDir\Caddyfile,target=/etc/caddy/Caddyfile,readonly" `
-            caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile
+        if ([IO.Path]::GetExtension($hostBackupPath) -eq ".dump") {
+            $relativeBackup = $hostBackupPath.Substring($PersistentDir.Length).TrimStart("\", "/").Replace("\", "/")
+            Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+                "run", "--rm", "--user", "0:0", "--entrypoint", "pg_restore",
+                "--mount", "type=bind,source=$PersistentDir,target=/app/persistent",
+                "tmod-discord-bot:latest", "--list", "/app/persistent/$relativeBackup"
+            ) -WorkingDirectory $CandidateDir -TimeoutSeconds $BackupTimeoutSeconds `
+                -FailureMessage "Candidate PostgreSQL dump validation failed"
+        }
+        else {
+            $CandidateDbDir = Join-Path $UpdateRoot "db-validation-$shortTarget-$(Get-Date -Format yyyyMMddHHmmss)"
+            New-Item -ItemType Directory -Path (Join-Path $CandidateDbDir "data") -Force | Out-Null
+            Copy-Item -LiteralPath $hostBackupPath -Destination (Join-Path $CandidateDbDir "data\tmod.db") -Force
+            Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+                "run", "--rm", "--user", "0:0", "--entrypoint", "python",
+                "--env", "DATA_DIR=/app/persistent/data",
+                "--env", "DATABASE_FILE=/app/persistent/data/tmod.db",
+                "--mount", "type=bind,source=$CandidateDbDir,target=/app/persistent",
+                "tmod-discord-bot:latest", "-c",
+                "import sqlite3, storage; storage.init_db(); con=sqlite3.connect(storage.DATABASE_FILE); result=con.execute('PRAGMA integrity_check').fetchone()[0]; con.close(); assert result == 'ok', result"
+            ) -WorkingDirectory $CandidateDir -TimeoutSeconds $BackupTimeoutSeconds `
+                -FailureMessage "Candidate SQLite database validation failed"
+        }
+        # Candidate Caddy validation: caddy validate runs inside the image.
+        Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
+            "run", "--rm", "--mount", "type=bind,source=$CandidateDir\Caddyfile,target=/etc/caddy/Caddyfile,readonly",
+            "caddy:2.10.2-alpine", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"
+        ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
+            -FailureMessage "Candidate Caddy configuration validation failed"
     }
     finally { Pop-Location }
 

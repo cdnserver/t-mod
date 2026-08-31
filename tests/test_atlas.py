@@ -32,6 +32,7 @@ from modules.atlas_ai import (
     atlas_embed,
     atlas_ensure_collection,
     atlas_index_source,
+    atlas_parse_text_mode,
     atlas_probe_collection,
     atlas_research_plan,
     atlas_search,
@@ -154,6 +155,39 @@ class AtlasRepositoryTests(unittest.TestCase):
             atlas_repository.atlas_set_message_feedback(
                 organization_id, 99, message_id, "good"
             )
+
+    def test_finetuning_candidates_require_good_feedback_and_pair_last_user_message(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(organization_id, 42, "Обучение")
+        atlas_repository.atlas_add_message(thread_id, "user", "Первый вопрос")
+        rejected_id = atlas_repository.atlas_add_message(
+            thread_id, "assistant", "Ответ без положительной оценки"
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, rejected_id, "bad"
+        )
+        user_id = atlas_repository.atlas_add_message(thread_id, "user", "Точный вопрос")
+        accepted_id = atlas_repository.atlas_add_message(
+            thread_id,
+            "assistant",
+            "Точный и полезный ответ со ссылками.",
+            citations=[{"title": "Уголовный кодекс"}],
+            model="atlas-test",
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, accepted_id, "good", comment="Проверено"
+        )
+
+        candidates = atlas_repository.atlas_training_candidates(
+            organization_id=organization_id
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["assistant_message_id"], accepted_id)
+        self.assertEqual(candidates[0]["user_message_id"], user_id)
+        self.assertEqual(candidates[0]["user_text"], "Точный вопрос")
+        self.assertEqual(candidates[0]["citations"][0]["title"], "Уголовный кодекс")
 
     def test_agent_threads_have_isolated_memory_lanes(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -424,6 +458,36 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(len(timeline), 1)
         self.assertEqual(timeline[0]["source_type"], "knowledge_source")
         self.assertEqual(timeline[0]["source_id"], str(first["id"]))
+
+    def test_searchable_corpus_keeps_old_reference_documents_ahead_of_recent_noise(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        law = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Уголовный кодекс штата San Andreas",
+            content="Старая, но действующая нормативная база с полным текстом статей.",
+            visibility_scope="server",
+        )
+        for index in range(4):
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Новость форума {index}",
+                content=f"Свежий информационный материал номер {index}, не являющийся кодексом.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("уголов",),
+            limit=2,
+        )
+
+        self.assertEqual(sources[0]["id"], law["id"])
+        self.assertEqual(sources[0]["title"], "Уголовный кодекс штата San Andreas")
 
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -723,6 +787,51 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(atlas_ai_config().chat_model, "custom/provider-model")
 
+    def test_deprecated_direct_model_is_upgraded_to_grok_43(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ATLAS_DIRECT_MODEL": "x-ai/grok-4.1-fast"},
+        ):
+            self.assertEqual(atlas_ai_config().direct_model, "x-ai/grok-4.3")
+
+    def test_atlas_2_is_text_only_and_strips_its_call_prefix(self) -> None:
+        self.assertEqual(
+            atlas_parse_text_mode("  Атлас 2, скажи прямо  "),
+            ("скажи прямо", True),
+        )
+        self.assertEqual(
+            atlas_parse_text_mode("Атлас 2, скажи прямо", latency_mode="overlay"),
+            ("Атлас 2, скажи прямо", False),
+        )
+
+    async def test_atlas_2_routes_to_direct_model_and_reports_mode(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="test/standard",
+            direct_model="x-ai/test-direct",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "Прямой ответ"}}]}
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[]),
+        ), patch("modules.atlas_ai._json_request", completion):
+            result = await atlas_answer(77, "Атлас 2, скажи прямо")
+
+        payload = completion.await_args.kwargs["payload"]
+        self.assertEqual(payload["model"], "x-ai/test-direct")
+        self.assertEqual(payload["messages"][-1]["content"], "скажи прямо")
+        self.assertIn("без стилистической цензуры", payload["messages"][0]["content"])
+        self.assertEqual(result["text_mode"], "atlas-2")
+
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
             title="Правила сервера",
@@ -841,6 +950,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "legal_analysis")
         self.assertEqual(profile.depth, "quick")
+
+    def test_plain_greeting_stays_social_instead_of_describing_the_interface(self) -> None:
+        profile = _atlas_task_profile("Привет!", mode="balanced")
+
+        self.assertEqual(profile.intent, "social")
+        self.assertEqual(profile.depth, "quick")
+        self.assertIn("обычное человеческое обращение", profile.response_brief)
 
     def test_contextual_drafting_reuses_the_described_situation(self) -> None:
         profile = _atlas_task_profile(
@@ -1090,6 +1206,62 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Нужная глава", result[0]["text"])
         self.assertNotIn("Следующая глава", result[0]["text"])
 
+    async def test_exact_chapter_survives_markdown_heading_decoration(self) -> None:
+        source = {
+            "id": 961,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "**ГЛАВА 16. ПРЕСТУПЛЕНИЯ ПРОТИВ ПРАВОСУДИЯ**\n"
+                "Статья 16.1. Точная норма.\n"
+                "**ГЛАВА 17. ИНЫЕ ПРЕСТУПЛЕНИЯ**\nСледующая глава."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.61/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Покажи главу 16 УК", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "chapter:16")
+        self.assertIn("Точная норма", result[0]["text"])
+        self.assertNotIn("Следующая глава", result[0]["text"])
+
+    async def test_lexical_fallback_matches_russian_word_forms(self) -> None:
+        source = {
+            "id": 962,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Процессуальный кодекс",
+            "content_text": "Порядок задержания требует разъяснить гражданину основание процедуры.",
+            "source_url": "https://forum.majestic-rp.ru/threads/process.62/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Меня задержали, что делать?", expanded=True)
+
+        self.assertEqual(result[0]["source_id"], 962)
+        self.assertIn("задержания", result[0]["text"])
+
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
             "id": 92,
@@ -1284,6 +1456,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(point["payload"]["visibility_scope"], "server")
         self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
         self.assertEqual(point["payload"]["corpus_kind"], "procedure")
+        self.assertEqual(point["payload"]["index_version"], 2)
         self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
         self.assertLess(
             request.await_args_list.index(put_call),
@@ -1366,6 +1539,24 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("modules.atlas_ai._json_request", corrupted):
             self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
+
+        stale = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"title": "Старый индекс"}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", stale):
+            self.assertEqual((await atlas_probe_collection())["status"], "stale")
+
+        current = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"index_version": 2}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", current):
+            self.assertEqual((await atlas_probe_collection())["status"], "ok")
 
     async def test_openrouter_answer_is_delivered_as_real_sse_deltas(self) -> None:
         async def completion(request: web.Request) -> web.StreamResponse:
@@ -1800,7 +1991,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["response_mode"], "creative")
         self.assertEqual(request.await_args.kwargs["payload"]["temperature"], 0.68)
         self.assertIn(
-            "источников для этого запроса не найдено",
+            "не отвечай шаблонным отказом о библиотеке",
             request.await_args.kwargs["payload"]["messages"][1]["content"],
         )
 
@@ -1833,7 +2024,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         payload = request.await_args.kwargs["payload"]
         system = payload["messages"][0]["content"]
-        self.assertLessEqual(payload["max_tokens"], 1100)
+        self.assertLessEqual(payload["max_tokens"], 700)
         self.assertIn("120–220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
 
@@ -1877,15 +2068,47 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         planner.assert_not_awaited()
         aristotle.assert_not_awaited()
-        self.assertEqual(search.await_args.kwargs["limit"], 7)
+        self.assertEqual(search.await_args.kwargs["limit"], 5)
+        self.assertTrue(search.await_args.kwargs["expanded"])
         payload = request.await_args.kwargs["payload"]
-        self.assertLessEqual(payload["max_tokens"], 280)
+        self.assertLessEqual(payload["max_tokens"], 180)
         self.assertIn("Полевой интерфейс", payload["messages"][0]["content"])
-        self.assertIn("35–70 слов", payload["messages"][0]["content"])
+        self.assertIn("18–36 слов", payload["messages"][0]["content"])
         self.assertIsInstance(payload["messages"][-1]["content"], list)
         self.assertEqual(result["latency_mode"], "overlay")
         self.assertTrue(result["screen_context_used"])
         self.assertEqual(result["depth"], "quick")
+
+    async def test_overlay_greeting_skips_retrieval_and_screen_analysis(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock()
+        ) as search, patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"choices": [{"message": {"content": "Привет! Что на уме?"}}]}),
+        ) as request:
+            result = await atlas_answer(
+                77,
+                "Привет!",
+                latency_mode="overlay",
+                screen_context="data:image/png;base64,dmFsaWRhdGVk",
+            )
+
+        search.assert_not_awaited()
+        system = request.await_args.kwargs["payload"]["messages"][0]["content"]
+        self.assertIn("Обычное общение", system)
+        self.assertFalse(result["screen_context_used"])
+        self.assertEqual(result["intent"], "social")
 
     def test_overlay_answer_hard_bound_prefers_complete_sentence(self) -> None:
         long_answer = (
@@ -1894,8 +2117,8 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         compact = _compact_overlay_answer(long_answer)
 
-        self.assertLessEqual(len(compact), 901)
-        self.assertLessEqual(len(compact.split()), 86)
+        self.assertLessEqual(len(compact), 461)
+        self.assertLessEqual(len(compact.split()), 42)
         self.assertTrue(compact.startswith("Сначала остановитесь"))
         self.assertTrue(compact.endswith("…"))
 
@@ -2181,11 +2404,31 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         async with TestClient(TestServer(app)) as client:
             page = await client.get("/atlas")
             bootstrap = await client.get("/api/atlas/bootstrap")
+            desktop_page = await client.get(
+                "/atlas",
+                headers={"User-Agent": "T-Mod QA TModDesktop/0.3.5"},
+            )
+            public_api = await client.get(
+                "/api/atlas/bootstrap",
+                headers={"Host": "atlas.tvr.lat"},
+            )
+            desktop_api = await client.get(
+                "/api/atlas/bootstrap",
+                headers={
+                    "Host": "atlas.tvr.lat",
+                    "User-Agent": "T-Mod QA TModDesktop/0.3.5",
+                },
+            )
 
             self.assertEqual(page.status, 200)
             self.assertIn("T-Mod Atlas", await page.text())
+            self.assertIn("Только T-Mod Desktop", await page.text())
+            self.assertIn('id="atlas-app"', await desktop_page.text())
             self.assertEqual(bootstrap.status, 401)
             self.assertIn((await bootstrap.json())["error"], {"unauthorized", "atlas_login_required"})
+            self.assertEqual(public_api.status, 403)
+            self.assertEqual((await public_api.json())["error"], "atlas_desktop_required")
+            self.assertEqual(desktop_api.status, 401)
 
     async def test_non_admin_receives_only_closed_preview(self) -> None:
         member = SimpleNamespace(
@@ -2420,7 +2663,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
                 AsyncMock(return_value=snapshot),
-            ), patch(
+            ) as fetch_thread, patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.trigger",
                 return_value=True,
             ) as trigger, patch(
@@ -2481,9 +2724,9 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.1)
 
             self.assertEqual(response.status, 202, payload)
-            self.assertEqual(payload["taxonomy"]["domain"], "ic")
-            self.assertEqual(payload["taxonomy"]["corpus_kind"], "charter")
-            self.assertEqual(payload["source"]["faction_code"], "gov")
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["job"]["job_type"], "atlas.forum.thread.v1")
+            fetch_thread.assert_awaited_once_with(snapshot.url)
             self.assertEqual(bulk_response.status, 202, bulk_payload)
             self.assertTrue(bulk_payload["bulk"])
             trigger.assert_called_once_with()
@@ -2494,11 +2737,19 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "https://forum.majestic-rp.ru/forums/general-server-rules/"
             )
             sources = atlas_repository.atlas_searchable_knowledge_sources(
-                int(payload["source"]["organization_id"]),
+                int(payload["job"]["organization_id"]),
                 server_code="phoenix-15",
                 faction_code="gov",
             )
-            self.assertIn("Общие правила сервера", {item["title"] for item in sources})
+            by_title = {item["title"]: item for item in sources}
+            self.assertIn("Общие правила сервера", by_title)
+            self.assertIn("Устав GOV", by_title)
+            self.assertEqual(by_title["Устав GOV"]["faction_code"], "gov")
+            self.assertEqual(by_title["Устав GOV"]["metadata"]["taxonomy"]["domain"], "ic")
+            self.assertEqual(
+                by_title["Устав GOV"]["metadata"]["taxonomy"]["corpus_kind"],
+                "charter",
+            )
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file
