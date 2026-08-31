@@ -529,6 +529,8 @@ def init_db() -> None:
                 visibility_scope TEXT NOT NULL DEFAULT 'server'
                     CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
                 federation_scope TEXT NOT NULL DEFAULT 'server',
+                knowledge_domain TEXT,
+                corpus_kind TEXT,
                 interval_seconds INTEGER NOT NULL DEFAULT 43200,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
@@ -2950,6 +2952,8 @@ def init_db() -> None:
             "federation_scope",
             "TEXT NOT NULL DEFAULT 'server'",
         )
+        _add_column_if_missing(con, "atlas_forum_feeds", "knowledge_domain", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_feeds", "corpus_kind", "TEXT")
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
         _add_column_if_missing(
             con,

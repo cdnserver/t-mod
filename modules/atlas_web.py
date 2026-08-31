@@ -1903,10 +1903,29 @@ def register_atlas_web_routes(
         source_url = str(payload.get("source_url") or "").strip()
         organization_id = int(job["organization_id"])
         actor_user_id = int(job.get("created_by_id") or 0)
-        feed_key = str(payload.get("feed_key") or "")
+        requested_feed_key = str(payload.get("feed_key") or "")
         if forum_sync_runner is None:
             raise AtlasForumSyncError("atlas_forum_sync_disabled")
         try:
+            # A manually imported section is not a one-off blob.  Persist its
+            # exact scope and taxonomy as a feed before reading it, so Atlas
+            # can refresh the same forum section later without an operator
+            # having to submit the URL again.
+            feed = await asyncio.to_thread(
+                storage.atlas_ensure_forum_feed,
+                int(guild_id),
+                feed_key=requested_feed_key,
+                root_url=source_url,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+                visibility_scope=str(payload.get("visibility_scope") or "server"),
+                federation_scope=str(payload.get("federation_scope") or "") or None,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                organization_id=organization_id,
+                interval_seconds=int(forum_sync_runner.config.interval_seconds),
+            )
+            feed_key = str(feed["feed_key"])
             await report({"percent": 5, "stage": "opening_forum"})
             batch = await forum_sync_runner.fetch_listing(source_url)
             total = max(1, len(batch.snapshots))
@@ -1924,6 +1943,8 @@ def register_atlas_web_routes(
                     faction_code=str(payload.get("faction_code") or "lspd"),
                     visibility_scope=str(payload.get("visibility_scope") or "server"),
                     federation_scope=str(payload.get("federation_scope") or "") or None,
+                    knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                    corpus_kind=str(payload.get("corpus_kind") or "") or None,
                     feed_key=feed_key,
                     metadata={
                         "author": snapshot.author,
@@ -1931,8 +1952,7 @@ def register_atlas_web_routes(
                         "import_mode": "authenticated_forum_listing",
                         "listing_url": source_url,
                         "requested_by_id": actor_user_id,
-                        "knowledge_domain": payload.get("knowledge_domain"),
-                        "corpus_kind": payload.get("corpus_kind"),
+                        "ingestion_origin": "manual_forum_feed",
                     },
                 )
                 created += int(bool(result["created"]))
@@ -1955,6 +1975,10 @@ def register_atlas_web_routes(
                 "queued": queued,
                 "skipped": len(batch.skipped_threads),
                 "inventory_complete": batch.inventory_complete,
+                "feed_key": feed_key,
+                "federation_scope": feed.get("federation_scope"),
+                "knowledge_domain": feed.get("knowledge_domain"),
+                "corpus_kind": feed.get("corpus_kind"),
             }
             await asyncio.to_thread(
                 storage.atlas_record_event,
@@ -1969,8 +1993,9 @@ def register_atlas_web_routes(
             await atlas_log(
                 "раздел форума прочитан",
                 (
-                    f"Тем: **{len(batch.snapshots)}** · новых: **{created}** · "
-                    f"обновлено: **{changed}** · пропущено: **{len(batch.skipped_threads)}**"
+                    f"Лента: `{feed_key}` · тем: **{len(batch.snapshots)}** · "
+                    f"новых: **{created}** · обновлено: **{changed}** · "
+                    f"пропущено: **{len(batch.skipped_threads)}**"
                 ),
                 level="info",
                 dedupe_key=f"atlas-forum-listing-ok:{feed_key}",
@@ -1986,7 +2011,7 @@ def register_atlas_web_routes(
                 ),
                 level="warning",
                 exception=exc,
-                dedupe_key=f"atlas-forum-listing-error:{feed_key}",
+                dedupe_key=f"atlas-forum-listing-error:{requested_feed_key}",
             )
             raise
 

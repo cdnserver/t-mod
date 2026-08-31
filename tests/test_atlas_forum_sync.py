@@ -477,13 +477,96 @@ class AtlasForumRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(state["last_stats"], {"pages": 1, "changed": 1})
 
+    def test_feed_profile_controls_ooc_taxonomy_and_project_scope(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="common-ooc-rules",
+            root_url="https://forum.majestic-rp.ru/forums/general-server-rules/",
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+        )
+
+        result = atlas_repository.atlas_upsert_synced_knowledge(
+            int(feed["organization_id"]),
+            title="Правила проекта",
+            content="Полный проверенный текст общих правил проекта для всех серверов Majestic.",
+            source_url="https://forum.majestic-rp.ru/threads/general-rules.200/",
+            server_code="phoenix-15",
+            faction_code="lspd",
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+            feed_key=str(feed["feed_key"]),
+        )
+
+        source = result["source"]
+        self.assertEqual(feed["federation_scope"], "project")
+        self.assertEqual(source["federation_scope"], "project")
+        self.assertEqual(source["metadata"]["taxonomy"]["domain"], "ooc")
+        self.assertEqual(source["metadata"]["taxonomy"]["corpus_kind"], "server_rule")
+        self.assertEqual(source["metadata"]["classification"]["mode"], "feed_profile")
+
+    def test_disabled_feed_stays_disabled_when_default_is_reseeded(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="paused-laws",
+            root_url=ROOT_URL,
+        )
+        with storage.connect() as con:
+            con.execute(
+                "UPDATE atlas_forum_feeds SET status = 'disabled' WHERE id = ?",
+                (int(feed["id"]),),
+            )
+            con.commit()
+
+        reseeded = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="paused-laws",
+            root_url=ROOT_URL,
+        )
+
+        self.assertEqual(reseeded["status"], "disabled")
+        self.assertEqual(atlas_repository.atlas_forum_due_feeds(77), [])
+
+    def test_due_feed_claim_recovers_missing_or_stale_lease_once(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="lease-laws",
+            root_url=ROOT_URL,
+        )
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET status = 'running', last_started_at = NULL, next_sync_at = NULL
+                WHERE id = ?
+                """,
+                (int(feed["id"]),),
+            )
+            con.commit()
+
+        now = "2026-09-01T12:00:00+00:00"
+        due = atlas_repository.atlas_forum_due_feeds(77, now=now)
+        claimed = atlas_repository.atlas_forum_claim_feed(77, int(feed["id"]), now=now)
+        duplicate = atlas_repository.atlas_forum_claim_feed(77, int(feed["id"]), now=now)
+
+        self.assertEqual([item["id"] for item in due], [feed["id"]])
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["status"], "running")
+        self.assertIsNone(duplicate)
+
 
 class _FakeBrowser:
     def __init__(self, result):
         self.result = result
         self.closed = False
+        self.scrapes = 0
 
     def scrape(self):
+        self.scrapes += 1
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -554,6 +637,88 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["last_stats"]["changed"], 0)
         index.assert_awaited_once()
         self.assertTrue(browser.closed)
+
+    async def test_runner_preserves_feed_profile_in_every_indexed_source(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/ooc-rules.101/",
+            title="Общие правила",
+            content="Полный текст правил проекта, который должен быть явно классифицирован как OOC.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=["point-ooc"]),
+        )
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="ooc",
+            root_url=ROOT_URL,
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+        )
+
+        state = await runner.sync_once(feed, force=True)
+        sources = atlas_repository.atlas_indexable_knowledge_sources()
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["last_stats"]["knowledge_domain"], "ooc")
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["federation_scope"], "project")
+        self.assertEqual(sources[0]["metadata"]["taxonomy"]["domain"], "ooc")
+
+    async def test_explicit_trigger_runs_default_feed_before_its_next_due_time(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/trigger.102/",
+            title="Проверка ручного запуска",
+            content="Проверенный материал показывает, что явный запуск не ждёт регулярного расписания.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        index = AsyncMock(return_value=["point-trigger"])
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=replace(sync_config(), initial_delay_seconds=0, scheduler_poll_seconds=60),
+            browser=browser,
+            index_callback=index,
+        )
+
+        await runner.sync_once()
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.02)
+        self.assertTrue(runner.trigger())
+        for _ in range(80):
+            if index.await_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await runner.close()
+        await task
+
+        self.assertGreaterEqual(browser.scrapes, 2)
+
+    async def test_runner_refuses_unapproved_forum_origin(self) -> None:
+        browser = _FakeBrowser(AtlasForumScrapeBatch((), True))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(),
+        )
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="unapproved-origin",
+            root_url="https://forum.example.org/forums/rules/",
+        )
+
+        state = await runner.sync_once(feed, force=True)
+
+        self.assertEqual(state["status"], "error")
+        self.assertIn("atlas_forum_feed_origin_not_allowed", state["last_error"])
 
     async def test_runner_reads_any_same_host_forum_listing(self) -> None:
         snapshot = AtlasForumSnapshot(

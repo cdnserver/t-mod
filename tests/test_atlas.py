@@ -3241,7 +3241,9 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                             ),
                             "server_code": "phoenix-15",
                             "faction_code": "gov",
-                            "visibility_scope": "server",
+                            "visibility_scope": "global",
+                            "knowledge_domain": "ooc",
+                            "corpus_kind": "server_rule",
                         },
                         headers={
                             "X-CSRF-Token": "admin-csrf",
@@ -3278,6 +3280,15 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 by_title["Устав GOV"]["metadata"]["taxonomy"]["corpus_kind"],
                 "charter",
             )
+            rules = by_title["Общие правила сервера"]
+            self.assertEqual(rules["federation_scope"], "project")
+            self.assertEqual(rules["metadata"]["taxonomy"]["domain"], "ooc")
+            self.assertEqual(rules["metadata"]["taxonomy"]["corpus_kind"], "server_rule")
+            feed = atlas_repository.atlas_forum_sync_status(77)
+            self.assertIsNotNone(feed)
+            self.assertTrue(str(feed["feed_key"]).startswith("majestic-rp:manual-"))
+            self.assertEqual(feed["knowledge_domain"], "ooc")
+            self.assertEqual(feed["corpus_kind"], "server_rule")
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file

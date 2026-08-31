@@ -20,7 +20,12 @@ from modules.atlas_federation import (
     atlas_legacy_visibility_scope,
     atlas_normalize_federation_scope,
 )
-from modules.atlas_taxonomy import atlas_classify_knowledge, atlas_taxonomy_catalog
+from modules.atlas_taxonomy import (
+    atlas_classify_knowledge,
+    atlas_normalize_corpus_kind,
+    atlas_normalize_knowledge_domain,
+    atlas_taxonomy_catalog,
+)
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
@@ -1765,6 +1770,9 @@ def atlas_ensure_forum_feed(
     faction_code: str = "lspd",
     visibility_scope: str = "server",
     federation_scope: str | None = None,
+    knowledge_domain: str | None = None,
+    corpus_kind: str | None = None,
+    organization_id: int | None = None,
     interval_seconds: int = 43_200,
 ) -> dict[str, Any]:
     clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
@@ -1774,7 +1782,17 @@ def atlas_ensure_forum_feed(
         federation_scope=federation_scope,
         legacy_visibility_scope=clean_visibility,
     )
-    organization = atlas_ensure_system_space(guild_id, project_code=scope["project_code"])
+    clean_domain = atlas_normalize_knowledge_domain(knowledge_domain)
+    clean_corpus = atlas_normalize_corpus_kind(corpus_kind)
+    if str(knowledge_domain or "").strip() and clean_domain is None:
+        raise ValueError("atlas_knowledge_domain_invalid")
+    if str(corpus_kind or "").strip() and clean_corpus is None:
+        raise ValueError("atlas_corpus_kind_invalid")
+    system_organization = (
+        atlas_ensure_system_space(guild_id, project_code=scope["project_code"])
+        if organization_id is None
+        else None
+    )
     clean_project = scope["project_code"]
     clean_server = scope["server_code"]
     clean_faction = scope["faction_code"]
@@ -1795,14 +1813,26 @@ def atlas_ensure_forum_feed(
         raise ValueError("atlas_forum_feed_invalid")
     interval = max(3600, min(604_800, int(interval_seconds)))
     now = utc_now_iso()
+    selected_organization_id = int(
+        organization_id if organization_id is not None else system_organization["id"]
+    )
     with _db_lock, connect() as con:
+        organization = con.execute(
+            "SELECT guild_id, project_code FROM atlas_organizations WHERE id = ?",
+            (selected_organization_id,),
+        ).fetchone()
+        if organization is None or int(organization["guild_id"]) != int(guild_id):
+            raise ValueError("atlas_forum_feed_organization_invalid")
+        if str(organization["project_code"] or "").strip().lower() != clean_project:
+            raise ValueError("atlas_organization_project_mismatch")
         con.execute(
             """
             INSERT INTO atlas_forum_feeds(
                 guild_id, organization_id, project_code, feed_key, root_url, server_code,
-                faction_code, visibility_scope, federation_scope, interval_seconds,
+                faction_code, visibility_scope, federation_scope, knowledge_domain,
+                corpus_kind, interval_seconds,
                 created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, feed_key) DO UPDATE SET
                 organization_id = excluded.organization_id,
                 project_code = excluded.project_code,
@@ -1811,16 +1841,14 @@ def atlas_ensure_forum_feed(
                 faction_code = excluded.faction_code,
                 visibility_scope = excluded.visibility_scope,
                 federation_scope = excluded.federation_scope,
+                knowledge_domain = excluded.knowledge_domain,
+                corpus_kind = excluded.corpus_kind,
                 interval_seconds = excluded.interval_seconds,
-                status = CASE
-                    WHEN atlas_forum_feeds.status = 'disabled' THEN 'pending'
-                    ELSE atlas_forum_feeds.status
-                END,
                 updated_at = excluded.updated_at
             """,
             (
                 int(guild_id),
-                int(organization["id"]),
+                selected_organization_id,
                 clean_project,
                 clean_key,
                 clean_url,
@@ -1828,6 +1856,8 @@ def atlas_ensure_forum_feed(
                 clean_faction,
                 clean_visibility,
                 clean_federation,
+                clean_domain,
+                clean_corpus,
                 interval,
                 now,
                 now,
@@ -1861,6 +1891,115 @@ def atlas_forum_sync_started(feed_id: int) -> dict[str, Any]:
     if row is None:
         raise ValueError("atlas_forum_feed_missing")
     return _row(row)
+
+
+def atlas_forum_due_feeds(
+    guild_id: int,
+    *,
+    limit: int = 8,
+    now: str | None = None,
+    running_lease_seconds: int = 3_600,
+) -> list[dict[str, Any]]:
+    """Return feeds eligible for a bounded scheduler pass.
+
+    A previously crashed process can leave a feed in ``running`` state.  It is
+    retried only after the lease expires; a live browser is never duplicated.
+    """
+
+    current = str(now or utc_now_iso())
+    try:
+        parsed_now = datetime.fromisoformat(current.replace("Z", "+00:00"))
+    except ValueError:
+        parsed_now = datetime.now(timezone.utc)
+    if parsed_now.tzinfo is None:
+        parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+    stale_before = (
+        parsed_now.astimezone(timezone.utc)
+        - timedelta(seconds=max(60, min(86_400, int(running_lease_seconds))))
+    ).isoformat()
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_forum_feeds
+            WHERE guild_id = ? AND status != 'disabled'
+              AND (
+                (status != 'running' AND (next_sync_at IS NULL OR next_sync_at <= ?))
+                OR (status = 'running' AND (last_started_at IS NULL OR last_started_at <= ?))
+              )
+            ORDER BY CASE WHEN next_sync_at IS NULL THEN 0 ELSE 1 END,
+                     next_sync_at, id
+            LIMIT ?
+            """,
+            (int(guild_id), current, stale_before, max(1, min(64, int(limit)))),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def atlas_forum_claim_feed(
+    guild_id: int,
+    feed_id: int,
+    *,
+    force: bool = False,
+    now: str | None = None,
+    running_lease_seconds: int = 3_600,
+) -> dict[str, Any] | None:
+    """Atomically claim one due feed so two workers cannot scrape it twice."""
+
+    current = str(now or utc_now_iso())
+    try:
+        parsed_now = datetime.fromisoformat(current.replace("Z", "+00:00"))
+    except ValueError:
+        parsed_now = datetime.now(timezone.utc)
+    if parsed_now.tzinfo is None:
+        parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+    stale_before = (
+        parsed_now.astimezone(timezone.utc)
+        - timedelta(seconds=max(60, min(86_400, int(running_lease_seconds))))
+    ).isoformat()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ? AND guild_id = ?",
+            (int(feed_id), int(guild_id)),
+        ).fetchone()
+        if row is None or str(row["status"] or "") == "disabled":
+            con.rollback()
+            return None
+        # Keep the eligibility condition in the UPDATE itself.  PostgreSQL
+        # re-checks it after a competing transaction releases the row, which
+        # makes the lease safe even when two application processes overlap.
+        if force:
+            eligibility = (
+                "(status != 'running' OR last_started_at IS NULL OR last_started_at <= ?)"
+            )
+            eligibility_params: tuple[Any, ...] = (stale_before,)
+        else:
+            eligibility = """
+                (
+                    (status != 'running' AND (next_sync_at IS NULL OR next_sync_at <= ?))
+                    OR (status = 'running' AND (last_started_at IS NULL OR last_started_at <= ?))
+                )
+            """
+            eligibility_params = (current, stale_before)
+        cursor = con.execute(
+            f"""
+            UPDATE atlas_forum_feeds
+            SET status = 'running', last_started_at = ?, last_error = NULL,
+                updated_at = ?
+            WHERE id = ? AND guild_id = ? AND status != 'disabled'
+              AND {eligibility}
+            """,
+            (current, current, int(feed_id), int(guild_id), *eligibility_params),
+        )
+        if not cursor.rowcount:
+            con.rollback()
+            return None
+        claimed = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        con.commit()
+    return _row(claimed) if claimed is not None else None
 
 
 def atlas_forum_sync_finished(
@@ -1946,6 +2085,8 @@ def atlas_upsert_synced_knowledge(
     faction_code: str,
     visibility_scope: str,
     federation_scope: str | None = None,
+    knowledge_domain: str | None = None,
+    corpus_kind: str | None = None,
     feed_key: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1993,13 +2134,18 @@ def atlas_upsert_synced_knowledge(
             content=clean_content,
             source_url=clean_url,
             source_kind="forum",
-            domain_hint=str(dict(metadata or {}).get("knowledge_domain") or "") or None,
-            corpus_hint=str(dict(metadata or {}).get("corpus_kind") or "") or None,
+            domain_hint=knowledge_domain,
+            corpus_hint=corpus_kind,
         )
         merged_metadata = {
             **current_metadata,
             **dict(metadata or {}),
             "taxonomy": taxonomy,
+            "classification": {
+                "mode": "feed_profile" if knowledge_domain or corpus_kind else "heuristic",
+                "knowledge_domain_hint": atlas_normalize_knowledge_domain(knowledge_domain),
+                "corpus_kind_hint": atlas_normalize_corpus_kind(corpus_kind),
+            },
             "sync_feed": str(feed_key)[:80],
             "last_seen_at": now,
             "missing_runs": 0,

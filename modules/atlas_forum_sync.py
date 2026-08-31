@@ -9,11 +9,12 @@ continues serving users.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -88,10 +89,33 @@ class AtlasForumSyncConfig:
     challenge_wait_seconds: int
     max_listing_pages: int
     max_threads: int
+    # The default Atlas feed is the Majestic legislative library.  Laws are
+    # shared between Majestic servers, so its canonical scope is the project,
+    # not one Phoenix faction. Other feeds can override this in the database.
+    federation_scope: str = "project"
+    knowledge_domain: str | None = "ic"
+    corpus_kind: str | None = "law"
+    scheduler_poll_seconds: int = 60
+    # Extra origins are opt-in. A database row must never be able to turn the
+    # forum browser into a general-purpose authenticated web client.
+    allowed_origins: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "AtlasForumSyncConfig":
         enabled = str(os.getenv("ATLAS_FORUM_SYNC_ENABLED", "true")).strip().lower()
+        root_url = str(
+            os.getenv(
+                "ATLAS_FORUM_ROOT_URL",
+                "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/",
+            )
+        ).strip()
+        configured_origins: list[str] = []
+        for raw_origin in str(os.getenv("ATLAS_FORUM_ALLOWED_ORIGINS", "")).split(","):
+            parsed = urlsplit(raw_origin.strip())
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                origin = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+                if origin not in configured_origins:
+                    configured_origins.append(origin)
         return cls(
             enabled=enabled in {"1", "true", "yes", "on"},
             selenium_url=str(
@@ -100,12 +124,7 @@ class AtlasForumSyncConfig:
                     "http://atlas-forum-browser:4444/wd/hub",
                 )
             ).strip(),
-            root_url=str(
-                os.getenv(
-                    "ATLAS_FORUM_ROOT_URL",
-                    "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/",
-                )
-            ).strip(),
+            root_url=root_url,
             cookie_file=str(
                 os.getenv(
                     "ATLAS_FORUM_COOKIE_FILE",
@@ -115,7 +134,7 @@ class AtlasForumSyncConfig:
             feed_key=str(os.getenv("ATLAS_FORUM_FEED_KEY", "majestic-phoenix-laws")).strip(),
             server_code=str(os.getenv("ATLAS_FORUM_SERVER_CODE", "phoenix-15")).strip(),
             faction_code=str(os.getenv("ATLAS_FORUM_FACTION_CODE", "lspd")).strip(),
-            visibility_scope=str(os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "server")).strip(),
+            visibility_scope=str(os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "global")).strip(),
             interval_seconds=max(
                 3600,
                 int(os.getenv("ATLAS_FORUM_SYNC_INTERVAL_SECONDS", "43200")),
@@ -140,6 +159,22 @@ class AtlasForumSyncConfig:
                 1,
                 min(500, int(os.getenv("ATLAS_FORUM_MAX_THREADS", "200"))),
             ),
+            federation_scope=str(
+                os.getenv("ATLAS_FORUM_FEDERATION_SCOPE", "project")
+            ).strip(),
+            knowledge_domain=str(
+                os.getenv("ATLAS_FORUM_KNOWLEDGE_DOMAIN", "ic")
+            ).strip()
+            or None,
+            corpus_kind=str(
+                os.getenv("ATLAS_FORUM_CORPUS_KIND", "law")
+            ).strip()
+            or None,
+            scheduler_poll_seconds=max(
+                15,
+                min(900, int(os.getenv("ATLAS_FORUM_SCHEDULER_POLL_SECONDS", "60"))),
+            ),
+            allowed_origins=tuple(configured_origins),
         )
 
 
@@ -745,28 +780,73 @@ class AtlasForumSyncRunner:
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._closed = False
-        self._auth_checkpoint_task: asyncio.Task[None] | None = None
+        default_origin = self._origin(self.config.root_url)
+        self._allowed_origins = {
+            default_origin,
+            *(self._origin(item) for item in self.config.allowed_origins),
+        }
+        self._browsers: dict[str, AtlasForumBrowser] = {default_origin: self.browser}
+        self._auth_checkpoint_tasks: dict[asyncio.Task[None], AtlasForumBrowser] = {}
+        self._force_default_once = False
 
-    def _start_auth_checkpoint(self) -> None:
-        checkpoint = getattr(self.browser, "checkpoint_authentication", None)
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlsplit(str(url or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise AtlasForumSyncError("atlas_forum_feed_url_invalid")
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+    def _cookie_file_for_origin(self, origin: str) -> str:
+        """Keep authenticated sessions separate when Atlas has several forums."""
+
+        configured_origin = self._origin(self.config.root_url)
+        if origin == configured_origin or not self.config.cookie_file:
+            return self.config.cookie_file
+        original = Path(self.config.cookie_file)
+        suffix = original.suffix or ".json"
+        token = hashlib.sha256(origin.encode("utf-8")).hexdigest()[:12]
+        return str(original.with_name(f"{original.stem}-{token}{suffix}"))
+
+    def _browser_for_feed(self, feed: dict[str, Any]) -> AtlasForumBrowser:
+        root_url = str(feed.get("root_url") or "").strip()
+        origin = self._origin(root_url)
+        if origin not in self._allowed_origins:
+            raise AtlasForumSyncError("atlas_forum_feed_origin_not_allowed")
+        existing = self._browsers.get(origin)
+        if existing is not None:
+            return existing
+        browser_config = replace(
+            self.config,
+            root_url=root_url,
+            cookie_file=self._cookie_file_for_origin(origin),
+        )
+        created = AtlasForumBrowser(browser_config)
+        self._browsers[origin] = created
+        return created
+
+    def _start_auth_checkpoint(self, browser: AtlasForumBrowser | None = None) -> None:
+        target = browser or self.browser
+        checkpoint = getattr(target, "checkpoint_authentication", None)
         if not callable(checkpoint):
             return
-        if self._auth_checkpoint_task is not None and not self._auth_checkpoint_task.done():
+        if any(browser is target and not task.done() for task, browser in self._auth_checkpoint_tasks.items()):
             return
-        self._auth_checkpoint_task = asyncio.create_task(
-            self._checkpoint_authentication_loop(),
+        task = asyncio.create_task(
+            self._checkpoint_authentication_loop(target),
             name="atlas-forum-auth-checkpoint",
         )
+        self._auth_checkpoint_tasks[task] = target
+        task.add_done_callback(lambda done: self._auth_checkpoint_tasks.pop(done, None))
 
-    async def _checkpoint_authentication_loop(self) -> None:
+    async def _checkpoint_authentication_loop(self, browser: AtlasForumBrowser) -> None:
         """Keep a manual browser session alive and capture login as soon as it changes."""
 
-        while not self._closed and bool(getattr(self.browser, "active", False)):
+        while not self._closed and bool(getattr(browser, "active", False)):
             async with self._lock:
-                if not bool(getattr(self.browser, "active", False)):
+                if not bool(getattr(browser, "active", False)):
                     return
                 try:
-                    await asyncio.to_thread(self.browser.checkpoint_authentication)
+                    await asyncio.to_thread(browser.checkpoint_authentication)
                 except Exception:
                     return
             await asyncio.sleep(3)
@@ -774,6 +854,9 @@ class AtlasForumSyncRunner:
     def trigger(self) -> bool:
         if not self.config.enabled or self._closed:
             return False
+        # The admin button is an explicit request, not merely a request to
+        # check whether the regular schedule happens to be due.
+        self._force_default_once = True
         self._wake.set()
         return True
 
@@ -801,7 +884,7 @@ class AtlasForumSyncRunner:
                 batch = await asyncio.to_thread(self.browser.scrape_listing, url)
             except (AtlasForumManualActionRequired, AtlasForumSyncError):
                 if bool(getattr(self.browser, "active", False)):
-                    self._start_auth_checkpoint()
+                    self._start_auth_checkpoint(self.browser)
                 raise
             else:
                 await asyncio.to_thread(self.browser.close)
@@ -817,7 +900,7 @@ class AtlasForumSyncRunner:
                 snapshot = await asyncio.to_thread(self.browser.scrape_thread, url)
             except (AtlasForumManualActionRequired, AtlasForumSyncError):
                 if bool(getattr(self.browser, "active", False)):
-                    self._start_auth_checkpoint()
+                    self._start_auth_checkpoint(self.browser)
                 raise
             else:
                 await asyncio.to_thread(self.browser.close)
@@ -847,22 +930,61 @@ class AtlasForumSyncRunner:
             component="atlas-forum-sync",
         )
 
-    async def sync_once(self) -> dict[str, Any]:
+    async def _ensure_default_feed(self) -> dict[str, Any]:
+        """Seed the configured Majestic feed without resetting its schedule."""
+
+        return await asyncio.to_thread(
+            storage.atlas_ensure_forum_feed,
+            self.guild_id,
+            feed_key=self.config.feed_key,
+            root_url=self.config.root_url,
+            server_code=self.config.server_code,
+            faction_code=self.config.faction_code,
+            visibility_scope=self.config.visibility_scope,
+            federation_scope=self.config.federation_scope,
+            knowledge_domain=self.config.knowledge_domain,
+            corpus_kind=self.config.corpus_kind,
+            interval_seconds=self.config.interval_seconds,
+        )
+
+    async def sync_once(
+        self,
+        feed: dict[str, Any] | None = None,
+        *,
+        force: bool = True,
+    ) -> dict[str, Any]:
+        """Synchronise one claimed feed and preserve its exact corpus profile.
+
+        ``force=True`` is intentionally retained for an explicit administrator
+        action and compatibility with the old one-feed runner.  The background
+        scheduler always passes ``force=False`` and claims only due feeds.
+        """
+
         async with self._lock:
-            feed = await asyncio.to_thread(
-                storage.atlas_ensure_forum_feed,
+            configured = feed or await self._ensure_default_feed()
+            claimed = await asyncio.to_thread(
+                storage.atlas_forum_claim_feed,
                 self.guild_id,
-                feed_key=self.config.feed_key,
-                root_url=self.config.root_url,
-                server_code=self.config.server_code,
-                faction_code=self.config.faction_code,
-                visibility_scope=self.config.visibility_scope,
-                interval_seconds=self.config.interval_seconds,
+                int(configured["id"]),
+                force=force,
             )
-            await asyncio.to_thread(storage.atlas_forum_sync_started, int(feed["id"]))
-            phase = "forum_read"
+            if claimed is None:
+                return {
+                    "id": int(configured["id"]),
+                    "feed_key": str(configured.get("feed_key") or ""),
+                    "status": "skipped",
+                    "last_stats": {"phase": "not_due"},
+                }
+            active_feed = claimed
+            browser: AtlasForumBrowser | None = None
+            phase = "feed_policy"
             try:
-                batch = await asyncio.to_thread(self.browser.scrape)
+                browser = self._browser_for_feed(active_feed)
+                phase = "forum_read"
+                batch = await asyncio.to_thread(
+                    browser.scrape_listing,
+                    str(active_feed["root_url"]),
+                )
                 snapshots = list(batch.snapshots)
                 phase = "knowledge_index"
                 changed = 0
@@ -875,17 +997,21 @@ class AtlasForumSyncRunner:
                     seen_urls.append(snapshot.url)
                     result = await asyncio.to_thread(
                         storage.atlas_upsert_synced_knowledge,
-                        int(feed["organization_id"]),
+                        int(active_feed["organization_id"]),
                         title=snapshot.title,
                         content=snapshot.content,
                         source_url=snapshot.url,
-                        server_code=self.config.server_code,
-                        faction_code=self.config.faction_code,
-                        visibility_scope=self.config.visibility_scope,
-                        feed_key=self.config.feed_key,
+                        server_code=str(active_feed["server_code"]),
+                        faction_code=str(active_feed["faction_code"]),
+                        visibility_scope=str(active_feed["visibility_scope"]),
+                        federation_scope=str(active_feed.get("federation_scope") or "") or None,
+                        knowledge_domain=str(active_feed.get("knowledge_domain") or "") or None,
+                        corpus_kind=str(active_feed.get("corpus_kind") or "") or None,
+                        feed_key=str(active_feed["feed_key"]),
                         metadata={
                             "author": snapshot.author,
                             "source_updated_at": snapshot.source_updated_at,
+                            "ingestion_origin": "scheduled_forum_feed",
                         },
                     )
                     if result["created"]:
@@ -918,12 +1044,17 @@ class AtlasForumSyncRunner:
                 if batch.inventory_complete:
                     missing_changes = await asyncio.to_thread(
                         storage.atlas_mark_forum_sources_seen,
-                        int(feed["organization_id"]),
-                        feed_key=self.config.feed_key,
+                        int(active_feed["organization_id"]),
+                        feed_key=str(active_feed["feed_key"]),
                         seen_urls=seen_urls,
                     )
                 stats = {
                     "phase": "knowledge_index" if index_errors else "complete",
+                    "feed_key": str(active_feed["feed_key"]),
+                    "project_code": str(active_feed["project_code"]),
+                    "federation_scope": str(active_feed.get("federation_scope") or ""),
+                    "knowledge_domain": str(active_feed.get("knowledge_domain") or ""),
+                    "corpus_kind": str(active_feed.get("corpus_kind") or ""),
                     "pages": len(snapshots),
                     "skipped": len(batch.skipped_threads),
                     "created": created,
@@ -941,108 +1072,143 @@ class AtlasForumSyncRunner:
                 )
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
+                    int(active_feed["id"]),
                     stats=stats,
                     error=partial_error,
                     attention=bool(index_errors),
                 )
                 if changed:
                     await self._technical_log(
-                        title="Atlas обновил законодательную базу",
+                        title="Atlas обновил проверяемую базу",
                         details=(
-                            f"Phoenix (15): проверено {len(snapshots)}, "
-                            f"изменено {changed}, новых {created}."
+                            f"Контур: `{active_feed['project_code']}` · "
+                            f"лента: `{active_feed['feed_key']}`\n"
+                            f"Проверено: {len(snapshots)}, изменено: {changed}, новых: {created}."
                         ),
                         level="info",
-                        dedupe_key=f"atlas-forum-updated:{state.get('last_success_at')}",
+                        dedupe_key=(
+                            f"atlas-forum-updated:{active_feed['id']}:"
+                            f"{state.get('last_success_at')}"
+                        ),
                     )
-                await asyncio.to_thread(self.browser.close)
+                await asyncio.to_thread(browser.close)
                 return state
             except AtlasForumManualActionRequired as exc:
-                self._start_auth_checkpoint()
+                if browser is not None:
+                    self._start_auth_checkpoint(browser)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
-                    stats={},
+                    int(active_feed["id"]),
+                    stats={"phase": phase, "feed_key": str(active_feed["feed_key"])},
                     error=str(exc),
                     attention=True,
                 )
                 await self._technical_log(
                     title="Atlas ждёт подтверждение форума",
                     details=(
-                        f"{exc}\nОткройте на домашнем сервере "
-                        "http://127.0.0.1:7900/?autoconnect=1&resize=scale и завершите проверку. "
+                        f"Лента: `{active_feed['feed_key']}`\n{exc}\n"
+                        "Откройте локальный Chromium Atlas и завершите проверку. "
                         "Последняя рабочая редакция продолжает использоваться."
                     ),
                     level="warning",
-                    dedupe_key="atlas-forum-manual-action",
+                    dedupe_key=f"atlas-forum-manual-action:{active_feed['id']}",
                     exception=exc,
                 )
                 return state
             except Exception as exc:
-                keep_browser_open = phase == "forum_read" and bool(
-                    getattr(self.browser, "active", False)
+                keep_browser_open = browser is not None and phase == "forum_read" and bool(
+                    getattr(browser, "active", False)
                 )
                 if keep_browser_open:
-                    self._start_auth_checkpoint()
-                else:
-                    await asyncio.to_thread(self.browser.close)
+                    self._start_auth_checkpoint(browser)
+                elif browser is not None:
+                    await asyncio.to_thread(browser.close)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
-                    stats={"phase": phase},
+                    int(active_feed["id"]),
+                    stats={"phase": phase, "feed_key": str(active_feed["feed_key"])},
                     error=f"{phase}:{type(exc).__name__}: {exc}",
                     attention=keep_browser_open,
                 )
                 await self._technical_log(
                     title="Ошибка синхронизации Atlas с форумом",
                     details=(
-                        f"Этап: `{phase}`. Ошибка: `{type(exc).__name__}`. "
-                        "Сохранённая законодательная база "
-                        "не изменена; следующая попытка состоится автоматически."
+                        f"Лента: `{active_feed['feed_key']}` · этап: `{phase}`. "
+                        f"Ошибка: `{type(exc).__name__}`. "
+                        "Сохранённая законодательная база не изменена; следующая попытка состоится автоматически."
                     ),
                     level="warning",
-                    dedupe_key=f"atlas-forum-sync:{type(exc).__name__}",
+                    dedupe_key=f"atlas-forum-sync:{active_feed['id']}:{type(exc).__name__}",
                     exception=exc,
                 )
                 return state
 
     async def run(self) -> None:
+        """Run every due feed, not only the legacy environment-defined one."""
+
         if not self.config.enabled:
             return
         try:
-            initial_wait = self.config.initial_delay_seconds
-            current = await asyncio.to_thread(
-                storage.atlas_forum_sync_status,
-                self.guild_id,
-            )
-            if current and current.get("next_sync_at"):
-                try:
-                    due = datetime.fromisoformat(str(current["next_sync_at"]))
-                    if due.tzinfo is None:
-                        due = due.replace(tzinfo=timezone.utc)
-                    remaining = (due - datetime.now(timezone.utc)).total_seconds()
-                    if remaining > 0:
-                        initial_wait = max(
-                            initial_wait,
-                            min(self.config.interval_seconds, int(remaining)),
-                        )
-                except (TypeError, ValueError):
-                    pass
+            # Seed once before sleeping so a new installation has a durable
+            # feed record immediately, but do not overwrite its next_sync_at.
+            try:
+                await self._ensure_default_feed()
+            except Exception as exc:
+                await self._technical_log(
+                    title="Не удалось подготовить ленту Atlas",
+                    details=f"Ошибка конфигурации: `{type(exc).__name__}`. Повтор будет выполнен автоматически.",
+                    level="warning",
+                    dedupe_key=f"atlas-forum-seed:{type(exc).__name__}",
+                    exception=exc,
+                )
             try:
                 await asyncio.wait_for(
                     self._wake.wait(),
-                    timeout=initial_wait,
+                    timeout=self.config.initial_delay_seconds,
                 )
             except TimeoutError:
                 pass
             self._wake.clear()
             while not self._closed:
-                await self.sync_once()
+                try:
+                    default_feed = await self._ensure_default_feed()
+                    due = await asyncio.to_thread(
+                        storage.atlas_forum_due_feeds,
+                        self.guild_id,
+                        limit=8,
+                    )
+                except Exception as exc:
+                    await self._technical_log(
+                        title="Планировщик Atlas временно недоступен",
+                        details=f"Ошибка: `{type(exc).__name__}`. Повтор будет выполнен автоматически.",
+                        level="warning",
+                        dedupe_key=f"atlas-forum-scheduler:{type(exc).__name__}",
+                        exception=exc,
+                    )
+                    due = []
+                    default_feed = None
+                force_default = self._force_default_once
+                self._force_default_once = False
+                if force_default and default_feed is not None and not any(
+                    int(feed["id"]) == int(default_feed["id"]) for feed in due
+                ):
+                    due.insert(0, default_feed)
+                for feed in due:
+                    if self._closed:
+                        break
+                    await self.sync_once(
+                        feed,
+                        force=bool(force_default and default_feed and int(feed["id"]) == int(default_feed["id"])),
+                    )
+                # Continue a long backlog promptly, but yield to the event
+                # loop so overlay/chat traffic is never starved by indexing.
+                if len(due) >= 8 and not self._closed:
+                    await asyncio.sleep(0)
+                    continue
                 try:
                     await asyncio.wait_for(
                         self._wake.wait(),
-                        timeout=self.config.interval_seconds,
+                        timeout=self.config.scheduler_poll_seconds,
                     )
                 except TimeoutError:
                     pass
@@ -1050,15 +1216,20 @@ class AtlasForumSyncRunner:
         except asyncio.CancelledError:
             raise
         finally:
-            await asyncio.to_thread(self.browser.close)
+            await self.close()
 
     async def close(self) -> None:
         self._closed = True
         self._wake.set()
-        if self._auth_checkpoint_task is not None:
-            self._auth_checkpoint_task.cancel()
-            await asyncio.gather(self._auth_checkpoint_task, return_exceptions=True)
-        await asyncio.to_thread(self.browser.close)
+        tasks = list(self._auth_checkpoint_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._auth_checkpoint_tasks.clear()
+        browsers = list({id(browser): browser for browser in self._browsers.values()}.values())
+        for browser in browsers:
+            await asyncio.to_thread(browser.close)
 
 
 __all__ = [
