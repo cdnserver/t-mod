@@ -358,8 +358,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
             ON reactor_notifications(guild_id, user_id, read_at, id DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_projects (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'suspended', 'archived')),
+                description TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS atlas_servers (
                 code TEXT PRIMARY KEY,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 name TEXT NOT NULL,
                 number INTEGER,
                 label TEXT NOT NULL,
@@ -367,7 +381,8 @@ def init_db() -> None:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_by_id INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_code) REFERENCES atlas_projects(code)
             );
 
             CREATE TABLE IF NOT EXISTS atlas_factions (
@@ -385,6 +400,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS atlas_organizations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 slug TEXT NOT NULL,
                 name TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'project'
@@ -396,7 +412,8 @@ def init_db() -> None:
                 branding_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE(guild_id, slug)
+                UNIQUE(guild_id, slug),
+                FOREIGN KEY(project_code) REFERENCES atlas_projects(code)
             );
 
             CREATE TABLE IF NOT EXISTS atlas_memberships (
@@ -427,6 +444,7 @@ def init_db() -> None:
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 character_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL,
                 rank_name TEXT NOT NULL DEFAULT '',
@@ -452,10 +470,12 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS atlas_knowledge_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL DEFAULT 'lspd',
                 visibility_scope TEXT NOT NULL DEFAULT 'workspace'
                     CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
+                federation_scope TEXT NOT NULL DEFAULT 'workspace',
                 title TEXT NOT NULL,
                 source_kind TEXT NOT NULL DEFAULT 'memo'
                     CHECK(source_kind IN ('document', 'forum', 'memo', 'regulation', 'manual', 'url')),
@@ -480,6 +500,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_status
             ON atlas_knowledge_sources(organization_id, status, id DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
+            ON atlas_knowledge_sources(project_code, federation_scope, server_code, faction_code, status, id DESC);
+
             CREATE TABLE IF NOT EXISTS atlas_knowledge_revisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -498,12 +521,14 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
                 organization_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 feed_key TEXT NOT NULL,
                 root_url TEXT NOT NULL,
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL DEFAULT 'lspd',
                 visibility_scope TEXT NOT NULL DEFAULT 'server'
                     CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
+                federation_scope TEXT NOT NULL DEFAULT 'server',
                 interval_seconds INTEGER NOT NULL DEFAULT 43200,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
@@ -663,6 +688,11 @@ def init_db() -> None:
                 content_text TEXT NOT NULL,
                 citations_json TEXT NOT NULL DEFAULT '[]',
                 model TEXT,
+                model_provider TEXT NOT NULL DEFAULT '',
+                model_release TEXT NOT NULL DEFAULT '',
+                project_code TEXT NOT NULL DEFAULT '',
+                server_code TEXT NOT NULL DEFAULT '',
+                faction_code TEXT NOT NULL DEFAULT '',
                 latency_ms INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(thread_id) REFERENCES atlas_ai_threads(id)
@@ -2844,6 +2874,36 @@ def init_db() -> None:
         )
         _add_column_if_missing(
             con,
+            "atlas_servers",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_organizations",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_character_bindings",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_forum_feeds",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
             "atlas_knowledge_sources",
             "faction_code",
             "TEXT NOT NULL DEFAULT 'lspd'",
@@ -2858,6 +2918,18 @@ def init_db() -> None:
             "visibility_scope",
             "TEXT NOT NULL DEFAULT 'workspace'",
         )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "federation_scope",
+            "TEXT NOT NULL DEFAULT 'workspace'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_forum_feeds",
+            "federation_scope",
+            "TEXT NOT NULL DEFAULT 'server'",
+        )
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
         _add_column_if_missing(
             con,
@@ -2865,6 +2937,14 @@ def init_db() -> None:
             "agent_id",
             "TEXT NOT NULL DEFAULT 'atlas-tvr-a'",
         )
+        for column, definition in {
+            "model_provider": "TEXT NOT NULL DEFAULT ''",
+            "model_release": "TEXT NOT NULL DEFAULT ''",
+            "project_code": "TEXT NOT NULL DEFAULT ''",
+            "server_code": "TEXT NOT NULL DEFAULT ''",
+            "faction_code": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            _add_column_if_missing(con, "atlas_ai_messages", column, definition)
         _add_column_if_missing(
             con,
             "atlas_timeline_events",
@@ -2883,6 +2963,132 @@ def init_db() -> None:
                     last_error = NULL
                 """
             )
+
+        atlas_federation_migration = "migration:atlas-federation:2026-08-31-v2"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_federation_migration,),
+        ).fetchone() is None:
+            migration_now = utc_now_iso()
+            con.execute(
+                """
+                INSERT OR IGNORE INTO atlas_projects(
+                    code, name, label, description, created_at, updated_at
+                ) VALUES('majestic-rp', 'Majestic RP', 'Majestic RP',
+                         'Базовый проект Atlas для серверов Majestic RP.', ?, ?)
+                """,
+                (migration_now, migration_now),
+            )
+            con.execute(
+                """
+                UPDATE atlas_servers
+                SET project_code = 'majestic-rp'
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_organizations
+                SET project_code = 'majestic-rp'
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_character_bindings
+                SET project_code = COALESCE(
+                    (SELECT project_code FROM atlas_servers s
+                      WHERE s.code = atlas_character_bindings.server_code),
+                    'majestic-rp'
+                )
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET project_code = COALESCE(
+                        (SELECT project_code FROM atlas_servers s
+                          WHERE s.code = atlas_knowledge_sources.server_code),
+                        'majestic-rp'
+                    ),
+                    federation_scope = CASE visibility_scope
+                        WHEN 'global' THEN 'project'
+                        WHEN 'server' THEN 'server'
+                        WHEN 'faction' THEN 'faction'
+                        ELSE 'workspace'
+                    END
+                """,
+            )
+            # An archived source must retain its original tenant boundary too:
+            # it can be restored later, and a legacy `global` source must not
+            # silently become a private default workspace on restoration.
+            # Only derived-index state is changed for live sources.
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = 'pending',
+                    qdrant_point_id = NULL,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE status != 'archived'
+                """,
+                (migration_now,),
+            )
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET project_code = COALESCE(
+                        (SELECT project_code FROM atlas_servers s
+                          WHERE s.code = atlas_forum_feeds.server_code),
+                        'majestic-rp'
+                    ),
+                    federation_scope = CASE visibility_scope
+                        WHEN 'global' THEN 'project'
+                        WHEN 'server' THEN 'server'
+                        WHEN 'faction' THEN 'faction'
+                        ELSE 'workspace'
+                    END
+                WHERE 1 = 1
+                """,
+            )
+            con.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
+                ON atlas_knowledge_sources(
+                    project_code, federation_scope, server_code,
+                    faction_code, status, id DESC
+                )
+                """
+            )
+            set_meta(con, atlas_federation_migration, migration_now)
+
+        atlas_message_provenance_migration = "migration:atlas-message-provenance:2026-08-31-v1"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_message_provenance_migration,),
+        ).fetchone() is None:
+            # Older messages were created before an answer could be tied to a
+            # release. We can safely restore their project from the owning
+            # organization, but we do not invent provider, release, server or
+            # faction data that was never recorded.
+            con.execute(
+                """
+                UPDATE atlas_ai_messages
+                SET project_code = COALESCE(
+                    (
+                        SELECT organization.project_code
+                        FROM atlas_ai_threads thread
+                        JOIN atlas_organizations organization
+                          ON organization.id = thread.organization_id
+                        WHERE thread.id = atlas_ai_messages.thread_id
+                    ),
+                    'majestic-rp'
+                )
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            set_meta(con, atlas_message_provenance_migration, utc_now_iso())
 
         atlas_taxonomy_migration = "migration:atlas-taxonomy:2026-08-09-v1"
         if con.execute(
@@ -3267,11 +3473,22 @@ def init_db() -> None:
         set_meta(con, "client_profiles_last_case_migration_at", utc_now_iso())
 
         catalog_now = utc_now_iso()
+        # This seed intentionally precedes atlas_servers: fresh SQLite
+        # installations enforce the project foreign key from the first run.
+        con.execute(
+            """
+            INSERT OR IGNORE INTO atlas_projects(
+                code, name, label, description, created_at, updated_at
+            ) VALUES('majestic-rp', 'Majestic RP', 'Majestic RP',
+                     'Базовый проект Atlas для серверов Majestic RP.', ?, ?)
+            """,
+            (catalog_now, catalog_now),
+        )
         con.execute(
             """
             INSERT OR IGNORE INTO atlas_servers(
-                code, name, number, label, created_at, updated_at
-            ) VALUES('phoenix-15', 'Phoenix', 15, 'Phoenix (15)', ?, ?)
+                code, project_code, name, number, label, created_at, updated_at
+            ) VALUES('phoenix-15', 'majestic-rp', 'Phoenix', 15, 'Phoenix (15)', ?, ?)
             """,
             (catalog_now, catalog_now),
         )

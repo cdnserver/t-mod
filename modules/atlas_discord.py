@@ -184,6 +184,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 int(message.guild.id),
                 int(mapping["owner_user_id"]),
                 str(getattr(message.author, "display_name", message.author.name)),
+                int(mapping["organization_id"]),
             )
             profile = dict(dashboard["membership"].get("profile") or {})
             async with conversation_channel.typing():
@@ -202,6 +203,9 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 int(mapping["atlas_thread_id"]),
                 "user",
                 question,
+                project_code=result["project_code"],
+                server_code=result["server_code"],
+                faction_code=result["faction_code"],
             )
             await asyncio.to_thread(
                 atlas_storage.atlas_add_message,
@@ -210,6 +214,11 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 result["answer"],
                 citations=result["citations"],
                 model=result["model"],
+                model_provider=result["model_provider"],
+                model_release=result["model_release"],
+                project_code=result["project_code"],
+                server_code=result["server_code"],
+                faction_code=result["faction_code"],
                 latency_ms=result["latency_ms"],
             )
             await _send_answer(conversation_channel, result)
@@ -221,7 +230,15 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 "Atlas ответил в Discord",
                 target_type="discord_thread",
                 target_id=int(conversation_channel.id),
-                details={"source": "discord", "model": result["model"]},
+                details={
+                    "source": "discord",
+                    "model": result["model"],
+                    "model_provider": result["model_provider"],
+                    "model_release": result["model_release"],
+                    "project_code": result["project_code"],
+                    "server_code": result["server_code"],
+                    "faction_code": result["faction_code"],
+                },
             )
 
     @bot.listen("on_message")

@@ -32,6 +32,7 @@ from modules.atlas_ai import (
     atlas_embed,
     atlas_ensure_collection,
     atlas_index_source,
+    atlas_model_route,
     atlas_parse_text_mode,
     atlas_probe_collection,
     atlas_research_plan,
@@ -156,6 +157,88 @@ class AtlasRepositoryTests(unittest.TestCase):
                 organization_id, 99, message_id, "good"
             )
 
+    def test_answer_provenance_round_trips_with_feedback_candidate(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(
+            organization_id,
+            42,
+            "Проверка выпуска",
+            agent_id="atlas-claims",
+        )
+        atlas_repository.atlas_add_message(
+            thread_id,
+            "user",
+            "Подготовь основу иска.",
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="gov",
+        )
+        message_id = atlas_repository.atlas_add_message(
+            thread_id,
+            "assistant",
+            "Основа иска подготовлена по подтверждённой норме.",
+            citations=[{"source_id": 41, "title": "Судебный кодекс"}],
+            model="account/atlas-claims-v1",
+            model_provider="together",
+            model_release="atlas-claims-v1",
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="gov",
+            latency_ms=87,
+        )
+        atlas_repository.atlas_set_message_feedback(organization_id, 42, message_id, "good")
+
+        messages = atlas_repository.atlas_thread_messages(organization_id, 42, thread_id)["messages"]
+        candidates = atlas_repository.atlas_training_candidates(
+            organization_id=organization_id,
+            project_code="majestic-rp",
+            agent_id="atlas-claims",
+        )
+
+        assistant = messages[-1]
+        self.assertEqual(assistant["model_provider"], "together")
+        self.assertEqual(assistant["model_release"], "atlas-claims-v1")
+        self.assertEqual(assistant["project_code"], "majestic-rp")
+        self.assertEqual(assistant["server_code"], "phoenix-15")
+        self.assertEqual(assistant["faction_code"], "gov")
+        self.assertEqual(candidates[0]["model_provider"], "together")
+        self.assertEqual(candidates[0]["answer_server_code"], "phoenix-15")
+
+    def test_federation_migration_preserves_archived_source_scope(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        source = atlas_repository.atlas_add_knowledge(
+            int(dashboard["organization"]["id"]),
+            42,
+            title="Исторический общий регламент",
+            content="Этот регламент остаётся историческим материалом после миграции Atlas.",
+            visibility_scope="global",
+        )
+        migration_key = "migration:atlas-federation:2026-08-31-v2"
+        with connect() as con:
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET project_code = '', federation_scope = 'workspace', status = 'archived'
+                WHERE id = ?
+                """,
+                (int(source["id"]),),
+            )
+            con.execute("DELETE FROM meta WHERE key = ?", (migration_key,))
+            con.commit()
+
+        storage.init_db()
+
+        with connect() as con:
+            restored = con.execute(
+                """
+                SELECT project_code, federation_scope, status
+                FROM atlas_knowledge_sources WHERE id = ?
+                """,
+                (int(source["id"]),),
+            ).fetchone()
+        self.assertEqual(tuple(restored), ("majestic-rp", "project", "archived"))
+
     def test_finetuning_candidates_require_good_feedback_and_pair_last_user_message(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])
@@ -188,6 +271,61 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(candidates[0]["user_message_id"], user_id)
         self.assertEqual(candidates[0]["user_text"], "Точный вопрос")
         self.assertEqual(candidates[0]["citations"][0]["title"], "Уголовный кодекс")
+
+    def test_finetuning_candidates_are_filtered_by_project_and_agent(self) -> None:
+        first = atlas_repository.atlas_dashboard(77, 42, "Majestic редактор")
+        first_id = int(first["organization"]["id"])
+        first_thread = atlas_repository.atlas_create_thread(
+            first_id, 42, "Общий", agent_id="atlas-tvr-a"
+        )
+        atlas_repository.atlas_add_message(first_thread, "user", "Вопрос первого проекта")
+        first_message = atlas_repository.atlas_add_message(
+            first_thread, "assistant", "Проверенный и полезный ответ первого проекта."
+        )
+        atlas_repository.atlas_set_message_feedback(first_id, 42, first_message, "good")
+
+        atlas_repository.atlas_upsert_project(42, code="project-b", name="Project B")
+        server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
+        second = atlas_repository.atlas_create_organization(
+            77,
+            42,
+            name="Project B LSPD",
+            owner_user_id=84,
+            server_code=server["code"],
+            faction_code="lspd",
+        )
+        second_id = int(second["id"])
+        second_thread = atlas_repository.atlas_create_thread(
+            second_id, 84, "Иск", agent_id="atlas-claims"
+        )
+        atlas_repository.atlas_add_message(second_thread, "user", "Вопрос второго проекта")
+        second_message = atlas_repository.atlas_add_message(
+            second_thread, "assistant", "Проверенный и полезный ответ второго проекта."
+        )
+        atlas_repository.atlas_set_message_feedback(second_id, 84, second_message, "good")
+
+        majestic = atlas_repository.atlas_training_candidates(
+            project_code="majestic-rp", agent_id="atlas-tvr-a"
+        )
+        second_project = atlas_repository.atlas_training_candidates(
+            project_code="project-b", agent_id="atlas-claims"
+        )
+        mismatched = atlas_repository.atlas_training_candidates(
+            organization_id=second_id,
+            project_code="majestic-rp",
+        )
+
+        self.assertEqual([item["assistant_message_id"] for item in majestic], [first_message])
+        self.assertEqual([item["project_code"] for item in majestic], ["majestic-rp"])
+        self.assertEqual([item["assistant_message_id"] for item in second_project], [second_message])
+        self.assertEqual([item["project_code"] for item in second_project], ["project-b"])
+        self.assertEqual(mismatched, [])
 
     def test_agent_threads_have_isolated_memory_lanes(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -585,6 +723,135 @@ class AtlasRepositoryTests(unittest.TestCase):
                 visibility_scope="unknown",
             )
 
+    def test_projects_keep_legal_corpora_and_workspaces_isolated(self) -> None:
+        first = atlas_repository.atlas_dashboard(77, 42, "Majestic редактор")
+        first_id = int(first["organization"]["id"])
+        atlas_repository.atlas_upsert_project(
+            42,
+            code="project-b",
+            name="Project B",
+        )
+        second_server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
+        second = atlas_repository.atlas_create_organization(
+            77,
+            42,
+            name="Project B LSPD",
+            owner_user_id=84,
+            server_code=second_server["code"],
+            faction_code="lspd",
+        )
+        second_id = int(second["id"])
+        majestic = atlas_repository.atlas_add_knowledge(
+            first_id,
+            42,
+            title="Закон Majestic",
+            content="Проверенная норма Majestic RP, применимая только в первом проекте.",
+            visibility_scope="global",
+        )
+        project_b = atlas_repository.atlas_add_knowledge(
+            second_id,
+            84,
+            title="Закон Project B",
+            content="Проверенная норма второго проекта, не применимая в Majestic RP.",
+            server_code="project-b-15",
+            faction_code="lspd",
+            visibility_scope="global",
+        )
+        platform = atlas_repository.atlas_add_knowledge(
+            second_id,
+            84,
+            title="Платформенная политика Atlas",
+            content="Единая техническая политика Atlas, явно опубликованная для всех проектов.",
+            server_code="project-b-15",
+            faction_code="lspd",
+            visibility_scope="global",
+            federation_scope="platform",
+        )
+
+        first_visible = {
+            int(item["id"])
+            for item in atlas_repository.atlas_searchable_knowledge_sources(
+                first_id,
+                server_code="phoenix-15",
+                faction_code="lspd",
+            )
+        }
+        second_visible = {
+            int(item["id"])
+            for item in atlas_repository.atlas_searchable_knowledge_sources(
+                second_id,
+                server_code="project-b-15",
+                faction_code="lspd",
+            )
+        }
+
+        self.assertEqual(majestic["federation_scope"], "project")
+        self.assertEqual(project_b["federation_scope"], "project")
+        self.assertEqual(platform["federation_scope"], "platform")
+        self.assertIn(int(majestic["id"]), first_visible)
+        self.assertIn(int(platform["id"]), first_visible)
+        self.assertNotIn(int(project_b["id"]), first_visible)
+        self.assertIn(int(project_b["id"]), second_visible)
+        self.assertIn(int(platform["id"]), second_visible)
+        self.assertNotIn(int(majestic["id"]), second_visible)
+        with self.assertRaisesRegex(ValueError, "atlas_organization_project_mismatch"):
+            atlas_repository.atlas_searchable_knowledge_sources(
+                first_id,
+                server_code="project-b-15",
+                faction_code="lspd",
+            )
+
+    def test_project_namespaces_personal_spaces_feeds_and_server_identity(self) -> None:
+        atlas_repository.atlas_upsert_project(42, code="project-c", name="Project C")
+        server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-c-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-c",
+        )
+        majestic_personal = atlas_repository.atlas_ensure_personal_space(77, 42, "Роберт")
+        project_personal = atlas_repository.atlas_ensure_personal_space(
+            77,
+            42,
+            "Роберт",
+            project_code="project-c",
+        )
+        majestic_feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="laws",
+            root_url="https://forum.majestic-rp.ru/forums/laws/",
+        )
+        project_feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="laws",
+            root_url="https://forum.example.org/forums/laws/",
+            server_code=server["code"],
+            faction_code="lspd",
+        )
+
+        self.assertNotEqual(majestic_personal["organization"]["id"], project_personal["organization"]["id"])
+        self.assertEqual(project_personal["organization"]["project_code"], "project-c")
+        self.assertEqual(majestic_feed["feed_key"], "majestic-rp:laws")
+        self.assertEqual(project_feed["feed_key"], "project-c:laws")
+        self.assertEqual(
+            atlas_repository.atlas_forum_sync_status(77, project_code="project-c")["id"],
+            project_feed["id"],
+        )
+        with self.assertRaisesRegex(ValueError, "atlas_server_project_immutable"):
+            atlas_repository.atlas_upsert_server(
+                42,
+                code="project-c-15",
+                name="Moved",
+                project_code="majestic-rp",
+            )
+
     def test_admin_catalog_and_private_space_are_dynamic_and_isolated(self) -> None:
         server = atlas_repository.atlas_upsert_server(
             42,
@@ -763,6 +1030,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog[0]["id"], "atlas-tvr-a")
         self.assertIn("atlas-claims", {item["id"] for item in catalog})
         self.assertIn("исков", atlas_resolve_agent("atlas-claims").specialty.casefold())
+        self.assertEqual(atlas_resolve_agent("atlas-claims").knowledge_domains, ("ic", "mixed"))
+        self.assertEqual(atlas_resolve_agent("atlas-complaints").knowledge_domains, ("ooc", "mixed"))
+        self.assertEqual(atlas_resolve_agent("atlas-complaints").training_lane, "ooc-complaints")
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
 
@@ -793,6 +1063,84 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             {"ATLAS_DIRECT_MODEL": "x-ai/grok-4.1-fast"},
         ):
             self.assertEqual(atlas_ai_config().direct_model, "x-ai/grok-4.3")
+
+    def test_fine_tuned_route_is_scoped_and_keeps_base_fallback(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            fine_tuned_model="cdnserver/atlas-general-v1",
+            fine_tuned_enabled=True,
+            fine_tuned_agents="atlas-tvr-a",
+            fine_tuned_projects="majestic-rp",
+        )
+        primary, fallback, reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="majestic-rp",
+        )
+        self.assertEqual((primary.provider, primary.model, primary.release), (
+            "together", "cdnserver/atlas-general-v1", "fine-tuned",
+        ))
+        self.assertEqual(fallback.model if fallback else None, "openai/base")
+        self.assertEqual(reason, "fine_tuned_rollout")
+
+        special, no_fallback, special_reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="majestic-rp",
+            direct_mode=True,
+        )
+        self.assertEqual(special.provider, "openrouter")
+        self.assertEqual(no_fallback, None)
+        self.assertEqual(special_reason, "special_route")
+
+        isolated, isolated_fallback, isolated_reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="another-project",
+        )
+        self.assertEqual(isolated.model, "openai/base")
+        self.assertEqual(isolated_fallback, None)
+        self.assertEqual(isolated_reason, "project_not_enrolled")
+
+    def test_fine_tuned_rollout_registry_prefers_exact_project_and_agent(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            fine_tuned_enabled=True,
+            fine_tuned_rollouts=json.dumps([
+                {"project_code": "*", "agent_id": "*", "model": "account/shared", "enabled": True},
+                {
+                    "project_code": "majestic-rp", "agent_id": "atlas-claims",
+                    "model": "account/claims-v1", "release": "claims-v1", "enabled": True,
+                },
+            ]),
+        )
+        route, fallback, reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-claims"),
+            project_code="majestic-rp",
+        )
+        self.assertEqual(route.model, "account/claims-v1")
+        self.assertEqual(route.release, "claims-v1")
+        self.assertEqual(fallback.model if fallback else None, "openai/base")
+        self.assertEqual(reason, "fine_tuned_rollout")
 
     def test_atlas_2_is_text_only_and_strips_its_call_prefix(self) -> None:
         self.assertEqual(
@@ -831,6 +1179,47 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][-1]["content"], "скажи прямо")
         self.assertIn("без стилистической цензуры", payload["messages"][0]["content"])
         self.assertEqual(result["text_mode"], "atlas-2")
+
+    async def test_retryable_fine_tuned_failure_falls_back_to_base_model(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            together_url="https://together.test/v1/chat/completions",
+            fine_tuned_model="cdnserver/atlas-general-v1",
+            fine_tuned_enabled=True,
+            fine_tuned_projects="majestic-rp",
+        )
+        calls: list[tuple[str, str]] = []
+
+        async def complete(_method, url, *, payload, **_kwargs):
+            calls.append((url, str(payload.get("model"))))
+            if "together.test" in url:
+                raise AtlasAIError("upstream_unavailable", "temporary", retryable=True)
+            return {"choices": [{"message": {"content": "Базовый ответ"}}]}
+
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[]),
+        ), patch("modules.atlas_ai._json_request", side_effect=complete):
+            result = await atlas_answer(77, "Помоги составить короткую речь")
+
+        self.assertEqual(
+            calls,
+            [
+                ("https://together.test/v1/chat/completions", "cdnserver/atlas-general-v1"),
+                ("https://openrouter.test/chat/completions", "openai/base"),
+            ],
+        )
+        self.assertEqual(result["model"], "openai/base")
+        self.assertEqual(result["model_provider"], "openrouter")
 
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
@@ -1293,19 +1682,44 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["source_id"], 92)
 
     async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
+        canonical = {
+            "id": 4,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "fresh-checksum",
+            "title": "Регламент",
+            "source_url": None,
+            "metadata": {"taxonomy": {"domain": "mixed", "corpus_kind": "procedure"}},
+        }
         response = {
             "result": {
                 "points": [
                     {
                         "score": 0.91,
-                        "payload": {"organization_id": 77, "source_id": 4, "title": "Регламент", "text": "Текст"},
+                        "payload": {
+                            "organization_id": 77,
+                            "source_id": 4,
+                            "project_code": "majestic-rp",
+                            "federation_scope": "server",
+                            "access_scope": "server:majestic-rp:phoenix-15",
+                            "checksum": "fresh-checksum",
+                            "title": "Регламент",
+                            "text": "Текст",
+                        },
                     }
                 ]
             }
         }
         with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
             "modules.atlas_ai._json_request", AsyncMock(return_value=response)
-        ) as request:
+        ) as request, patch(
+            "modules.atlas_ai.atlas_storage.atlas_visible_knowledge_sources_by_id",
+            return_value={4: canonical},
+        ):
             result = await atlas_search(77, "полномочия")
 
         payload = request.await_args.kwargs["payload"]
@@ -1315,15 +1729,96 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "key": "access_scope",
                 "match": {
                     "any": [
-                        "global",
-                        "server:phoenix-15",
-                        "faction:phoenix-15:lspd",
-                        "workspace:77:phoenix-15:lspd",
+                        "platform",
+                        "project:majestic-rp",
+                        "server:majestic-rp:phoenix-15",
+                        "faction:majestic-rp:phoenix-15:lspd",
+                        "workspace:majestic-rp:77:phoenix-15:lspd",
                     ]
                 },
             },
         )
         self.assertEqual(result[0]["source_id"], 4)
+
+    async def test_semantic_hit_is_rejected_when_canonical_revision_changed(self) -> None:
+        canonical = {
+            "id": 501,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "current-revision",
+            "title": "Новая редакция",
+            "source_url": "https://forum.example.org/501",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        response = {
+            "result": {
+                "points": [
+                    {
+                        "score": 0.99,
+                        "payload": {
+                            "source_id": 501,
+                            "project_code": "majestic-rp",
+                            "federation_scope": "server",
+                            "access_scope": "server:majestic-rp:phoenix-15",
+                            "checksum": "obsolete-revision",
+                            "text": "Текст устаревшей редакции.",
+                        },
+                    }
+                ]
+            }
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_visible_knowledge_sources_by_id",
+            return_value={501: canonical},
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value=response),
+        ):
+            result = await atlas_search(77, "Покажи норму")
+
+        self.assertEqual(result, [])
+
+    async def test_agent_domain_filter_does_not_mix_ic_material_into_ooc_complaint(self) -> None:
+        source = {
+            "id": 502,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный кодекс",
+            "content_text": "Уголовный кодекс содержит применимые составы правонарушений.",
+            "source_url": "https://forum.example.org/502",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(
+                77,
+                "Какая жалоба по правилам сервера?",
+                allowed_domains=("ooc", "mixed"),
+            )
+
+        self.assertEqual(result, [])
 
     async def test_search_applies_server_and_faction_filters(self) -> None:
         with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
@@ -1338,9 +1833,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         scopes = request.await_args.kwargs["payload"]["filter"]["must"][0]
         self.assertEqual(scopes["key"], "access_scope")
-        self.assertIn("server:phoenix-15", scopes["match"]["any"])
-        self.assertIn("faction:phoenix-15:lspd", scopes["match"]["any"])
-        self.assertIn("workspace:77:phoenix-15:lspd", scopes["match"]["any"])
+        self.assertIn("server:majestic-rp:phoenix-15", scopes["match"]["any"])
+        self.assertIn("faction:majestic-rp:phoenix-15:lspd", scopes["match"]["any"])
+        self.assertIn("workspace:majestic-rp:77:phoenix-15:lspd", scopes["match"]["any"])
 
     async def test_search_embeds_agent_queries_independently(self) -> None:
         embedded: list[str] = []
@@ -1429,9 +1924,12 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         source = {
             "id": 5,
             "organization_id": 77,
+            "project_code": "majestic-rp",
             "server_code": "phoenix-15",
             "faction_code": "gov",
             "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "source-checksum",
             "title": "Общий регламент",
             "content_text": "Проверенный общий материал Phoenix длиной больше двадцати символов.",
         }
@@ -1452,11 +1950,14 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         delete_call = next(call for call in request.await_args_list if call.args[0] == "POST")
         point = put_call.kwargs["payload"]["points"][0]
         self.assertIn("Название документа: Общий регламент", embed.await_args.args[0][0])
-        self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
+        self.assertEqual(point["payload"]["access_scope"], "server:majestic-rp:phoenix-15")
         self.assertEqual(point["payload"]["visibility_scope"], "server")
+        self.assertEqual(point["payload"]["federation_scope"], "server")
+        self.assertEqual(point["payload"]["project_code"], "majestic-rp")
+        self.assertEqual(point["payload"]["checksum"], "source-checksum")
         self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
         self.assertEqual(point["payload"]["corpus_kind"], "procedure")
-        self.assertEqual(point["payload"]["index_version"], 2)
+        self.assertEqual(point["payload"]["index_version"], 3)
         self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
         self.assertLess(
             request.await_args_list.index(put_call),
@@ -1552,7 +2053,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         current = AsyncMock(
             side_effect=[
                 {"result": {"points_count": 12}},
-                {"result": {"points": [{"payload": {"index_version": 2}}]}},
+                {"result": {"points": [{"payload": {"index_version": 3}}]}},
             ]
         )
         with patch("modules.atlas_ai._json_request", current):
@@ -1600,7 +2101,8 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(chunks, ["Первый ", "фрагмент"])
         self.assertEqual(result["answer"], "Первый фрагмент")
-        self.assertEqual(result["model"], "atlas-tvr-a")
+        self.assertEqual(result["model"], "test/model")
+        self.assertEqual(result["model_provider"], "openrouter")
 
     async def test_empty_stream_is_retried_once_as_visible_completion(self) -> None:
         requests: list[dict] = []
@@ -2251,6 +2753,14 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         storage.DATA_DIR = Path(temp_dir.name)
         storage.DATABASE_FILE = storage.DATA_DIR / "atlas-overlay-web-test.db"
         storage.init_db()
+        atlas_repository.atlas_upsert_project(42, code="project-b", name="Project B")
+        atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
         character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
         selected = ConsensusWebPrincipal(
             user_id=42,
@@ -2270,11 +2780,17 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
 
         async def stream_answer(_organization_id, _question, *, on_delta, **kwargs):
             await on_delta("Полевой ответ [1].")
+            stream_answer.organization_id = _organization_id
             stream_answer.kwargs = kwargs
             return {
                 "answer": "Полевой ответ [1].",
                 "citations": [],
                 "model": "atlas-tvr-a",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "project-b",
+                "server_code": "project-b-15",
+                "faction_code": "fib",
                 "response_mode": "balanced",
                 "requested_response_mode": "balanced",
                 "latency_mode": "overlay",
@@ -2296,7 +2812,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         "/api/atlas/overlay/context",
                         json={
                             "character_id": character.id,
-                            "server_code": "phoenix-15",
+                            "server_code": "project-b-15",
                             "faction_code": "fib",
                         },
                     )
@@ -2308,7 +2824,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         "/api/atlas/overlay/context",
                         json={
                             "character_id": character.id,
-                            "server_code": "phoenix-15",
+                            "server_code": "project-b-15",
                             "faction_code": "fib",
                             "rank": "Special Agent",
                             "screen_context_enabled": True,
@@ -2340,6 +2856,17 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context_payload["selected_character"]["faction_code"], "fib")
             self.assertNotIn("csrf_token", context_payload)
             self.assertEqual(streamed.status, 200)
+            project_dashboard = atlas_repository.atlas_dashboard(
+                77,
+                42,
+                "Администратор",
+                project_code="project-b",
+            )
+            self.assertEqual(
+                stream_answer.organization_id,
+                int(project_dashboard["organization"]["id"]),
+            )
+            self.assertEqual(stream_answer.kwargs["server_code"], "project-b-15")
             self.assertEqual(stream_answer.kwargs["faction_code"], "fib")
             self.assertEqual(stream_answer.kwargs["latency_mode"], "overlay")
             self.assertEqual(stream_answer.kwargs["user_profile"]["nickname"], "Saul Goodman")
@@ -2584,7 +3111,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         form = FormData()
         form.add_field("server_code", "phoenix-15")
         form.add_field("faction_code", "gov")
-        form.add_field("visibility_scope", "server")
+        form.add_field("visibility_scope", "global")
         form.add_field("source_kind", "regulation")
         form.add_field(
             "file",
@@ -2607,7 +3134,8 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     )
                     payload = await listed.json()
             self.assertEqual(payload["items"][0]["faction_code"], "gov")
-            self.assertEqual(payload["items"][0]["visibility_scope"], "server")
+            self.assertEqual(payload["items"][0]["visibility_scope"], "global")
+            self.assertEqual(payload["items"][0]["federation_scope"], "project")
             self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
             self.assertEqual(payload["items"][0]["status"], "indexed")
         finally:
@@ -2792,6 +3320,11 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "answer": "Продолжение ответа",
                 "citations": [],
                 "model": "test/model",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
                 "response_mode": "creative",
                 "latency_ms": 12,
             }
@@ -2803,6 +3336,11 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "answer": "Потоковый ответ",
                 "citations": [],
                 "model": "atlas-tvr-a",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
                 "response_mode": "balanced",
                 "requested_response_mode": "balanced",
                 "latency_ms": 8,

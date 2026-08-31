@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import py_compile
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_sqlite_to_postgres_migration_script_parses(self) -> None:
+        """Keep a malformed migration helper from reaching a live upgrade."""
+
+        py_compile.compile(
+            str(ROOT / "scripts/migrate_sqlite_to_postgres.py"),
+            doraise=True,
+        )
+
     def test_begin_immediate_relies_on_psycopg_implicit_transaction(self) -> None:
         class Connection:
             def __init__(self) -> None:

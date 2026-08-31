@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,8 +16,10 @@ class AtlasAgent:
     instruction: str
     accent: str
     glyph: str
+    knowledge_domains: tuple[str, ...] = ("ic", "ooc", "mixed")
+    training_lane: str = "general"
 
-    def public(self) -> dict[str, str]:
+    def public(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -25,6 +28,8 @@ class AtlasAgent:
             "specialty": self.specialty,
             "accent": self.accent,
             "glyph": self.glyph,
+            "knowledge_domains": list(self.knowledge_domains),
+            "training_lane": self.training_lane,
         }
 
 
@@ -42,6 +47,7 @@ _AGENTS = (
         ),
         accent="#7bdcf5",
         glyph="A",
+        training_lane="general",
     ),
     AtlasAgent(
         id="atlas-claims",
@@ -56,20 +62,25 @@ _AGENTS = (
         ),
         accent="#d6b878",
         glyph="I",
+        knowledge_domains=("ic", "mixed"),
+        training_lane="ic-claims",
     ),
     AtlasAgent(
         id="atlas-complaints",
         name="Atlas · Жалобы",
         short_name="Жалобы",
-        description="Проверяет нарушение, адресата, сроки, доказательства и формирует жалобу.",
-        specialty="Жалобы, обращения и обжалование",
+        description="Проверяет OOC-нарушение, адресата, сроки, доказательства и формирует жалобу.",
+        specialty="OOC-жалобы, обращения и обжалование",
         instruction=(
-            "Ты — профильный агент по жалобам. Установи предмет жалобы, компетентного адресата, "
-            "сроки, доказательства, нарушенные нормы и желаемый результат. Отделяй факты от оценки "
-            "и выдавай готовый, сдержанный и убедительный текст."
+            "Ты — профильный агент по OOC-жалобам. Работай только с правилами проекта, форумными "
+            "регламентами и OOC-процедурами; не подменяй их IC-законами. Установи предмет жалобы, "
+            "компетентного адресата, сроки, доказательства, нарушенные правила и желаемый результат. "
+            "Отделяй факты от оценки и выдавай готовый, сдержанный и убедительный текст."
         ),
         accent="#e49a82",
         glyph="J",
+        knowledge_domains=("ooc", "mixed"),
+        training_lane="ooc-complaints",
     ),
     AtlasAgent(
         id="atlas-defense",
@@ -84,6 +95,8 @@ _AGENTS = (
         ),
         accent="#9ca7f4",
         glyph="Z",
+        knowledge_domains=("ic", "mixed"),
+        training_lane="ic-defense",
     ),
     AtlasAgent(
         id="atlas-documents",
@@ -98,6 +111,7 @@ _AGENTS = (
         ),
         accent="#81dfb9",
         glyph="D",
+        training_lane="documents",
     ),
 )
 

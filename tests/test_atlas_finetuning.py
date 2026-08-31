@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from modules.atlas_finetuning import (
+    AtlasDatasetScopeError,
+    atlas_agent_system_prompt,
     build_finetuning_bundle,
     prepare_candidates,
     redact_training_text,
@@ -17,14 +19,22 @@ def candidate(
     thread_id: int,
     prompt: str,
     answer: str,
+    *,
+    project_code: str = "majestic-rp",
+    agent_id: str = "atlas-tvr-a",
 ) -> dict[str, object]:
     return {
         "feedback_id": feedback_id,
         "thread_id": thread_id,
-        "agent_id": "atlas-tvr-a",
+        "project_code": project_code,
+        "agent_id": agent_id,
         "user_text": prompt,
         "assistant_text": answer,
         "model": "test-model",
+        "model_provider": "openrouter",
+        "model_release": "base",
+        "answer_server_code": "phoenix-15",
+        "answer_faction_code": "lspd",
         "citations": [{"title": "Источник"}],
     }
 
@@ -89,6 +99,96 @@ class AtlasFinetuningTests(unittest.TestCase):
             self.assertEqual(manifest["approved_count"], 1)
             record = json.loads((root / "approved/train.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(record["messages"][-1]["role"], "assistant")
+
+    def test_scope_filters_keep_project_and_agent_lanes_separate(self) -> None:
+        rows = [
+            candidate(
+                1,
+                10,
+                "Подготовь иск",
+                "Подробный проект иска с хронологией и требованиями.",
+                agent_id="atlas-claims",
+            ),
+            candidate(
+                2,
+                20,
+                "Составь жалобу",
+                "Подробная OOC-жалоба с описанием доказательств.",
+                agent_id="atlas-complaints",
+            ),
+            candidate(
+                3,
+                30,
+                "Вопрос второго проекта",
+                "Подробный ответ, относящийся только ко второму проекту.",
+                project_code="project-b",
+                agent_id="atlas-claims",
+            ),
+        ]
+        prepared, rejected = prepare_candidates(
+            rows,
+            project_code="majestic-rp",
+            agent_id="atlas-claims",
+        )
+
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(prepared[0].project_code, "majestic-rp")
+        self.assertEqual(prepared[0].agent_id, "atlas-claims")
+        self.assertEqual(prepared[0].training_lane, "ic-claims")
+        self.assertEqual(prepared[0].model_provider, "openrouter")
+        self.assertEqual(prepared[0].server_code, "phoenix-15")
+        self.assertEqual(rejected["agent_scope_mismatch"], 1)
+        self.assertEqual(rejected["project_scope_mismatch"], 1)
+
+    def test_bundle_refuses_mixed_project_or_agent_data_without_explicit_boundary(self) -> None:
+        rows = [
+            candidate(1, 10, "Первый проект", "Достаточно длинный ответ первого проекта."),
+            candidate(
+                2,
+                20,
+                "Второй проект",
+                "Достаточно длинный ответ второго проекта.",
+                project_code="project-b",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                AtlasDatasetScopeError,
+                "atlas_finetuning_cross_project_export_forbidden",
+            ):
+                build_finetuning_bundle(rows, Path(directory))
+
+    def test_approval_is_bound_to_the_redacted_pair_that_was_reviewed(self) -> None:
+        original = [
+            candidate(1, 10, "Составь речь", "Готовая содержательная речь для выступления.")
+        ]
+        changed = [
+            candidate(1, 10, "Составь речь", "Другой содержательный ответ после редактирования.")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_finetuning_bundle(original, root / "review")
+            with (root / "review" / "review.csv").open(encoding="utf-8-sig") as handle:
+                review = list(csv.DictReader(handle))
+            review[0]["status"] = "approved"
+            approval_path = root / "approved.csv"
+            with approval_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=review[0].keys())
+                writer.writeheader()
+                writer.writerows(review)
+
+            manifest = build_finetuning_bundle(
+                changed,
+                root / "changed",
+                approvals_path=approval_path,
+            )
+            self.assertEqual(manifest["approved_count"], 0)
+            self.assertTrue(any("checksum" in warning for warning in manifest["warnings"]))
+
+    def test_agent_prompt_preserves_specialist_boundary(self) -> None:
+        complaint_prompt = atlas_agent_system_prompt("atlas-complaints")
+        self.assertIn("OOC-жалоб", complaint_prompt)
+        self.assertIn("не подменяй их IC-законами", complaint_prompt)
 
 
 if __name__ == "__main__":

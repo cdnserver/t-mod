@@ -16,13 +16,15 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-DATASET_VERSION = 1
+DATASET_VERSION = 2
+DEFAULT_PROJECT_CODE = "majestic-rp"
 DEFAULT_SYSTEM_PROMPT = (
     "Ты Atlas AI — точный и практичный помощник экосистемы T-Mod. "
     "Для юридических утверждений опирайся на доступные источники, не выдумывай "
     "статьи и ссылки, прямо отмечай неопределённость и соблюдай запрошенные "
     "пользователем формат и объём ответа."
 )
+_SCOPE_CODE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 _REDACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -64,6 +66,50 @@ _LOW_VALUE_PATTERNS = (
 )
 
 
+class AtlasDatasetScopeError(ValueError):
+    """Raised when a dataset would combine independent Atlas model lanes.
+
+    A fine-tuning file is deliberately scoped to one project and one agent by
+    default.  Mixing them makes it impossible to audit which rules, style and
+    user feedback influenced a model release.
+    """
+
+
+def _scope_code(
+    value: object,
+    *,
+    fallback: str | None = None,
+    error: str,
+) -> str:
+    candidate = str(value or fallback or "").strip().lower()
+    if not _SCOPE_CODE_RE.fullmatch(candidate):
+        raise AtlasDatasetScopeError(error)
+    return candidate
+
+
+def _training_lane_for_agent(agent_id: str) -> str:
+    """Resolve an agent's stable training lane without trusting row input."""
+
+    try:
+        from modules.atlas_agents import atlas_resolve_agent
+
+        return str(atlas_resolve_agent(agent_id).training_lane)
+    except (ImportError, ValueError, AttributeError) as exc:
+        raise AtlasDatasetScopeError("atlas_finetuning_agent_unregistered") from exc
+
+
+def atlas_agent_system_prompt(agent_id: str) -> str:
+    """Return the same role boundary that the selected agent receives at run time."""
+
+    try:
+        from modules.atlas_agents import atlas_resolve_agent
+
+        agent = atlas_resolve_agent(agent_id)
+    except (ImportError, ValueError) as exc:
+        raise AtlasDatasetScopeError("atlas_finetuning_agent_unregistered") from exc
+    return f"{DEFAULT_SYSTEM_PROMPT}\n\nРоль агента: {agent.instruction}"
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedCandidate:
     candidate_id: int
@@ -72,18 +118,31 @@ class PreparedCandidate:
     user_text: str
     assistant_text: str
     model: str
+    model_provider: str
+    model_release: str
+    server_code: str
+    faction_code: str
     source_count: int
     flags: tuple[str, ...]
     checksum: str
+    project_code: str = DEFAULT_PROJECT_CODE
+    training_lane: str = "general"
 
     def review_record(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
             "status": "",
+            "project_code": self.project_code,
             "agent_id": self.agent_id,
+            "training_lane": self.training_lane,
             "model": self.model,
+            "model_provider": self.model_provider,
+            "model_release": self.model_release,
+            "server_code": self.server_code,
+            "faction_code": self.faction_code,
             "source_count": self.source_count,
             "flags": ",".join(self.flags),
+            "checksum": self.checksum,
             "prompt_preview": self.user_text[:360].replace("\n", " "),
             "answer_preview": self.assistant_text[:560].replace("\n", " "),
             "review_note": "",
@@ -92,7 +151,7 @@ class PreparedCandidate:
     def training_record(self) -> dict[str, Any]:
         return {
             "messages": [
-                {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+                {"role": "system", "content": atlas_agent_system_prompt(self.agent_id)},
                 {"role": "user", "content": self.user_text},
                 {"role": "assistant", "content": self.assistant_text},
             ]
@@ -129,16 +188,72 @@ def _decoded_citations(value: Any) -> list[Any]:
     return decoded if isinstance(decoded, list) else []
 
 
-def prepare_candidates(rows: Iterable[Mapping[str, Any]]) -> tuple[list[PreparedCandidate], dict[str, int]]:
+def prepare_candidates(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    project_code: str | None = None,
+    agent_id: str | None = None,
+) -> tuple[list[PreparedCandidate], dict[str, int]]:
+    """Redact candidate rows while preserving their project and agent boundary.
+
+    ``project_code`` and ``agent_id`` are assertions supplied by the caller.
+    Rows that disagree are excluded rather than relabelled.  Old direct callers
+    without project metadata remain compatible only with the legacy default
+    project, and the result is visibly marked for reviewer attention.
+    """
+
+    expected_project = (
+        _scope_code(project_code, error="atlas_finetuning_project_invalid")
+        if project_code is not None
+        else None
+    )
+    expected_agent = (
+        _scope_code(agent_id, error="atlas_finetuning_agent_invalid")
+        if agent_id is not None
+        else None
+    )
     accepted: list[PreparedCandidate] = []
     rejected = {
         "missing_pair": 0,
         "too_short": 0,
         "too_large": 0,
         "duplicate": 0,
+        "project_scope_mismatch": 0,
+        "agent_scope_mismatch": 0,
+        "invalid_scope": 0,
     }
     seen: set[str] = set()
     for row in rows:
+        row_flags: set[str] = set()
+        raw_project = str(row.get("project_code") or "").strip().lower()
+        if not raw_project:
+            # Historical candidate rows predate project federation.  They can
+            # only remain compatible with the original Majestic project; a new
+            # project must never inherit ambiguous feedback.
+            if expected_project not in {None, DEFAULT_PROJECT_CODE}:
+                rejected["project_scope_mismatch"] += 1
+                continue
+            clean_project = DEFAULT_PROJECT_CODE
+            row_flags.add("legacy_project_scope")
+        else:
+            try:
+                clean_project = _scope_code(raw_project, error="atlas_finetuning_project_invalid")
+            except AtlasDatasetScopeError:
+                rejected["invalid_scope"] += 1
+                continue
+        raw_agent = str(row.get("agent_id") or "atlas-tvr-a").strip().lower()
+        try:
+            clean_agent = _scope_code(raw_agent, error="atlas_finetuning_agent_invalid")
+            training_lane = _training_lane_for_agent(clean_agent)
+        except AtlasDatasetScopeError:
+            rejected["invalid_scope"] += 1
+            continue
+        if expected_project is not None and clean_project != expected_project:
+            rejected["project_scope_mismatch"] += 1
+            continue
+        if expected_agent is not None and clean_agent != expected_agent:
+            rejected["agent_scope_mismatch"] += 1
+            continue
         user_text, user_redactions = redact_training_text(str(row.get("user_text") or ""))
         answer_text, answer_redactions = redact_training_text(str(row.get("assistant_text") or ""))
         if not user_text or not answer_text:
@@ -157,23 +272,29 @@ def prepare_candidates(rows: Iterable[Mapping[str, Any]]) -> tuple[list[Prepared
             rejected["duplicate"] += 1
             continue
         seen.add(checksum)
-        flags = set(user_redactions) | set(answer_redactions)
+        flags = row_flags | set(user_redactions) | set(answer_redactions)
         if any(pattern.search(answer_text) for pattern in _LOW_VALUE_PATTERNS):
             flags.add("low_value_review")
         thread_key = hashlib.sha256(
-            f"atlas-thread-v1:{int(row.get('thread_id') or 0)}".encode("utf-8")
+            f"atlas-thread-v2:{clean_project}:{int(row.get('thread_id') or 0)}".encode("utf-8")
         ).hexdigest()[:20]
         accepted.append(
             PreparedCandidate(
                 candidate_id=int(row.get("feedback_id") or 0),
                 thread_key=thread_key,
-                agent_id=str(row.get("agent_id") or "atlas-tvr-a")[:80],
+                agent_id=clean_agent,
                 user_text=user_text,
                 assistant_text=answer_text,
                 model=str(row.get("model") or "")[:160],
+                model_provider=str(row.get("model_provider") or "")[:80],
+                model_release=str(row.get("model_release") or "")[:120],
+                server_code=str(row.get("answer_server_code") or row.get("server_code") or "")[:80],
+                faction_code=str(row.get("answer_faction_code") or row.get("faction_code") or "")[:80],
                 source_count=len(_decoded_citations(row.get("citations", row.get("citations_json")))),
                 flags=tuple(sorted(flags)),
                 checksum=checksum,
+                project_code=clean_project,
+                training_lane=training_lane,
             )
         )
     return accepted, rejected
@@ -186,6 +307,25 @@ def load_approvals(path: Path | None) -> set[int]:
         reader = csv.DictReader(handle)
         return {
             int(row["candidate_id"])
+            for row in reader
+            if str(row.get("status") or "").strip().lower() == "approved"
+            and str(row.get("candidate_id") or "").strip().isdigit()
+        }
+
+
+def load_approval_checksums(path: Path | None) -> dict[int, str]:
+    """Load checksum-bound approvals emitted by the current review template.
+
+    A reviewer approves the exact redacted pair they saw.  Reusing the same
+    feedback id after an answer changes is intentionally not an approval.
+    """
+
+    if path is None or not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        return {
+            int(row["candidate_id"]): str(row.get("checksum") or "").strip().lower()
             for row in reader
             if str(row.get("status") or "").strip().lower() == "approved"
             and str(row.get("candidate_id") or "").strip().isdigit()
@@ -207,6 +347,67 @@ def split_approved(
     train = [item for item in approved if item.thread_key not in eval_groups]
     evaluation = [item for item in approved if item.thread_key in eval_groups]
     return train, evaluation
+
+
+def _assert_bundle_scope(
+    candidates: Iterable[PreparedCandidate],
+    *,
+    project_code: str | None,
+    agent_id: str | None,
+    allow_mixed_projects: bool,
+    allow_mixed_agents: bool,
+) -> dict[str, Any]:
+    items = list(candidates)
+    projects = sorted({item.project_code for item in items})
+    agents = sorted({item.agent_id for item in items})
+    lanes = sorted({item.training_lane for item in items})
+    expected_project = (
+        _scope_code(project_code, error="atlas_finetuning_project_invalid")
+        if project_code is not None
+        else None
+    )
+    expected_agent = (
+        _scope_code(agent_id, error="atlas_finetuning_agent_invalid")
+        if agent_id is not None
+        else None
+    )
+    if expected_project is not None and any(item != expected_project for item in projects):
+        raise AtlasDatasetScopeError("atlas_finetuning_project_scope_mismatch")
+    if expected_agent is not None and any(item != expected_agent for item in agents):
+        raise AtlasDatasetScopeError("atlas_finetuning_agent_scope_mismatch")
+    if len(projects) > 1 and not allow_mixed_projects:
+        raise AtlasDatasetScopeError("atlas_finetuning_cross_project_export_forbidden")
+    if len(agents) > 1 and not allow_mixed_agents:
+        raise AtlasDatasetScopeError("atlas_finetuning_cross_agent_export_forbidden")
+    return {
+        "project_code": expected_project or (projects[0] if len(projects) == 1 else None),
+        "agent_id": expected_agent or (agents[0] if len(agents) == 1 else None),
+        "projects": projects,
+        "agents": agents,
+        "training_lanes": lanes,
+        "mixed_projects_explicit": bool(len(projects) > 1 and allow_mixed_projects),
+        "mixed_agents_explicit": bool(len(agents) > 1 and allow_mixed_agents),
+    }
+
+
+def _assert_output_scope(output_dir: Path, scope: Mapping[str, Any]) -> None:
+    """Prevent a reused folder from silently replacing another training lane."""
+
+    manifest_path = output_dir / "manifest.json"
+    if not manifest_path.exists():
+        return
+    try:
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    old_scope = previous.get("scope") if isinstance(previous, dict) else None
+    if not isinstance(old_scope, dict):
+        return
+    for key in ("project_code", "agent_id"):
+        before = str(old_scope.get(key) or "")
+        after = str(scope.get(key) or "")
+        if before and after and before != after:
+            raise AtlasDatasetScopeError("atlas_finetuning_output_scope_mismatch")
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> int:
@@ -235,10 +436,39 @@ def build_finetuning_bundle(
     output_dir: Path,
     *,
     approvals_path: Path | None = None,
+    project_code: str | None = None,
+    agent_id: str | None = None,
+    allow_mixed_projects: bool = False,
+    allow_mixed_agents: bool = False,
 ) -> dict[str, Any]:
+    # Validate caller-provided boundary before creating any filesystem output.
+    if project_code is not None:
+        _scope_code(project_code, error="atlas_finetuning_project_invalid")
+    if agent_id is not None:
+        clean_agent = _scope_code(agent_id, error="atlas_finetuning_agent_invalid")
+        _training_lane_for_agent(clean_agent)
     output_dir.mkdir(parents=True, exist_ok=True)
-    candidates, rejected = prepare_candidates(rows)
-    approved_ids = load_approvals(approvals_path)
+    candidates, rejected = prepare_candidates(
+        rows,
+        project_code=project_code,
+        agent_id=agent_id,
+    )
+    scope = _assert_bundle_scope(
+        candidates,
+        project_code=project_code,
+        agent_id=agent_id,
+        allow_mixed_projects=allow_mixed_projects,
+        allow_mixed_agents=allow_mixed_agents,
+    )
+    _assert_output_scope(output_dir, scope)
+    reviewed_ids = load_approvals(approvals_path)
+    approval_checksums = load_approval_checksums(approvals_path)
+    approved_ids = {
+        item.candidate_id
+        for item in candidates
+        if item.candidate_id in reviewed_ids
+        and approval_checksums.get(item.candidate_id) == item.checksum
+    }
     train, evaluation = split_approved(candidates, approved_ids)
 
     candidate_path = output_dir / "candidates.jsonl"
@@ -251,8 +481,14 @@ def build_finetuning_bundle(
             {
                 "candidate_id": item.candidate_id,
                 "thread_key": item.thread_key,
+                "project_code": item.project_code,
                 "agent_id": item.agent_id,
+                "training_lane": item.training_lane,
                 "model": item.model,
+                "model_provider": item.model_provider,
+                "model_release": item.model_release,
+                "server_code": item.server_code,
+                "faction_code": item.faction_code,
                 "source_count": item.source_count,
                 "flags": list(item.flags),
                 "checksum": item.checksum,
@@ -262,7 +498,9 @@ def build_finetuning_bundle(
         ),
     )
     with review_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        fields = list(PreparedCandidate(0, "", "", "", "", "", 0, (), "").review_record())
+        fields = list(
+            PreparedCandidate(0, "", "", "", "", "", "", "", "", "", 0, (), "").review_record()
+        )
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(item.review_record() for item in candidates)
@@ -275,6 +513,7 @@ def build_finetuning_bundle(
         "dataset_version": DATASET_VERSION,
         "privacy": "redacted_offline_human_approval_required",
         "provider_upload_performed": False,
+        "scope": scope,
         "candidate_count": len(candidates),
         "approved_count": len(train) + len(evaluation),
         "train_count": len(train),
@@ -283,6 +522,9 @@ def build_finetuning_bundle(
         "warnings": (
             ["No examples were approved; review review.csv before training."]
             if not approved_ids else []
+        ) + (
+            ["Some approvals were ignored because their candidate checksum changed or is missing."]
+            if reviewed_ids and len(approved_ids) < len(reviewed_ids) else []
         ) + (
             ["Evaluation split is empty; approve examples from at least two conversations."]
             if approved_ids and not evaluation else []
@@ -303,8 +545,12 @@ def build_finetuning_bundle(
 
 __all__ = [
     "DATASET_VERSION",
+    "DEFAULT_PROJECT_CODE",
+    "AtlasDatasetScopeError",
     "PreparedCandidate",
+    "atlas_agent_system_prompt",
     "build_finetuning_bundle",
+    "load_approval_checksums",
     "load_approvals",
     "prepare_candidates",
     "redact_training_text",

@@ -354,18 +354,45 @@ def register_atlas_web_routes(
     async def user_dashboard(
         request: web.Request,
         selected: ConsensusWebPrincipal,
+        *,
+        project_code: str | None = None,
     ) -> dict[str, Any]:
         try:
             requested_space = int(request.headers.get("X-Atlas-Space-ID") or 0) or None
         except (TypeError, ValueError):
             requested_space = None
-        return await asyncio.to_thread(
+        clean_project = str(project_code or "").strip().lower() or None
+        dashboard = await asyncio.to_thread(
             storage.atlas_dashboard,
             int(guild_id),
             int(selected.user_id),
             str(selected.display_name),
             requested_space,
+            project_code=clean_project,
         )
+        if clean_project and str(dashboard["organization"].get("project_code") or "").strip().lower() != clean_project:
+            raise ValueError("atlas_space_project_mismatch")
+        return dashboard
+
+    def explicit_platform_scope(payload: dict[str, Any]) -> str | None:
+        """Require a deliberate administrator confirmation before cross-project sharing.
+
+        The old UI calls project-wide material `global`.  Treating that label as
+        platform-wide would expose legacy Majestic laws to every future project,
+        so it continues to map to the current project unless this dedicated
+        switch and confirmation are both supplied by an administrator-only
+        endpoint.
+        """
+
+        requested = str(payload.get("federation_scope") or "").strip().lower()
+        if not requested:
+            return None
+        if requested != "platform":
+            raise ValueError("atlas_federation_scope_selection_invalid")
+        confirmed = str(payload.get("confirm_platform_scope") or "").strip().lower()
+        if confirmed not in {"1", "true", "yes", "on", "confirm"}:
+            raise ValueError("atlas_platform_scope_confirmation_required")
+        return "platform"
 
     async def dashboard_for(
         request: web.Request,
@@ -867,7 +894,21 @@ def register_atlas_web_routes(
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
-        dashboard = await user_dashboard(request, selected)
+        try:
+            dashboard = await user_dashboard(
+                request,
+                selected,
+                project_code=(
+                    str(overlay_character.get("project_code") or "")
+                    if overlay_character is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Выбранное пространство Atlas относится к другому проекту."},
+                status=409,
+            )
         organization_id = int(dashboard["organization"]["id"])
         agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
@@ -968,7 +1009,15 @@ def register_atlas_web_routes(
                 question[:100],
                 agent_id=agent_id,
             )
-        await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
+        await asyncio.to_thread(
+            storage.atlas_add_message,
+            thread_id,
+            "user",
+            question,
+            project_code=answer["project_code"],
+            server_code=answer["server_code"],
+            faction_code=answer["faction_code"],
+        )
         assistant_message_id = await asyncio.to_thread(
             storage.atlas_add_message,
             thread_id,
@@ -976,6 +1025,11 @@ def register_atlas_web_routes(
             answer["answer"],
             citations=answer["citations"],
             model=answer["model"],
+            model_provider=answer["model_provider"],
+            model_release=answer["model_release"],
+            project_code=answer["project_code"],
+            server_code=answer["server_code"],
+            faction_code=answer["faction_code"],
             latency_ms=answer["latency_ms"],
         )
         await asyncio.to_thread(
@@ -989,6 +1043,11 @@ def register_atlas_web_routes(
             details={
                 "source": "web",
                 "model": answer["model"],
+                "model_provider": answer["model_provider"],
+                "model_release": answer["model_release"],
+                "project_code": answer["project_code"],
+                "server_code": answer["server_code"],
+                "faction_code": answer["faction_code"],
                 "latency_ms": answer["latency_ms"],
             },
         )
@@ -1095,7 +1154,21 @@ def register_atlas_web_routes(
                 {"error": str(exc), "message": "Выберите доступный сервер и фракцию."},
                 status=400,
             )
-        dashboard = await user_dashboard(request, selected)
+        try:
+            dashboard = await user_dashboard(
+                request,
+                selected,
+                project_code=(
+                    str(overlay_character.get("project_code") or "")
+                    if overlay_character is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Выбранное пространство Atlas относится к другому проекту."},
+                status=409,
+            )
         organization_id = int(dashboard["organization"]["id"])
         agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
@@ -1186,7 +1259,15 @@ def register_atlas_web_routes(
                     question[:100],
                     agent_id=agent_id,
                 )
-            await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
+            await asyncio.to_thread(
+                storage.atlas_add_message,
+                thread_id,
+                "user",
+                question,
+                project_code=answer["project_code"],
+                server_code=answer["server_code"],
+                faction_code=answer["faction_code"],
+            )
             assistant_message_id = await asyncio.to_thread(
                 storage.atlas_add_message,
                 thread_id,
@@ -1194,6 +1275,11 @@ def register_atlas_web_routes(
                 answer["answer"],
                 citations=answer["citations"],
                 model=answer["model"],
+                model_provider=answer["model_provider"],
+                model_release=answer["model_release"],
+                project_code=answer["project_code"],
+                server_code=answer["server_code"],
+                faction_code=answer["faction_code"],
                 latency_ms=answer["latency_ms"],
             )
             await asyncio.to_thread(
@@ -1207,6 +1293,11 @@ def register_atlas_web_routes(
                 details={
                     "source": "desktop-overlay" if latency_mode == "overlay" else "web-stream",
                     "model": answer["model"],
+                    "model_provider": answer["model_provider"],
+                    "model_release": answer["model_release"],
+                    "project_code": answer["project_code"],
+                    "server_code": answer["server_code"],
+                    "faction_code": answer["faction_code"],
                     "latency_ms": answer["latency_ms"],
                 },
             )
@@ -1832,6 +1923,7 @@ def register_atlas_web_routes(
                     server_code=str(payload.get("server_code") or "phoenix-15"),
                     faction_code=str(payload.get("faction_code") or "lspd"),
                     visibility_scope=str(payload.get("visibility_scope") or "server"),
+                    federation_scope=str(payload.get("federation_scope") or "") or None,
                     feed_key=feed_key,
                     metadata={
                         "author": snapshot.author,
@@ -1925,6 +2017,7 @@ def register_atlas_web_routes(
                 server_code=str(payload.get("server_code") or "phoenix-15"),
                 faction_code=str(payload.get("faction_code") or "lspd"),
                 visibility_scope=str(payload.get("visibility_scope") or "server"),
+                federation_scope=str(payload.get("federation_scope") or "") or None,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
                 metadata={
@@ -1980,6 +2073,7 @@ def register_atlas_web_routes(
         server_code: str,
         faction_code: str,
         visibility_scope: str,
+        federation_scope: str | None,
         knowledge_domain: str | None,
         corpus_kind: str | None,
         request_key: str | None = None,
@@ -2003,6 +2097,7 @@ def register_atlas_web_routes(
                 "server_code": server_code,
                 "faction_code": faction_code,
                 "visibility_scope": visibility_scope,
+                "federation_scope": federation_scope,
                 "knowledge_domain": knowledge_domain,
                 "corpus_kind": corpus_kind,
             },
@@ -2021,6 +2116,7 @@ def register_atlas_web_routes(
         server_code: str,
         faction_code: str,
         visibility_scope: str,
+        federation_scope: str | None,
         knowledge_domain: str | None,
         corpus_kind: str | None,
         request_key: str | None = None,
@@ -2042,6 +2138,7 @@ def register_atlas_web_routes(
                 "server_code": server_code,
                 "faction_code": faction_code,
                 "visibility_scope": visibility_scope,
+                "federation_scope": federation_scope,
                 "knowledge_domain": knowledge_domain,
                 "corpus_kind": corpus_kind,
             },
@@ -2140,6 +2237,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
+            federation_scope = explicit_platform_scope(payload)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
                 organization_id,
@@ -2151,6 +2249,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
             )
@@ -2645,6 +2744,8 @@ def register_atlas_web_routes(
                     "server_code",
                     "faction_code",
                     "visibility_scope",
+                    "federation_scope",
+                    "confirm_platform_scope",
                     "knowledge_domain",
                     "corpus_kind",
                 }:
@@ -2658,6 +2759,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 values.get("visibility_scope", "server")
             )
+            federation_scope = explicit_platform_scope(values)
             dashboard = await user_dashboard(request, selected)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
@@ -2670,6 +2772,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 original_filename=str(extracted["filename"]),
                 knowledge_domain=values.get("knowledge_domain") or None,
                 corpus_kind=values.get("corpus_kind") or None,
@@ -2737,6 +2840,7 @@ def register_atlas_web_routes(
                 visibility_scope = atlas_normalize_knowledge_scope(
                     str(payload.get("visibility_scope") or "server")
                 )
+                federation_scope = explicit_platform_scope(payload)
                 dashboard = await user_dashboard(request, selected)
             except (TypeError, ValueError) as exc:
                 return web.json_response(
@@ -2750,6 +2854,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
                 request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
@@ -2776,6 +2881,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
+            federation_scope = explicit_platform_scope(payload)
             dashboard = await user_dashboard(request, selected)
         except (TypeError, ValueError) as exc:
             return web.json_response(
@@ -2792,6 +2898,7 @@ def register_atlas_web_routes(
             server_code=server_code,
             faction_code=faction_code,
             visibility_scope=visibility_scope,
+            federation_scope=federation_scope,
             knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
             corpus_kind=str(payload.get("corpus_kind") or "") or None,
             request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
@@ -2850,13 +2957,23 @@ def register_atlas_web_routes(
         payload = await body(request, selected)
         resource = str(payload.get("resource") or "").strip().lower()
         try:
-            if resource == "server":
+            if resource == "project":
+                item = await asyncio.to_thread(
+                    storage.atlas_upsert_project,
+                    int(selected.user_id),
+                    code=str(payload.get("code") or ""),
+                    name=str(payload.get("name") or ""),
+                    description=str(payload.get("description") or "") or None,
+                    enabled=bool(payload.get("enabled", True)),
+                )
+            elif resource == "server":
                 item = await asyncio.to_thread(
                     storage.atlas_upsert_server,
                     int(selected.user_id),
                     code=str(payload.get("code") or ""),
                     name=str(payload.get("name") or ""),
                     number=payload.get("number"),
+                    project_code=str(payload.get("project_code") or "majestic-rp"),
                     enabled=bool(payload.get("enabled", True)),
                 )
             elif resource == "faction":

@@ -8,13 +8,14 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable
 
 import aiohttp
 
 from modules.atlas_taxonomy import atlas_classify_knowledge
 from modules.atlas_agents import AtlasAgent, atlas_agent_catalog, atlas_resolve_agent
+from modules.atlas_model_registry import AtlasModelRoute, select_atlas_model_route
 from persistence import atlas_repository as atlas_storage
 
 
@@ -30,7 +31,7 @@ _CREATIVE_REQUEST_RE = re.compile(
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
 _ATLAS_DIRECT_MODEL = "x-ai/grok-4.3"
-_ATLAS_INDEX_VERSION = 2
+_ATLAS_INDEX_VERSION = 3
 _ATLAS_RETIRED_DIRECT_MODELS = frozenset({"x-ai/grok-4.1-fast"})
 _ATLAS_DIRECT_PREFIX_RE = re.compile(
     r"^\s*атлас\s*2\s*[,;:—–-]\s*",
@@ -128,6 +129,15 @@ class AtlasAIConfig:
     referer: str
     title: str
     direct_model: str = _ATLAS_DIRECT_MODEL
+    together_key: str = ""
+    together_url: str = "https://api.together.ai/v1/chat/completions"
+    fine_tuned_model: str = ""
+    fine_tuned_enabled: bool = False
+    fine_tuned_provider: str = "together"
+    fine_tuned_agents: str = "atlas-tvr-a"
+    fine_tuned_projects: str = ""
+    fine_tuned_fallback: bool = True
+    fine_tuned_rollouts: str = ""
 
     @property
     def configured(self) -> bool:
@@ -195,6 +205,11 @@ class _AtlasAnswerRequest:
     latency_mode: str
     screen_context_used: bool
     direct_mode: bool
+    project_code: str
+    server_code: str
+    faction_code: str
+    model_route: AtlasModelRoute
+    fallback_model_route: AtlasModelRoute | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +368,22 @@ def atlas_ai_config() -> AtlasAIConfig:
         collection=os.getenv("ATLAS_QDRANT_COLLECTION", "tmod_atlas_v1").strip() or "tmod_atlas_v1",
         referer=os.getenv("OPENROUTER_REFERER", "https://atlas.tvr.lat").strip(),
         title=os.getenv("ATLAS_OPENROUTER_TITLE", "T-Mod Atlas").strip(),
+        together_key=os.getenv("TOGETHER_API_KEY", "").strip(),
+        together_url=os.getenv(
+            "ATLAS_TOGETHER_API_URL",
+            "https://api.together.ai/v1/chat/completions",
+        ).strip(),
+        fine_tuned_model=os.getenv("ATLAS_FINE_TUNED_MODEL", "").strip(),
+        fine_tuned_enabled=str(
+            os.getenv("ATLAS_FINE_TUNED_ENABLED", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"},
+        fine_tuned_provider=os.getenv("ATLAS_FINE_TUNED_PROVIDER", "together").strip(),
+        fine_tuned_agents=os.getenv("ATLAS_FINE_TUNED_AGENTS", "atlas-tvr-a").strip(),
+        fine_tuned_projects=os.getenv("ATLAS_FINE_TUNED_PROJECTS", "").strip(),
+        fine_tuned_fallback=str(
+            os.getenv("ATLAS_FINE_TUNED_FALLBACK", "true")
+        ).strip().lower() not in {"0", "false", "no", "off"},
+        fine_tuned_rollouts=os.getenv("ATLAS_FINE_TUNED_ROLLOUTS_JSON", "").strip(),
     )
 
 
@@ -387,6 +418,54 @@ def _openrouter_headers(config: AtlasAIConfig) -> dict[str, str]:
     if config.title:
         headers["X-OpenRouter-Title"] = config.title
     return headers
+
+
+def atlas_model_route(
+    config: AtlasAIConfig,
+    *,
+    agent: AtlasAgent,
+    project_code: str,
+    direct_mode: bool = False,
+    latency_mode: str = "standard",
+) -> tuple[AtlasModelRoute, AtlasModelRoute | None, str]:
+    """Select a deployed answer model without changing retrieval providers.
+
+    Planning, embeddings and the vector index deliberately retain their
+    existing OpenRouter path.  A future fine-tuned release is only responsible
+    for the final visible answer, so it can be switched off or rolled back
+    without rebuilding the knowledge library.
+    """
+
+    selected_latency = str(latency_mode or "standard").strip().lower()
+    special_model = (
+        str(os.getenv("ATLAS_OVERLAY_MODEL") or "").strip()
+        if selected_latency == "overlay"
+        else config.direct_model
+        if direct_mode
+        else ""
+    )
+    selection = select_atlas_model_route(
+        openrouter_key=config.openrouter_key,
+        openrouter_url=config.openrouter_url,
+        openrouter_model=config.chat_model,
+        openrouter_referer=config.referer,
+        openrouter_title=config.title,
+        together_key=config.together_key,
+        together_url=config.together_url,
+        fine_tuned_model=config.fine_tuned_model,
+        fine_tuned_enabled=config.fine_tuned_enabled,
+        fine_tuned_provider=config.fine_tuned_provider,
+        fine_tuned_agents=config.fine_tuned_agents,
+        fine_tuned_projects=config.fine_tuned_projects,
+        fine_tuned_fallback=config.fine_tuned_fallback,
+        fine_tuned_rollouts=config.fine_tuned_rollouts,
+        agent_id=agent.id,
+        project_code=project_code,
+        direct_mode=direct_mode,
+        latency_mode=selected_latency,
+        special_model=special_model,
+    )
+    return selection.primary, selection.fallback, selection.reason
 
 
 def _qdrant_headers(config: AtlasAIConfig) -> dict[str, str]:
@@ -666,9 +745,30 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
         raise AtlasAIError("knowledge_empty", "Источник не содержит текста для индексации.")
     organization_id = int(source["organization_id"])
     source_id = int(source["id"])
-    server_code = str(source.get("server_code") or "phoenix-15")
-    faction_code = str(source.get("faction_code") or "lspd")
-    visibility_scope = str(source.get("visibility_scope") or "workspace")
+    try:
+        scope = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            str(source.get("server_code") or "phoenix-15"),
+            str(source.get("faction_code") or "lspd"),
+            federation_scope=str(source.get("federation_scope") or "") or None,
+            legacy_visibility_scope=str(source.get("visibility_scope") or "workspace"),
+        )
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_source_scope_invalid",
+            "Источник Atlas имеет недопустимую область доступа.",
+        ) from exc
+    project_code = str(scope["project_code"])
+    server_code = str(scope["server_code"])
+    faction_code = str(scope["faction_code"])
+    federation_scope = str(scope["federation_scope"])
+    visibility_scope = str(scope["visibility_scope"])
+    stored_project = str(source.get("project_code") or "").strip().lower()
+    if stored_project and stored_project != project_code:
+        raise AtlasAIError(
+            "atlas_source_project_invalid",
+            "Источник Atlas привязан к другому проекту, чем выбранный сервер.",
+        )
     title = str(source.get("title") or "Источник")[:300]
     source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     taxonomy = source_metadata.get("taxonomy") if isinstance(source_metadata.get("taxonomy"), dict) else {}
@@ -686,10 +786,11 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     vectors = await atlas_embed([f"{embedding_prefix}{chunk}" for chunk in chunks])
     await atlas_ensure_collection(len(vectors[0]))
     access_scope = _atlas_access_scope(
+        project_code,
         organization_id,
         server_code,
         faction_code,
-        visibility_scope,
+        federation_scope,
     )
     points = []
     point_ids = []
@@ -703,10 +804,13 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                 "payload": {
                     "organization_id": organization_id,
                     "source_id": source_id,
+                    "project_code": project_code,
                     "server_code": server_code,
                     "faction_code": faction_code,
                     "visibility_scope": visibility_scope,
+                    "federation_scope": federation_scope,
                     "access_scope": access_scope,
+                    "checksum": str(source.get("checksum") or ""),
                     "title": title,
                     "source_url": str(source.get("source_url") or "")[:1000] or None,
                     "source_kind": str(source.get("source_kind") or "memo"),
@@ -777,6 +881,12 @@ def _atlas_corpus_abbreviations(
             titles = next(iter(identities.values()))
             aliases[alias] = max(titles, key=len)
     return aliases
+
+
+def _atlas_source_domain(source: dict[str, Any]) -> str:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+    return str(taxonomy.get("domain") or "mixed").strip().lower()
 
 
 def _atlas_query_variants(
@@ -896,9 +1006,11 @@ def _atlas_lexical_candidates(
             candidates.append(
                 {
                     "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
                     "server_code": str(source.get("server_code") or ""),
                     "faction_code": str(source.get("faction_code") or ""),
                     "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
                     "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                     "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                     "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
@@ -1086,9 +1198,11 @@ def _atlas_structured_legal_candidates(
                 candidates.append(
                     {
                         "source_id": int(source["id"]),
+                        "project_code": str(source.get("project_code") or ""),
                         "server_code": str(source.get("server_code") or ""),
                         "faction_code": str(source.get("faction_code") or ""),
                         "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                        "federation_scope": str(source.get("federation_scope") or "workspace"),
                         "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                         "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                         "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
@@ -1275,10 +1389,28 @@ async def atlas_search(
     limit: int = 6,
     expanded: bool = False,
     query_variants: list[str] | None = None,
+    allowed_domains: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
-    clean_server = str(server_code or "phoenix-15")
-    clean_faction = str(faction_code or "lspd")
+    try:
+        access_context = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            str(server_code or "phoenix-15"),
+            str(faction_code or "lspd"),
+        )
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_scope_invalid",
+            "Выбранный проект, сервер или фракция Atlas недоступны.",
+        ) from exc
+    clean_project = str(access_context["project_code"])
+    clean_server = str(access_context["server_code"])
+    clean_faction = str(access_context["faction_code"])
+    permitted_domains = {
+        str(value or "").strip().lower()
+        for value in (allowed_domains or ())
+        if str(value or "").strip()
+    }
     raw_queries = list(
         dict.fromkeys(
             item
@@ -1300,6 +1432,12 @@ async def atlas_search(
         )
     except Exception:
         canonical_sources = []
+    if permitted_domains:
+        canonical_sources = [
+            source
+            for source in canonical_sources
+            if _atlas_source_domain(source) in permitted_domains
+        ]
     corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
     structured_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
@@ -1326,10 +1464,11 @@ async def atlas_search(
             if len(variants) >= 8:
                 break
     access_scopes = [
-        "global",
-        f"server:{clean_server}",
-        f"faction:{clean_server}:{clean_faction}",
-        f"workspace:{int(organization_id)}:{clean_server}:{clean_faction}",
+        "platform",
+        f"project:{clean_project}",
+        f"server:{clean_project}:{clean_server}",
+        f"faction:{clean_project}:{clean_server}:{clean_faction}",
+        f"workspace:{clean_project}:{int(organization_id)}:{clean_server}:{clean_faction}",
     ]
     filters: list[dict[str, Any]] = [
         {"key": "access_scope", "match": {"any": access_scopes}}
@@ -1376,6 +1515,7 @@ async def atlas_search(
         else:
             raise
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
+    semantic_hits: list[tuple[int, int, float, dict[str, Any]]] = []
     for variant_index, body in enumerate(bodies):
         result = body.get("result")
         points = result.get("points") if isinstance(result, dict) else result
@@ -1385,26 +1525,67 @@ async def atlas_search(
             payload = point.get("payload") if isinstance(point, dict) else None
             if not isinstance(payload, dict):
                 continue
-            source_id = int(payload.get("source_id") or 0)
-            chunk = int(payload.get("chunk") or 0)
+            try:
+                source_id = int(payload.get("source_id") or 0)
+                chunk = int(payload.get("chunk") or 0)
+            except (TypeError, ValueError):
+                continue
+            if source_id <= 0:
+                continue
             score = float(point.get("score") or 0) + (0.018 if variant_index == 0 else 0)
-            item = {
-                "source_id": source_id,
-                "server_code": str(payload.get("server_code") or ""),
-                "faction_code": str(payload.get("faction_code") or ""),
-                "visibility_scope": str(payload.get("visibility_scope") or "workspace"),
-                "knowledge_domain": str(payload.get("knowledge_domain") or "mixed"),
-                "corpus_kind": str(payload.get("corpus_kind") or "other"),
-                "authority_scope": str(payload.get("authority_scope") or "operational"),
-                "title": str(payload.get("title") or "Источник"),
-                "url": str(payload.get("source_url") or "") or None,
-                "text": str(payload.get("text") or "")[:7000],
-                "score": round(score, 4),
-                "chunk": chunk,
-            }
-            key = (source_id, chunk)
-            if key not in candidates or float(candidates[key]["score"]) < score:
-                candidates[key] = item
+            semantic_hits.append((source_id, chunk, score, payload))
+
+    # A Qdrant payload is derived, eventually consistent data. Re-authorize
+    # every source id against PostgreSQL/SQLite so archived, stale and foreign
+    # project vectors cannot surface even if an old point survived a failed
+    # reindex. The checksum check additionally rejects an old revision of a
+    # still-visible source.
+    try:
+        canonical_by_id = await asyncio.to_thread(
+            atlas_storage.atlas_visible_knowledge_sources_by_id,
+            int(organization_id),
+            [source_id for source_id, _chunk, _score, _payload in semantic_hits],
+            server_code=clean_server,
+            faction_code=clean_faction,
+            allowed_domains=tuple(sorted(permitted_domains)) or None,
+        )
+    except Exception:
+        canonical_by_id = {}
+    for source_id, chunk, score, payload in semantic_hits:
+        source = canonical_by_id.get(source_id)
+        if source is None:
+            continue
+        source_checksum = str(source.get("checksum") or "")
+        if not source_checksum or str(payload.get("checksum") or "") != source_checksum:
+            continue
+        if (
+            str(payload.get("project_code") or "") != str(source.get("project_code") or "")
+            or str(payload.get("federation_scope") or "")
+            != str(source.get("federation_scope") or "")
+            or str(payload.get("access_scope") or "") not in access_scopes
+        ):
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        item = {
+            "source_id": source_id,
+            "project_code": str(source.get("project_code") or ""),
+            "server_code": str(source.get("server_code") or ""),
+            "faction_code": str(source.get("faction_code") or ""),
+            "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+            "federation_scope": str(source.get("federation_scope") or "workspace"),
+            "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+            "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+            "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+            "title": str(source.get("title") or payload.get("title") or "Источник"),
+            "url": str(source.get("source_url") or payload.get("source_url") or "") or None,
+            "text": str(payload.get("text") or "")[:7000],
+            "score": round(score, 4),
+            "chunk": chunk,
+        }
+        key = (source_id, chunk)
+        if key not in candidates or float(candidates[key]["score"]) < score:
+            candidates[key] = item
 
     for item in [*structured_candidates, *lexical_candidates]:
         key = (int(item["source_id"]), int(item.get("chunk") or 0))
@@ -1452,18 +1633,21 @@ async def atlas_search(
 
 
 def _atlas_access_scope(
+    project_code: str,
     organization_id: int,
     server_code: str,
     faction_code: str,
-    visibility_scope: str,
+    federation_scope: str,
 ) -> str:
-    if visibility_scope == "global":
-        return "global"
-    if visibility_scope == "server":
-        return f"server:{server_code}"
-    if visibility_scope == "faction":
-        return f"faction:{server_code}:{faction_code}"
-    return f"workspace:{int(organization_id)}:{server_code}:{faction_code}"
+    if federation_scope == "platform":
+        return "platform"
+    if federation_scope == "project":
+        return f"project:{project_code}"
+    if federation_scope == "server":
+        return f"server:{project_code}:{server_code}"
+    if federation_scope == "faction":
+        return f"faction:{project_code}:{server_code}:{faction_code}"
+    return f"workspace:{project_code}:{int(organization_id)}:{server_code}:{faction_code}"
 
 
 def atlas_normalize_response_mode(value: str | None) -> str:
@@ -2250,6 +2434,20 @@ async def _prepare_atlas_answer(
         raise AtlasAIError("atlas_model_invalid", "Выбранная модель Atlas недоступна.") from None
     if not config.configured:
         raise AtlasAIError("atlas_ai_not_configured", "ИИ-контур Atlas ещё не настроен администратором.")
+    try:
+        trusted_scope = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            server_code,
+            faction_code,
+        )
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_scope_invalid",
+            "Выбранный проект, сервер или фракция Atlas недоступны.",
+        ) from exc
+    project_code = str(trusted_scope["project_code"])
+    server_code = str(trusted_scope["server_code"])
+    faction_code = str(trusted_scope["faction_code"])
     started = time.monotonic()
     requested_mode = atlas_normalize_response_mode(response_mode)
     profile = dict(user_profile or {})
@@ -2322,6 +2520,11 @@ async def _prepare_atlas_answer(
             )
         except Exception:
             catalog_sources = []
+        catalog_sources = [
+            source
+            for source in catalog_sources
+            if _atlas_source_domain(source) in set(selected_agent.knowledge_domains)
+        ]
         intelligence_brief = await _build_intelligence_brief(
             config,
             clean_question,
@@ -2384,6 +2587,7 @@ async def _prepare_atlas_answer(
         # route and social greetings deliberately skip retrieval altogether.
         expanded=selected_latency != "overlay" or overlay_legal,
         query_variants=research_queries,
+        allowed_domains=selected_agent.knowledge_domains,
     )
     sources = _atlas_merge_source_fragments(sources)
     if selected_latency == "overlay":
@@ -2519,13 +2723,14 @@ async def _prepare_atlas_answer(
         if direct_mode
         else ""
     )
-    selected_model = (
-        str(os.getenv("ATLAS_OVERLAY_MODEL") or "").strip()
-        if selected_latency == "overlay"
-        else config.direct_model
-        if direct_mode
-        else ""
-    ) or config.chat_model
+    model_route, fallback_model_route, _route_reason = atlas_model_route(
+        config,
+        agent=selected_agent,
+        project_code=project_code,
+        direct_mode=direct_mode,
+        latency_mode=selected_latency,
+    )
+    selected_model = model_route.model
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -2686,6 +2891,11 @@ async def _prepare_atlas_answer(
         latency_mode=selected_latency,
         screen_context_used=bool(clean_screen_context),
         direct_mode=direct_mode,
+        project_code=project_code,
+        server_code=server_code,
+        faction_code=faction_code,
+        model_route=model_route,
+        fallback_model_route=fallback_model_route,
     )
 
 
@@ -2768,25 +2978,110 @@ def _empty_output_retry_payload(prepared: _AtlasAnswerRequest) -> dict[str, Any]
     return payload
 
 
-async def _retry_empty_completion(prepared: _AtlasAnswerRequest) -> str:
-    """Retry once with space reserved for the visible final answer."""
+def _completion_payload_for_route(
+    payload: dict[str, Any],
+    route: AtlasModelRoute,
+) -> dict[str, Any]:
+    """Make an OpenAI-compatible request portable between approved providers."""
 
-    body = await _json_request(
-        "POST",
-        prepared.config.openrouter_url,
-        headers=_openrouter_headers(prepared.config),
-        payload=_empty_output_retry_payload(prepared),
-        timeout=90,
-    )
-    provider_error = _completion_error(body)
-    if provider_error is not None:
-        raise provider_error
-    answer = _answer_text(body).strip()
-    if answer:
-        return answer
+    selected = dict(payload)
+    selected["model"] = route.model
+    # Reasoning controls are an OpenRouter extension.  A Together hosted
+    # fine-tune may be based on a model that does not understand them, so the
+    # final-answer route stays portable rather than failing on an unknown key.
+    if route.provider != "openrouter":
+        selected.pop("reasoning", None)
+    return selected
+
+
+def _completion_routes(
+    prepared: _AtlasAnswerRequest,
+    *,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[AtlasModelRoute, ...]:
+    initial = initial_route or prepared.model_route
+    candidates = [initial]
+    if initial == prepared.model_route and prepared.fallback_model_route is not None:
+        candidates.append(prepared.fallback_model_route)
+    result: list[AtlasModelRoute] = []
+    seen: set[tuple[str, str, str]] = set()
+    for route in candidates:
+        signature = (route.provider, route.model, route.endpoint)
+        if route.configured and signature not in seen:
+            result.append(route)
+            seen.add(signature)
+    return tuple(result)
+
+
+async def _completion_with_fallback(
+    prepared: _AtlasAnswerRequest,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[dict[str, Any], AtlasModelRoute]:
+    """Request the selected release, falling back only on retryable failure."""
+
+    routes = _completion_routes(prepared, initial_route=initial_route)
+    if not routes:
+        raise AtlasAIError(
+            "atlas_model_not_configured",
+            "Для выбранной модели Atlas не настроен ключ доступа.",
+        )
+    last_error: AtlasAIError | None = None
+    for index, route in enumerate(routes):
+        try:
+            body = await _json_request(
+                "POST",
+                route.endpoint,
+                headers=route.headers(),
+                payload=_completion_payload_for_route(payload, route),
+                timeout=timeout,
+            )
+            provider_error = _completion_error(body)
+            if provider_error is not None:
+                raise provider_error
+            return body, route
+        except AtlasAIError as exc:
+            last_error = exc
+            if not exc.retryable or index >= len(routes) - 1:
+                raise
+    assert last_error is not None
+    raise last_error
+
+
+async def _retry_empty_completion(
+    prepared: _AtlasAnswerRequest,
+    *,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[str, AtlasModelRoute]:
+    """Retry a blank completion and safely try the base release once if needed."""
+
+    last_error: AtlasAIError | None = None
+    for route in _completion_routes(prepared, initial_route=initial_route):
+        try:
+            body = await _json_request(
+                "POST",
+                route.endpoint,
+                headers=route.headers(),
+                payload=_completion_payload_for_route(_empty_output_retry_payload(prepared), route),
+                timeout=90,
+            )
+            provider_error = _completion_error(body)
+            if provider_error is not None:
+                raise provider_error
+            answer = _answer_text(body).strip()
+            if answer:
+                return answer, route
+        except AtlasAIError as exc:
+            last_error = exc
+            if not exc.retryable:
+                raise
+    if last_error is not None:
+        raise last_error
     raise AtlasAIError(
         "answer_invalid",
-        "ИИ-провайдер дважды завершил генерацию без видимого ответа. Запрос можно повторить.",
+        "ИИ-провайдер завершил генерацию без видимого ответа. Запрос можно повторить.",
         retryable=True,
     )
 
@@ -2879,7 +3174,12 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
     return {
         "answer": clean_answer[:30000],
         "citations": citations,
-        "model": prepared.agent.id,
+        "model": prepared.model_route.model,
+        "model_provider": prepared.model_route.provider,
+        "model_release": prepared.model_route.release,
+        "project_code": prepared.project_code,
+        "server_code": prepared.server_code,
+        "faction_code": prepared.faction_code,
         "agent": prepared.agent.public(),
         "response_mode": prepared.response_mode,
         "requested_response_mode": prepared.requested_response_mode,
@@ -2927,66 +3227,47 @@ async def atlas_answer(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
-    body = await _json_request(
-        "POST",
-        prepared.config.openrouter_url,
-        headers=_openrouter_headers(prepared.config),
-        payload=prepared.payload,
+    body, used_route = await _completion_with_fallback(
+        prepared,
+        prepared.payload,
         timeout=90,
     )
-    provider_error = _completion_error(body)
-    if provider_error is not None:
-        raise provider_error
     answer = _answer_text(body).strip()
     if not answer:
-        answer = await _retry_empty_completion(prepared)
-    return _atlas_answer_result(prepared, answer)
+        answer, used_route = await _retry_empty_completion(
+            prepared,
+            initial_route=used_route,
+        )
+    return _atlas_answer_result(
+        replace(
+            prepared,
+            model_route=used_route,
+            fallback_model_route=None,
+        ),
+        answer,
+    )
 
 
-async def atlas_answer_stream(
-    organization_id: int,
-    question: str,
+async def _stream_completion_route(
+    prepared: _AtlasAnswerRequest,
+    route: AtlasModelRoute,
     *,
     on_delta: Callable[[str], Awaitable[None]],
-    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    server_code: str = "phoenix-15",
-    faction_code: str = "lspd",
-    history: list[dict[str, Any]] | None = None,
-    memory: list[dict[str, Any]] | None = None,
-    response_mode: str = "balanced",
-    model_id: str = "atlas-tvr-a",
-    user_profile: dict[str, Any] | None = None,
-    latency_mode: str = "standard",
-    screen_context: str | None = None,
-) -> dict[str, Any]:
-    """Stream provider deltas while preserving the regular Atlas result contract."""
+    answer_limit: int,
+) -> tuple[list[str], list[str], AtlasAIError | None]:
+    """Read one SSE response without mixing output from different models."""
 
-    prepared = await _prepare_atlas_answer(
-        organization_id,
-        question,
-        server_code=server_code,
-        faction_code=faction_code,
-        history=history,
-        memory=memory,
-        response_mode=response_mode,
-        model_id=model_id,
-        user_profile=user_profile,
-        on_progress=on_progress,
-        latency_mode=latency_mode,
-        screen_context=screen_context,
-    )
     timeout = aiohttp.ClientTimeout(total=180, connect=5, sock_read=90)
     answer_parts: list[str] = []
     answer_length = 0
-    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
     fallback_lines: list[str] = []
     stream_failure: AtlasAIError | None = None
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                prepared.config.openrouter_url,
-                headers=_openrouter_headers(prepared.config),
-                json={**prepared.payload, "stream": True},
+                route.endpoint,
+                headers=route.headers(),
+                json={**_completion_payload_for_route(prepared.payload, route), "stream": True},
             ) as response:
                 if response.status >= 400:
                     raw = await response.text()
@@ -3032,7 +3313,7 @@ async def atlas_answer_stream(
                     delta = _answer_text(event, streamed=True)
                     if not delta:
                         continue
-                    remaining = stream_answer_limit - answer_length
+                    remaining = answer_limit - answer_length
                     if remaining <= 0:
                         continue
                     selected = delta[:remaining]
@@ -3047,29 +3328,94 @@ async def atlas_answer_stream(
             "ИИ-контур временно недоступен. Запрос можно безопасно повторить.",
             retryable=True,
         ) from exc
+    return answer_parts, fallback_lines, stream_failure
 
-    if stream_failure is not None and answer_parts:
-        raise stream_failure
-    if not answer_parts and fallback_lines:
+
+async def atlas_answer_stream(
+    organization_id: int,
+    question: str,
+    *,
+    on_delta: Callable[[str], Awaitable[None]],
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    history: list[dict[str, Any]] | None = None,
+    memory: list[dict[str, Any]] | None = None,
+    response_mode: str = "balanced",
+    model_id: str = "atlas-tvr-a",
+    user_profile: dict[str, Any] | None = None,
+    latency_mode: str = "standard",
+    screen_context: str | None = None,
+) -> dict[str, Any]:
+    """Stream provider deltas while preserving the regular Atlas result contract."""
+
+    prepared = await _prepare_atlas_answer(
+        organization_id,
+        question,
+        server_code=server_code,
+        faction_code=faction_code,
+        history=history,
+        memory=memory,
+        response_mode=response_mode,
+        model_id=model_id,
+        user_profile=user_profile,
+        on_progress=on_progress,
+        latency_mode=latency_mode,
+        screen_context=screen_context,
+    )
+    answer_parts: list[str] = []
+    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
+    used_route = prepared.model_route
+    stream_failure: AtlasAIError | None = None
+    routes = _completion_routes(prepared)
+    for index, route in enumerate(routes):
         try:
-            fallback = json.loads("\n".join(fallback_lines))
-        except (TypeError, ValueError):
-            fallback = {}
-        full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
-        if full_text:
-            answer_parts.append(full_text[:stream_answer_limit])
-            await on_delta(answer_parts[0])
-    if not answer_parts:
+            parts, fallback_lines, stream_failure = await _stream_completion_route(
+                prepared,
+                route,
+                on_delta=on_delta,
+                answer_limit=stream_answer_limit,
+            )
+        except AtlasAIError as exc:
+            if exc.retryable and index < len(routes) - 1:
+                continue
+            raise
+        if stream_failure is not None and parts:
+            # Once the user has received a delta, changing model would make a
+            # single answer internally inconsistent. Preserve the established
+            # stream contract and surface the retriable error instead.
+            raise stream_failure
+        if not parts and fallback_lines:
+            try:
+                fallback = json.loads("\n".join(fallback_lines))
+            except (TypeError, ValueError):
+                fallback = {}
+            full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
+            if full_text:
+                parts.append(full_text[:stream_answer_limit])
+                await on_delta(parts[0])
+        if parts:
+            answer_parts = parts
+            used_route = route
+            break
         if stream_failure is not None and not stream_failure.retryable:
             raise stream_failure
+        used_route = route
+    if not answer_parts:
         await _atlas_progress(
             on_progress,
             {"phase": "retry", "status": "running", "reason": "empty_provider_output"},
         )
-        fallback = await _retry_empty_completion(prepared)
+        fallback, used_route = await _retry_empty_completion(
+            prepared,
+            initial_route=used_route,
+        )
         answer_parts.append(fallback[:stream_answer_limit])
         await on_delta(answer_parts[0])
-    result = _atlas_answer_result(prepared, "".join(answer_parts))
+    result = _atlas_answer_result(
+        replace(prepared, model_route=used_route, fallback_model_route=None),
+        "".join(answer_parts),
+    )
     if prepared.research_plan:
         await _atlas_progress(
             on_progress,
@@ -3096,6 +3442,11 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
             qdrant = "ok"
         except AtlasAIError:
             qdrant = "unavailable"
+    rollout_route, _rollout_fallback, rollout_reason = atlas_model_route(
+        config,
+        agent=atlas_resolve_agent("atlas-tvr-a"),
+        project_code="majestic-rp",
+    )
     result = {
         "configured": config.configured,
         "qdrant": qdrant,
@@ -3104,6 +3455,12 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
         "models": atlas_agent_catalog(),
         "embedding_model": config.embedding_model,
         "collection": config.collection,
+        "fine_tuning": {
+            "enabled": bool(config.fine_tuned_enabled),
+            "default_route": rollout_route.public(),
+            "reason": rollout_reason,
+            "fallback_enabled": bool(config.fine_tuned_fallback),
+        },
     }
     _HEALTH_CACHE = (now + 20.0, result)
     return dict(result)
@@ -3117,6 +3474,7 @@ __all__ = [
     "atlas_answer_stream",
     "atlas_ensure_collection",
     "atlas_index_source",
+    "atlas_model_route",
     "atlas_normalize_response_mode",
     "atlas_probe_collection",
     "atlas_reset_collection",
