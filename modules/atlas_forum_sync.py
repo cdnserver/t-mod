@@ -179,12 +179,36 @@ class AtlasForumSyncConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AtlasForumAttachment:
+    """A forum-owned attachment discovered in the authoritative first post.
+
+    Discovery deliberately does not download or OCR a file.  The link remains
+    tied to the source topic until a bounded background worker can preserve the
+    original and present a human-reviewable OCR result.
+    """
+
+    url: str
+    filename: str
+    media_kind: str
+    label: str | None = None
+
+    def public(self) -> dict[str, str | None]:
+        return {
+            "url": self.url,
+            "filename": self.filename,
+            "media_kind": self.media_kind,
+            "label": self.label,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AtlasForumSnapshot:
     url: str
     title: str
     content: str
     author: str | None = None
     source_updated_at: str | None = None
+    attachments: tuple[AtlasForumAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +238,66 @@ def _canonical_url(base_url: str, href: str) -> str | None:
     if thread_match:
         path = f"{thread_match.group(1)}/"
     return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
+
+
+def _canonical_attachment_url(base_url: str, href: str) -> str | None:
+    """Keep only attachment URLs owned by the forum that supplied the topic."""
+
+    absolute = urljoin(base_url, str(href or "").strip())
+    base = urlsplit(base_url)
+    parsed = urlsplit(absolute)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
+        return None
+    path = parsed.path or ""
+    lowered = path.casefold()
+    if "/attachments/" not in lowered and "/data/attachments/" not in lowered:
+        return None
+    return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
+
+
+def _forum_attachments(body: Any, page_url: str) -> tuple[AtlasForumAttachment, ...]:
+    """Extract a small, deduplicated inventory without trusting external media."""
+
+    discovered: list[AtlasForumAttachment] = []
+    seen: set[str] = set()
+    candidates: list[tuple[str, str, str | None]] = []
+    for image in body.xpath(".//img[@src or @data-src]"):
+        candidates.append(
+            (
+                str(image.get("data-src") or image.get("src") or ""),
+                "image",
+                _clean_text(str(image.get("alt") or image.get("title") or ""))[:180] or None,
+            )
+        )
+    for link in body.xpath(".//a[@href]"):
+        candidates.append(
+            (
+                str(link.get("href") or ""),
+                "file",
+                _clean_text(link.text_content())[:180] or None,
+            )
+        )
+    for href, inferred_kind, label in candidates:
+        url = _canonical_attachment_url(page_url, href)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        filename = Path(urlsplit(url).path).name or "forum-attachment"
+        suffix = Path(filename).suffix.casefold()
+        media_kind = "image" if inferred_kind == "image" or suffix in {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"
+        } else "file"
+        discovered.append(
+            AtlasForumAttachment(
+                url=url,
+                filename=filename[:240],
+                media_kind=media_kind,
+                label=label,
+            )
+        )
+        if len(discovered) >= 16:
+            break
+    return tuple(discovered)
 
 
 def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str | None]:
@@ -323,6 +407,7 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
         content=content[:250000],
         author=_clean_text(author_nodes[0].text_content())[:120] if author_nodes else None,
         source_updated_at=str(time_values[0])[:100] if time_values else None,
+        attachments=_forum_attachments(body, str(page_url)),
     )
 
 
@@ -1012,6 +1097,9 @@ class AtlasForumSyncRunner:
                             "author": snapshot.author,
                             "source_updated_at": snapshot.source_updated_at,
                             "ingestion_origin": "scheduled_forum_feed",
+                            "forum_attachments": [
+                                attachment.public() for attachment in snapshot.attachments
+                            ],
                         },
                     )
                     if result["created"]:
@@ -1234,6 +1322,7 @@ class AtlasForumSyncRunner:
 
 __all__ = [
     "AtlasForumBrowser",
+    "AtlasForumAttachment",
     "AtlasForumManualActionRequired",
     "AtlasForumScrapeBatch",
     "AtlasForumSnapshot",

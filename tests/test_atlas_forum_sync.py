@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import storage
 from modules.atlas_forum_sync import (
+    AtlasForumAttachment,
     AtlasForumBrowser,
     AtlasForumManualActionRequired,
     AtlasForumScrapeBatch,
@@ -168,6 +169,34 @@ class AtlasForumParserTests(unittest.TestCase):
         )
 
         self.assertIn("Проверенный текст правил", snapshot.content)
+
+    def test_thread_records_only_owned_forum_attachments(self) -> None:
+        page = """
+        <h1 class="p-title-value">Акт суда</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+          <p>Акт приложен к материалу дела и хранится в оригинальной теме.</p>
+          <a href="/attachments/court-act-17-png.100/"><img
+              data-src="/attachments/court-act-17-png.100/"
+              alt="Акт суда, лист 1" /></a>
+          <a href="/attachments/court-act-17-png.100/">Скачать акт</a>
+          <img src="https://example.org/foreign.png" alt="Чужая картинка" />
+          <img src="/styles/default/xenforo/logo.png" alt="Оформление форума" />
+        </div></div></article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/court-act.17/",
+        )
+
+        self.assertEqual(len(snapshot.attachments), 1)
+        attachment = snapshot.attachments[0]
+        self.assertEqual(
+            attachment.url,
+            "https://forum.majestic-rp.ru/attachments/court-act-17-png.100/",
+        )
+        self.assertEqual(attachment.media_kind, "image")
+        self.assertEqual(attachment.label, "Акт суда, лист 1")
 
     def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
         self.assertEqual(
@@ -643,6 +672,14 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
             url="https://forum.majestic-rp.ru/threads/ooc-rules.101/",
             title="Общие правила",
             content="Полный текст правил проекта, который должен быть явно классифицирован как OOC.",
+            attachments=(
+                AtlasForumAttachment(
+                    url="https://forum.majestic-rp.ru/attachments/rules-image.101/",
+                    filename="rules-image.101",
+                    media_kind="image",
+                    label="Скриншот правил",
+                ),
+            ),
         )
         browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
         runner = AtlasForumSyncRunner(
@@ -670,6 +707,10 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["federation_scope"], "project")
         self.assertEqual(sources[0]["metadata"]["taxonomy"]["domain"], "ooc")
+        self.assertEqual(
+            sources[0]["metadata"]["forum_attachments"][0]["label"],
+            "Скриншот правил",
+        )
 
     async def test_explicit_trigger_runs_default_feed_before_its_next_due_time(self) -> None:
         snapshot = AtlasForumSnapshot(

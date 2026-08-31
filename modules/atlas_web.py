@@ -1953,6 +1953,9 @@ def register_atlas_web_routes(
                         "listing_url": source_url,
                         "requested_by_id": actor_user_id,
                         "ingestion_origin": "manual_forum_feed",
+                        "forum_attachments": [
+                            attachment.public() for attachment in snapshot.attachments
+                        ],
                     },
                 )
                 created += int(bool(result["created"]))
@@ -2049,6 +2052,9 @@ def register_atlas_web_routes(
                     "author": snapshot.author,
                     "source_updated_at": snapshot.source_updated_at,
                     "import_mode": "authenticated_forum_thread",
+                    "forum_attachments": [
+                        attachment.public() for attachment in snapshot.attachments
+                    ],
                 },
             )
             index_job = await queue_knowledge_index(source)
