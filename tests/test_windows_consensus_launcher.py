@@ -186,6 +186,25 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]', compose)
         self.assertIn("http://127.0.0.1:8792/ready", compose)
 
+    def test_launcher_recovers_stale_postgres_health_without_accepting_running_as_ready(
+        self,
+    ) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("call :wait_for_postgres_health 30", launcher)
+        self.assertIn("call :postgres_accepts_connections", launcher)
+        self.assertIn(
+            "docker compose up -d --no-deps --force-recreate tmod-postgres",
+            launcher,
+        )
+        self.assertIn("call :postgres_diagnostics", launcher)
+        self.assertIn("-h 127.0.0.1 -p 5432", launcher)
+        self.assertIn("pg_isready -q -h 127.0.0.1 -p 5432", compose)
+        self.assertIn("timeout: 20s", compose)
+        self.assertIn("retries: 36", compose)
+        self.assertIn("stop_grace_period: 6m", compose)
+
     def test_web_health_server_starts_before_discord_ready(self) -> None:
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         setup_hook = source.index("async def setup_hook")

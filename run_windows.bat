@@ -172,22 +172,47 @@ if errorlevel 1 (
   call :pause_if_interactive
   exit /b 1
 )
-set POSTGRES_READY=0
-for /l %%i in (1,1,60) do (
-  docker inspect --format "{{.State.Health.Status}}" tmod-postgres 2>nul | findstr /I /X /C:"healthy" >nul
-  if not errorlevel 1 (
-    set POSTGRES_READY=1
-    goto :postgres_ready
+rem Docker reports a container as Running before its healthcheck has passed.
+rem On a busy Docker Desktop disk, PostgreSQL checkpoints can delay that probe
+rem far beyond the old 4s/120s budget. Require both the Docker health state
+rem and an actual local PostgreSQL connection before booting application code.
+call :wait_for_postgres_health 30
+if not errorlevel 1 goto :postgres_ready
+
+rem Existing containers keep their old healthcheck until they are recreated.
+rem When PostgreSQL itself answers a direct SQL probe but Docker still says
+rem unhealthy, refresh only its container so the new healthcheck applies. The
+rem named volume is retained; stop dependent writers first for a clean handoff.
+call :postgres_accepts_connections
+if not errorlevel 1 (
+  call :warn "PostgreSQL accepts SQL, but Docker health is stale; refreshing its healthcheck once"
+  docker compose stop tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+  docker compose up -d --no-deps --force-recreate tmod-postgres
+  if errorlevel 1 (
+    call :fail "PostgreSQL healthcheck refresh failed"
+    call :postgres_diagnostics
+    call :pause_if_interactive
+    exit /b 1
   )
-  timeout /t 2 /nobreak >nul
+) else (
+  rem A database that is still recovering must not be interrupted. Continue
+  rem with a longer bounded wait and report the real healthcheck details if it
+  rem never answers, rather than killing a valid recovery in progress.
+  call :warn "PostgreSQL is still recovering; extending the bounded readiness wait"
 )
-:postgres_ready
-if not "%POSTGRES_READY%"=="1" (
-  call :fail "PostgreSQL did not become healthy within 120 seconds"
-  docker logs --tail 100 tmod-postgres
+
+rem The database is stored on a Windows-hosted Docker volume and can take a
+rem few minutes to recover after a large checkpoint. Give the current or
+rem refreshed healthcheck a bounded eight-minute window rather than treating a
+rem live database as failed after two minutes.
+call :wait_for_postgres_health 96
+if errorlevel 1 (
+  call :fail "PostgreSQL did not become healthy after bounded readiness checks"
+  call :postgres_diagnostics
   call :pause_if_interactive
   exit /b 1
 )
+:postgres_ready
 rem Verify the application-side secret path through the effective Compose
 rem configuration. This catches stale or missing Docker Desktop bind mounts
 rem before Python starts and emits a clear boot-stage failure.
@@ -482,6 +507,47 @@ echo.
 call :warn "The bot is running, but the web panel did not answer within 72 seconds."
 call :warn "Check: docker logs --tail 100 tmod-discord-bot"
 exit /b 1
+
+:postgres_accepts_connections
+rem Use TCP deliberately: it validates the same listener that the application
+rem containers use and avoids a false pass through a Unix socket alone. Then
+rem execute a minimal SQL statement: pg_isready alone is not a usable database
+rem readiness guarantee if PostgreSQL is still recovering.
+docker exec tmod-postgres pg_isready -q -h 127.0.0.1 -p 5432 -U tmod -d tmod -t 15 >nul 2>nul
+if errorlevel 1 exit /b 1
+docker exec tmod-postgres psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT 1" 2>nul | findstr /X /C:"1" >nul
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:wait_for_postgres_health
+set "POSTGRES_HEALTH="
+for /l %%i in (1,1,%~1) do (
+  set "POSTGRES_HEALTH="
+  for /f "delims=" %%H in ('docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}" tmod-postgres 2^>nul') do set "POSTGRES_HEALTH=%%H"
+  if /I "!POSTGRES_HEALTH!"=="healthy" (
+    call :postgres_accepts_connections
+    if not errorlevel 1 exit /b 0
+  )
+  <nul set /p "=."
+  timeout /t 5 /nobreak >nul
+)
+echo.
+exit /b 1
+
+:postgres_diagnostics
+echo.
+echo --- PostgreSQL status ---
+docker compose ps -a tmod-postgres
+echo.
+echo --- Docker healthcheck details ---
+docker inspect --format "{{json .State.Health}}" tmod-postgres 2>nul
+echo.
+echo --- Direct PostgreSQL probe ---
+docker exec tmod-postgres pg_isready -h 127.0.0.1 -p 5432 -U tmod -d tmod -t 15 2>&1
+echo.
+echo --- Recent PostgreSQL logs ---
+docker logs --tail 100 tmod-postgres
+exit /b 0
 
 :pause_if_interactive
 if not "%TMOD_NONINTERACTIVE%"=="1" pause

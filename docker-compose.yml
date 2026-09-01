@@ -3,6 +3,10 @@ services:
     image: postgres:17-alpine
     container_name: tmod-postgres
     restart: unless-stopped
+    # Let a slow Windows/Docker Desktop checkpoint finish if the launcher must
+    # recreate the container to refresh its healthcheck. The named volume is
+    # durable either way, but avoiding SIGKILL prevents a needless recovery.
+    stop_grace_period: 6m
     environment:
       POSTGRES_DB: "tmod"
       POSTGRES_USER: "tmod"
@@ -16,11 +20,15 @@ services:
     expose:
       - "5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tmod -d tmod"]
-      interval: 5s
-      timeout: 4s
-      retries: 20
-      start_period: 15s
+      # A large database on Docker Desktop can be busy flushing a checkpoint
+      # for longer than the old four-second probe budget.  Check the TCP
+      # listener used by the application network and leave enough time for
+      # slow Windows-backed storage to respond before marking it unhealthy.
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 -U $$POSTGRES_USER -d $$POSTGRES_DB -t 15"]
+      interval: 10s
+      timeout: 20s
+      retries: 36
+      start_period: 60s
 
   tmod-db-migrate:
     build: .
