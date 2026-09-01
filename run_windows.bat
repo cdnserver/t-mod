@@ -154,10 +154,18 @@ if "%TMOD_SKIP_BUILD%"=="1" (
   set COMPOSE_BAKE=true
   docker compose build
   if errorlevel 1 (
-    call :fail "Docker build failed"
-    call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
-    call :pause_if_interactive
-    exit /b 1
+    rem Docker Desktop's BuildKit credential helper cannot be opened from
+    rem some SSH, Task Scheduler and service sessions. All T-Mod images use
+    rem public registries, so retry through Docker's local-image legacy path
+    rem instead of making a healthy remote updater fail on wincred/desktop.
+    call :warn "Docker build failed; retrying through the local-image builder"
+    call :docker_build_without_windows_credentials
+    if errorlevel 1 (
+      call :fail "Docker build failed"
+      call :warn "If you see dockerDesktopLinuxEngine pipe error, run repair_docker_desktop_windows.bat"
+      call :pause_if_interactive
+      exit /b 1
+    )
   )
   call :ok "Docker image ready"
 )
@@ -548,6 +556,18 @@ echo.
 echo --- Recent PostgreSQL logs ---
 docker logs --tail 100 tmod-postgres
 exit /b 0
+
+:docker_build_without_windows_credentials
+rem BuildKit asks Docker Desktop's session-bound credential helper for public
+rem base images. The legacy path uses the local image cache and anonymous pull
+rem path instead, which stays available to the T-Mod remote controller.
+set "DOCKER_BUILDKIT=0"
+set "COMPOSE_DOCKER_CLI_BUILD=0"
+set "COMPOSE_BAKE=false"
+docker build --pull=false -t tmod-discord-bot:latest .
+if errorlevel 1 exit /b 1
+docker build --pull=false -t tmod-minecraft-supervisor:latest .\minecraft-supervisor
+exit /b %errorlevel%
 
 :pause_if_interactive
 if not "%TMOD_NONINTERACTIVE%"=="1" pause

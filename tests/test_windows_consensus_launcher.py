@@ -205,6 +205,20 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("retries: 36", compose)
         self.assertIn("stop_grace_period: 6m", compose)
 
+    def test_launcher_retries_public_docker_build_without_windows_credentials(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertIn("call :docker_build_without_windows_credentials", launcher)
+        self.assertIn(":docker_build_without_windows_credentials", launcher)
+        self.assertIn('set "DOCKER_BUILDKIT=0"', launcher)
+        self.assertIn('set "COMPOSE_DOCKER_CLI_BUILD=0"', launcher)
+        self.assertIn("docker build --pull=false -t tmod-discord-bot:latest .", launcher)
+        self.assertIn(
+            "docker build --pull=false -t tmod-minecraft-supervisor:latest .\\minecraft-supervisor",
+            launcher,
+        )
+        self.assertIn("local-image builder", launcher)
+
     def test_web_health_server_starts_before_discord_ready(self) -> None:
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         setup_hook = source.index("async def setup_hook")
