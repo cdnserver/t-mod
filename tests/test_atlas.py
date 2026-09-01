@@ -18,6 +18,7 @@ from modules.atlas_ai import (
     AtlasAIError,
     _answer_text,
     _atlas_corpus_abbreviations,
+    _atlas_merge_source_fragments,
     _atlas_pinpoint_labels,
     _atlas_query_variants,
     _atlas_task_profile,
@@ -1074,6 +1075,49 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _project_rules_source() -> dict[str, object]:
+        return {
+            "id": 9_071,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "global",
+            "federation_scope": "project",
+            "title": "Основные правила проекта",
+            "source_kind": "forum",
+            "source_url": "https://forum.majestic-rp.ru/threads/osnovnyye-pravila-proyekta.8036/",
+            "content_text": (
+                "Общее положение\n"
+                "1.1 На проекте действует прецедентная система правил.\n"
+                "Положение об аккаунте\n"
+                "2.1 Максимальное количество разрешенных аккаунтов на одного человека — один.\n"
+                "2.2 Запрещено передавать аккаунт 3-м лицам. | PermBan.\n"
+                "2.2.1 Вложенное пояснение к передаче аккаунта.\n"
+                "2.20 Условный соседний пункт, который не относится к передаче.\n"
+                "2.3 Администрация не несет ответственности за аккаунт при взломе.\n"
+                "Игровые чаты\n"
+                "4.1 Текстовый и голосовой чат является исключительно IC чатом, где запрещено "
+                "OOC-общение; OOC информация передается через /b, /fb, /gb и /cb. | Mute 30–90 "
+                "минут / Demorgan 5 минут.\n"
+                "4.3 Запрещено прямое оскорбление родственников. | HardBan 30–60 дней.\n"
+                "Role Play процесс\n"
+                "5.1 DM — прямое убийство, нанесение урона или стрельба без IC причины и IC диалога. "
+                "| GunBan 8 часов / Demorgan 120 минут / WARN / Ban 3–30 дней.\n"
+                "Исключение: IC диалог не обязателен при угрозе жизни, грубых оскорблениях, угоне "
+                "транспортного средства и других прямо перечисленных ситуациях.\n"
+                "5.2 DB — умышленный наезд транспортом.\n"
+            ),
+            "metadata": {
+                "taxonomy": {
+                    "domain": "ooc",
+                    "corpus_kind": "server_rule",
+                    "authority_scope": "project",
+                }
+            },
+        }
+
     def test_answer_text_accepts_provider_content_variants(self) -> None:
         self.assertEqual(
             _answer_text(
@@ -1768,6 +1812,90 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         self.assertEqual(result[0]["source_id"], 92)
+
+    async def test_ooc_rules_search_returns_account_transfer_clause_before_semantic_chunks(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Можно ли передавать свой аккаунт другому игроку? Укажи пункт и наказание.",
+                expanded=True,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["reference"], "clause:2.2")
+        self.assertIn("Запрещено передавать аккаунт", result[0]["text"])
+        self.assertIn("PermBan", result[0]["text"])
+        merged = _atlas_merge_source_fragments(result)
+        self.assertIn("пункт 2.2", merged[0]["pinpoints"])
+
+    async def test_ooc_rules_exact_clause_keeps_descendant_without_matching_lookalike(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Покажи пункт 2.2 правил", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "clause:2.2")
+        self.assertIn("2.2.1 Вложенное пояснение", result[0]["text"])
+        self.assertNotIn("2.20 Условный соседний", result[0]["text"])
+        self.assertNotIn("2.3 Администрация", result[0]["text"])
+
+    async def test_ooc_rules_search_returns_dm_definition_and_exceptions(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что такое DM по правилам проекта и какие есть исключения из требования IC-диалога?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("прямое убийство", result[0]["text"])
+        self.assertIn("GunBan 8 часов", result[0]["text"])
+        self.assertIn("Исключение: IC диалог", result[0]["text"])
+
+    async def test_ooc_rules_search_keeps_chat_and_relatives_answers_pinpointed(self) -> None:
+        source = self._project_rules_source()
+        checks = (
+            (
+                "Какое наказание предусмотрено за прямое оскорбление родственников? Укажи пункт правил.",
+                "clause:4.3",
+                "HardBan 30–60 дней",
+            ),
+            (
+                "В каком чате можно передавать OOC-информацию и что запрещено в обычном голосовом чате?",
+                "clause:4.1",
+                "/b, /fb, /gb и /cb",
+            ),
+        )
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            for question, reference, expected in checks:
+                result = await atlas_search(77, question, expanded=True)
+                self.assertEqual(result[0]["reference"], reference)
+                self.assertIn(expected, result[0]["text"])
 
     async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
         canonical = {

@@ -78,6 +78,38 @@ _ATLAS_SEARCH_STOP_WORDS = frozenset(
         "это",
     }
 )
+_ATLAS_RULE_GENERIC_TERMS = frozenset(
+    {
+        "правил",
+        "правило",
+        "пункт",
+        "пункты",
+        "укажи",
+        "указать",
+        "какой",
+        "какие",
+        "другой",
+        "другому",
+        "другом",
+        "игрок",
+        "игроку",
+        "ли",
+        "свой",
+        "своего",
+        "наказан",
+    }
+)
+_ATLAS_RULE_SHORT_SIGNALS = frozenset(
+    {"dm", "db", "pg", "mg", "rk", "nlr", "sk", "tk", "ooc", "ic", "warn", "mute", "ban"}
+)
+_ATLAS_NUMBERED_RULE_RE = re.compile(
+    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.)\s*)?(\d+(?:\.\d+){1,3})"
+    r"(?![\d.])(?=[.)\s:—-]|$)"
+)
+_ATLAS_EXPLICIT_RULE_REFERENCE_RE = re.compile(
+    r"\b(?:пункт|п\.)\s*(?:№\s*)?(\d+(?:\.\d+){1,3})\b",
+    re.IGNORECASE,
+)
 _ATLAS_EVIDENCE_STOP_WORDS = _ATLAS_SEARCH_STOP_WORDS | frozenset(
     {
         "его",
@@ -909,9 +941,13 @@ def _atlas_query_variants(
     if expanded != clean:
         variants.extend((expanded, *matched_expansions))
     lowered = expanded.casefold()
-    if not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered):
+    ooc_rules_question = bool(_ATLAS_OOC_RULE_SIGNAL_RE.search(lowered))
+    if (
+        not ooc_rules_question
+        and not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered)
+    ):
         variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
-    if not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
+    if ooc_rules_question or not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
         variants.append(f"{clean}\nOOC правила сервера и требования проекта")
     if re.search(r"суд|иск|жалоб|прокур|адвокат|дел[аоу]", lowered):
         variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
@@ -933,11 +969,13 @@ def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
     return _ordered_distinct(terms, limit=12)
 
 
-def _atlas_lexical_candidates(
+def _atlas_lexical_query_terms(
     query: str,
     sources: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    focused_query = query[-2500:]
+) -> tuple[list[str], list[str]]:
+    """Build morphology-tolerant terms shared by lexical and clause search."""
+
+    focused_query = str(query or "")[-2500:]
     expanded = focused_query
     abbreviations = _atlas_corpus_abbreviations(sources)
     for abbreviation, meaning in abbreviations.items():
@@ -948,13 +986,16 @@ def _atlas_lexical_candidates(
             flags=re.IGNORECASE,
         )
     expanded = expanded.casefold()
-    raw_terms = [
-        token
-        for token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE)
-        if token not in _ATLAS_SEARCH_STOP_WORDS
-    ]
+    raw_terms: list[str] = []
+    for raw_token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE):
+        # OOC-information and similar forum wording may use either a hyphen
+        # or a space. Keep the whole term, its parts and its compact spelling.
+        candidates = (raw_token, *raw_token.split("-"), raw_token.replace("-", ""))
+        raw_terms.extend(
+            token for token in candidates if token and token not in _ATLAS_SEARCH_STOP_WORDS
+        )
     # Exact substrings alone miss ordinary Russian morphology (for example,
-    # ``задержали`` versus ``задержание``).  Rank with conservative stems and
+    # ``задержали`` versus ``задержание``). Rank with conservative stems and
     # retain dotted article numbers verbatim.
     terms = list(
         dict.fromkeys(
@@ -973,6 +1014,122 @@ def _atlas_lexical_candidates(
         for abbreviation, meaning in abbreviations.items()
         if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", query, re.IGNORECASE)
     ]
+    return terms, phrases
+
+
+def _atlas_is_numbered_rule_source(source: dict[str, Any]) -> bool:
+    """Recognize OOC rules, including forum rows imported before taxonomy v1."""
+
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+    if str(taxonomy.get("corpus_kind") or "").strip().lower() == "server_rule":
+        return True
+    return (
+        str(source.get("source_kind") or "").strip().lower() == "forum"
+        and "правил" in str(source.get("title") or "").casefold()
+    )
+
+
+def _atlas_numbered_rule_sections(content: str) -> list[tuple[str, str]]:
+    """Split a forum ruleset into numbered clauses without losing descendants."""
+
+    clean = _atlas_legal_search_text(content)
+    matches = list(_ATLAS_NUMBERED_RULE_RE.finditer(clean))
+    result: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        number = str(match.group(1))
+        end = len(clean)
+        nested_prefix = f"{number}."
+        for following in matches[index + 1 :]:
+            # A request for 2.2 needs the full clause, including 2.2.1, but
+            # must stop before siblings such as 2.3 and lookalikes such as 2.20.
+            if str(following.group(1)).startswith(nested_prefix):
+                continue
+            end = following.start()
+            break
+        section = clean[match.start() : end].strip()
+        if len(section) >= 20:
+            result.append((number, section))
+    return result
+
+
+def _atlas_numbered_rule_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prioritize direct OOC-rule clauses over broad semantic forum chunks."""
+
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
+    explicit_references = {
+        str(match.group(1))
+        for match in _ATLAS_EXPLICIT_RULE_REFERENCE_RE.finditer(str(query or ""))
+    }
+    if not terms and not phrases and not explicit_references:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        if not _atlas_is_numbered_rule_source(source):
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        ranked: list[tuple[float, int, str, str]] = []
+        for clause_index, (number, section) in enumerate(
+            _atlas_numbered_rule_sections(str(source.get("content_text") or ""))
+        ):
+            folded = section.casefold()
+            matched_terms = [term for term in terms if term in folded]
+            meaningful_hits = [
+                term for term in matched_terms if term not in _ATLAS_RULE_GENERIC_TERMS
+            ]
+            phrase_hits = sum(phrase.casefold() in folded for phrase in phrases)
+            explicit = number in explicit_references
+            short_signal = any(term in _ATLAS_RULE_SHORT_SIGNALS for term in meaningful_hits)
+            if not explicit and not phrase_hits and not meaningful_hits:
+                continue
+            if not explicit and not phrase_hits and len(meaningful_hits) < 2 and not short_signal:
+                continue
+            score = (
+                11.0
+                if explicit
+                else 8.4
+                + min(1.2, len(meaningful_hits) * 0.42)
+                + min(0.6, phrase_hits * 0.3)
+                + (0.55 if short_signal else 0.0)
+            )
+            ranked.append((score, clause_index, number, section))
+        for score, clause_index, number, section in sorted(
+            ranked, key=lambda item: (-item[0], item[1])
+        )[:3]:
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "ooc"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "server_rule"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "project"),
+                    "title": str(source.get("title") or "Правила сервера"),
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": section[:7000],
+                    "score": round(score, 4),
+                    # Synthetic clause ids cannot collide with Qdrant chunks.
+                    "chunk": 20_000 + clause_index,
+                    "structured": True,
+                    "reference": f"clause:{number}",
+                }
+            )
+    return candidates
+
+
+def _atlas_lexical_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
     if not terms and not phrases:
         return []
     candidates: list[dict[str, Any]] = []
@@ -1228,10 +1385,22 @@ def _atlas_pinpoint_labels(item: dict[str, Any]) -> list[str]:
             "article": "статья",
             "chapter": "глава",
             "section": "раздел",
+            "clause": "пункт",
         }.get(kind, kind)
         return [f"{label} {value}".strip()]
     text = str(item.get("text") or "")
     labels: list[str] = []
+    seen: set[str] = set()
+    if str(item.get("corpus_kind") or "").strip().lower() == "server_rule":
+        for match in _ATLAS_NUMBERED_RULE_RE.finditer(text):
+            value = f"пункт {match.group(1)}"
+            fingerprint = value.casefold()
+            if fingerprint in seen:
+                continue
+            labels.append(value)
+            seen.add(fingerprint)
+            if len(labels) >= 8:
+                return labels
     patterns = (
         (
             "статья",
@@ -1255,7 +1424,6 @@ def _atlas_pinpoint_labels(item: dict[str, Any]) -> list[str]:
             ),
         ),
     )
-    seen: set[str] = set()
     for label, pattern in patterns:
         for match in pattern.finditer(text):
             value = f"{label} {match.group(1)}"
@@ -1306,7 +1474,16 @@ def _atlas_merge_source_fragments(items: list[dict[str, Any]]) -> list[dict[str,
         selected["score"] = max(float(item.get("score") or 0) for item in fragments)
         selected["structured"] = bool(structured)
         selected["fragment_count"] = len(texts)
-        selected["pinpoints"] = _atlas_pinpoint_labels(selected)
+        selected["pinpoints"] = list(
+            _ordered_distinct(
+                [
+                    pinpoint
+                    for fragment in fragments
+                    for pinpoint in _atlas_pinpoint_labels(fragment)
+                ],
+                limit=12,
+            )
+        )
         merged.append(selected)
     if any(item.get("structured") for item in merged):
         exact = [item for item in merged if item.get("structured")]
@@ -1440,12 +1617,17 @@ async def atlas_search(
         ]
     corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
     structured_candidates: list[dict[str, Any]] = []
+    rule_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
     for query_index, raw_query in enumerate(raw_queries):
         for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
             structured_candidates.append(candidate)
+        for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
+            candidate = dict(item)
+            candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
+            rule_candidates.append(candidate)
         for item in _atlas_lexical_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.025, 4)
@@ -1498,7 +1680,7 @@ async def atlas_search(
         # accelerator, not a single point of failure: when embeddings or
         # Qdrant are temporarily unavailable, keep answering from exact and
         # abbreviation-expanded matches already found in the saved corpus.
-        if lexical_candidates or structured_candidates:
+        if lexical_candidates or structured_candidates or rule_candidates:
             bodies = []
         elif exc.code == "upstream_not_found":
             raise AtlasAIError(
@@ -1587,7 +1769,7 @@ async def atlas_search(
         if key not in candidates or float(candidates[key]["score"]) < score:
             candidates[key] = item
 
-    for item in [*structured_candidates, *lexical_candidates]:
+    for item in [*structured_candidates, *rule_candidates, *lexical_candidates]:
         key = (int(item["source_id"]), int(item.get("chunk") or 0))
         if key not in candidates or float(candidates[key]["score"]) < float(item["score"]):
             candidates[key] = item
@@ -1610,6 +1792,8 @@ async def atlas_search(
         corpus = str(item.get("corpus_kind") or "other")
         if re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
+        elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
+            score += 0.42 if corpus == "server_rule" or domain == "ooc" else -0.12 if domain == "ic" else 0
         elif _ATLAS_LEGAL_RE.search(query_folded):
             score += 0.18 if domain == "ic" else 0
         if re.search(r"суд|иск|жалоб|прецедент|практик", query_folded):
@@ -1659,8 +1843,9 @@ _ATLAS_EXACT_LOOKUP_RE = re.compile(
     r"\b(?:покаж(?:и|ите)|привед(?:и|ите)|напиш(?:и|ите))?\s*"
     r"(?:мне\s+)?(?:(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|ст\.|раздел)\s*"
     r"(?:№\s*)?(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})|"
+    r"(?:пункт|п\.)\s*(?:№\s*)?\d+(?:\.\d+){1,3}|"
     r"(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})\s+"
-    r"(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|раздел))\b",
+    r"(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|раздел|пункт))\b",
     re.IGNORECASE,
 )
 _ATLAS_FOLLOWUP_RE = re.compile(
@@ -1678,6 +1863,12 @@ _ATLAS_LEGAL_RE = re.compile(
     r"\b(?:закон|кодекс|стать|глав|норм|прав[оа]|полномочи|наказани|"
     r"задержан|арест|обыск|суд|иск|жалоб|доказательств|устав|регламент|"
     r"ic|и[сc]|ooc|оо[сc])\w*",
+    re.IGNORECASE,
+)
+_ATLAS_OOC_RULE_SIGNAL_RE = re.compile(
+    r"\b(?:аккаунт|мультиаккаунт|permban|hardban|demorgan|gunban|warn|mute|"
+    r"dm|db|pg|mg|rk|nlr|sk|tk|nonrp|ooc|оо[сc]|оскорблен|родствен|администрац|"
+    r"жалоб[аыуе]?|бан)\w*",
     re.IGNORECASE,
 )
 _ATLAS_PROCEDURE_RE = re.compile(
@@ -2775,6 +2966,8 @@ async def _prepare_atlas_answer(
                 "библиотеки, а не о секретности документа или отсутствии нормы вообще. Не придумывай "
                 "причины недоступности. Если запрошена конкретная глава или статья и она присутствует "
                 "в источниках, приведи её текст полностью и не заменяй его общим пересказом. "
+                "Фрагмент с опорным местом «пункт N.N» — это прямой текст OOC-правила: если он "
+                "отвечает на вопрос, назови этот пункт и не утверждай, что прямой нормы не найдено. "
                 "Перед отправкой молча проведи финальную проверку результата: дан ли прямой ответ на "
                 "реальный вопрос пользователя; подтверждено ли каждое существенное проверяемое утверждение; "
                 "учтены ли исключения, компетенция и порядок действий; не противоречат ли друг другу выбранные "
