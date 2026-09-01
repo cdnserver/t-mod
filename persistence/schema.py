@@ -500,9 +500,6 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_status
             ON atlas_knowledge_sources(organization_id, status, id DESC);
 
-            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
-            ON atlas_knowledge_sources(project_code, federation_scope, server_code, faction_code, status, id DESC);
-
             CREATE TABLE IF NOT EXISTS atlas_knowledge_revisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -3235,6 +3232,17 @@ def init_db() -> None:
             ON atlas_knowledge_sources(
                 visibility_scope, server_code, faction_code, organization_id,
                 status, id DESC
+            );
+
+            -- This index intentionally lives after the additive column
+            -- migrations above.  Older PostgreSQL databases can have the
+            -- original knowledge table without the federation columns; an
+            -- early CREATE INDEX would abort startup before those columns
+            -- could be added.
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
+            ON atlas_knowledge_sources(
+                project_code, federation_scope, server_code,
+                faction_code, status, id DESC
             );
 
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_revisions_source

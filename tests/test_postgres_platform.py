@@ -121,6 +121,21 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("LOWER(name)=LOWER(%s)", search)
         self.assertNotIn("NOCASE", search)
 
+    def test_legacy_atlas_columns_precede_federation_index(self) -> None:
+        """An old PostgreSQL schema must upgrade before its new index exists."""
+
+        schema = (ROOT / "persistence/schema.py").read_text(encoding="utf-8")
+        project_column = schema.index(
+            '_add_column_if_missing(\n'
+            '            con,\n'
+            '            "atlas_knowledge_sources",\n'
+            '            "project_code",'
+        )
+        federation_index = schema.index(
+            "CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope"
+        )
+        self.assertLess(project_column, federation_index)
+
     def test_sqlite_julianday_ordering_translates_to_postgres(self) -> None:
         translated = translate_sql(
             "SELECT due_at FROM delivery_outbox ORDER BY julianday(due_at), due_at"
