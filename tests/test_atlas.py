@@ -1312,6 +1312,22 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(practice["corpus_kind"], "case_law")
         self.assertEqual(practice["authority_scope"], "court")
 
+    def test_taxonomy_keeps_project_rules_ooc_when_they_describe_ic_mechanics(self) -> None:
+        # Real project rules contain terms such as IC, DM and RP.  They are
+        # still OOC regulations, rather than an IC/OOC mixed corpus.
+        rules = atlas_classify_knowledge(
+            title="Основные правила проекта",
+            content=(
+                "На проекте действует система наказаний. Текстовый и голосовой "
+                "чат является IC, запрещены DM, DB, NonRP и нарушения RP процесса."
+            ),
+            source_url="https://forum.majestic-rp.ru/threads/osnovnyye-pravila-proyekta.8036/",
+            source_kind="forum",
+        )
+
+        self.assertEqual((rules["domain"], rules["corpus_kind"]), ("ooc", "server_rule"))
+        self.assertEqual(rules["authority_scope"], "project")
+
     def test_aristotle_plan_adapts_to_legal_case(self) -> None:
         plan = atlas_research_plan("Составь позицию по иску и судебной практике")
         self.assertEqual(plan[0]["agent"], "Навигатор")

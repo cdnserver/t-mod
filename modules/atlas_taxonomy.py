@@ -72,10 +72,6 @@ def atlas_classify_knowledge(
     sample = "\n".join((str(title or ""), str(source_url or ""), str(content or "")[:12_000]))
     hinted_domain = atlas_normalize_knowledge_domain(domain_hint)
     hinted_corpus = atlas_normalize_corpus_kind(corpus_hint)
-    has_ooc = bool(_OOC_RE.search(sample))
-    has_ic = bool(_IC_RE.search(sample))
-    domain = hinted_domain or ("mixed" if has_ooc == has_ic else "ooc" if has_ooc else "ic")
-
     corpus = hinted_corpus
     if corpus is None:
         corpus = next((code for code, pattern in _CORPUS_PATTERNS if pattern.search(sample)), None)
@@ -85,6 +81,22 @@ def atlas_classify_knowledge(
             "manual": "manual",
             "forum": "forum",
         }.get(str(source_kind or "").lower(), "other")
+
+    has_ooc = bool(_OOC_RE.search(sample))
+    has_ic = bool(_IC_RE.search(sample))
+    # Project/server rules routinely explain IC mechanics (DM, RP, factions,
+    # etc.).  Those terms must not turn an OOC ruleset into a mixed source:
+    # ``server_rule`` is itself an explicit semantic classification for the
+    # project-level OOC corpus, including when a feed profile is absent.
+    domain = hinted_domain or (
+        "ooc"
+        if corpus == "server_rule"
+        else "mixed"
+        if has_ooc == has_ic
+        else "ooc"
+        if has_ooc
+        else "ic"
+    )
 
     authority_scope = (
         "project"
