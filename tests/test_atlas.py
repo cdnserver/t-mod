@@ -46,6 +46,7 @@ from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
 from persistence import atlas_repository
+from persistence import atlas_forum_attachment_repository
 from persistence.core import connect
 
 
@@ -204,6 +205,77 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(assistant["faction_code"], "gov")
         self.assertEqual(candidates[0]["model_provider"], "together")
         self.assertEqual(candidates[0]["answer_server_code"], "phoenix-15")
+
+    def test_forum_attachment_ocr_is_review_gated_and_resets_on_source_revision(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        organization_id = int(dashboard["organization"]["id"])
+        first = atlas_repository.atlas_upsert_synced_knowledge(
+            organization_id,
+            title="Судебный акт по делу №17",
+            content="Проверяемая редакция материала форума с описанием приложенного судебного акта.",
+            source_url="https://forum.majestic-rp.ru/threads/court-act.17/",
+            server_code="phoenix-15",
+            faction_code="gov",
+            visibility_scope="server",
+            feed_key="court-acts",
+        )["source"]
+        discovered = atlas_forum_attachment_repository.atlas_sync_forum_attachments(
+            organization_id,
+            int(first["id"]),
+            (
+                {
+                    "url": "https://forum.majestic-rp.ru/attachments/court-act-17.100/",
+                    "filename": "court-act-17.png",
+                    "media_kind": "image",
+                    "label": "Акт суда, лист 1",
+                },
+            ),
+        )
+        self.assertEqual(discovered[0]["status"], "discovered")
+        attachment_id = int(discovered[0]["id"])
+        atlas_forum_attachment_repository.atlas_forum_attachment_complete_ocr(
+            attachment_id,
+            content_sha256="a" * 64,
+            mime_type="image/png",
+            size_bytes=1234,
+            text="Проверяемая машинная расшифровка приложенного судебного акта.",
+            engine="tesseract",
+        )
+        review = atlas_forum_attachment_repository.atlas_forum_attachment_review(
+            organization_id,
+            42,
+            attachment_id,
+            approve=True,
+        )
+        self.assertEqual(review["status"], "approved")
+        # The parent source remains the forum post; OCR has no path into the
+        # searchable source until a later explicit reviewer-to-source action.
+        self.assertNotIn("машинная расшифровка", first["content_text"])
+
+        revised = atlas_repository.atlas_upsert_synced_knowledge(
+            organization_id,
+            title="Судебный акт по делу №17",
+            content="Новая проверяемая редакция материала форума с изменённым описанием судебного акта.",
+            source_url="https://forum.majestic-rp.ru/threads/court-act.17/",
+            server_code="phoenix-15",
+            faction_code="gov",
+            visibility_scope="server",
+            feed_key="court-acts",
+        )["source"]
+        reset = atlas_forum_attachment_repository.atlas_sync_forum_attachments(
+            organization_id,
+            int(revised["id"]),
+            (
+                {
+                    "url": "https://forum.majestic-rp.ru/attachments/court-act-17.100/",
+                    "filename": "court-act-17.png",
+                    "media_kind": "image",
+                },
+            ),
+        )[0]
+        self.assertEqual(reset["status"], "discovered")
+        self.assertIsNone(reset["ocr_text"])
+        self.assertIsNone(reset["reviewed_at"])
 
     def test_federation_migration_preserves_archived_source_scope(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")

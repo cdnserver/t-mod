@@ -38,6 +38,11 @@ from modules.atlas_knowledge import (
     AtlasKnowledgeFileError,
     atlas_extract_knowledge_file,
 )
+from modules.atlas_ocr import (
+    AtlasOcrError,
+    AtlasOcrUnavailable,
+    atlas_ocr_attachment,
+)
 from modules.atlas_jobs import AtlasJobWorker
 from modules.atlas_media import (
     AtlasLocalBlobStore,
@@ -57,6 +62,7 @@ from modules.consensus_web_auth import (
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_forum_attachment_repository as attachment_storage
 from persistence import atlas_job_repository as job_storage
 from persistence import atlas_case_repository as case_storage
 from persistence import atlas_document_repository as document_storage
@@ -197,6 +203,7 @@ def register_atlas_web_routes(
     index_lock = asyncio.Lock()
     rebuild_task: asyncio.Task[None] | None = None
     forum_sync_task: asyncio.Task[None] | None = None
+    attachment_ocr_task: asyncio.Task[None] | None = None
     forum_sync_runner: AtlasForumSyncRunner | None = None
     job_worker = AtlasJobWorker(
         concurrency=2,
@@ -1806,6 +1813,144 @@ def register_atlas_web_routes(
 
     job_worker.register("atlas.media.finalize.v1", run_media_finalize_job)
 
+    async def run_forum_attachment_ocr_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """OCR one forum-owned file without treating its text as a legal source."""
+
+        attachment_id = int(dict(job.get("payload") or {}).get("attachment_id") or 0)
+        attachment = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_begin_processing,
+            attachment_id,
+        )
+        if attachment is None:
+            return {"attachment_id": attachment_id, "skipped": True}
+        if str(attachment.get("status") or "") in {
+            "review_pending", "approved", "rejected", "unavailable", "archived"
+        }:
+            return {
+                "attachment_id": attachment_id,
+                "skipped": True,
+                "status": attachment.get("status"),
+            }
+        if forum_sync_runner is None or not forum_sync_runner.config.enabled:
+            error = "atlas_forum_sync_disabled"
+            await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_error,
+                attachment_id,
+                error=error,
+            )
+            raise AtlasForumSyncError(error)
+        await report({"percent": 12, "stage": "fetching_original", "attachment_id": attachment_id})
+        content_sha256: str | None = None
+        detected_mime: str | None = None
+        size_bytes: int | None = None
+        try:
+            raw, declared_mime = await forum_sync_runner.fetch_attachment(
+                str(attachment["attachment_url"]),
+            )
+            size_bytes = len(raw)
+            content_sha256 = hashlib.sha256(raw).hexdigest()
+            detected_mime = atlas_media_detect_type(raw[:64 * 1024], declared_mime)
+            await report({"percent": 45, "stage": "recognising", "attachment_id": attachment_id})
+            result = await asyncio.to_thread(
+                atlas_ocr_attachment,
+                raw,
+                mime_type=detected_mime,
+                filename=str(attachment.get("filename") or "forum-attachment"),
+            )
+        except AtlasOcrUnavailable as exc:
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except AtlasOcrError as exc:
+            if exc.retryable:
+                await asyncio.to_thread(
+                    attachment_storage.atlas_forum_attachment_mark_error,
+                    attachment_id,
+                    error=f"{exc.code}: {exc}",
+                )
+                raise
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except AtlasMediaError as exc:
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except Exception as exc:
+            await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_error,
+                attachment_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        await report({"percent": 80, "stage": "waiting_for_review", "attachment_id": attachment_id})
+        stored = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_complete_ocr,
+            attachment_id,
+            content_sha256=content_sha256,
+            mime_type=detected_mime,
+            size_bytes=size_bytes,
+            text=result.text,
+            engine=result.engine,
+        )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            int(stored["organization_id"]),
+            0,
+            "forum_attachment_ocr_ready",
+            "Atlas подготовил распознавание вложения для проверки",
+            target_type="forum_attachment",
+            target_id=attachment_id,
+            details={
+                "source_id": int(stored["source_id"]),
+                "engine": result.engine,
+                "pages": result.pages,
+                "mime_type": detected_mime,
+                "size_bytes": size_bytes,
+            },
+        )
+        return {
+            "attachment_id": attachment_id,
+            "status": "review_pending",
+            "pages": result.pages,
+            "engine": result.engine,
+        }
+
+    job_worker.register("atlas.forum.attachment-ocr.v1", run_forum_attachment_ocr_job)
+
     async def reconcile_knowledge_index(*, force_reset: bool = False) -> None:
         sources = await asyncio.to_thread(storage.atlas_indexable_knowledge_sources)
         if not sources:
@@ -1895,6 +2040,73 @@ def register_atlas_web_routes(
         job_worker.wake()
         return queued
 
+    async def queue_forum_attachment_ocr(attachment: dict[str, Any]) -> dict[str, Any] | None:
+        """Make discovery durable first, then let the leased worker OCR it."""
+
+        if str(attachment.get("status") or "") != "discovered":
+            return None
+        fingerprint = hashlib.sha256(
+            str(attachment.get("source_checksum") or "").encode("utf-8")
+        ).hexdigest()[:24]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(attachment["organization_id"]),
+            0,
+            job_type="atlas.forum.attachment-ocr.v1",
+            dedupe_key=f"attachment:{int(attachment['id'])}:{fingerprint}",
+            payload={"attachment_id": int(attachment["id"])},
+            subject_type="forum_attachment",
+            subject_id=int(attachment["id"]),
+            max_attempts=4,
+        )
+        await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_mark_queued,
+            int(attachment["id"]),
+        )
+        job_worker.wake()
+        return queued
+
+    async def reconcile_forum_attachment_ocr(*, limit: int = 40) -> int:
+        """Backfill old forum topics and queue only explicitly discovered files."""
+
+        if forum_sync_runner is None or not forum_sync_runner.config.enabled:
+            return 0
+        await asyncio.to_thread(
+            attachment_storage.atlas_reconcile_forum_attachment_inventory,
+            limit=max(1, min(2_000, int(limit) * 8)),
+        )
+        pending = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_pending,
+            limit=limit,
+        )
+        queued = 0
+        for attachment in pending:
+            if await queue_forum_attachment_ocr(attachment):
+                queued += 1
+        return queued
+
+    async def persist_forum_attachment_inventory(
+        source: dict[str, Any],
+        attachments: tuple[Any, ...] | list[Any],
+    ) -> tuple[int, int]:
+        """Save the parser inventory and immediately schedule new safe OCR work."""
+
+        rows = await asyncio.to_thread(
+            attachment_storage.atlas_sync_forum_attachments,
+            int(source["organization_id"]),
+            int(source["id"]),
+            tuple(
+                item.public()
+                for item in attachments
+                if callable(getattr(item, "public", None))
+            ),
+        )
+        queued = 0
+        for row in rows:
+            if await queue_forum_attachment_ocr(row):
+                queued += 1
+        return len(rows), queued
+
     async def run_forum_listing_job(
         job: dict[str, Any],
         report: Callable[[dict[str, Any]], Awaitable[None]],
@@ -1932,6 +2144,8 @@ def register_atlas_web_routes(
             created = 0
             changed = 0
             queued = 0
+            attachments = 0
+            attachment_jobs = 0
             for position, snapshot in enumerate(batch.snapshots, start=1):
                 result = await asyncio.to_thread(
                     storage.atlas_upsert_synced_knowledge,
@@ -1961,6 +2175,12 @@ def register_atlas_web_routes(
                 created += int(bool(result["created"]))
                 changed += int(bool(result["changed"]))
                 source = result["source"]
+                saved_attachments, queued_attachments = await persist_forum_attachment_inventory(
+                    source,
+                    snapshot.attachments,
+                )
+                attachments += saved_attachments
+                attachment_jobs += queued_attachments
                 if result["changed"] or source.get("status") != "indexed":
                     await queue_knowledge_index(source)
                     queued += 1
@@ -1978,6 +2198,8 @@ def register_atlas_web_routes(
                 "queued": queued,
                 "skipped": len(batch.skipped_threads),
                 "inventory_complete": batch.inventory_complete,
+                "attachments": attachments,
+                "attachment_jobs": attachment_jobs,
                 "feed_key": feed_key,
                 "federation_scope": feed.get("federation_scope"),
                 "knowledge_domain": feed.get("knowledge_domain"),
@@ -2057,6 +2279,10 @@ def register_atlas_web_routes(
                     ],
                 },
             )
+            attachment_count, attachment_jobs = await persist_forum_attachment_inventory(
+                source,
+                snapshot.attachments,
+            )
             index_job = await queue_knowledge_index(source)
             taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
             await report({"percent": 92, "stage": "index_queued"})
@@ -2075,6 +2301,8 @@ def register_atlas_web_routes(
                 "title": str(source.get("title") or snapshot.title),
                 "taxonomy": taxonomy,
                 "index_job_id": int(index_job["id"]),
+                "attachments": attachment_count,
+                "attachment_jobs": attachment_jobs,
             }
         except Exception as exc:
             await atlas_log(
@@ -2190,10 +2418,28 @@ def register_atlas_web_routes(
         queue_index_reconciliation()
 
     async def start_atlas_jobs(_: web.Application) -> None:
+        nonlocal attachment_ocr_task
         # Let startup reconciliation acquire the index lock before old jobs resume.
         await asyncio.sleep(0)
         job_worker.start()
         job_worker.wake()
+
+        async def attachment_runner() -> None:
+            while True:
+                try:
+                    await reconcile_forum_attachment_ocr()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # The queue remains durable; a transient forum/DB outage
+                    # must not prevent the rest of Atlas from serving users.
+                    pass
+                await asyncio.sleep(45)
+
+        attachment_ocr_task = asyncio.create_task(
+            attachment_runner(),
+            name="atlas-forum-attachment-ocr",
+        )
 
     async def start_forum_sync(_: web.Application) -> None:
         nonlocal forum_sync_task
@@ -2213,6 +2459,14 @@ def register_atlas_web_routes(
     async def stop_atlas_jobs(_: web.Application) -> None:
         await job_worker.close()
 
+    async def stop_forum_attachment_ocr(_: web.Application) -> None:
+        nonlocal attachment_ocr_task
+        if attachment_ocr_task is None:
+            return
+        attachment_ocr_task.cancel()
+        await asyncio.gather(attachment_ocr_task, return_exceptions=True)
+        attachment_ocr_task = None
+
     async def stop_overlay_tts(_: web.Application) -> None:
         await overlay_tts.close()
 
@@ -2228,6 +2482,7 @@ def register_atlas_web_routes(
     app.on_startup.append(start_forum_sync)
     app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
+    app.on_cleanup.append(stop_forum_attachment_ocr)
     app.on_cleanup.append(stop_atlas_jobs)
     app.on_cleanup.append(stop_overlay_tts)
 

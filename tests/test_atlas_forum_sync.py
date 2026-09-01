@@ -198,6 +198,47 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertEqual(attachment.media_kind, "image")
         self.assertEqual(attachment.label, "Акт суда, лист 1")
 
+    def test_attachment_download_is_bounded_and_keeps_the_forum_origin(self) -> None:
+        browser = AtlasForumBrowser(replace(sync_config(), attachment_max_bytes=64))
+        response = SimpleNamespace(
+            status_code=200,
+            headers={"Content-Type": "image/png", "Content-Length": "12"},
+            iter_content=lambda chunk_size: iter((b"\x89PNG", b"content")),
+            close=Mock(),
+        )
+        session = SimpleNamespace(get=Mock(return_value=response), close=Mock())
+        browser._attachment_session = lambda: session
+
+        data, mime = browser.fetch_attachment(
+            "https://forum.majestic-rp.ru/attachments/court-act-17.100/"
+        )
+
+        self.assertEqual(data, b"\x89PNGcontent")
+        self.assertEqual(mime, "image/png")
+        self.assertFalse(session.get.call_args.kwargs["allow_redirects"])
+        response.close.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_attachment_download_rejects_foreign_redirect_before_following_it(self) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        response = SimpleNamespace(
+            status_code=302,
+            headers={"Location": "https://example.org/attachments/evil.png"},
+            iter_content=lambda _chunk_size: iter(()),
+            close=Mock(),
+        )
+        session = SimpleNamespace(get=Mock(return_value=response), close=Mock())
+        browser._attachment_session = lambda: session
+
+        with self.assertRaisesRegex(AtlasForumSyncError, "redirect_rejected"):
+            browser.fetch_attachment(
+                "https://forum.majestic-rp.ru/attachments/court-act-17.100/"
+            )
+
+        self.assertEqual(session.get.call_count, 1)
+        response.close.assert_called_once()
+        session.close.assert_called_once()
+
     def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
         self.assertEqual(
             forum_interstitial_kind("<p>Please turn JavaScript on</p><script src='vddosw3data.js'></script>"),

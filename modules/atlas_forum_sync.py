@@ -26,6 +26,7 @@ from lxml import html
 from modules.atlas_ai import atlas_index_source
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_forum_attachment_repository as attachment_storage
 
 
 _SPACE_RE = re.compile(r"[ \t\r\f\v]+")
@@ -99,9 +100,20 @@ class AtlasForumSyncConfig:
     # Extra origins are opt-in. A database row must never be able to turn the
     # forum browser into a general-purpose authenticated web client.
     allowed_origins: tuple[str, ...] = ()
+    # Separate from the page/listing limits: original attachments are
+    # untrusted and may be intentionally oversized.
+    attachment_max_bytes: int = 16 * 1024 * 1024
+    attachment_timeout_seconds: int = 60
 
     @classmethod
     def from_env(cls) -> "AtlasForumSyncConfig":
+        def bounded_env(name: str, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(str(os.getenv(name, str(default))).strip())
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(maximum, value))
+
         enabled = str(os.getenv("ATLAS_FORUM_SYNC_ENABLED", "true")).strip().lower()
         root_url = str(
             os.getenv(
@@ -175,6 +187,12 @@ class AtlasForumSyncConfig:
                 min(900, int(os.getenv("ATLAS_FORUM_SCHEDULER_POLL_SECONDS", "60"))),
             ),
             allowed_origins=tuple(configured_origins),
+            attachment_max_bytes=bounded_env(
+                "ATLAS_FORUM_ATTACHMENT_MAX_MIB", 16, 1, 64
+            ) * 1024 * 1024,
+            attachment_timeout_seconds=bounded_env(
+                "ATLAS_FORUM_ATTACHMENT_TIMEOUT_SECONDS", 60, 10, 180
+            ),
         )
 
 
@@ -634,6 +652,124 @@ class AtlasForumBrowser:
                 pass
         return restored
 
+    def _attachment_session(self) -> requests.Session:
+        """Create a request session from the manually approved browser cookies.
+
+        The attachment worker never receives a browser profile or credentials.
+        It can only reuse the cookie snapshot for the same forum origin, and
+        only to fetch links that the HTML parser already classified as forum
+        attachments.
+        """
+
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Accept": "image/avif,image/webp,image/png,image/jpeg,application/pdf,*/*;q=0.4",
+                "User-Agent": "T-Mod Atlas attachment verifier/1.0",
+            }
+        )
+        cookie_file = str(self.config.cookie_file or "").strip()
+        if not cookie_file:
+            return session
+        try:
+            payload = json.loads(Path(cookie_file).read_text(encoding="utf-8"))
+            raw_cookies = payload.get("cookies") if isinstance(payload, dict) else payload
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return session
+        if not isinstance(raw_cookies, list):
+            return session
+        root_host = urlsplit(self.config.root_url).hostname or ""
+        for raw in raw_cookies:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name or "value" not in raw:
+                continue
+            domain = str(raw.get("domain") or root_host).strip().lower().lstrip(".")
+            if not domain or not (root_host == domain or root_host.endswith(f".{domain}")):
+                continue
+            path = str(raw.get("path") or "/").strip() or "/"
+            try:
+                session.cookies.set(
+                    name,
+                    str(raw.get("value") or ""),
+                    domain=domain,
+                    path=path if path.startswith("/") else "/",
+                )
+            except (TypeError, ValueError):
+                continue
+        return session
+
+    def fetch_attachment(self, url: str) -> tuple[bytes, str]:
+        """Download one same-origin attachment with strict redirect/size bounds."""
+
+        current = _canonical_attachment_url(self.config.root_url, str(url or ""))
+        if current is None:
+            raise AtlasForumSyncError("atlas_forum_attachment_url_invalid")
+        session = self._attachment_session()
+        try:
+            for _redirect in range(4):
+                try:
+                    response = session.get(
+                        current,
+                        stream=True,
+                        allow_redirects=False,
+                        timeout=(10, int(self.config.attachment_timeout_seconds)),
+                    )
+                except requests.RequestException as exc:
+                    raise AtlasForumSyncError(
+                        f"atlas_forum_attachment_request_failed:{type(exc).__name__}"
+                    ) from exc
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get("Location") or "").strip()
+                        candidate = _canonical_attachment_url(
+                            self.config.root_url,
+                            urljoin(current, location),
+                        )
+                        if candidate is None:
+                            raise AtlasForumSyncError("atlas_forum_attachment_redirect_rejected")
+                        current = candidate
+                        continue
+                    if response.status_code in {401, 403}:
+                        raise AtlasForumManualActionRequired(
+                            "Форум требует повторной авторизации для чтения вложения."
+                        )
+                    if response.status_code < 200 or response.status_code >= 300:
+                        raise AtlasForumSyncError(
+                            f"atlas_forum_attachment_http_{int(response.status_code)}"
+                        )
+                    try:
+                        declared_size = int(str(response.headers.get("Content-Length") or "0"))
+                    except (TypeError, ValueError):
+                        declared_size = 0
+                    maximum = int(self.config.attachment_max_bytes)
+                    if declared_size > maximum:
+                        raise AtlasForumSyncError("atlas_forum_attachment_too_large")
+                    data = bytearray()
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        data.extend(chunk)
+                        if len(data) > maximum:
+                            raise AtlasForumSyncError("atlas_forum_attachment_too_large")
+                    if not data:
+                        raise AtlasForumSyncError("atlas_forum_attachment_empty")
+                    mime_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    if mime_type in {"text/html", "application/xhtml+xml"}:
+                        kind = forum_interstitial_kind(bytes(data[:256_000]).decode("utf-8", errors="replace"))
+                        if kind in {"login", "manual", "javascript", "access"}:
+                            raise AtlasForumManualActionRequired(
+                                "Форум требует ручного подтверждения перед чтением вложения."
+                            )
+                        raise AtlasForumSyncError("atlas_forum_attachment_not_file")
+                    return bytes(data), mime_type
+                finally:
+                    response.close()
+            raise AtlasForumSyncError("atlas_forum_attachment_redirect_limit")
+        finally:
+            session.close()
+
     @property
     def active(self) -> bool:
         return self._driver is not None
@@ -991,6 +1127,21 @@ class AtlasForumSyncRunner:
                 await asyncio.to_thread(self.browser.close)
                 return snapshot
 
+    async def fetch_attachment(self, url: str) -> tuple[bytes, str]:
+        """Read a verified same-origin attachment without broadening browser access."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        origin = self._origin(url)
+        if origin not in self._allowed_origins:
+            raise AtlasForumSyncError("atlas_forum_attachment_origin_not_allowed")
+        # Constructing a browser for this origin only selects its independent
+        # cookie file. Attachment downloads themselves use a bounded requests
+        # session, never Selenium automation.
+        browser = self._browser_for_feed({"root_url": url})
+        async with self._lock:
+            return await asyncio.to_thread(browser.fetch_attachment, url)
+
     async def _technical_log(
         self,
         *,
@@ -1077,6 +1228,8 @@ class AtlasForumSyncRunner:
                 indexed = 0
                 index_errors = 0
                 retried = 0
+                attachment_discovered = 0
+                attachment_errors = 0
                 seen_urls: list[str] = []
                 for snapshot in snapshots:
                     seen_urls.append(snapshot.url)
@@ -1105,6 +1258,20 @@ class AtlasForumSyncRunner:
                     if result["created"]:
                         created += 1
                     source = result["source"]
+                    try:
+                        attachment_rows = await asyncio.to_thread(
+                            attachment_storage.atlas_sync_forum_attachments,
+                            int(active_feed["organization_id"]),
+                            int(source["id"]),
+                            tuple(attachment.public() for attachment in snapshot.attachments),
+                        )
+                        attachment_discovered += len(attachment_rows)
+                    except (TypeError, ValueError):
+                        # A malformed attachment must never discard the text
+                        # revision that already passed the forum parser. It is
+                        # omitted from the OCR queue and remains visible only
+                        # through the original forum topic.
+                        attachment_errors += 1
                     needs_index = result["changed"] or source.get("status") != "indexed"
                     if not needs_index:
                         continue
@@ -1150,6 +1317,8 @@ class AtlasForumSyncRunner:
                     "indexed": indexed,
                     "index_errors": index_errors,
                     "retried": retried,
+                    "attachment_discovered": attachment_discovered,
+                    "attachment_errors": attachment_errors,
                     "missing_changes": missing_changes,
                     "inventory_complete": batch.inventory_complete,
                 }

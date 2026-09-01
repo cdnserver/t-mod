@@ -549,6 +549,50 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_forum_feeds_due
             ON atlas_forum_feeds(status, next_sync_at, id);
 
+            -- An attachment is a separate, reviewable evidence item.  OCR is
+            -- deliberately not merged into atlas_knowledge_sources: a scan is
+            -- only a machine transcription until an authorized reviewer
+            -- accepts it against its original forum URL.
+            CREATE TABLE IF NOT EXISTS atlas_forum_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                attachment_url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                media_kind TEXT NOT NULL DEFAULT 'file'
+                    CHECK(media_kind IN ('image', 'file')),
+                label TEXT,
+                source_checksum TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'discovered'
+                    CHECK(status IN (
+                        'discovered', 'queued', 'processing', 'review_pending',
+                        'approved', 'rejected', 'failed', 'unavailable', 'archived'
+                    )),
+                content_sha256 TEXT,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                ocr_text TEXT,
+                ocr_engine TEXT,
+                ocr_error TEXT,
+                reviewed_by_id INTEGER,
+                reviewed_at TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_id, attachment_url),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES atlas_knowledge_sources(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_queue
+            ON atlas_forum_attachments(organization_id, status, updated_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_source
+            ON atlas_forum_attachments(source_id, id);
+
             CREATE TABLE IF NOT EXISTS atlas_document_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER,
