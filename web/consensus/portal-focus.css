@@ -381,6 +381,7 @@
 .portal-canvas > .identity-widget,
 .portal-canvas > .treasury-widget,
 .portal-canvas > .consensus-widget,
+.portal-canvas > .preparation-widget,
 .portal-canvas > .notifications-widget {
   min-height: 330px;
 }

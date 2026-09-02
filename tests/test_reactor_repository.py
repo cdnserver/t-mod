@@ -40,6 +40,10 @@ class ReactorRepositoryTests(unittest.TestCase):
             reactor.reactor_get_layout(1, 2, "member"),
             list(reactor.MEMBER_WIDGETS),
         )
+        reactor.reactor_set_layout(1, 3, "member", ["identity", "consensus"])
+        # Existing custom canvases automatically gain newly deployed personal
+        # surfaces instead of hiding them forever.
+        self.assertIn("preparation", reactor.reactor_get_layout(1, 3, "member"))
 
     def test_notifications_are_deduplicated_unread_and_markable(self) -> None:
         first = reactor.reactor_put_notification(

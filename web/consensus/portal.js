@@ -9,6 +9,7 @@
     editor: "Законодательная мастерская",
     games: "T-Mod Games",
     consensus: "Консенсус",
+    preparation: "Листы подготовки",
     notifications: "Уведомления",
   };
   const viewTitles = {
@@ -26,7 +27,7 @@
     projects: ["my_bills", "legislation"],
     editor: ["editor"],
     treasury: ["treasury"],
-    consensus: ["consensus"],
+    consensus: ["consensus", "preparation"],
     games: ["games"],
     notifications: ["notifications"],
   };
@@ -57,6 +58,16 @@
     onboardingRequired: false,
     onboardingOpened: false,
     activeView: "overview",
+    preparation: {
+      items: [],
+      loaded: false,
+      bill: null,
+      sheet: null,
+      sourceChanged: false,
+      dirty: false,
+      saving: false,
+      saveTimer: null,
+    },
   };
   const byId = (id) => document.getElementById(id);
   const el = (tag, className = "", text = "") => {
@@ -251,6 +262,9 @@
     }
     if (push) {
       window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    if (target === "consensus" && !state.preparation.loaded) {
+      void loadPreparation(true);
     }
   }
 
@@ -525,6 +539,424 @@
       : `Следующий номер: ${
         String(state.data?.legislation?.next_number || "—").padStart(3, "0")
       }`;
+  }
+
+  const PREPARATION_MAX_QUESTIONS = 12;
+
+  function defaultPreparationSheet() {
+    return {
+      questions: [],
+      notes: "",
+      preliminary_vote: null,
+      preliminary_vote_reason: "",
+      review_flags: {
+        read_text: false,
+        verify_sources: false,
+        need_discussion: false,
+      },
+      source_bill_updated_at: null,
+      revision: 0,
+      created_at: null,
+      updated_at: null,
+    };
+  }
+
+  function normalisePreparationSheet(value) {
+    const fallback = defaultPreparationSheet();
+    const source = value && typeof value === "object" ? value : {};
+    const flags = source.review_flags && typeof source.review_flags === "object"
+      ? source.review_flags
+      : {};
+    const questions = Array.isArray(source.questions)
+      ? source.questions.slice(0, PREPARATION_MAX_QUESTIONS).flatMap((item, index) => {
+        if (!item || typeof item !== "object") return [];
+        return [{
+          id: String(item.id || `question-${index + 1}`),
+          text: String(item.text || ""),
+          resolved: Boolean(item.resolved),
+        }];
+      })
+      : [];
+    const vote = ["yes", "no", "abstain"].includes(String(source.preliminary_vote || ""))
+      ? String(source.preliminary_vote)
+      : null;
+    return {
+      ...fallback,
+      questions,
+      notes: String(source.notes || ""),
+      preliminary_vote: vote,
+      preliminary_vote_reason: String(source.preliminary_vote_reason || ""),
+      review_flags: {
+        read_text: Boolean(flags.read_text),
+        verify_sources: Boolean(flags.verify_sources),
+        need_discussion: Boolean(flags.need_discussion),
+      },
+      source_bill_updated_at: source.source_bill_updated_at || null,
+      revision: Math.max(0, Number(source.revision) || 0),
+      created_at: source.created_at || null,
+      updated_at: source.updated_at || null,
+    };
+  }
+
+  function preparationNumber(bill) {
+    const value = Number(bill?.bill_number ?? bill?.number ?? 0);
+    return Number.isInteger(value) && value > 0 ? String(value).padStart(3, "0") : "—";
+  }
+
+  function preparationAuthor(bill) {
+    if (bill?.author && typeof bill.author === "object") {
+      return String(bill.author.name || "Автор не указан");
+    }
+    return String(bill?.author || "Автор не указан");
+  }
+
+  function preparationDraft() {
+    const sheet = state.preparation.sheet || defaultPreparationSheet();
+    return {
+      questions: sheet.questions
+        .filter((item) => String(item?.text || "").trim())
+        .map((item) => ({
+          id: String(item.id || ""),
+          text: String(item.text || ""),
+          resolved: Boolean(item.resolved),
+        })),
+      notes: String(sheet.notes || ""),
+      preliminary_vote: sheet.preliminary_vote || null,
+      preliminary_vote_reason: String(sheet.preliminary_vote_reason || ""),
+      review_flags: {
+        read_text: Boolean(sheet.review_flags?.read_text),
+        verify_sources: Boolean(sheet.review_flags?.verify_sources),
+        need_discussion: Boolean(sheet.review_flags?.need_discussion),
+      },
+    };
+  }
+
+  function preparationDraftSignature() {
+    return JSON.stringify(preparationDraft());
+  }
+
+  function preparationDraftHasContent() {
+    const draft = preparationDraft();
+    return Boolean(
+      draft.questions.length ||
+      draft.notes.trim() ||
+      draft.preliminary_vote ||
+      draft.preliminary_vote_reason.trim() ||
+      Object.values(draft.review_flags).some(Boolean),
+    );
+  }
+
+  function setPreparationSaveState(label, kind = "") {
+    const node = byId("reactor-preparation-save-state");
+    node.textContent = label;
+    node.dataset.state = kind;
+  }
+
+  function preparationStatusLabel(marker) {
+    const vote = String(marker?.preliminary_vote || "");
+    if (vote === "yes") return "ПОЗИЦИЯ: ПОДДЕРЖАТЬ";
+    if (vote === "no") return "ПОЗИЦИЯ: НЕ ПОДДЕРЖИВАТЬ";
+    if (vote === "abstain") return "ПОЗИЦИЯ: ВОЗДЕРЖАТЬСЯ";
+    return marker?.prepared ? "ЛИСТ В РАБОТЕ" : "НЕ НАЧАТ";
+  }
+
+  function updatePreparationSummary() {
+    const items = state.preparation.items || [];
+    const prepared = items.filter((item) => item.preparation?.prepared).length;
+    byId("preparation-progress").textContent = `${prepared} / ${items.length}`;
+    if (state.data && !state.data.consensus?.active) {
+      byId("overview-consensus-detail").textContent = items.length
+        ? `Подготовлено: ${prepared} из ${items.length}`
+        : "Законопроектов в очереди нет";
+    }
+  }
+
+  function renderPreparation() {
+    const list = byId("preparation-list");
+    const items = state.preparation.items || [];
+    const nodes = items.map((item) => {
+      const marker = item.preparation || {};
+      const row = el("article", `preparation-row${marker.prepared ? " prepared" : ""}`);
+      const copy = el("div", "preparation-row-copy");
+      copy.append(
+        el("small", "", `ПРОЕКТ № ${preparationNumber(item)} · ${preparationStatusLabel(marker)}`),
+        el("h3", "", item.title || "Без названия"),
+        el("p", "", item.summary || "Текст проекта доступен в личном листе подготовки."),
+      );
+      const meta = el("footer");
+      meta.append(
+        el("span", "", preparationAuthor(item)),
+        el("span", "", marker.updated_at ? formatMoment(marker.updated_at) : ""),
+      );
+      copy.append(meta);
+      const button = el("button", "", marker.prepared ? "Продолжить" : "Открыть лист");
+      button.type = "button";
+      button.addEventListener("click", () => void openPreparationSheet(item));
+      row.append(copy, button);
+      return row;
+    });
+    list.replaceChildren(...nodes);
+    if (!nodes.length) {
+      list.append(el("div", "portal-empty", "В очереди пока нет законопроектов для подготовки."));
+    }
+    updatePreparationSummary();
+  }
+
+  function renderPreparationVotes() {
+    const vote = state.preparation.sheet?.preliminary_vote || "";
+    document.querySelectorAll("[data-reactor-preparation-vote]").forEach((button) => {
+      const selected = button.dataset.reactorPreparationVote === vote;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  }
+
+  function newPreparationQuestionId() {
+    const suffix = globalThis.crypto?.randomUUID?.() ||
+      `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    return `question-${suffix}`.slice(0, 72);
+  }
+
+  function renderPreparationQuestions() {
+    const list = byId("reactor-preparation-questions");
+    const questions = state.preparation.sheet?.questions || [];
+    const nodes = questions.map((question, index) => {
+      const item = el("article", `preparation-question${question.resolved ? " resolved" : ""}`);
+      const number = el("span", "", String(index + 1).padStart(2, "0"));
+      const field = el("textarea");
+      field.rows = 2;
+      field.maxLength = 1000;
+      field.placeholder = "Сформулируйте вопрос…";
+      field.value = question.text;
+      field.setAttribute("aria-label", `Вопрос ${index + 1}`);
+      field.addEventListener("input", () => {
+        const current = state.preparation.sheet?.questions.find((entry) => entry.id === question.id);
+        if (!current) return;
+        current.text = field.value;
+        markPreparationDirty();
+      });
+      const actions = el("div", "preparation-question-actions");
+      const resolve = el("button", "", question.resolved ? "↺" : "✓");
+      resolve.type = "button";
+      resolve.title = question.resolved ? "Сделать вопрос открытым" : "Отметить как решённый";
+      resolve.setAttribute("aria-label", resolve.title);
+      resolve.addEventListener("click", () => {
+        const current = state.preparation.sheet?.questions.find((entry) => entry.id === question.id);
+        if (!current) return;
+        current.resolved = !current.resolved;
+        renderPreparationQuestions();
+        markPreparationDirty();
+      });
+      const remove = el("button", "", "×");
+      remove.type = "button";
+      remove.title = "Удалить вопрос";
+      remove.setAttribute("aria-label", remove.title);
+      remove.addEventListener("click", () => {
+        if (!state.preparation.sheet) return;
+        state.preparation.sheet.questions = state.preparation.sheet.questions.filter(
+          (entry) => entry.id !== question.id,
+        );
+        renderPreparationQuestions();
+        markPreparationDirty();
+      });
+      actions.append(resolve, remove);
+      item.append(number, field, actions);
+      return item;
+    });
+    list.replaceChildren(...nodes);
+    byId("reactor-preparation-questions-empty").hidden = questions.length > 0;
+  }
+
+  function renderPreparationSheet() {
+    const prep = state.preparation;
+    const bill = prep.bill || {};
+    const sheet = prep.sheet || defaultPreparationSheet();
+    byId("reactor-preparation-number").textContent = `ЛИЧНЫЙ ЛИСТ · ПРОЕКТ № ${preparationNumber(bill)}`;
+    byId("reactor-preparation-title").textContent = bill.title || "Подготовка к рассмотрению";
+    byId("reactor-preparation-author").textContent = `Автор: ${preparationAuthor(bill)}`;
+    byId("reactor-preparation-summary").textContent = bill.summary || "Текст законопроекта не сохранён.";
+    const materials = String(bill.materials || "").trim();
+    const materialsSection = byId("reactor-preparation-materials");
+    materialsSection.hidden = !materials;
+    if (materials) materialsSection.querySelector("p").textContent = materials;
+    const sourceState = byId("reactor-preparation-source-state");
+    sourceState.textContent = prep.sourceChanged ? "ТЕКСТ ОБНОВЛЁН" : "АКТУАЛЬНАЯ РЕДАКЦИЯ";
+    sourceState.dataset.changed = String(Boolean(prep.sourceChanged));
+    byId("reactor-preparation-reason").value = sheet.preliminary_vote_reason;
+    byId("reactor-preparation-notes").value = sheet.notes;
+    byId("reactor-preparation-notes-count").textContent = `${sheet.notes.length} / 16000`;
+    byId("reactor-preparation-read-text").checked = Boolean(sheet.review_flags.read_text);
+    byId("reactor-preparation-verify-sources").checked = Boolean(sheet.review_flags.verify_sources);
+    byId("reactor-preparation-need-discussion").checked = Boolean(sheet.review_flags.need_discussion);
+    renderPreparationVotes();
+    renderPreparationQuestions();
+    setPreparationSaveState(
+      sheet.updated_at ? `Сохранено ${formatMoment(sheet.updated_at)}` : "Изменения сохраняются автоматически",
+      sheet.updated_at ? "saved" : "",
+    );
+  }
+
+  function schedulePreparationSave() {
+    clearTimeout(state.preparation.saveTimer);
+    state.preparation.saveTimer = setTimeout(() => {
+      void savePreparation({ silent: true });
+    }, 850);
+  }
+
+  function markPreparationDirty({ schedule = true } = {}) {
+    if (!state.preparation.sheet) return;
+    state.preparation.dirty = true;
+    setPreparationSaveState("Есть несохранённые изменения", "dirty");
+    if (schedule) schedulePreparationSave();
+  }
+
+  function markPreparationListItemSaved() {
+    const prep = state.preparation;
+    const billId = Number(prep.bill?.id || 0);
+    const item = prep.items.find((candidate) => Number(candidate.id || 0) === billId);
+    if (!item || !prep.sheet) return;
+    item.preparation = {
+      prepared: true,
+      preliminary_vote: prep.sheet.preliminary_vote || null,
+      updated_at: prep.sheet.updated_at || new Date().toISOString(),
+    };
+    renderPreparation();
+  }
+
+  async function savePreparation({ silent = false } = {}) {
+    const prep = state.preparation;
+    const billId = Number(prep.bill?.id || 0);
+    if (!billId || !prep.sheet || prep.saving) return false;
+    if (!prep.dirty && prep.sheet.revision > 0) return true;
+    clearTimeout(prep.saveTimer);
+    if (prep.sheet.revision === 0 && !preparationDraftHasContent()) {
+      prep.dirty = false;
+      setPreparationSaveState("Лист ожидает первой записи");
+      return true;
+    }
+    prep.saving = true;
+    const beforeSave = preparationDraftSignature();
+    const expectedRevision = prep.sheet.revision;
+    setPreparationSaveState("Сохраняем личный лист…", "saving");
+    try {
+      const result = await request(`/api/bills/${billId}/preparation`, {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: expectedRevision,
+          ...preparationDraft(),
+        }),
+      });
+      const saved = normalisePreparationSheet(result.sheet);
+      if (preparationDraftSignature() === beforeSave) {
+        prep.sheet = saved;
+        prep.dirty = false;
+        prep.sourceChanged = Boolean(result.source_changed);
+        renderPreparationSheet();
+      } else {
+        prep.sheet.revision = saved.revision;
+        prep.sheet.updated_at = saved.updated_at;
+        prep.dirty = true;
+        setPreparationSaveState("Есть новые изменения после сохранения", "dirty");
+        schedulePreparationSave();
+      }
+      markPreparationListItemSaved();
+      return true;
+    } catch (error) {
+      setPreparationSaveState("Не удалось сохранить лист", "error");
+      if (!silent) toast(error.message || "Проверьте соединение и повторите.", "error");
+      return false;
+    } finally {
+      prep.saving = false;
+    }
+  }
+
+  function setPreparationControlsDisabled(disabled) {
+    document.querySelectorAll(
+      "#reactor-preparation-dialog .preparation-workspace button, " +
+      "#reactor-preparation-dialog .preparation-workspace textarea, " +
+      "#reactor-preparation-dialog .preparation-workspace input, " +
+      "#reactor-preparation-save, #reactor-preparation-download",
+    ).forEach((control) => {
+      control.disabled = disabled;
+    });
+  }
+
+  async function openPreparationSheet(item) {
+    const billId = Number(item?.id || 0);
+    if (!Number.isInteger(billId) || billId <= 0) {
+      toast("Карточка законопроекта пока недоступна.", "error");
+      return;
+    }
+    const prep = state.preparation;
+    if (prep.bill && prep.dirty && !(await savePreparation({ silent: true }))) {
+      toast("Сначала сохраните текущий лист подготовки.", "error");
+      return;
+    }
+    prep.bill = { ...item, id: billId };
+    prep.sheet = defaultPreparationSheet();
+    prep.sourceChanged = false;
+    prep.dirty = false;
+    renderPreparationSheet();
+    openDialog(byId("reactor-preparation-dialog"));
+    setPreparationControlsDisabled(true);
+    setPreparationSaveState("Загружаем личный лист…", "saving");
+    try {
+      const result = await request(`/api/bills/${billId}/preparation`);
+      prep.bill = result.bill || prep.bill;
+      prep.sheet = normalisePreparationSheet(result.sheet);
+      prep.sourceChanged = Boolean(result.source_changed);
+      prep.dirty = false;
+      renderPreparationSheet();
+    } catch (error) {
+      setPreparationSaveState("Лист временно недоступен", "error");
+      toast(error.message || "Обновите страницу и повторите.", "error");
+    } finally {
+      setPreparationControlsDisabled(false);
+    }
+  }
+
+  async function downloadPreparationPdf() {
+    const prep = state.preparation;
+    const billId = Number(prep.bill?.id || 0);
+    if (!billId) return;
+    if (prep.dirty && !(await savePreparation())) return;
+    const button = byId("reactor-preparation-download");
+    button.disabled = true;
+    button.textContent = "Собираем PDF…";
+    try {
+      const response = await fetch(`/api/bills/${billId}/preparation.pdf`, {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `consensus-preparation-${preparationNumber(prep.bill)}.pdf`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setPreparationSaveState("PDF подготовлен · файл можно редактировать офлайн", "saved");
+    } catch {
+      setPreparationSaveState("Не удалось собрать PDF", "error");
+      toast("Не удалось скачать PDF. Попробуйте ещё раз.", "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Скачать PDF";
+    }
+  }
+
+  async function loadPreparation(silent = false) {
+    try {
+      const payload = await request("/api/reactor/preparation");
+      state.preparation.items = Array.isArray(payload.items) ? payload.items : [];
+      state.preparation.loaded = true;
+      renderPreparation();
+    } catch (error) {
+      if (!silent) toast(error.message || "Не удалось загрузить листы подготовки.", "error");
+    }
   }
 
   function collectWorkspace() {
@@ -1096,6 +1528,7 @@
     byId("overview-consensus-detail").textContent = consensus.active
       ? `Пленарное заседание ${consensus.plenary_number || ""}`.trim()
       : `В очереди: ${queuedBills}`;
+    if (state.preparation.loaded) updatePreparationSummary();
 
     const inbox = data.notifications || { items: [], unread: 0 };
     const unread = Number(inbox.unread || 0);
@@ -1384,10 +1817,59 @@
     localStorage.setItem("tmod-desktop-recommendation-v1", "dismissed");
     byId("desktop-recommendation").hidden = true;
   });
+  document.querySelectorAll("[data-reactor-preparation-vote]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.preparation.sheet) return;
+      state.preparation.sheet.preliminary_vote = button.dataset.reactorPreparationVote || null;
+      renderPreparationVotes();
+      markPreparationDirty();
+    });
+  });
+  byId("reactor-preparation-reason").addEventListener("input", (event) => {
+    if (!state.preparation.sheet) return;
+    state.preparation.sheet.preliminary_vote_reason = event.currentTarget.value;
+    markPreparationDirty();
+  });
+  byId("reactor-preparation-notes").addEventListener("input", (event) => {
+    if (!state.preparation.sheet) return;
+    state.preparation.sheet.notes = event.currentTarget.value;
+    byId("reactor-preparation-notes-count").textContent = `${state.preparation.sheet.notes.length} / 16000`;
+    markPreparationDirty();
+  });
+  [
+    ["reactor-preparation-read-text", "read_text"],
+    ["reactor-preparation-verify-sources", "verify_sources"],
+    ["reactor-preparation-need-discussion", "need_discussion"],
+  ].forEach(([id, key]) => {
+    byId(id).addEventListener("change", (event) => {
+      if (!state.preparation.sheet) return;
+      state.preparation.sheet.review_flags[key] = Boolean(event.currentTarget.checked);
+      markPreparationDirty();
+    });
+  });
+  byId("reactor-preparation-add-question").addEventListener("click", () => {
+    const sheet = state.preparation.sheet;
+    if (!sheet) return;
+    if (sheet.questions.length >= PREPARATION_MAX_QUESTIONS) {
+      toast(`Можно добавить не более ${PREPARATION_MAX_QUESTIONS} вопросов.`, "error");
+      return;
+    }
+    sheet.questions.push({ id: newPreparationQuestionId(), text: "", resolved: false });
+    renderPreparationQuestions();
+    byId("reactor-preparation-questions").querySelector("textarea:last-of-type")?.focus();
+  });
+  byId("reactor-preparation-save").addEventListener("click", () => void savePreparation());
+  byId("reactor-preparation-download").addEventListener("click", () => void downloadPreparationPdf());
+  byId("reactor-preparation-dialog").addEventListener("close", () => {
+    if (state.preparation.dirty && !state.preparation.saving) {
+      void savePreparation({ silent: true });
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && !state.busy) {
       void load(true);
       void loadLegislation(true);
+      void loadPreparation(true);
     }
   });
   state.refreshTimer = setInterval(() => {
@@ -1404,7 +1886,7 @@
     },
   );
   globalThis.addEventListener("beforeunload", (event) => {
-    if (state.dirty) {
+    if (state.dirty || state.preparation.dirty) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1416,5 +1898,6 @@
   void (async () => {
     await load();
     await loadLegislation(true);
+    await loadPreparation(true);
   })();
 })();

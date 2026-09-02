@@ -270,6 +270,52 @@ class ConsensusPreparationWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_reactor_preparation_queue_projects_only_private_markers(self) -> None:
+        storage.save_preparation_sheet(
+            77,
+            self.bill.id,
+            41,
+            user_display="Сенатор 41",
+            expected_revision=0,
+            questions=[],
+            notes="Это не должно попасть в список очереди.",
+            preliminary_vote="yes",
+            preliminary_vote_reason="Личная причина.",
+            review_flags={"read_text": True},
+            source_bill_updated_at=None,
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal(41)),
+            ):
+                owner_response = await client.get("/api/reactor/preparation")
+            self.assertEqual(owner_response.status, 200)
+            self.assertEqual(owner_response.headers.get("Cache-Control"), "private, no-store")
+            owner = await owner_response.json()
+            self.assertEqual(owner["total"], 1)
+            self.assertEqual(owner["prepared"], 1)
+            item = owner["items"][0]
+            self.assertEqual(item["id"], self.bill.id)
+            self.assertEqual(item["preparation"]["preliminary_vote"], "yes")
+            self.assertNotIn("notes", item)
+            self.assertNotIn("preliminary_vote_reason", item)
+
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=self._principal(42)),
+            ):
+                other_response = await client.get("/api/reactor/preparation")
+            self.assertEqual(other_response.status, 200)
+            other = await other_response.json()
+            self.assertEqual(other["prepared"], 0)
+            self.assertFalse(other["items"][0]["preparation"]["prepared"])
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

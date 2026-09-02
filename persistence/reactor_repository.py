@@ -26,6 +26,7 @@ MEMBER_WIDGETS = (
     "editor",
     "games",
     "consensus",
+    "preparation",
     "notifications",
 )
 _SURFACE_WIDGETS = {
@@ -78,7 +79,9 @@ def reactor_get_layout(guild_id: int, user_id: int, surface: str) -> list[str]:
         # legislation editor cannot silently disappear after deployment.
         return list(MEMBER_WIDGETS)
     if selected_surface == "member" and isinstance(parsed, list):
-        for widget in ("games", "my_bills"):
+        # New member surfaces must be visible after deployment even for people
+        # who saved a custom canvas before the widget existed.
+        for widget in ("games", "my_bills", "preparation"):
             if widget not in parsed:
                 parsed.append(widget)
     return _clean_layout(
