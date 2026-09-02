@@ -318,6 +318,18 @@ a:focus-visible,
 .host-live footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 0.72rem; }
 .host-live header small { display: block; margin-top: 5px; color: var(--muted); font-size: 0.7rem; }
 
+.host-live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.host-live-actions button:disabled {
+  cursor: default;
+  opacity: 0.46;
+}
+
 .host-live-text {
   max-width: 1220px;
   min-height: 280px;
@@ -760,6 +772,7 @@ a:focus-visible,
   .host-stage-orbit { width: 100%; min-height: 94px; }
   .host-live-text { min-height: 230px; font-size: calc(clamp(1.35rem, 7vw, 2.2rem) * var(--script-scale)); }
   .host-live header, .host-live footer { align-items: flex-start; }
+  .host-live-actions { justify-content: flex-start; }
   .host-live footer { flex-direction: column; }
   .host-cues { grid-template-columns: 1fr; }
   .host-metric-cue { grid-column: auto; }

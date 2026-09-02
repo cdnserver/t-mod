@@ -37,6 +37,29 @@ let scriptScale = Math.max(
   0.72,
   Math.min(1.45, Number(readSetting("t-consensus-host-scale", "1"))),
 );
+const SCRIPT_VARIANT_STORAGE_KEY = "t-consensus-host-script-variants-v1";
+
+function readJsonSetting(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonSetting(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Выбор реплики — удобство ведущего, а не условие работы суфлёра.
+  }
+}
+
+let scriptVariantChoices = readJsonSetting(SCRIPT_VARIANT_STORAGE_KEY, {});
+let activePrompt = null;
 
 const STAGE_INDEX = {
   idle: "00",
@@ -117,6 +140,19 @@ function clip(value, limit = 620) {
   return `${clean.slice(0, limit).replace(/\s+\S*$/, "").trim()}…`;
 }
 
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value || "")) {
+    hash ^= character.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function stableVariantIndex(key, count) {
+  return count > 0 ? stableHash(key) % count : 0;
+}
+
 function formatNumber(value) {
   return String(Math.max(0, Number(value) || 0)).padStart(3, "0");
 }
@@ -174,54 +210,243 @@ function billEssence(bill) {
   return clip(bill?.summary, 720) || "Содержание проекта изложено в опубликованном тексте и материалах.";
 }
 
-function billIntroduction(bill) {
+function billIntroductionVariants(bill) {
   const number = formatNumber(bill?.bill_number);
   const title = cleanSpeech(bill?.title) || "Без названия";
   const author = cleanSpeech(bill?.author?.name) || "автор не указан";
+  const essence = billEssence(bill);
   return [
-    `Рассматривается законопроект №${number} — «${title}».`,
-    `Автор проекта — ${author}.`,
-    `Предмет решения: ${billEssence(bill)}`,
-    "Полный текст, приложения и первоначально поданный материал доступны в личных панелях и на трансляции.",
-  ].join("\n\n");
+    [
+      `Рассматривается законопроект №${number} — «${title}».`,
+      `Автор проекта — ${author}.`,
+      `Предмет решения: ${essence}`,
+      "Полный текст, приложения и первоначально поданный материал доступны в личных панелях и на трансляции.",
+    ].join("\n\n"),
+    [
+      `Переходим к проекту №${number}: «${title}».`,
+      `Проект представлен ${author}.`,
+      `Для решения предлагается следующее: ${essence}`,
+      "Прошу сверять формулировки с материалами, а не с кратким изложением на экране.",
+    ].join("\n\n"),
+    [
+      `На рассмотрение вынесен законопроект №${number} «${title}».`,
+      `Инициатор — ${author}.`,
+      `Суть вопроса: ${essence}`,
+      "После представления будет время для уточнений; до отдельного объявления воут не открывается.",
+    ].join("\n\n"),
+  ];
+}
+
+function billIntroduction(bill) {
+  return billIntroductionVariants(bill)[0];
+}
+
+function voteOpeningVariants(bill) {
+  const number = formatNumber(bill?.bill_number);
+  return [
+    `Законопроект №${number} поставлен на воут. Голосование открыто. Доступны три позиции: «За», «Против» и «Воздержаться». Прошу проверить название проекта перед подтверждением выбора.`,
+    `Открываю голосование по законопроекту №${number}. Выберите «За», «Против» или «Воздержаться» в личном пульте T-Mod и подтвердите именно свою позицию.`,
+    `Проект №${number} вынесен на голосование. Воут открыт для подтверждённого состава. Перед выбором ещё раз сверьте номер и название законопроекта.`,
+  ];
 }
 
 function voteOpening(bill) {
-  return `Законопроект №${formatNumber(bill?.bill_number)} поставлен на воут. Голосование открыто. Доступны три позиции: «За», «Против» и «Воздержаться». Прошу проверить название проекта перед подтверждением выбора.`;
+  return voteOpeningVariants(bill)[0];
 }
 
-function resultSpeech(result, bill) {
+function resultSpeechVariants(result, bill) {
   const status = String(result?.status || "");
   const number = formatNumber(result?.bill_number || bill?.bill_number);
   const title = cleanSpeech(result?.title || bill?.title) || "Без названия";
   if (status === "vetoed") {
-    return `Система зафиксировала применение права вето к законопроекту №${number} — «${title}». Текущий проект завершён в особом порядке. Зафиксированный итог включается в официальный протокол без ручного повторения действия.`;
+    return [
+      `Система зафиксировала применение права вето к законопроекту №${number} — «${title}». Текущий проект завершён в особом порядке. Зафиксированный итог включается в официальный протокол без ручного повторения действия.`,
+      `По проекту №${number} «${title}» применено право вето. Решение уже зафиксировано системой и будет отражено в официальном протоколе заседания.`,
+    ];
   }
   const overall = formatPercent(result?.overall_percent);
   const opposed = formatPercent(result?.opposed_percent);
   const accepted = status === "accepted";
+  const conclusion = accepted
+    ? "В соответствии с действующим порядком законопроект принят."
+    : "Установленный порог принятия не достигнут. Законопроект отклонён.";
   return [
-    "Приём голосов завершён. Результат зафиксирован системой.",
-    `По законопроекту №${number} — «${title}» общий консенсус составил ${overall} процента за и ${opposed} процента против.`,
-    accepted
-      ? "В соответствии с действующим порядком законопроект принят."
-      : "Установленный порог принятия не достигнут. Законопроект отклонён.",
-    "Решение будет включено в официальный протокол заседания.",
-  ].join("\n\n");
+    [
+      "Приём голосов завершён. Результат зафиксирован системой.",
+      `По законопроекту №${number} — «${title}» общий консенсус составил ${overall} процента за и ${opposed} процента против.`,
+      conclusion,
+      "Решение будет включено в официальный протокол заседания.",
+    ].join("\n\n"),
+    [
+      `Оглашается итог по проекту №${number} «${title}».`,
+      `Общий консенсус: ${overall}% за; против: ${opposed}%.`,
+      conclusion,
+      "Итоговая карточка и протокол являются официальной фиксацией решения.",
+    ].join("\n\n"),
+    [
+      `Система завершила подсчёт по законопроекту №${number}.`,
+      `По проекту «${title}» зафиксировано ${overall}% за и ${opposed}% против.`,
+      conclusion,
+      "Переход к следующему вопросу возможен после сверки итоговой карточки.",
+    ].join("\n\n"),
+  ];
 }
 
-function completedSpeech(session) {
+function resultSpeech(result, bill) {
+  return resultSpeechVariants(result, bill)[0];
+}
+
+function completedSpeechVariants(session) {
   const results = session?.results || [];
   const accepted = results.filter((item) => item.status === "accepted").length;
   const rejected = results.filter((item) => item.status === "rejected").length;
   const special = results.length - accepted - rejected;
+  const summary = `Сегодня рассмотрено ${results.length} ${plural(results.length, "проект", "проекта", "проектов")}: принято — ${accepted}, отклонено — ${rejected}, завершено в особом порядке — ${special}.`;
+  const closing = `${ordinal(session?.plenary_number)} пленарный консенсус Товарищества объявляется завершённым.`;
   return [
-    "Сенаторы Товарищества. Повестка исчерпана, результаты сохранены, официальный протокол сформирован системой.",
-    `Сегодня рассмотрено ${results.length} ${plural(results.length, "проект", "проекта", "проектов")}: принято — ${accepted}, отклонено — ${rejected}, завершено в особом порядке — ${special}.`,
-    "Благодарю участников за точность позиции, соблюдение порядка и ответственность перед общим решением.",
-    `${ordinal(session?.plenary_number)} пленарный консенсус Товарищества объявляется завершённым.`,
-    "Товарищество — светлый круг. Заседание окончено.",
-  ].join("\n\n");
+    [
+      "Сенаторы Товарищества. Повестка исчерпана, результаты сохранены, официальный протокол сформирован системой.",
+      summary,
+      "Благодарю участников за точность позиции, соблюдение порядка и ответственность перед общим решением.",
+      closing,
+      "Товарищество — светлый круг. Заседание окончено.",
+    ].join("\n\n"),
+    [
+      "Работа по повестке завершена. Все решения внесены в протокол T-Mod.",
+      summary,
+      "Спасибо за собранность, аргументированность и уважение к общей процедуре.",
+      `${closing} Светлый круг остаётся в работе.`,
+    ].join("\n\n"),
+    [
+      "Итоги заседания зафиксированы, повестка закрыта.",
+      summary,
+      "Официальные материалы доступны в карточках решений и итоговом протоколе.",
+      `${closing} Благодарю всех участников.`,
+    ].join("\n\n"),
+  ];
+}
+
+function completedSpeech(session) {
+  return completedSpeechVariants(session)[0];
+}
+
+function promptSpeechVariants(prompt, data) {
+  const session = data?.session || null;
+  const schedule = data?.schedule || null;
+  const bill = session?.current_bill || null;
+  const quorum = session?.quorum || {};
+  const voting = session?.voting || {};
+  const result = session?.current_result || (session?.results || []).at(-1) || null;
+  const number = formatNumber(bill?.bill_number);
+
+  switch (prompt.stage) {
+    case "completed":
+      return completedSpeechVariants(data?.last_session || session);
+    case "scheduled": {
+      const plenary = ordinal(schedule?.plenary_number).toLowerCase();
+      const count = Number(data?.queue?.length || 0);
+      const moment = formatMoment(schedule?.scheduled_for);
+      return [
+        prompt.speech,
+        [
+          `Объявляется созыв ${plenary} пленарного консенсуса Товарищества.`,
+          `Заседание начнётся ${moment} по времени Товарищества. В повестке — ${count} ${plural(count, "проект", "проекта", "проектов")}.`,
+          "Прошу заранее сверить материалы, личный пульт и возможность присутствия.",
+        ].join("\n\n"),
+        [
+          `Товарищество готовится к ${plenary} пленарному консенсусу.`,
+          `Начало назначено на ${moment}. К рассмотрению подготовлено ${count} ${plural(count, "вопрос", "вопроса", "вопросов")}.`,
+          "До регистрации ознакомьтесь с повесткой и подтвердите участие через T-Mod.",
+        ].join("\n\n"),
+      ];
+    }
+    case "idle":
+      return [
+        prompt.speech,
+        "План следующего пленарного консенсуса ещё не опубликован. После назначения даты суфлёр автоматически подготовит повестку, приглашение и последовательность действий ведущего.",
+      ];
+    case "registration":
+      if (quorum.ready) {
+        return [
+          prompt.speech,
+          `Кворум подтверждён: ${quorum.confirmed || 0} участников. Перед переходом к повестке прошу сообщить только существенные возражения по составу и готовности.`,
+          `Состав для заседания собран — ${quorum.confirmed || 0} участников. Если процедурных замечаний нет, переходим к первому вопросу повестки.`,
+        ];
+      }
+      return [
+        prompt.speech,
+        `Переходим к подтверждению состава ${ordinal(session?.plenary_number).toLowerCase()} пленарного консенсуса. Сейчас в кворуме ${quorum.confirmed || 0} из ${quorum.invited || 0}. Прошу подтвердить участие через личный пульт T-Mod.`,
+        `Регистрация продолжается. Подтверждено ${quorum.confirmed || 0} из ${quorum.invited || 0} участников. До набора кворума повестка не открывается.`,
+      ];
+    case "presentation":
+      return billIntroductionVariants(bill);
+    case "voting":
+      return voteOpeningVariants(bill).map((opening) => `${opening}\n\nГолосование продолжается. Принято ${voting.received || 0} из ${voting.expected || 0} бюллетеней.`);
+    case "discussion_type":
+      return [
+        prompt.speech,
+        `По законопроекту №${number} поступил запрос на дискуссию. Воут временно остановлен; ранее подтверждённые позиции сохранены. Сейчас определим предмет обсуждения.`,
+        `Переходим к вопросу о дискуссии по проекту №${number}. Голосование приостановлено процедурно и возобновится только после завершения обсуждения.`,
+      ];
+    case "discussion": {
+      const kind = (session?.discussion?.type || "иная").toLowerCase();
+      return [
+        prompt.speech,
+        `Открыта ${kind} дискуссия по проекту №${number}. Прошу формулировать новые существенные доводы кратко, по существу и с отделением фактов от оценки.`,
+        `По законопроекту №${number} идёт ${kind} дискуссия. Слово предоставляется по очереди; повторённые аргументы не требуют повторного изложения.`,
+      ];
+    }
+    case "paused": {
+      const reason = cleanSpeech(session?.pause_reason) || "техническая проверка";
+      return [
+        prompt.speech,
+        `Объявлена процедурная пауза: ${reason}. Состояние проекта и все принятые системой действия сохранены. О продолжении будет объявлено отдельно.`,
+      ];
+    }
+    case "finalizing":
+      return [
+        prompt.speech,
+        `Голосование по проекту №${number} завершено. T-Mod фиксирует результат; до появления итоговой карточки не оглашаются ни проценты, ни решение.`,
+        `Идёт защищённая фиксация результата по законопроекту №${number}. Прошу дождаться итоговой карточки и не повторять команды.`,
+      ];
+    case "after_result":
+      return resultSpeechVariants(result, bill);
+    default:
+      return [prompt.speech];
+  }
+}
+
+function selectedPromptVariant(baseKey, count) {
+  const chosen = Number(scriptVariantChoices[baseKey]);
+  if (Number.isInteger(chosen) && chosen >= 0 && chosen < count) return chosen;
+  return stableVariantIndex(baseKey, count);
+}
+
+function choosePromptVariant(prompt, data) {
+  const alternatives = promptSpeechVariants(prompt, data)
+    .map((value) => String(value || "").trim())
+    .filter((value, index, all) => value && all.indexOf(value) === index);
+  const baseKey = String(prompt.key || "idle");
+  const variantIndex = selectedPromptVariant(baseKey, alternatives.length);
+  return {
+    ...prompt,
+    baseKey,
+    key: `${baseKey}:variant:${variantIndex}`,
+    speech: alternatives[variantIndex] || prompt.speech,
+    variantIndex,
+    variantCount: alternatives.length,
+  };
+}
+
+function advancePromptVariant() {
+  if (!activePrompt || activePrompt.variantCount < 2 || !state) return;
+  const next = (activePrompt.variantIndex + 1) % activePrompt.variantCount;
+  scriptVariantChoices = { ...scriptVariantChoices, [activePrompt.baseKey]: next };
+  const keys = Object.keys(scriptVariantChoices);
+  if (keys.length > 120) delete scriptVariantChoices[keys[0]];
+  writeJsonSetting(SCRIPT_VARIANT_STORAGE_KEY, scriptVariantChoices);
+  render(state);
+  showToast(`Выбран вариант ${next + 1} из ${activePrompt.variantCount}`);
 }
 
 function derivePrompt(data) {
@@ -433,8 +658,11 @@ function agendaItems(data) {
 
 function preparedBillSpeech(item) {
   const bill = detailCache.get(Number(item.bill.id))?.bill || item.bill;
-  const presentation = billIntroduction(bill);
-  const vote = voteOpening(bill);
+  const seed = `agenda:${bill?.id || bill?.bill_number || 0}`;
+  const introductions = billIntroductionVariants(bill);
+  const openings = voteOpeningVariants(bill);
+  const presentation = introductions[stableVariantIndex(`${seed}:presentation`, introductions.length)];
+  const vote = openings[stableVariantIndex(`${seed}:vote`, openings.length)];
   return `${presentation}\n\nПосле представления:\n«${vote}»`;
 }
 
@@ -731,7 +959,8 @@ function render(data) {
 
   byId("host-gate").hidden = true;
   byId("host-shell").hidden = false;
-  const prompt = derivePrompt(data);
+  const prompt = choosePromptVariant(derivePrompt(data), data);
+  activePrompt = prompt;
   const session = data.session;
   const schedule = data.schedule;
   const plenary = session?.plenary_number || schedule?.plenary_number || data.last_session?.plenary_number || 0;
@@ -754,6 +983,14 @@ function render(data) {
   text("host-live-context", prompt.context);
   text("host-live-text", prompt.speech);
   text("host-live-note", prompt.note);
+  const alternateButton = byId("host-alternate-live");
+  alternateButton.disabled = prompt.variantCount < 2;
+  alternateButton.textContent = prompt.variantCount > 1
+    ? `Другой вариант · ${prompt.variantIndex + 1}/${prompt.variantCount}`
+    : "Одна формула";
+  alternateButton.title = prompt.variantCount > 1
+    ? "Показать другую утверждённую формулировку без изменения состояния заседания"
+    : "Для этой процедурной формулы варианта нет";
   text("host-next-action", prompt.action);
   text("host-next-action-note", prompt.actionNote);
   text("host-next-speech", prompt.next);
@@ -981,6 +1218,7 @@ function applyScale(next) {
 }
 
 byId("host-copy-live").addEventListener("click", () => void copyText(byId("host-live-text").textContent));
+byId("host-alternate-live").addEventListener("click", advancePromptVariant);
 byId("host-font-down").addEventListener("click", () => applyScale(scriptScale - 0.08));
 byId("host-font-up").addEventListener("click", () => applyScale(scriptScale + 0.08));
 byId("host-auto-scroll").addEventListener("click", () => {
