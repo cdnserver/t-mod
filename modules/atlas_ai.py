@@ -56,10 +56,15 @@ _ATLAS_SEARCH_STOP_WORDS = frozenset(
         "без",
         "в",
         "во",
+        "за",
         "для",
         "и",
         "или",
         "как",
+        "какая",
+        "какие",
+        "какой",
+        "какую",
         "на",
         "о",
         "об",
@@ -70,12 +75,17 @@ _ATLAS_SEARCH_STOP_WORDS = frozenset(
         "расскажи",
         "напиши",
         "найди",
+        "назови",
         "нужно",
         "можно",
         "мне",
         "такое",
         "что",
         "это",
+        "укажи",
+        "указать",
+        "статья",
+        "статью",
     }
 )
 _ATLAS_RULE_GENERIC_TERMS = frozenset(
@@ -954,7 +964,10 @@ def _atlas_query_variants(
     if expanded != clean:
         variants.extend((expanded, *matched_expansions))
     lowered = expanded.casefold()
-    ooc_rules_question = bool(_ATLAS_OOC_RULE_SIGNAL_RE.search(lowered))
+    ooc_rules_question = bool(
+        _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered)
+        or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", lowered)
+    )
     ic_legal_question = bool(_ATLAS_LEGAL_RE.search(lowered)) and not ooc_rules_question
     # Short natural questions rarely contain the formal title of the right
     # codex. Embeddings alone are not reliable enough here: ``статья за
@@ -995,7 +1008,7 @@ def _atlas_query_variants(
         )
     if (
         not ooc_rules_question
-        and not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered)
+        and not re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", lowered)
     ):
         variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
     if ooc_rules_question or (
@@ -1048,6 +1061,25 @@ def _atlas_lexical_query_terms(
         raw_terms.extend(
             token for token in candidates if token and token not in _ATLAS_SEARCH_STOP_WORDS
         )
+    # Natural Russian queries use inflected forms while statutes use the
+    # nominative (``кражу`` / ``кража``, ``дачу`` / ``дача``). Keep a compact
+    # root beside the ordinary conservative stem. Also bridge the common
+    # colloquial wording ``убивать без причины`` to the DM definition without
+    # forcing an OOC interpretation when the user explicitly asks for the UK.
+    inflection_roots: list[str] = []
+    for token in raw_terms:
+        if len(token) >= 5:
+            root = re.sub(
+                r"(?:иями|ями|ами|ого|ему|ому|ими|ыми|иям|ием|иях|ую|юю|ая|яя|"
+                r"ое|ее|ые|ие|ов|ев|ам|ям|ах|ях|ом|ем|ой|ей|ы|и|а|я|у|ю|е|о)$",
+                "",
+                token,
+            )
+            if len(root) >= 4 and root != token:
+                inflection_roots.append(root)
+    raw_terms.extend(inflection_roots)
+    if re.search(r"\bубива\w*", expanded, re.IGNORECASE):
+        raw_terms.append("убийст")
     # Exact substrings alone miss ordinary Russian morphology (for example,
     # ``задержали`` versus ``задержание``). Rank with conservative stems and
     # retain dotted article numbers verbatim.
@@ -1845,7 +1877,7 @@ async def atlas_search(
     extract_numbered_rules = bool(
         _ATLAS_OOC_RULE_SIGNAL_RE.search(primary_query)
         or re.search(
-            r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b",
+            r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b",
             primary_query,
             re.IGNORECASE,
         )
@@ -2032,7 +2064,7 @@ async def atlas_search(
         score = float(item.get("score") or 0)
         domain = str(item.get("knowledge_domain") or "mixed")
         corpus = str(item.get("corpus_kind") or "other")
-        if re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", query_folded):
+        if re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
         elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
             score += 0.42 if corpus == "server_rule" or domain == "ooc" else -0.12 if domain == "ic" else 0
@@ -2209,7 +2241,7 @@ def _atlas_task_profile(
     elif (
         _ATLAS_LEGAL_RE.search(routed_text)
         or _ATLAS_OOC_RULE_SIGNAL_RE.search(routed_text)
-        or re.search(r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b", routed_text, re.IGNORECASE)
+        or re.search(r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b", routed_text, re.IGNORECASE)
     ):
         intent = "legal_analysis"
     elif _ATLAS_SUMMARY_RE.search(routed_text):

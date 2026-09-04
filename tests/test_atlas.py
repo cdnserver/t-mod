@@ -1755,6 +1755,53 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("6.2", result[0]["text"])
         self.assertIn("Убийство", result[0]["text"])
 
+    async def test_thematic_legal_search_matches_inflected_offence(self) -> None:
+        source = {
+            "id": 9_312,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "8.1 (F/R) Кража чужого имущества. Наказание: до 30 месяцев.\n"
+                "8.2 (F/R) Грабеж с применением насилия. Наказание: до 40 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9312/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Какая статья за кражу?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "article:8.1")
+        self.assertIn("Кража", result[0]["text"])
+
+    async def test_colloquial_killing_question_finds_dm_rule(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Можно ли убивать без причины по правилам сервера?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("DM", result[0]["text"])
+
     async def test_search_returns_exact_article_instead_of_nearby_reference(self) -> None:
         source = {
             "id": 94,
