@@ -1080,6 +1080,12 @@ def _atlas_lexical_query_terms(
     raw_terms.extend(inflection_roots)
     if re.search(r"\bубива\w*", expanded, re.IGNORECASE):
         raw_terms.append("убийст")
+        if (
+            re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", expanded)
+            or re.search(r"\bбез\s+(?:ic[- ]?)?причин\w*\b", expanded)
+            or _ATLAS_OOC_RULE_SIGNAL_RE.search(expanded)
+        ):
+            raw_terms.append("dm")
     # Exact substrings alone miss ordinary Russian morphology (for example,
     # ``задержали`` versus ``задержание``). Rank with conservative stems and
     # retain dotted article numbers verbatim.
@@ -1185,6 +1191,8 @@ def _atlas_numbered_rule_candidates(
                 folded,
                 count=1,
             )
+            opening = clause_body[:320]
+            opening_hits = sum(term in opening for term in meaningful_hits)
             direct_short_signal = any(
                 term in _ATLAS_RULE_SHORT_SIGNALS
                 and re.match(rf"{re.escape(term)}\b", clause_body, re.IGNORECASE)
@@ -1202,6 +1210,7 @@ def _atlas_numbered_rule_candidates(
                 + min(0.6, phrase_hits * 0.3)
                 + (0.55 if short_signal else 0.0)
                 + min(1.4, title_hits * 0.55)
+                + min(0.9, opening_hits * 0.45)
                 + (1.35 if direct_short_signal else 0.0)
             )
             ranked.append((score, clause_index, number, section))
