@@ -1068,14 +1068,14 @@ def _atlas_lexical_query_terms(
     # forcing an OOC interpretation when the user explicitly asks for the UK.
     inflection_roots: list[str] = []
     for token in raw_terms:
-        if len(token) >= 5:
+        if len(token) >= 4:
             root = re.sub(
                 r"(?:иями|ями|ами|ого|ему|ому|ими|ыми|иям|ием|иях|ую|юю|ая|яя|"
                 r"ое|ее|ые|ие|ов|ев|ам|ям|ах|ях|ом|ем|ой|ей|ы|и|а|я|у|ю|е|о)$",
                 "",
                 token,
             )
-            if len(root) >= 4 and root != token:
+            if len(root) >= 3 and root != token:
                 inflection_roots.append(root)
     raw_terms.extend(inflection_roots)
     if re.search(r"\bубива\w*", expanded, re.IGNORECASE):
@@ -2064,6 +2064,7 @@ async def atlas_search(
         score = float(item.get("score") or 0)
         domain = str(item.get("knowledge_domain") or "mixed")
         corpus = str(item.get("corpus_kind") or "other")
+        title_folded = str(item.get("title") or "").casefold()
         if re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
         elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
@@ -2076,6 +2077,19 @@ async def atlas_search(
             score += 0.2 if corpus in {"charter", "department_order"} else 0
         if re.search(r"порядок|процедур|задержан|арест|обыск", query_folded):
             score += 0.12 if corpus in {"law", "procedure"} else 0
+        if (
+            (
+                _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded)
+                or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", query_folded)
+            )
+            and not re.search(
+                r"\b(?:банк|ограб|похищ|остров|кайо|форт|захват|теракт|постав|"
+                r"цех|дилер|семейн|лидер)\w*",
+                query_folded,
+            )
+            and "основные правил" in title_folded
+        ):
+            score += 1.15
         return score
 
     for item in sorted(candidates.values(), key=relevance_score, reverse=True):

@@ -1784,6 +1784,34 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "article:8.1")
         self.assertIn("Кража", result[0]["text"])
 
+    async def test_thematic_legal_search_distinguishes_giving_from_receiving_bribe(self) -> None:
+        source = {
+            "id": 9_313,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "15.4 (F/R) Получение взятки должностным лицом. Наказание: до 50 месяцев.\n"
+                "15.5 (F/R) Дача взятки должностному лицу. Наказание: до 40 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9313/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Какая статья за дачу взятки?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "article:15.5")
+
     async def test_colloquial_killing_question_finds_dm_rule(self) -> None:
         source = self._project_rules_source()
         with patch(
