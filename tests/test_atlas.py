@@ -17,6 +17,7 @@ from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
     _answer_text,
+    _atlas_answer_is_retrieval_refusal,
     _atlas_corpus_abbreviations,
     _atlas_merge_source_fragments,
     _atlas_pinpoint_labels,
@@ -1428,6 +1429,25 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(any("уголовный кодекс" in item.casefold() for item in variants))
 
+    def test_query_variants_route_colloquial_crime_to_criminal_code(self) -> None:
+        variants = _atlas_query_variants("Назови статью за убийство")
+
+        self.assertTrue(
+            any("уголовный кодекс штата san andreas" in item.casefold() for item in variants)
+        )
+
+    def test_retrieval_refusal_detector_ignores_a_substantive_no_prohibition_answer(self) -> None:
+        self.assertTrue(
+            _atlas_answer_is_retrieval_refusal(
+                "В текущей библиотеке точная статья не найдена, поэтому назвать её не могу."
+            )
+        )
+        self.assertFalse(
+            _atlas_answer_is_retrieval_refusal(
+                "В статье 6.2 нет отдельного запрета на оказание первой помощи."
+            )
+        )
+
     def test_ic_legal_query_does_not_receive_an_ooc_rescue_variant(self) -> None:
         variants = _atlas_query_variants(
             "Меня задержали сотрудники LSPD, какие у меня права?"
@@ -1693,6 +1713,46 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Глава 16", result[0]["text"])
         self.assertIn("Статья 16.1", result[0]["text"])
         self.assertNotIn("Глава 17", result[0]["text"])
+
+    async def test_search_routes_short_murder_question_to_criminal_code(self) -> None:
+        criminal_code = {
+            "id": 9_310,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "Глава 6. Преступления против жизни.\n"
+                "6.2 (F/R) Убийство, то есть умышленное причинение смерти другому человеку. "
+                "Приоритет розыска — 4. Наказание: до 40 месяцев лишения свободы.\n"
+                "6.3 Тяжкое убийство двух или более лиц."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9310/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        adjacent_law = {
+            **criminal_code,
+            "id": 9_311,
+            "title": "Закон о деятельности государственных служащих",
+            "content_text": "Статья 3. Общие полномочия. Наказание определяется законом.",
+            "source_url": "https://forum.majestic-rp.ru/threads/law.9311/",
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[adjacent_law, criminal_code],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Назови статью за убийство", expanded=True)
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["source_id"], criminal_code["id"])
+        self.assertIn("6.2", result[0]["text"])
+        self.assertIn("Убийство", result[0]["text"])
 
     async def test_search_returns_exact_article_instead_of_nearby_reference(self) -> None:
         source = {

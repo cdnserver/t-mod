@@ -956,6 +956,43 @@ def _atlas_query_variants(
     lowered = expanded.casefold()
     ooc_rules_question = bool(_ATLAS_OOC_RULE_SIGNAL_RE.search(lowered))
     ic_legal_question = bool(_ATLAS_LEGAL_RE.search(lowered)) and not ooc_rules_question
+    # Short natural questions rarely contain the formal title of the right
+    # codex. Embeddings alone are not reliable enough here: ``статья за
+    # убийство`` used to retrieve neighbouring laws while the complete
+    # Criminal Code was already present in the canonical store. Add narrow
+    # document routes before the generic IC/OOC lanes so both lexical and
+    # semantic retrieval inspect the governing primary source.
+    if not ooc_rules_question and re.search(
+        r"\b(?:убийств|убил|убить|похищ|краж|ограб|разбо|террор|взятк|"
+        r"наркот|оружи|преступлен|розыск|лишени\w*\s+свобод)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nУголовный Кодекс штата San Andreas: применимая статья, состав и наказание"
+        )
+    if not ooc_rules_question and re.search(
+        r"\b(?:задерж|арест|обыск|допрос|адвокат|ордер|мер[аы]\s+пресечен|"
+        r"процессуальн)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПроцессуальный Кодекс штата San Andreas: основание, порядок и сроки"
+        )
+    if re.search(r"\b(?:дорожн|пдд|парковк|скорост|движени|водител)\w*", lowered):
+        variants.append(
+            f"{clean}\nДорожный Кодекс штата San Andreas: применимая статья и ответственность"
+        )
+    if re.search(
+        r"\bправил\w*\s+(?:государственн\w*\s+структур|гос\.?\s*структур|"
+        r"госорганизац)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПравила государственных структур: точный пункт и полное условие"
+        )
     if (
         not ooc_rules_question
         and not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered)
@@ -970,7 +1007,7 @@ def _atlas_query_variants(
         variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
     if re.search(r"организац|фракц|департамент|полиц|правительств|устав|ранг", lowered):
         variants.append(f"{clean}\nустав организации, внутренний регламент и зона полномочий")
-    return list(dict.fromkeys(item for item in variants if item))[:6]
+    return list(dict.fromkeys(item for item in variants if item))[:8]
 
 
 def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
@@ -1636,7 +1673,21 @@ async def atlas_search(
             if item.strip()
         )
     )[:6]
-    repository_terms = _atlas_repository_query_terms("\n".join(raw_queries))
+    # Deterministic document routes must participate in the canonical DB
+    # lookup too. Previously they were created only after that lookup and sent
+    # solely to Qdrant, which made an indexed law appear absent whenever a
+    # short user phrase did not resemble the document title.
+    repository_queries = list(raw_queries)
+    if expanded:
+        for raw_query in raw_queries:
+            for item in _atlas_query_variants(raw_query):
+                if item and item not in repository_queries:
+                    repository_queries.append(item)
+                if len(repository_queries) >= 12:
+                    break
+            if len(repository_queries) >= 12:
+                break
+    repository_terms = _atlas_repository_query_terms("\n".join(repository_queries))
     try:
         canonical_sources = await asyncio.to_thread(
             atlas_storage.atlas_searchable_knowledge_sources,
@@ -1654,6 +1705,16 @@ async def atlas_search(
             if _atlas_source_domain(source) in permitted_domains
         ]
     corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
+    retrieval_queries: list[str] = list(raw_queries)
+    if expanded:
+        for raw_query in raw_queries:
+            for item in _atlas_query_variants(raw_query, corpus_abbreviations):
+                if item and item not in retrieval_queries:
+                    retrieval_queries.append(item)
+                if len(retrieval_queries) >= 12:
+                    break
+            if len(retrieval_queries) >= 12:
+                break
     structured_candidates: list[dict[str, Any]] = []
     rule_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
@@ -1667,7 +1728,7 @@ async def atlas_search(
         )
         or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(primary_query)
     )
-    for query_index, raw_query in enumerate(raw_queries):
+    for query_index, raw_query in enumerate(retrieval_queries):
         for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
@@ -1676,7 +1737,11 @@ async def atlas_search(
         # that extractor for an ordinary IC situation such as "меня задержали":
         # generic words like "сотрудник" and "действия" otherwise promote an
         # unrelated event rule above the Process Code.
-        if extract_numbered_rules:
+        # Generic rescue variants contain words such as ``информация`` and
+        # ``сервер`` that occur in many clauses. They improve document-level
+        # retrieval but must not outrank the user's own wording inside a
+        # numbered ruleset.
+        if extract_numbered_rules and query_index < len(raw_queries):
             for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
@@ -1688,16 +1753,7 @@ async def atlas_search(
     # Search every independently planned question before spending the small
     # embedding budget on generic IC/OOC expansions. Previously the first raw
     # query could consume all eight lanes, silently dropping later checks.
-    variants: list[str] = list(raw_queries)
-    if expanded:
-        for raw_query in raw_queries:
-            for item in _atlas_query_variants(raw_query, corpus_abbreviations):
-                if item and item not in variants:
-                    variants.append(item)
-                if len(variants) >= 8:
-                    break
-            if len(variants) >= 8:
-                break
+    variants = retrieval_queries[:8]
     access_scopes = [
         "platform",
         f"project:{clean_project}",
@@ -2271,7 +2327,10 @@ def _should_build_intelligence_brief(
     if task.depth == "deep":
         return True
     if task.intent in {"legal_analysis", "procedural_advice"}:
-        return task.depth != "quick"
+        # A short legal question is not a cheap question. It is exactly where
+        # colloquial wording needs a planning pass to identify the governing
+        # document before retrieval.
+        return True
     expanded = task.retrieval_query
     for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
         expanded = re.sub(
@@ -2881,13 +2940,13 @@ async def _prepare_atlas_answer(
         "Для обычного приветствия внешние источники не требуются."
         if task_profile.intent == "social"
         else (
-            "По текущему игровому правовому вопросу точный подтверждённый фрагмент не найден. "
-            "Не выдумывай номер нормы, но всё равно дай полезный анализ ситуации, безопасный "
-            "порядок действий и один действительно необходимый уточняющий вопрос. Не превращай "
-            "ответ в длинный отказ и не утверждай, что всей информации нет в Atlas."
+            "Продолжай разбор по доступному игровому праву. Не выдумывай номер нормы: установи "
+            "правовую область, дай безопасный порядок действий и задай только один вопрос, если "
+            "без него действительно нельзя различить две применимые нормы. Не отвечай отчётом "
+            "о состоянии библиотеки или поиска."
             if task_profile.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
             else
-            "Внешний источник для этого запроса не требуется или не найден. Используй общие "
+            "Внешний источник для этого запроса не требуется. Используй общие "
             "знания, рассуждение и творческие способности; не выдавай неподтверждённые игровые "
             "нормы за действующие и не отвечай шаблонным отказом о библиотеке."
         )
@@ -2954,7 +3013,9 @@ async def _prepare_atlas_answer(
         "приоритет над общим редакторским контрактом выше. "
         "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
         "Если вопрос касается статьи, нарушения, задержания, обыска, наказания или полномочия, "
-        "в первой же фразе назови точную статью или прямо скажи, что точная статья не найдена. "
+        "в первой же фразе назови наиболее применимую точную статью. Если формулировка неоднозначна, "
+        "назови основную норму и одно короткое условие, "
+        "которое может изменить квалификацию. Не сообщай пользователю состояние поиска. "
         "Оставь только применимое сейчас: действие, одно критичное условие и точную норму. "
         "Не используй таблицы, повтор вопроса, приветствие и "
         "длинные оговорки. Если нужно уточнение, сначала дай безопасное действие, затем задай один "
@@ -3009,8 +3070,9 @@ async def _prepare_atlas_answer(
                 "ссылку рядом с ним, а не одну общую ссылку в конце ответа. "
                 "Не переноси названия, сокращения и структуру кодексов из российского или иного "
                 "реального права в Majestic RP. Используй только фактические названия документов "
-                "из библиотеки Atlas; если введённого пользователем кодекса там нет, прямо уточни "
-                "это и предложи существующий документ, не выдумывая соответствие. "
+                "из библиотеки Atlas; если пользователь использовал привычное, но неофициальное "
+                "название кодекса, сначала сопоставь его с фактическим названием документа и дай "
+                "ответ по этому документу, не выдумывая соответствие. "
                 "Строго различай IC-законодательство игрового мира и OOC-правила сервера: не подменяй "
                 "одно другим. Устав действует внутри соответствующей организации; судебная практика "
                 "помогает толковать применение, но не становится законом автоматически. "
@@ -3031,9 +3093,9 @@ async def _prepare_atlas_answer(
                 "Не копируй одну и ту же композицию ответа из сообщения в сообщение. Заголовки, списки, "
                 "таблицы и блоки «вывод/основания/шаги» используй только когда они действительно делают "
                 "этот конкретный ответ понятнее. Не добавляй дежурное предложение помощи в конце. "
-                "Если нужной нормы нет среди найденных фрагментов, говори именно о пробеле текущей "
-                "библиотеки, а не о секретности документа или отсутствии нормы вообще. Не придумывай "
-                "причины недоступности. Если запрошена конкретная глава или статья и она присутствует "
+                "Не заменяй ответ сообщением о состоянии библиотеки, индекса или поиска. Если вопрос "
+                "допускает несколько квалификаций, перечисли применимые варианты и условие выбора между "
+                "ними. Если запрошена конкретная глава или статья и она присутствует "
                 "в источниках, приведи её текст полностью и не заменяй его общим пересказом. "
                 "Фрагмент с опорным местом «пункт N.N» — это прямой текст OOC-правила: если он "
                 "отвечает на вопрос, назови этот пункт и не утверждай, что прямой нормы не найдено. "
@@ -3287,6 +3349,83 @@ def _truncated_output_retry_payload(
         messages.insert(max(0, len(messages) - 1), instruction)
     payload["messages"] = messages
     return payload
+
+
+_ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
+    r"(?:"
+    r"(?:не\s+(?:могу|удалось)\s+(?:найти|назвать|определить|подтвердить))"
+    r"|(?:в\s+(?:текущей\s+)?(?:библиотеке|базе|источниках|материалах)[^.\n]{0,100}"
+    r"(?:нет|не\s+найден|отсутств))"
+    r"|(?:(?:нет|не\s+найден|отсутств)[^.\n]{0,100}"
+    r"(?:информац|данн|текст|стать|норм|источник|материал))"
+    r"|(?:точн\w*\s+(?:фрагмент|норм|стать)[^.\n]{0,80}не\s+найден)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _atlas_answer_is_retrieval_refusal(answer: str) -> bool:
+    """Recognize an answer that reports search state instead of doing the job."""
+
+    return bool(_ATLAS_RETRIEVAL_REFUSAL_RE.search(str(answer or "")))
+
+
+def _retrieval_refusal_retry_payload(
+    prepared: _AtlasAnswerRequest,
+    previous_answer: str,
+) -> dict[str, Any]:
+    """Force one grounded reread when a provider overlooks retrieved evidence."""
+
+    payload = dict(prepared.payload)
+    try:
+        current_limit = int(payload.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        current_limit = 0
+    payload["max_tokens"] = max(current_limit, 1800)
+    messages = list(payload.get("messages") or [])
+    messages.extend(
+        (
+            {"role": "assistant", "content": str(previous_answer or "")[:20_000]},
+            {
+                "role": "user",
+                "content": (
+                    "Предыдущий вариант ошибочно описал состояние поиска вместо ответа. "
+                    "Перечитай все уже приложенные первичные источники и ответь заново по существу. "
+                    "Выбери регулирующий документ по смыслу вопроса, найди точную формулировку внутри "
+                    "его фрагментов, назови статью или пункт и условие применения. Если возможны две "
+                    "квалификации, дай обе и чётко разведи их условия. Не пиши, что информации, нормы, "
+                    "статьи, текста или источника нет; не обсуждай библиотеку, индекс и поиск. Ничего "
+                    "не выдумывай и ставь ссылку [N] рядом с каждым правовым выводом."
+                ),
+            },
+        )
+    )
+    payload["messages"] = messages
+    return payload
+
+
+async def _repair_retrieval_refusal(
+    prepared: _AtlasAnswerRequest,
+    answer: str,
+    used_route: AtlasModelRoute,
+) -> tuple[str, AtlasModelRoute]:
+    """Do not expose a false 'nothing found' after evidence was retrieved."""
+
+    clean = str(answer or "").strip()
+    if (
+        prepared.intent not in {"exact_lookup", "legal_analysis", "procedural_advice"}
+        or not prepared.sources
+        or not _atlas_answer_is_retrieval_refusal(clean)
+    ):
+        return clean, used_route
+    retry_body, retry_route = await _completion_with_fallback(
+        prepared,
+        _retrieval_refusal_retry_payload(prepared, clean),
+        timeout=120,
+        initial_route=used_route,
+    )
+    repaired = _answer_text(retry_body).strip()
+    return (repaired or clean), retry_route
 
 
 def _completion_payload_for_route(
@@ -3633,6 +3772,11 @@ async def atlas_answer(
             prepared,
             initial_route=used_route,
         )
+    answer, used_route = await _repair_retrieval_refusal(
+        prepared,
+        answer,
+        used_route,
+    )
     return _atlas_answer_result(
         replace(
             prepared,
@@ -3779,6 +3923,18 @@ async def atlas_answer_stream(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             exact_answer,
         )
+    # Legal text is buffered until the grounded-answer guard has inspected it.
+    # This deliberately trades first-token latency for correctness: a false
+    # "nothing found" must never be streamed to the user and then retracted.
+    defer_legal_output = (
+        prepared.latency_mode != "overlay"
+        and prepared.intent in {"legal_analysis", "procedural_advice"}
+    )
+
+    async def emit_stream_delta(delta: str) -> None:
+        if not defer_legal_output:
+            await on_delta(delta)
+
     answer_parts: list[str] = []
     stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
     used_route = prepared.model_route
@@ -3789,7 +3945,7 @@ async def atlas_answer_stream(
             parts, fallback_lines, stream_failure, truncated = await _stream_completion_route(
                 prepared,
                 route,
-                on_delta=on_delta,
+                on_delta=emit_stream_delta,
                 answer_limit=stream_answer_limit,
             )
         except AtlasAIError as exc:
@@ -3809,16 +3965,16 @@ async def atlas_answer_stream(
             full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
             if full_text:
                 parts.append(full_text[:stream_answer_limit])
-                await on_delta(parts[0])
+                await emit_stream_delta(parts[0])
         if parts:
             if truncated and prepared.latency_mode != "overlay":
                 partial = "".join(parts)
-                await on_delta("\n\n")
+                await emit_stream_delta("\n\n")
                 continuation, _unused_lines, continuation_failure, _still_truncated = (
                     await _stream_completion_route(
                         prepared,
                         route,
-                        on_delta=on_delta,
+                        on_delta=emit_stream_delta,
                         answer_limit=max(1, stream_answer_limit - len(partial) - 2),
                         payload=_truncated_output_retry_payload(
                             prepared,
@@ -3847,10 +4003,18 @@ async def atlas_answer_stream(
             initial_route=used_route,
         )
         answer_parts.append(fallback[:stream_answer_limit])
-        await on_delta(answer_parts[0])
+        await emit_stream_delta(answer_parts[0])
+    final_answer = "".join(answer_parts)
+    if defer_legal_output:
+        final_answer, used_route = await _repair_retrieval_refusal(
+            prepared,
+            final_answer,
+            used_route,
+        )
+        await on_delta(final_answer)
     result = _atlas_answer_result(
         replace(prepared, model_route=used_route, fallback_model_route=None),
-        "".join(answer_parts),
+        final_answer,
     )
     if prepared.research_plan:
         await _atlas_progress(
