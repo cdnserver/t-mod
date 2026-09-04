@@ -1200,6 +1200,128 @@ def _atlas_numbered_rule_candidates(
     return candidates
 
 
+_ATLAS_THEMATIC_LEGAL_GENERIC_TERMS = _ATLAS_RULE_GENERIC_TERMS | frozenset(
+    {
+        "назови",
+        "назват",
+        "статью",
+        "статья",
+        "кодекс",
+        "штата",
+        "andreas",
+        "примени",
+        "состав",
+        "ответст",
+    }
+)
+
+
+def _atlas_thematic_legal_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Extract the actual article for a colloquial offence description.
+
+    Exact lookup handles ``статья 17.3``. This companion handles the inverse
+    question — ``какая статья за убийство`` — by ranking complete numbered
+    articles instead of arbitrary fixed-size chunks or cross-references.
+    """
+
+    lowered = str(query or "").casefold()
+    if _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered) or not (
+        _ATLAS_LEGAL_RE.search(lowered)
+        or re.search(
+            r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
+            r"преступлен|задерж|арест|обыск)\w*",
+            lowered,
+            re.IGNORECASE,
+        )
+    ):
+        return []
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
+    meaningful_terms = [
+        term for term in terms if term not in _ATLAS_THEMATIC_LEGAL_GENERIC_TERMS
+    ]
+    if not meaningful_terms and not phrases:
+        return []
+    criminal_route = bool(
+        re.search(
+            r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
+            r"преступлен|розыск|лишени\w*\s+свобод)\w*",
+            lowered,
+            re.IGNORECASE,
+        )
+    )
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        domain = str(taxonomy.get("domain") or "mixed").strip().lower()
+        corpus = str(taxonomy.get("corpus_kind") or "other").strip().lower()
+        title = str(source.get("title") or "Источник")
+        title_folded = title.casefold()
+        if domain == "ooc" or not (
+            corpus in {"law", "procedure", "department_order"}
+            or "кодекс" in title_folded
+            or "закон" in title_folded
+        ):
+            continue
+        if criminal_route and not (
+            "уголовн" in title_folded and "кодекс" in title_folded
+        ):
+            continue
+        ranked: list[tuple[float, int, str, str]] = []
+        for article_index, (number, section) in enumerate(
+            _atlas_numbered_rule_sections(str(source.get("content_text") or ""))
+        ):
+            folded = section.casefold()
+            term_hits = [term for term in meaningful_terms if term in folded]
+            phrase_hits = [phrase for phrase in phrases if phrase.casefold() in folded]
+            if not term_hits and not phrase_hits:
+                continue
+            opening = re.sub(
+                r"^\s*\d+(?:\.\s*\d+){1,3}\s*[.)\s:—-]*(?:\([a-z/]+\)\s*)?",
+                "",
+                folded,
+                count=1,
+                flags=re.IGNORECASE,
+            )[:260]
+            opening_hits = sum(term in opening for term in meaningful_terms)
+            score = (
+                8.8
+                + min(1.2, len(term_hits) * 0.38)
+                + min(0.5, len(phrase_hits) * 0.25)
+                + min(0.8, opening_hits * 0.4)
+                + (0.45 if criminal_route else 0.0)
+            )
+            ranked.append((score, article_index, number, section))
+        for score, article_index, number, section in sorted(
+            ranked,
+            key=lambda item: (-item[0], item[1]),
+        )[:3]:
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "ic"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "law"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "server"),
+                    "title": title,
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": section[:7000],
+                    "score": round(score, 4),
+                    "chunk": 30_000 + article_index,
+                    "structured": True,
+                    "reference": f"article:{number}",
+                }
+            )
+    return candidates
+
+
 def _atlas_lexical_candidates(
     query: str,
     sources: list[dict[str, Any]],
@@ -1717,6 +1839,7 @@ async def atlas_search(
                 break
     structured_candidates: list[dict[str, Any]] = []
     rule_candidates: list[dict[str, Any]] = []
+    thematic_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
     primary_query = raw_queries[0] if raw_queries else ""
     extract_numbered_rules = bool(
@@ -1746,6 +1869,11 @@ async def atlas_search(
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
                 rule_candidates.append(candidate)
+        if query_index < len(raw_queries):
+            for item in _atlas_thematic_legal_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
+                thematic_candidates.append(candidate)
         for item in _atlas_lexical_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.025, 4)
@@ -1789,7 +1917,7 @@ async def atlas_search(
         # accelerator, not a single point of failure: when embeddings or
         # Qdrant are temporarily unavailable, keep answering from exact and
         # abbreviation-expanded matches already found in the saved corpus.
-        if lexical_candidates or structured_candidates or rule_candidates:
+        if lexical_candidates or structured_candidates or rule_candidates or thematic_candidates:
             bodies = []
         elif exc.code == "upstream_not_found":
             raise AtlasAIError(
@@ -1878,7 +2006,12 @@ async def atlas_search(
         if key not in candidates or float(candidates[key]["score"]) < score:
             candidates[key] = item
 
-    for item in [*structured_candidates, *rule_candidates, *lexical_candidates]:
+    for item in [
+        *structured_candidates,
+        *rule_candidates,
+        *thematic_candidates,
+        *lexical_candidates,
+    ]:
         key = (int(item["source_id"]), int(item.get("chunk") or 0))
         if key not in candidates or float(candidates[key]["score"]) < float(item["score"]):
             candidates[key] = item

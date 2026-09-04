@@ -1751,6 +1751,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         self.assertEqual(result[0]["source_id"], criminal_code["id"])
+        self.assertEqual(result[0]["reference"], "article:6.2")
         self.assertIn("6.2", result[0]["text"])
         self.assertIn("Убийство", result[0]["text"])
 
