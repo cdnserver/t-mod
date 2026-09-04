@@ -2119,9 +2119,9 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
             "Приведи найденную норму полностью; после неё допускается не более 120 слов пояснения."
         )
     elif re.search(r"\b(?:кратко|коротко|в\s+двух\s+словах|без\s+подробностей)\b", clean, re.IGNORECASE):
-        length = "Уложись примерно в 80–160 слов."
+        length = "Цель — 80–130 слов, жёсткий предел — 160 слов; обязательно закончи последнюю фразу."
     elif task.depth == "quick":
-        length = "Обычно достаточно 120–220 слов."
+        length = "Цель — 120–180 слов, жёсткий предел — 220 слов; обязательно закончи последнюю фразу."
     elif task.depth == "deep":
         length = "Ориентир — 600–1000 слов, только если каждая часть добавляет новую пользу."
     elif task.intent == "drafting":
@@ -3479,6 +3479,22 @@ def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     return ""
 
 
+def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Keep greetings instant and free from irrelevant server/interface prose."""
+
+    if prepared.intent != "social":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    content = str(messages[-1].get("content") or "").casefold() if messages else ""
+    if re.search(r"\b(?:спасибо|благодарю)\b", content):
+        return "Пожалуйста!"
+    if re.search(r"\b(?:до\s+свидания|пока)\b", content):
+        return "До встречи!"
+    if "как дела" in content:
+        return "Всё отлично. Что сегодня разберём?"
+    return "Привет! Чем помочь?"
+
+
 def _local_exact_route() -> AtlasModelRoute:
     return AtlasModelRoute(
         provider="tmod",
@@ -3486,6 +3502,16 @@ def _local_exact_route() -> AtlasModelRoute:
         endpoint="",
         api_key="",
         release=f"index-v{_ATLAS_INDEX_VERSION}",
+    )
+
+
+def _local_social_route() -> AtlasModelRoute:
+    return AtlasModelRoute(
+        provider="tmod",
+        model="atlas-dialog",
+        endpoint="",
+        api_key="",
+        release="dialog-v1",
     )
 
 
@@ -3565,6 +3591,12 @@ async def atlas_answer(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
+    social_answer = _deterministic_social_reply(prepared)
+    if social_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
+            social_answer,
+        )
     exact_answer = _deterministic_exact_lookup(prepared)
     if exact_answer:
         return _atlas_answer_result(
@@ -3724,6 +3756,13 @@ async def atlas_answer_stream(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
+    social_answer = _deterministic_social_reply(prepared)
+    if social_answer:
+        await on_delta(social_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
+            social_answer,
+        )
     exact_answer = _deterministic_exact_lookup(prepared)
     if exact_answer:
         await on_delta(exact_answer)

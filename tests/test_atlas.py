@@ -1153,6 +1153,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "Не переноси требования к доказательствам",
             atlas_resolve_agent("atlas-complaints").instruction,
         )
+        self.assertIn(
+            "Любые не названные пользователем",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
 
@@ -2990,7 +2994,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         # the larger provider budget leaves room for hidden reasoning so the
         # last sentence is not cut off.
         self.assertLessEqual(payload["max_tokens"], 1100)
-        self.assertIn("120–220 слов", system)
+        self.assertIn("жёсткий предел — 220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
 
     async def test_non_stream_answer_retries_a_truncated_provider_response(self) -> None:
@@ -3107,8 +3111,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             )
 
         search.assert_not_awaited()
-        system = request.await_args.kwargs["payload"]["messages"][0]["content"]
-        self.assertIn("Обычное общение", system)
+        request.assert_not_awaited()
+        self.assertEqual(result["answer"], "Привет! Чем помочь?")
+        self.assertEqual(result["model_provider"], "tmod")
+        self.assertEqual(result["model"], "atlas-dialog")
         self.assertFalse(result["screen_context_used"])
         self.assertEqual(result["intent"], "social")
 

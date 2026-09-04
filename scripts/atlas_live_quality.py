@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ class LiveCase:
     agent_id: str = "atlas-tvr-a"
     required_terms: tuple[str, ...] = ()
     forbidden_terms: tuple[str, ...] = ()
+    forbidden_patterns: tuple[str, ...] = ()
     max_words: int = 0
 
 
@@ -57,7 +59,7 @@ CASES = (
         "Что такое DM и какое наказание предусмотрено правилами проекта?",
         "Основные правила проекта",
         required_terms=("DM",),
-        max_words=260,
+        max_words=220,
     ),
     LiveCase(
         "ooc-software",
@@ -71,7 +73,7 @@ CASES = (
         "Кратко перечисли основные правила ограбления банков.",
         "Правила ограбления банков",
         required_terms=("12:00", "01:00"),
-        max_words=220,
+        max_words=180,
     ),
     LiveCase(
         "ic-detention",
@@ -100,13 +102,18 @@ CASES = (
         agent_id="atlas-complaints",
         required_terms=("DM",),
         forbidden_terms=("20 секунд", "храните оригинал видео минимум 48 часов"),
+        forbidden_patterns=(
+            r"\b\d{2}\.\d{2}\.\d{4}\b",
+            r"\b\d{1,2}:\d{2}\b",
+            r"\b[^\s]+\.(?:mp4|mov|png|jpe?g)\b",
+        ),
         max_words=480,
     ),
     LiveCase(
         "social-greeting",
         "Привет!",
         required_terms=("привет",),
-        forbidden_terms=("интерфейс", "библиотек", "режим работы"),
+        forbidden_terms=("интерфейс", "библиотек", "режим работы", "LSPD", "phoenix"),
         max_words=30,
     ),
 )
@@ -199,6 +206,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         "required_terms": all(_contains(answer, term) for term in case.required_terms),
                         "forbidden_terms": not any(
                             _contains(answer, term) for term in case.forbidden_terms
+                        ),
+                        "forbidden_patterns": not any(
+                            re.search(pattern, answer, re.IGNORECASE)
+                            for pattern in case.forbidden_patterns
                         ),
                         "word_limit": not case.max_words or len(answer.split()) <= case.max_words,
                         "complete": _looks_complete(answer),
