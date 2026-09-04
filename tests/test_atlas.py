@@ -1986,6 +1986,52 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GunBan 8 часов", result[0]["text"])
         self.assertIn("Исключение: IC диалог", result[0]["text"])
 
+    async def test_ooc_rule_ranking_prefers_definition_over_event_exception(self) -> None:
+        main_rules = self._project_rules_source()
+        event_rules = {
+            **self._project_rules_source(),
+            "id": 9_072,
+            "title": "Правила нападения на Форт-Занкудо",
+            "source_url": "https://forum.majestic-rp.ru/threads/fort.9000/",
+            "content_text": "1.2 На мероприятии действуют общие правила. Исключение: PG, DM.",
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[event_rules, main_rules],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что такое DM и какое наказание предусмотрено правилами проекта?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], main_rules["id"])
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+
+    async def test_ooc_rule_parser_splits_spaced_xenforo_numbers(self) -> None:
+        source = {
+            **self._project_rules_source(),
+            "content_text": (
+                "5.1 DM — убийство без IC причины и IC диалога. | WARN.\n"
+                "5. 2 Запрещено стороннее ПО; этот пункт не относится к DM.\n"
+                "5. 3 Запрещено использовать ошибки игры."
+            ),
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Что такое DM?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertNotIn("стороннее ПО", result[0]["text"])
+
     async def test_ooc_rules_search_keeps_chat_and_relatives_answers_pinpointed(self) -> None:
         source = self._project_rules_source()
         checks = (

@@ -103,7 +103,10 @@ _ATLAS_RULE_SHORT_SIGNALS = frozenset(
     {"dm", "db", "pg", "mg", "rk", "nlr", "sk", "tk", "ooc", "ic", "warn", "mute", "ban"}
 )
 _ATLAS_NUMBERED_RULE_RE = re.compile(
-    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.)\s*)?(\d+(?:\.\d+){1,3})"
+    # XenForo exports sometimes render ``1. 3`` instead of ``1.3``. Accept
+    # both forms so one parsed clause cannot accidentally swallow the rest of
+    # a multi-page ruleset and inherit unrelated keywords from later rules.
+    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.)\s*)?(\d+(?:\.\s*\d+){1,3})"
     r"(?![\d.])(?=[.)\s:—-]|$)"
 )
 _ATLAS_EXPLICIT_RULE_REFERENCE_RE = re.compile(
@@ -1042,13 +1045,14 @@ def _atlas_numbered_rule_sections(content: str) -> list[tuple[str, str]]:
     matches = list(_ATLAS_NUMBERED_RULE_RE.finditer(clean))
     result: list[tuple[str, str]] = []
     for index, match in enumerate(matches):
-        number = str(match.group(1))
+        number = re.sub(r"\s+", "", str(match.group(1)))
         end = len(clean)
         nested_prefix = f"{number}."
         for following in matches[index + 1 :]:
             # A request for 2.2 needs the full clause, including 2.2.1, but
             # must stop before siblings such as 2.3 and lookalikes such as 2.20.
-            if str(following.group(1)).startswith(nested_prefix):
+            following_number = re.sub(r"\s+", "", str(following.group(1)))
+            if following_number.startswith(nested_prefix):
                 continue
             end = following.start()
             break
@@ -1076,12 +1080,14 @@ def _atlas_numbered_rule_candidates(
     for source in sources:
         if not _atlas_is_numbered_rule_source(source):
             continue
+        title_folded = str(source.get("title") or "").casefold()
         metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
         taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
         ranked: list[tuple[float, int, str, str]] = []
         for clause_index, (number, section) in enumerate(
             _atlas_numbered_rule_sections(str(source.get("content_text") or ""))
         ):
+            number = re.sub(r"\s+", "", number)
             folded = section.casefold()
             matched_terms = [term for term in terms if term in folded]
             meaningful_hits = [
@@ -1090,6 +1096,22 @@ def _atlas_numbered_rule_candidates(
             phrase_hits = sum(phrase.casefold() in folded for phrase in phrases)
             explicit = number in explicit_references
             short_signal = any(term in _ATLAS_RULE_SHORT_SIGNALS for term in meaningful_hits)
+            title_hits = sum(
+                term in title_folded
+                for term in terms
+                if term not in _ATLAS_RULE_GENERIC_TERMS
+            )
+            clause_body = re.sub(
+                r"^\s*\d+(?:\.\s*\d+){1,3}\s*[.)\s:—-]*",
+                "",
+                folded,
+                count=1,
+            )
+            direct_short_signal = any(
+                term in _ATLAS_RULE_SHORT_SIGNALS
+                and re.match(rf"{re.escape(term)}\b", clause_body, re.IGNORECASE)
+                for term in terms
+            )
             if not explicit and not phrase_hits and not meaningful_hits:
                 continue
             if not explicit and not phrase_hits and len(meaningful_hits) < 2 and not short_signal:
@@ -1101,6 +1123,8 @@ def _atlas_numbered_rule_candidates(
                 + min(1.2, len(meaningful_hits) * 0.42)
                 + min(0.6, phrase_hits * 0.3)
                 + (0.55 if short_signal else 0.0)
+                + min(1.4, title_hits * 0.55)
+                + (1.35 if direct_short_signal else 0.0)
             )
             ranked.append((score, clause_index, number, section))
         for score, clause_index, number, section in sorted(
