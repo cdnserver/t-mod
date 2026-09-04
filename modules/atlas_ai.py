@@ -1869,7 +1869,7 @@ async def atlas_search(
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
                 rule_candidates.append(candidate)
-        if query_index < len(raw_queries):
+        if query_index == 0:
             for item in _atlas_thematic_legal_candidates(raw_query, canonical_sources):
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
@@ -2222,7 +2222,11 @@ def _atlas_task_profile(
     if mode == "aristotle" or _ATLAS_DEEP_RE.search(clean) or len(clean) > 900:
         depth = "deep"
     elif intent in {"social", "exact_lookup", "summary"} or _ATLAS_SUMMARY_RE.search(clean) or (
-        len(clean) < 120 and re.match(r"^(?:что|кто|где|когда|можно\s+ли)\b", lowered)
+        len(clean) < 120
+        and re.match(
+            r"^(?:что|кто|где|когда|можно\s+ли|назови|укажи|какая|какой|какую)\b",
+            lowered,
+        )
     ):
         depth = "quick"
     else:
@@ -3491,7 +3495,10 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"(?:нет|не\s+найден|отсутств))"
     r"|(?:(?:нет|не\s+найден|отсутств)[^.\n]{0,100}"
     r"(?:информац|данн|текст|стать|норм|источник|материал))"
+    r"|(?:(?:информац|данн|текст|стать|норм|источник|материал)[^.\n]{0,100}"
+    r"(?:нет|не\s+найден|отсутств))"
     r"|(?:точн\w*\s+(?:фрагмент|норм|стать)[^.\n]{0,80}не\s+найден)"
+    r"|(?:назват\w*\s+(?:точн\w*\s+)?стать\w*[^.\n]{0,80}нельзя)"
     r")",
     re.IGNORECASE,
 )
