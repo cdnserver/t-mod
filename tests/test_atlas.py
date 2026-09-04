@@ -1157,6 +1157,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "Любые не названные пользователем",
             atlas_resolve_agent("atlas-complaints").instruction,
         )
+        self.assertIn(
+            "Не требуй конкретное наказание",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
 
