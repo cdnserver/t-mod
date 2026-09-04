@@ -2094,6 +2094,8 @@ def _atlas_task_profile(
     reasoning_effort = (
         "high"
         if depth == "deep"
+        else "medium"
+        if intent == "drafting"
         else "low"
         if depth == "quick"
         else "medium"

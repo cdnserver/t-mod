@@ -1170,6 +1170,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         profile = _atlas_task_profile(question, mode="balanced")
 
         self.assertEqual(profile.intent, "drafting")
+        self.assertEqual(profile.reasoning_effort, "medium")
         self.assertIn("жёсткий предел — 160 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
