@@ -27,6 +27,7 @@ from modules.atlas_ai import (
     _chunks,
     _compact_overlay_answer,
     _recent_user_dialog_context,
+    _response_delivery_contract,
     atlas_ai_config,
     atlas_answer,
     atlas_answer_stream,
@@ -1163,6 +1164,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
+
+    def test_inflected_short_request_gets_the_strict_short_contract(self) -> None:
+        question = "Определи нарушение и составь краткую жалобу."
+        profile = _atlas_task_profile(question, mode="balanced")
+
+        self.assertEqual(profile.intent, "drafting")
+        self.assertIn("жёсткий предел — 160 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(

@@ -112,6 +112,7 @@ CASES = (
             r"\b\d{2}\.\d{2}\.\d{4}\b",
             r"\b\d{1,2}:\d{2}\b",
             r"\b[^\s]+\.(?:mp4|mov|png|jpe?g)\b",
+            r"(?im)^\s*текст\s+жалобы\s*:\s*\n\s*\d+\.",
         ),
         max_words=320,
     ),
@@ -159,8 +160,15 @@ def _looks_complete(value: str) -> bool:
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     organization_id = _organization_id(args.project, args.organization_id)
     health = await atlas_ai_health(force=True)
+    requested_cases = {str(item) for item in getattr(args, "case", []) if str(item)}
+    selected_cases = tuple(
+        case for case in CASES if not requested_cases or case.case_id in requested_cases
+    )
+    missing_cases = requested_cases - {case.case_id for case in selected_cases}
+    if missing_cases:
+        raise RuntimeError(f"atlas_live_quality_case_missing:{','.join(sorted(missing_cases))}")
     reports: list[dict[str, Any]] = []
-    for case in CASES:
+    for case in selected_cases:
         started = time.monotonic()
         report: dict[str, Any] = {
             "case_id": case.case_id,
@@ -258,6 +266,12 @@ def main() -> int:
     parser.add_argument("--faction", default="lspd")
     parser.add_argument("--organization-id", type=int, default=0)
     parser.add_argument("--include-model", action="store_true")
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="Run only the named case id; may be specified more than once.",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     report = asyncio.run(run(args))
