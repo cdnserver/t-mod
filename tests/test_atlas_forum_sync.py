@@ -47,6 +47,23 @@ def sync_config() -> AtlasForumSyncConfig:
 
 
 class AtlasForumParserTests(unittest.TestCase):
+    def test_legacy_global_law_defaults_are_repaired_to_server_scope(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "ATLAS_FORUM_ROOT_URL": ROOT_URL,
+                "ATLAS_FORUM_VISIBILITY_SCOPE": "global",
+                "ATLAS_FORUM_FEDERATION_SCOPE": "project",
+                "ATLAS_FORUM_KNOWLEDGE_DOMAIN": "ic",
+                "ATLAS_FORUM_CORPUS_KIND": "law",
+            },
+            clear=False,
+        ):
+            config = AtlasForumSyncConfig.from_env()
+
+        self.assertEqual(config.visibility_scope, "server")
+        self.assertEqual(config.federation_scope, "server")
+
     def test_hidden_login_overlay_does_not_mask_authenticated_listing(self) -> None:
         page = """
         <html><body>
@@ -600,6 +617,65 @@ class AtlasForumRepositoryTests(unittest.TestCase):
 
         self.assertEqual(reseeded["status"], "disabled")
         self.assertEqual(atlas_repository.atlas_forum_due_feeds(77), [])
+
+    def test_namespaced_feed_disables_legacy_duplicate_writer(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Администратор")
+        now = "2026-09-04T00:00:00+00:00"
+        with storage.connect() as con:
+            con.execute(
+                """
+                INSERT INTO atlas_forum_feeds(
+                    guild_id, organization_id, project_code, feed_key, root_url,
+                    server_code, faction_code, visibility_scope, federation_scope,
+                    interval_seconds, status, last_stats_json, created_at, updated_at
+                ) VALUES(77, ?, 'majestic-rp', 'majestic-phoenix-laws', ?,
+                         'phoenix-15', 'lspd', 'server', 'server', 43200,
+                         'ok', '{}', ?, ?)
+                """,
+                (int(dashboard["organization"]["id"]), ROOT_URL, now, now),
+            )
+            con.commit()
+
+        canonical = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="majestic-phoenix-laws",
+            root_url=ROOT_URL,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            visibility_scope="server",
+            federation_scope="server",
+            knowledge_domain="ic",
+            corpus_kind="law",
+        )
+        with storage.connect() as con:
+            legacy = con.execute(
+                "SELECT status, last_error FROM atlas_forum_feeds WHERE feed_key = ?",
+                ("majestic-phoenix-laws",),
+            ).fetchone()
+
+        self.assertEqual(canonical["feed_key"], "majestic-rp:majestic-phoenix-laws")
+        self.assertEqual(legacy["status"], "disabled")
+        self.assertEqual(legacy["last_error"], "superseded_by_namespaced_feed")
+
+    def test_runner_seeds_server_laws_and_shared_project_rules(self) -> None:
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=_FakeBrowser(None),
+            index_callback=AsyncMock(),
+        )
+
+        laws = asyncio.run(runner._ensure_default_feed())
+        rules = asyncio.run(runner._ensure_project_rules_feed())
+
+        self.assertEqual(laws["federation_scope"], "server")
+        self.assertEqual(laws["knowledge_domain"], "ic")
+        self.assertEqual(laws["corpus_kind"], "law")
+        self.assertIsNotNone(rules)
+        self.assertEqual(rules["federation_scope"], "project")
+        self.assertEqual(rules["knowledge_domain"], "ooc")
+        self.assertEqual(rules["corpus_kind"], "server_rule")
 
     def test_due_feed_claim_recovers_missing_or_stale_lease_once(self) -> None:
         feed = atlas_repository.atlas_ensure_forum_feed(

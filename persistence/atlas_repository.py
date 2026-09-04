@@ -1867,6 +1867,23 @@ def atlas_ensure_forum_feed(
             "SELECT * FROM atlas_forum_feeds WHERE guild_id = ? AND feed_key = ?",
             (int(guild_id), clean_key),
         ).fetchone()
+        # Versions before project namespaces stored the same feed under the
+        # raw key. Leaving that row active makes two schedulers alternately
+        # overwrite each source with contradictory scope/taxonomy. Preserve
+        # the row for audit history, but make the canonical namespaced feed
+        # the only writer for the same root URL.
+        if clean_key != requested_key:
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET status = 'disabled',
+                    last_error = 'superseded_by_namespaced_feed',
+                    updated_at = ?
+                WHERE guild_id = ? AND feed_key = ? AND root_url = ?
+                  AND id != ?
+                """,
+                (now, int(guild_id), requested_key, clean_url, int(row["id"])),
+            )
         con.commit()
     return _row(row)
 

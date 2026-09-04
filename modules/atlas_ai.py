@@ -556,7 +556,12 @@ def _adaptive_output_token_limit(
     if mode == "aristotle" or task.depth == "deep":
         return configured
     if task.depth == "quick":
-        return min(configured, 700)
+        return min(configured, 520)
+    if task.intent == "drafting":
+        # A ready-to-send complaint or document still needs structure, but the
+        # old 1000-token allowance routinely produced several screens of
+        # duplicated advice after the actual draft.
+        return min(configured, 720)
     return min(configured, 1000)
 
 
@@ -1624,10 +1629,19 @@ async def atlas_search(
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
             structured_candidates.append(candidate)
-        for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
-            candidate = dict(item)
-            candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
-            rule_candidates.append(candidate)
+        # A numbered OOC rule is deliberately very highly ranked.  Do not run
+        # that extractor for an ordinary IC situation such as "меня задержали":
+        # generic words like "сотрудник" and "действия" otherwise promote an
+        # unrelated event rule above the Process Code.
+        if (
+            _ATLAS_OOC_RULE_SIGNAL_RE.search(raw_query)
+            or re.search(r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b", raw_query, re.IGNORECASE)
+            or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(raw_query)
+        ):
+            for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
+                rule_candidates.append(candidate)
         for item in _atlas_lexical_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.025, 4)
@@ -2068,7 +2082,10 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
     elif task.depth == "deep":
         length = "Ориентир — 600–1000 слов, только если каждая часть добавляет новую пользу."
     elif task.intent == "drafting":
-        length = "Готовый текст важнее комментариев; без явного требования обычно достаточно 350–700 слов."
+        length = (
+            "Готовый текст важнее комментариев; без явного требования уложись примерно в "
+            "220–420 слов и не добавляй после него повторный разбор тех же норм."
+        )
     else:
         length = "Ориентир — 220–450 слов; не расширяй ответ ради солидности."
 
@@ -3344,6 +3361,42 @@ def _compact_overlay_answer(
     return prefix.rstrip(" ,;:-") + "…"
 
 
+def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
+    """Return an extracted article/chapter verbatim without a paid rewrite.
+
+    Structured retrieval has already located and bounded the requested legal
+    section. Sending that text through a generative model adds latency and can
+    silently omit a clause, so exact lookups should use the canonical source
+    directly. Supporting sources remain available in the citation panel.
+    """
+
+    if prepared.intent != "exact_lookup":
+        return ""
+    for index, source in enumerate(prepared.sources, 1):
+        if not source.get("structured"):
+            continue
+        reference = str(source.get("reference") or "").strip()
+        text = str(source.get("text") or "").strip()
+        if not reference or len(text) < 20:
+            continue
+        label = next(
+            (str(item) for item in source.get("pinpoints") or [] if str(item).strip()),
+            reference.replace(":", " ", 1),
+        )
+        return f"{text}\n\n[{index}, {label}]"
+    return ""
+
+
+def _local_exact_route() -> AtlasModelRoute:
+    return AtlasModelRoute(
+        provider="tmod",
+        model="atlas-exact-retrieval",
+        endpoint="",
+        api_key="",
+        release=f"index-v{_ATLAS_INDEX_VERSION}",
+    )
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = str(answer or "").strip()
     if not clean_answer:
@@ -3420,6 +3473,12 @@ async def atlas_answer(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
+    exact_answer = _deterministic_exact_lookup(prepared)
+    if exact_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            exact_answer,
+        )
     body, used_route = await _completion_with_fallback(
         prepared,
         prepared.payload,
@@ -3556,6 +3615,13 @@ async def atlas_answer_stream(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
+    exact_answer = _deterministic_exact_lookup(prepared)
+    if exact_answer:
+        await on_delta(exact_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            exact_answer,
+        )
     answer_parts: list[str] = []
     stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
     used_route = prepared.model_route

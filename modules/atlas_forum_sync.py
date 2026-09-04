@@ -90,10 +90,10 @@ class AtlasForumSyncConfig:
     challenge_wait_seconds: int
     max_listing_pages: int
     max_threads: int
-    # The default Atlas feed is the Majestic legislative library.  Laws are
-    # shared between Majestic servers, so its canonical scope is the project,
-    # not one Phoenix faction. Other feeds can override this in the database.
-    federation_scope: str = "project"
+    # IC laws differ between Majestic servers.  The default legislative feed
+    # is therefore server-scoped; project scope is reserved for common OOC
+    # rules. Other feeds can still override this explicitly in the database.
+    federation_scope: str = "server"
     knowledge_domain: str | None = "ic"
     corpus_kind: str | None = "law"
     scheduler_poll_seconds: int = 60
@@ -128,6 +128,32 @@ class AtlasForumSyncConfig:
                 origin = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
                 if origin not in configured_origins:
                     configured_origins.append(origin)
+        visibility_scope = str(
+            os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "server")
+        ).strip()
+        federation_scope = str(
+            os.getenv("ATLAS_FORUM_FEDERATION_SCOPE", "server")
+        ).strip()
+        knowledge_domain = str(
+            os.getenv("ATLAS_FORUM_KNOWLEDGE_DOMAIN", "ic")
+        ).strip() or None
+        corpus_kind = str(
+            os.getenv("ATLAS_FORUM_CORPUS_KIND", "law")
+        ).strip() or None
+        # Existing installations copied the retired global/project defaults
+        # into their persistent .env. Transparently repair that exact legacy
+        # combination for the Phoenix legislative root; deliberate custom
+        # feeds remain untouched.
+        if (
+            root_url.rstrip("/")
+            == "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213"
+            and knowledge_domain == "ic"
+            and corpus_kind == "law"
+            and visibility_scope == "global"
+            and federation_scope == "project"
+        ):
+            visibility_scope = "server"
+            federation_scope = "server"
         return cls(
             enabled=enabled in {"1", "true", "yes", "on"},
             selenium_url=str(
@@ -146,7 +172,7 @@ class AtlasForumSyncConfig:
             feed_key=str(os.getenv("ATLAS_FORUM_FEED_KEY", "majestic-phoenix-laws")).strip(),
             server_code=str(os.getenv("ATLAS_FORUM_SERVER_CODE", "phoenix-15")).strip(),
             faction_code=str(os.getenv("ATLAS_FORUM_FACTION_CODE", "lspd")).strip(),
-            visibility_scope=str(os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "global")).strip(),
+            visibility_scope=visibility_scope,
             interval_seconds=max(
                 3600,
                 int(os.getenv("ATLAS_FORUM_SYNC_INTERVAL_SECONDS", "43200")),
@@ -171,17 +197,9 @@ class AtlasForumSyncConfig:
                 1,
                 min(500, int(os.getenv("ATLAS_FORUM_MAX_THREADS", "200"))),
             ),
-            federation_scope=str(
-                os.getenv("ATLAS_FORUM_FEDERATION_SCOPE", "project")
-            ).strip(),
-            knowledge_domain=str(
-                os.getenv("ATLAS_FORUM_KNOWLEDGE_DOMAIN", "ic")
-            ).strip()
-            or None,
-            corpus_kind=str(
-                os.getenv("ATLAS_FORUM_CORPUS_KIND", "law")
-            ).strip()
-            or None,
+            federation_scope=federation_scope,
+            knowledge_domain=knowledge_domain,
+            corpus_kind=corpus_kind,
             scheduler_poll_seconds=max(
                 15,
                 min(900, int(os.getenv("ATLAS_FORUM_SCHEDULER_POLL_SECONDS", "60"))),
@@ -1183,6 +1201,25 @@ class AtlasForumSyncRunner:
             interval_seconds=self.config.interval_seconds,
         )
 
+    async def _ensure_project_rules_feed(self) -> dict[str, Any] | None:
+        """Keep Majestic's shared OOC rules on their own renewable feed."""
+
+        if "forum.majestic-rp.ru" not in self._origin(self.config.root_url):
+            return None
+        return await asyncio.to_thread(
+            storage.atlas_ensure_forum_feed,
+            self.guild_id,
+            feed_key="majestic-general-rules",
+            root_url="https://forum.majestic-rp.ru/forums/general-server-rules/",
+            server_code=self.config.server_code,
+            faction_code=self.config.faction_code,
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+            interval_seconds=self.config.interval_seconds,
+        )
+
     async def sync_once(
         self,
         feed: dict[str, Any] | None = None,
@@ -1410,6 +1447,7 @@ class AtlasForumSyncRunner:
             # feed record immediately, but do not overwrite its next_sync_at.
             try:
                 await self._ensure_default_feed()
+                await self._ensure_project_rules_feed()
             except Exception as exc:
                 await self._technical_log(
                     title="Не удалось подготовить ленту Atlas",
@@ -1429,6 +1467,7 @@ class AtlasForumSyncRunner:
             while not self._closed:
                 try:
                     default_feed = await self._ensure_default_feed()
+                    await self._ensure_project_rules_feed()
                     due = await asyncio.to_thread(
                         storage.atlas_forum_due_feeds,
                         self.guild_id,

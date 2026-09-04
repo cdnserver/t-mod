@@ -1149,6 +1149,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(atlas_resolve_agent("atlas-claims").knowledge_domains, ("ic", "mixed"))
         self.assertEqual(atlas_resolve_agent("atlas-complaints").knowledge_domains, ("ooc", "mixed"))
         self.assertEqual(atlas_resolve_agent("atlas-complaints").training_lane, "ooc-complaints")
+        self.assertIn(
+            "Не переноси требования к доказательствам",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
 
@@ -1371,6 +1375,24 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((rules["domain"], rules["corpus_kind"]), ("ooc", "server_rule"))
         self.assertEqual(rules["authority_scope"], "project")
+
+    def test_taxonomy_uses_document_title_before_incidental_body_terms(self) -> None:
+        criminal_code = atlas_classify_knowledge(
+            title="Уголовный Кодекс штата San Andreas",
+            content=(
+                "Суд рассматривает материалы дела. Прокурор может издать распоряжение, "
+                "а участник вправе подать исковое заявление."
+            ),
+            source_kind="forum",
+        )
+        constitution = atlas_classify_knowledge(
+            title="Конституция Штата San Andreas",
+            content="Судебная практика и исковые заявления применяются с учетом Конституции.",
+            source_kind="forum",
+        )
+
+        self.assertEqual((criminal_code["domain"], criminal_code["corpus_kind"]), ("ic", "law"))
+        self.assertEqual((constitution["domain"], constitution["corpus_kind"]), ("ic", "law"))
 
     def test_aristotle_plan_adapts_to_legal_case(self) -> None:
         plan = atlas_research_plan("Составь позицию по иску и судебной практике")
@@ -1782,6 +1804,99 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result[0]["source_id"], 962)
         self.assertIn("задержания", result[0]["text"])
+
+    async def test_ic_detention_query_does_not_promote_unrelated_ooc_clauses(self) -> None:
+        procedural = {
+            "id": 963,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Процессуальный Кодекс штата San Andreas",
+            "content_text": (
+                "Глава 4. Задержание. Сотрудник обязан назвать основание задержания и "
+                "разъяснить задержанному право на защиту."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/process.63/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        event_rules = {
+            "id": 964,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "global",
+            "federation_scope": "project",
+            "title": "Правила нападения на военную базу",
+            "content_text": (
+                "1.1 Сотрудники могут участвовать в событии.\n"
+                "1.2 Действия участников должны соответствовать правилам мероприятия."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/event.64/",
+            "metadata": {"taxonomy": {"domain": "ooc", "corpus_kind": "server_rule"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[procedural, event_rules],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(
+                77,
+                "Меня задержали сотрудники LSPD, какие у меня права и что делать?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 963)
+        self.assertFalse(any(item.get("structured") for item in result if item["source_id"] == 964))
+
+    async def test_exact_lookup_returns_canonical_text_without_model_rewrite(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 965,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "authority_scope": "state",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "url": "https://forum.majestic-rp.ru/threads/uk.65/",
+            "text": "Глава 16. Преступления против правосудия.\n16.1 Точная норма.",
+            "score": 10.0,
+            "structured": True,
+            "reference": "chapter:16",
+            "pinpoints": ["глава 16"],
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch("modules.atlas_ai._json_request", AsyncMock()) as provider:
+            result = await atlas_answer(77, "Напиши полностью главу 16 УК")
+
+        provider.assert_not_awaited()
+        self.assertIn("16.1 Точная норма", result["answer"])
+        self.assertIn("[1, глава 16]", result["answer"])
+        self.assertEqual(result["model_provider"], "tmod")
+        self.assertEqual(result["citation_health"]["status"], "ok")
 
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
