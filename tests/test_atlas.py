@@ -1411,6 +1411,14 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(any("уголовный кодекс" in item.casefold() for item in variants))
 
+    def test_ic_legal_query_does_not_receive_an_ooc_rescue_variant(self) -> None:
+        variants = _atlas_query_variants(
+            "Меня задержали сотрудники LSPD, какие у меня права?"
+        )
+
+        self.assertTrue(any("IC законодательство" in item for item in variants))
+        self.assertFalse(any("OOC правила" in item for item in variants))
+
     def test_corpus_abbreviations_follow_actual_atlas_documents(self) -> None:
         aliases = _atlas_corpus_abbreviations(
             [
@@ -1493,6 +1501,21 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "legal_analysis")
         self.assertEqual(profile.depth, "quick")
+
+    def test_concise_modifier_does_not_replace_legal_or_procedural_intent(self) -> None:
+        detention = _atlas_task_profile(
+            "Меня задержали сотрудники LSPD. Кратко: какие у меня права и что делать?",
+            mode="balanced",
+        )
+        prosecutor = _atlas_task_profile(
+            "Кратко объясни полномочия Генерального прокурора.",
+            mode="balanced",
+        )
+
+        self.assertEqual(detention.intent, "procedural_advice")
+        self.assertEqual(detention.depth, "quick")
+        self.assertEqual(prosecutor.intent, "legal_analysis")
+        self.assertEqual(prosecutor.depth, "quick")
 
     def test_plain_greeting_stays_social_instead_of_describing_the_interface(self) -> None:
         profile = _atlas_task_profile("Привет!", mode="balanced")
@@ -2481,6 +2504,66 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["model"], "test/model")
         self.assertEqual(result["model_provider"], "openrouter")
 
+    async def test_partial_stream_continues_after_provider_token_limit(self) -> None:
+        requests: list[dict] = []
+
+        async def completion(request: web.Request) -> web.StreamResponse:
+            body = await request.json()
+            requests.append(body)
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            if len(requests) == 1:
+                await response.write(
+                    'data: {"choices":[{"delta":{"content":"Начало ответа"}}]}\n\n'.encode()
+                )
+                await response.write(
+                    'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'.encode()
+                )
+            else:
+                await response.write(
+                    'data: {"choices":[{"delta":{"content":" и завершение."}}]}\n\n'.encode()
+                )
+                await response.write(
+                    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'.encode()
+                )
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        chunks: list[str] = []
+
+        async def receive(text: str) -> None:
+            chunks.append(text)
+
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+            ):
+                result = await atlas_answer_stream(77, "Дай полный ответ", on_delta=receive)
+        finally:
+            await server.close()
+
+        self.assertEqual(result["answer"], "Начало ответа\n\n и завершение.")
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1]["reasoning"]["effort"], "minimal")
+        self.assertEqual(requests[1]["messages"][-2]["content"], "Начало ответа")
+        self.assertIn("Продолжи ровно с места обрыва", requests[1]["messages"][-1]["content"])
+
     async def test_empty_stream_is_retried_once_as_visible_completion(self) -> None:
         requests: list[dict] = []
 
@@ -2903,9 +2986,49 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         payload = request.await_args.kwargs["payload"]
         system = payload["messages"][0]["content"]
-        self.assertLessEqual(payload["max_tokens"], 700)
+        # The visible answer remains compact through the editorial contract;
+        # the larger provider budget leaves room for hidden reasoning so the
+        # last sentence is not cut off.
+        self.assertLessEqual(payload["max_tokens"], 1100)
         self.assertIn("120–220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
+
+    async def test_non_stream_answer_retries_a_truncated_provider_response(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        request = AsyncMock(
+            side_effect=[
+                {
+                    "choices": [
+                        {"message": {"content": "Оборванный ответ в"}, "finish_reason": "length"}
+                    ]
+                },
+                {
+                    "choices": [
+                        {"message": {"content": "Короткий завершённый ответ."}, "finish_reason": "stop"}
+                    ]
+                },
+            ]
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+        ), patch("modules.atlas_ai._json_request", request):
+            result = await atlas_answer(77, "Кратко ответь на вопрос")
+
+        self.assertEqual(result["answer"], "Короткий завершённый ответ.")
+        self.assertEqual(request.await_count, 2)
+        retry_payload = request.await_args_list[1].kwargs["payload"]
+        self.assertGreaterEqual(retry_payload["max_tokens"], 1800)
+        self.assertIn("без оборванных предложений", retry_payload["messages"][-2]["content"])
 
     async def test_overlay_answer_skips_planners_and_uses_compact_field_contract(self) -> None:
         config = AtlasAIConfig(

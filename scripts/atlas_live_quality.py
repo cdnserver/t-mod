@@ -77,15 +77,20 @@ CASES = (
         "ic-detention",
         "Меня задержали сотрудники LSPD. Кратко: какие у меня права и что делать по шагам?",
         "Процессуальный Кодекс",
-        required_terms=("задерж",),
-        forbidden_terms=("в библиотеке нет отдельной статьи",),
+        required_terms=("задерж", "прав"),
+        forbidden_terms=(
+            "в библиотеке нет",
+            "нет явного IC-кодекса",
+            "точная статья не найдена",
+        ),
         max_words=280,
     ),
     LiveCase(
         "ic-prosecutor",
         "Кратко объясни полномочия Генерального прокурора.",
         "О деятельности офиса Генерального прокурора",
-        required_terms=("прокурор",),
+        required_terms=("прокурор", "полномоч"),
+        forbidden_terms=("в библиотеке Atlas нет", "нужная IC-норма отсутствует"),
         max_words=260,
     ),
     LiveCase(
@@ -126,6 +131,16 @@ def _source_titles(items: list[dict[str, Any]]) -> list[str]:
 
 def _contains(value: str, expected: str) -> bool:
     return expected.casefold() in value.casefold()
+
+
+def _looks_complete(value: str) -> bool:
+    clean = str(value or "").rstrip()
+    if not clean:
+        return False
+    # Provider token exhaustion used to leave visible answers ending in
+    # fragments such as ``...увеличивается в``. A finished citation marker is
+    # also a valid ending for deterministic exact retrieval.
+    return clean[-1] in ".!?…)]}»\"”'"
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -186,6 +201,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             _contains(answer, term) for term in case.forbidden_terms
                         ),
                         "word_limit": not case.max_words or len(answer.split()) <= case.max_words,
+                        "complete": _looks_complete(answer),
                         "scope": (
                             str(result.get("project_code") or "") == args.project
                             and str(result.get("server_code") or "") == args.server

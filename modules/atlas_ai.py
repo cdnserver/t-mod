@@ -559,12 +559,17 @@ def _adaptive_output_token_limit(
     if mode == "aristotle" or task.depth == "deep":
         return configured
     if task.depth == "quick":
-        return min(configured, 520)
+        # Reasoning-capable models count hidden reasoning against this budget.
+        # A 520-token cap routinely left only 20–90 visible Russian words and
+        # cut the final sentence in half even though the editorial contract
+        # requested a concise answer. The contract controls length; this is a
+        # completion safety margin, not a target.
+        return min(configured, 1100)
     if task.intent == "drafting":
         # A ready-to-send complaint or document still needs structure, but the
         # old 1000-token allowance routinely produced several screens of
         # duplicated advice after the actual draft.
-        return min(configured, 720)
+        return min(configured, 1400)
     return min(configured, 1000)
 
 
@@ -950,12 +955,16 @@ def _atlas_query_variants(
         variants.extend((expanded, *matched_expansions))
     lowered = expanded.casefold()
     ooc_rules_question = bool(_ATLAS_OOC_RULE_SIGNAL_RE.search(lowered))
+    ic_legal_question = bool(_ATLAS_LEGAL_RE.search(lowered)) and not ooc_rules_question
     if (
         not ooc_rules_question
         and not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered)
     ):
         variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
-    if ooc_rules_question or not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
+    if ooc_rules_question or (
+        not ic_legal_question
+        and not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered)
+    ):
         variants.append(f"{clean}\nOOC правила сервера и требования проекта")
     if re.search(r"суд|иск|жалоб|прокур|адвокат|дел[аоу]", lowered):
         variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
@@ -1648,6 +1657,16 @@ async def atlas_search(
     structured_candidates: list[dict[str, Any]] = []
     rule_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
+    primary_query = raw_queries[0] if raw_queries else ""
+    extract_numbered_rules = bool(
+        _ATLAS_OOC_RULE_SIGNAL_RE.search(primary_query)
+        or re.search(
+            r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b",
+            primary_query,
+            re.IGNORECASE,
+        )
+        or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(primary_query)
+    )
     for query_index, raw_query in enumerate(raw_queries):
         for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
             candidate = dict(item)
@@ -1657,11 +1676,7 @@ async def atlas_search(
         # that extractor for an ordinary IC situation such as "меня задержали":
         # generic words like "сотрудник" and "действия" otherwise promote an
         # unrelated event rule above the Process Code.
-        if (
-            _ATLAS_OOC_RULE_SIGNAL_RE.search(raw_query)
-            or re.search(r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b", raw_query, re.IGNORECASE)
-            or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(raw_query)
-        ):
+        if extract_numbered_rules:
             for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
@@ -1996,16 +2011,20 @@ def _atlas_task_profile(
         intent = "social"
     elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
-    elif _ATLAS_SUMMARY_RE.search(routed_text):
-        intent = "summary"
     elif _CREATIVE_REQUEST_RE.search(routed_text):
         intent = "drafting"
     elif _ATLAS_BRAINSTORM_RE.search(routed_text):
         intent = "brainstorm"
     elif _ATLAS_PROCEDURE_RE.search(routed_text):
         intent = "procedural_advice"
-    elif _ATLAS_LEGAL_RE.search(routed_text):
+    elif (
+        _ATLAS_LEGAL_RE.search(routed_text)
+        or _ATLAS_OOC_RULE_SIGNAL_RE.search(routed_text)
+        or re.search(r"\bправил(?:о|а|у|е|ом|ы|ами|ах)\b", routed_text, re.IGNORECASE)
+    ):
         intent = "legal_analysis"
+    elif _ATLAS_SUMMARY_RE.search(routed_text):
+        intent = "summary"
     elif is_followup:
         intent = "followup"
     else:
@@ -2013,7 +2032,7 @@ def _atlas_task_profile(
 
     if mode == "aristotle" or _ATLAS_DEEP_RE.search(clean) or len(clean) > 900:
         depth = "deep"
-    elif intent in {"social", "exact_lookup", "summary"} or (
+    elif intent in {"social", "exact_lookup", "summary"} or _ATLAS_SUMMARY_RE.search(clean) or (
         len(clean) < 120 and re.match(r"^(?:что|кто|где|когда|можно\s+ли)\b", lowered)
     ):
         depth = "quick"
@@ -3167,6 +3186,12 @@ def _answer_text(body: dict[str, Any], *, streamed: bool = False) -> str:
     return _content_text(selected.get("text"))
 
 
+def _completion_finish_reason(body: dict[str, Any]) -> str:
+    choices = body.get("choices")
+    selected = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    return str(selected.get("finish_reason") or "").strip().lower()
+
+
 def _completion_error(body: dict[str, Any]) -> AtlasAIError | None:
     choices = body.get("choices")
     selected = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
@@ -3209,6 +3234,49 @@ def _empty_output_retry_payload(prepared: _AtlasAnswerRequest) -> dict[str, Any]
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, dict):
         payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
+    return payload
+
+
+def _truncated_output_retry_payload(
+    prepared: _AtlasAnswerRequest,
+    *,
+    partial_answer: str = "",
+) -> dict[str, Any]:
+    """Give a cut-off completion enough room without encouraging longer prose."""
+
+    payload = dict(prepared.payload)
+    try:
+        current_limit = int(payload.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        current_limit = 0
+    payload["max_tokens"] = min(4000, max(1800, current_limit * 2))
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
+    messages = list(payload.get("messages") or [])
+    if partial_answer:
+        messages.extend(
+            (
+                {"role": "assistant", "content": partial_answer[-24_000:]},
+                {
+                    "role": "user",
+                    "content": (
+                        "Продолжи ровно с места обрыва, не повторяя уже написанное. "
+                        "Заверши ответ кратко и обязательно закончи последнее предложение."
+                    ),
+                },
+            )
+        )
+    else:
+        instruction = {
+            "role": "system",
+            "content": (
+                "Предыдущая генерация исчерпала технический лимит. Дай тот же ответ заново, "
+                "но компактнее, целиком и без оборванных предложений."
+            ),
+        }
+        messages.insert(max(0, len(messages) - 1), instruction)
+    payload["messages"] = messages
     return payload
 
 
@@ -3509,6 +3577,16 @@ async def atlas_answer(
         timeout=90,
     )
     answer = _answer_text(body).strip()
+    if answer and _completion_finish_reason(body) == "length":
+        retry_body, used_route = await _completion_with_fallback(
+            prepared,
+            _truncated_output_retry_payload(prepared),
+            timeout=90,
+            initial_route=used_route,
+        )
+        retry_answer = _answer_text(retry_body).strip()
+        if retry_answer:
+            answer = retry_answer
     if not answer:
         answer, used_route = await _retry_empty_completion(
             prepared,
@@ -3530,7 +3608,8 @@ async def _stream_completion_route(
     *,
     on_delta: Callable[[str], Awaitable[None]],
     answer_limit: int,
-) -> tuple[list[str], list[str], AtlasAIError | None]:
+    payload: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str], AtlasAIError | None, bool]:
     """Read one SSE response without mixing output from different models."""
 
     timeout = aiohttp.ClientTimeout(total=180, connect=5, sock_read=90)
@@ -3538,12 +3617,16 @@ async def _stream_completion_route(
     answer_length = 0
     fallback_lines: list[str] = []
     stream_failure: AtlasAIError | None = None
+    truncated = False
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 route.endpoint,
                 headers=route.headers(),
-                json={**_completion_payload_for_route(prepared.payload, route), "stream": True},
+                json={
+                    **_completion_payload_for_route(payload or prepared.payload, route),
+                    "stream": True,
+                },
             ) as response:
                 if response.status >= 400:
                     raw = await response.text()
@@ -3582,6 +3665,8 @@ async def _stream_completion_route(
                         continue
                     if not isinstance(event, dict):
                         continue
+                    if _completion_finish_reason(event) == "length":
+                        truncated = True
                     provider_error = _completion_error(event)
                     if provider_error is not None:
                         stream_failure = provider_error
@@ -3604,7 +3689,7 @@ async def _stream_completion_route(
             "ИИ-контур временно недоступен. Запрос можно безопасно повторить.",
             retryable=True,
         ) from exc
-    return answer_parts, fallback_lines, stream_failure
+    return answer_parts, fallback_lines, stream_failure, truncated
 
 
 async def atlas_answer_stream(
@@ -3653,7 +3738,7 @@ async def atlas_answer_stream(
     routes = _completion_routes(prepared)
     for index, route in enumerate(routes):
         try:
-            parts, fallback_lines, stream_failure = await _stream_completion_route(
+            parts, fallback_lines, stream_failure, truncated = await _stream_completion_route(
                 prepared,
                 route,
                 on_delta=on_delta,
@@ -3678,6 +3763,26 @@ async def atlas_answer_stream(
                 parts.append(full_text[:stream_answer_limit])
                 await on_delta(parts[0])
         if parts:
+            if truncated and prepared.latency_mode != "overlay":
+                partial = "".join(parts)
+                await on_delta("\n\n")
+                continuation, _unused_lines, continuation_failure, _still_truncated = (
+                    await _stream_completion_route(
+                        prepared,
+                        route,
+                        on_delta=on_delta,
+                        answer_limit=max(1, stream_answer_limit - len(partial) - 2),
+                        payload=_truncated_output_retry_payload(
+                            prepared,
+                            partial_answer=partial,
+                        ),
+                    )
+                )
+                if continuation_failure is not None:
+                    raise continuation_failure
+                if continuation:
+                    parts.append("\n\n")
+                    parts.extend(continuation)
             answer_parts = parts
             used_route = route
             break
