@@ -1495,6 +1495,19 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aliases["ак"], "Административный кодекс штата San Andreas")
         self.assertEqual(aliases["кэ"], "Кодекс этики и служебного поведения")
         self.assertNotIn("упк", aliases)
+
+    def test_corpus_abbreviations_include_latin_organization_names(self) -> None:
+        aliases = _atlas_corpus_abbreviations(
+            [
+                {"title": "Закон О статусе United States Secret Service"},
+                {"title": "Закон О статусе Federal Investigation Bureau"},
+                {"title": "Закон О Статусе San Andreas National Guard"},
+            ]
+        )
+
+        self.assertEqual(aliases["usss"], "United States Secret Service")
+        self.assertEqual(aliases["fib"], "Federal Investigation Bureau")
+        self.assertEqual(aliases["sang"], "San Andreas National Guard")
         self.assertNotIn("коап", aliases)
 
     def test_bad_answer_is_not_reused_inside_current_dialog(self) -> None:
@@ -1949,6 +1962,46 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result[0]["source_id"], 9_402)
         self.assertIn("исполнительной власти", result[0]["text"])
+
+    async def test_exact_article_understands_corpus_organization_abbreviation(self) -> None:
+        common = {
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        sources = [
+            {
+                **common,
+                "id": 9_411,
+                "title": "Закон О Статусе San Andreas National Guard",
+                "content_text": "3.1 Применение вооружённых сил.",
+            },
+            {
+                **common,
+                "id": 9_412,
+                "title": "Закон О статусе United States Secret Service",
+                "content_text": "3.1 Секретная служба обеспечивает охрану первых лиц штата.",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что написано в статье 3.1 закона о статусе USSS?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 9_412)
+        self.assertIn("охрану первых лиц", result[0]["text"])
 
     async def test_exact_article_is_not_displaced_by_a_planner_reference(self) -> None:
         source = {

@@ -908,8 +908,20 @@ def _atlas_corpus_abbreviations(
     """Derive aliases from the corpus instead of importing real-world code names."""
 
     candidates: dict[str, dict[str, set[str]]] = {}
+    latin_candidates: dict[str, set[str]] = {}
     for source in sources:
         title = " ".join(str(source.get("title") or "").split())
+        latin_name = re.search(
+            r"\bстатус\w*\s+((?:[a-z]+(?:[\s-]+|$)){2,6})",
+            title,
+            re.IGNORECASE,
+        )
+        if latin_name:
+            words = re.findall(r"[a-z]+", latin_name.group(1), re.IGNORECASE)
+            alias = "".join(word[0] for word in words).casefold()
+            identity = " ".join(words)
+            if 2 <= len(alias) <= 6 and identity:
+                latin_candidates.setdefault(alias, set()).add(identity)
         words = re.findall(r"[а-яё]+", title.casefold())
         if "кодекс" not in words:
             continue
@@ -935,6 +947,9 @@ def _atlas_corpus_abbreviations(
         if len(identities) == 1:
             titles = next(iter(identities.values()))
             aliases[alias] = max(titles, key=len)
+    for alias, identities in latin_candidates.items():
+        if len(identities) == 1 and alias not in aliases:
+            aliases[alias] = next(iter(identities))
     return aliases
 
 
