@@ -1437,6 +1437,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             any("уголовный кодекс штата san andreas" in item.casefold() for item in variants)
         )
 
+    def test_query_variants_route_software_check_to_its_ooc_rules(self) -> None:
+        variants = _atlas_query_variants("Можно ли использовать стороннее ПО и как проходит проверка?")
+
+        self.assertTrue(
+            any("правила проверки на стороннее по" in item.casefold() for item in variants)
+        )
+
     def test_retrieval_refusal_detector_ignores_a_substantive_no_prohibition_answer(self) -> None:
         self.assertTrue(
             _atlas_answer_is_retrieval_refusal(
@@ -1881,6 +1888,40 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "article:16.1")
         self.assertIn("Первая точная норма", result[0]["text"])
         self.assertNotIn("Другая вложенная норма", result[0]["text"])
+
+    async def test_exact_article_is_not_displaced_by_a_planner_reference(self) -> None:
+        source = {
+            "id": 9_314,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "1.3 Совокупность преступлений. В тексте упоминается статья 17.3.\n"
+                "17.3 Оскорбление представителя власти. Наказание: до 30 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9314/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что означает статья 17.3 Уголовного кодекса?",
+                expanded=True,
+                query_variants=["Проверить статью 1.3 и её исключения"],
+            )
+
+        self.assertEqual(result[0]["reference"], "article:17.3")
+        self.assertIn("Оскорбление представителя власти", result[0]["text"])
 
     async def test_exact_article_survives_forum_markup_and_nonbreaking_spaces(self) -> None:
         source = {

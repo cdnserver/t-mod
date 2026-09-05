@@ -1006,6 +1006,14 @@ def _atlas_query_variants(
         variants.append(
             f"{clean}\nПравила государственных структур: точный пункт и полное условие"
         )
+    if re.search(
+        r"\b(?:сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\b",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПравила проверки на стороннее ПО: порядок проверки, права и последствия"
+        )
     if (
         not ooc_rules_question
         and not re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", lowered)
@@ -1893,10 +1901,14 @@ async def atlas_search(
         or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(primary_query)
     )
     for query_index, raw_query in enumerate(retrieval_queries):
-        for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
-            candidate = dict(item)
-            candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
-            structured_candidates.append(candidate)
+        # A concrete chapter/article number is trusted only when it came from
+        # the user's own question. Planner variants may mention neighbouring
+        # provisions for verification and must never replace the requested one.
+        if query_index == 0:
+            for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]), 4)
+                structured_candidates.append(candidate)
         # A numbered OOC rule is deliberately very highly ranked.  Do not run
         # that extractor for an ordinary IC situation such as "меня задержали":
         # generic words like "сотрудник" and "действия" otherwise promote an
@@ -1910,7 +1922,7 @@ async def atlas_search(
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
                 rule_candidates.append(candidate)
-        if query_index == 0:
+        if query_index == 0 and not _ATLAS_EXACT_LOOKUP_RE.search(primary_query):
             for item in _atlas_thematic_legal_candidates(raw_query, canonical_sources):
                 candidate = dict(item)
                 candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
@@ -2165,7 +2177,7 @@ _ATLAS_LEGAL_RE = re.compile(
 _ATLAS_OOC_RULE_SIGNAL_RE = re.compile(
     r"\b(?:аккаунт|мультиаккаунт|permban|hardban|demorgan|gunban|warn|mute|"
     r"dm|db|pg|mg|rk|nlr|sk|tk|nonrp|ooc|оо[сc]|оскорблен|родствен|администрац|"
-    r"жалоб[аыуе]?|бан)\w*",
+    r"жалоб[аыуе]?|бан|сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\w*",
     re.IGNORECASE,
 )
 _ATLAS_PROCEDURE_RE = re.compile(
