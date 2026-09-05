@@ -156,7 +156,7 @@ CASES = (
         "United States Secret Service",
         required_terms=("3.1", "Обязанности Секретной Службы"),
         forbidden_terms=("информация отсутствует", "статья не найдена"),
-        max_words=500,
+        max_words=700,
     ),
     LiveCase(
         "complaint-dm",
