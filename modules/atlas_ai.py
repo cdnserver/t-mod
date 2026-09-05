@@ -912,7 +912,7 @@ def _atlas_corpus_abbreviations(
     for source in sources:
         title = " ".join(str(source.get("title") or "").split())
         latin_name = re.search(
-            r"\bстатус\w*\s+((?:[a-z]+(?:[\s-]+|$)){2,6})",
+            r"\bстатус\w*\s+([a-z][a-z\s-]*)",
             title,
             re.IGNORECASE,
         )

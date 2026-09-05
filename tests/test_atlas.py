@@ -1499,9 +1499,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     def test_corpus_abbreviations_include_latin_organization_names(self) -> None:
         aliases = _atlas_corpus_abbreviations(
             [
-                {"title": "Закон О статусе United States Secret Service"},
-                {"title": "Закон О статусе Federal Investigation Bureau"},
-                {"title": "Закон О Статусе San Andreas National Guard"},
+                {"title": 'Закон "О статусе United States Secret Service"'},
+                {"title": 'Закон "О статусе Federal Investigation Bureau"'},
+                {"title": 'Закон "О Статусе San Andreas National Guard"'},
             ]
         )
 
