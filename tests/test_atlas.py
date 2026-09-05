@@ -3225,6 +3225,46 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("жёсткий предел — 220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
 
+    async def test_complaint_prompt_forbids_invented_evidence_requirements(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 97,
+            "title": "Основные правила проекта",
+            "url": None,
+            "text": "5.1 DM — убийство без IC причины. | Ban.",
+            "score": 10.0,
+            "structured": True,
+            "reference": "clause:5.1",
+            "pinpoints": ["пункт 5.1"],
+        }
+        response = {"choices": [{"message": {"content": "DM — пункт 5.1. [1]"}}]}
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch(
+            "modules.atlas_ai._build_intelligence_brief", AsyncMock(return_value=None)
+        ), patch("modules.atlas_ai._json_request", AsyncMock(return_value=response)) as request:
+            await atlas_answer(
+                77,
+                "Игрок убил меня без причины. Составь жалобу.",
+                model_id="atlas-complaints",
+            )
+
+        complaint_gate = "\n".join(
+            str(item.get("content") or "") for item in request.await_args.kwargs["payload"]["messages"]
+        )
+        self.assertIn("Не утверждай отсутствие угрозы", complaint_gate)
+        self.assertIn("не добавляй срок хранения доказательств", complaint_gate)
+
     async def test_non_stream_answer_retries_a_truncated_provider_response(self) -> None:
         config = AtlasAIConfig(
             openrouter_key="test",
