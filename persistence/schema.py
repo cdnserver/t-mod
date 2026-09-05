@@ -566,6 +566,8 @@ def init_db() -> None:
                         'approved', 'rejected', 'failed', 'unavailable', 'archived'
                     )),
                 content_sha256 TEXT,
+                storage_key TEXT,
+                knowledge_source_id INTEGER,
                 mime_type TEXT,
                 size_bytes INTEGER,
                 ocr_text TEXT,
@@ -581,7 +583,9 @@ def init_db() -> None:
                 FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
                     ON DELETE CASCADE,
                 FOREIGN KEY(source_id) REFERENCES atlas_knowledge_sources(id)
-                    ON DELETE CASCADE
+                    ON DELETE CASCADE,
+                FOREIGN KEY(knowledge_source_id) REFERENCES atlas_knowledge_sources(id)
+                    ON DELETE SET NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_queue
@@ -2995,6 +2999,8 @@ def init_db() -> None:
         )
         _add_column_if_missing(con, "atlas_forum_feeds", "knowledge_domain", "TEXT")
         _add_column_if_missing(con, "atlas_forum_feeds", "corpus_kind", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_attachments", "storage_key", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_attachments", "knowledge_source_id", "INTEGER")
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
         _add_column_if_missing(
             con,

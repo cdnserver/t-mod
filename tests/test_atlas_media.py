@@ -311,5 +311,25 @@ class AtlasMediaWebTests(unittest.IsolatedAsyncioTestCase):
             temp_dir.cleanup()
 
 
+class AtlasLocalBlobStorePersistenceTests(unittest.TestCase):
+    def test_put_bytes_is_content_addressed_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = AtlasLocalBlobStore(Path(directory))
+            payload = b"permanent forum image"
+            digest = hashlib.sha256(payload).hexdigest()
+
+            first = store.put_bytes(payload, checksum_sha256=digest)
+            second = store.put_bytes(payload, checksum_sha256=digest)
+
+            self.assertEqual(first, second)
+            self.assertEqual(store.path(first).read_bytes(), payload)
+
+    def test_put_bytes_rejects_wrong_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = AtlasLocalBlobStore(Path(directory))
+            with self.assertRaisesRegex(AtlasMediaError, "Контрольная сумма"):
+                store.put_bytes(b"image", checksum_sha256="0" * 64)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -199,6 +199,7 @@ class AtlasForumParserTests(unittest.TestCase):
           <a href="/attachments/court-act-17-png.100/">Скачать акт</a>
           <img src="https://example.org/foreign.png" alt="Чужая картинка" />
           <img src="/styles/default/xenforo/logo.png" alt="Оформление форума" />
+          <img src="/data/legal/court-map.png" alt="Схема суда" />
         </div></div></article>
         """
 
@@ -207,7 +208,7 @@ class AtlasForumParserTests(unittest.TestCase):
             "https://forum.majestic-rp.ru/threads/court-act.17/",
         )
 
-        self.assertEqual(len(snapshot.attachments), 1)
+        self.assertEqual(len(snapshot.attachments), 2)
         attachment = snapshot.attachments[0]
         self.assertEqual(
             attachment.url,
@@ -215,6 +216,33 @@ class AtlasForumParserTests(unittest.TestCase):
         )
         self.assertEqual(attachment.media_kind, "image")
         self.assertEqual(attachment.label, "Акт суда, лист 1")
+        self.assertEqual(snapshot.attachments[1].label, "Схема суда")
+        self.assertEqual(
+            snapshot.attachments[1].url,
+            "https://forum.majestic-rp.ru/data/legal/court-map.png",
+        )
+
+    def test_thread_collects_all_lazy_content_images_without_old_sixteen_limit(self) -> None:
+        images = "".join(
+            f'<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" '
+            f'data-url="/attachments/page-{index}-png.{1000 + index}/" alt="Лист {index}" />'
+            for index in range(1, 41)
+        )
+        page = f"""
+        <h1 class="p-title-value">Большой судебный материал</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+          <p>Комплект судебных актов содержит сорок отдельных листов.</p>{images}
+        </div></div></article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/large-case.77/",
+        )
+
+        self.assertEqual(len(snapshot.attachments), 40)
+        self.assertEqual(snapshot.attachments[0].label, "Лист 1")
+        self.assertEqual(snapshot.attachments[-1].label, "Лист 40")
 
     def test_attachment_download_is_bounded_and_keeps_the_forum_origin(self) -> None:
         browser = AtlasForumBrowser(replace(sync_config(), attachment_max_bytes=64))

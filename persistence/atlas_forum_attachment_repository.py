@@ -20,6 +20,10 @@ from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _MEDIA_KINDS = frozenset({"image", "file"})
+_IMAGE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+)
+_NON_CONTENT_IMAGE_PATHS = ("/styles/", "/avatars/", "/smilies/", "/reactions/")
 _TERMINAL_STATUSES = frozenset({"review_pending", "approved", "rejected", "unavailable", "archived"})
 
 
@@ -62,7 +66,14 @@ def _clean_attachment(
     ):
         raise ValueError("atlas_forum_attachment_url_invalid")
     path = str(parsed.path or "")
-    if "/attachments/" not in path.casefold() and "/data/attachments/" not in path.casefold():
+    lowered_path = path.casefold()
+    is_attachment = "/attachments/" in lowered_path or "/data/attachments/" in lowered_path
+    is_content_image = (
+        str(item.get("media_kind") or "").strip().lower() == "image"
+        and any(lowered_path.endswith(suffix) for suffix in _IMAGE_SUFFIXES)
+        and not any(marker in lowered_path for marker in _NON_CONTENT_IMAGE_PATHS)
+    )
+    if not is_attachment and not is_content_image:
         raise ValueError("atlas_forum_attachment_url_invalid")
     url = urlunsplit(("https", parsed.netloc.casefold(), path, "", ""))
     media_kind = str(item.get("media_kind") or "file").strip().lower()
@@ -97,7 +108,7 @@ def atlas_sync_forum_attachments(
     changes, never merely because a title/label changed.
     """
 
-    raw_items = list(attachments or ())[:16]
+    raw_items = list(attachments or ())[:512]
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
@@ -123,6 +134,25 @@ def atlas_sync_forum_attachments(
             seen.add(str(clean["url"]))
             inventory.append(clean)
 
+        stale_derivatives = con.execute(
+            """
+            SELECT knowledge_source_id FROM atlas_forum_attachments
+            WHERE source_id = ? AND source_checksum != ?
+              AND knowledge_source_id IS NOT NULL
+            """,
+            (int(source_id), str(source["checksum"] or "")),
+        ).fetchall()
+        for stale in stale_derivatives:
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = 'archived', qdrant_point_id = NULL,
+                    last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, int(stale["knowledge_source_id"])),
+            )
+
         rows: list[dict[str, Any]] = []
         source_checksum = str(source["checksum"] or "")
         for item in inventory:
@@ -147,6 +177,12 @@ def atlas_sync_forum_attachments(
                     content_sha256 = CASE
                         WHEN atlas_forum_attachments.source_checksum != excluded.source_checksum
                             THEN NULL ELSE atlas_forum_attachments.content_sha256 END,
+                    storage_key = CASE
+                        WHEN atlas_forum_attachments.source_checksum != excluded.source_checksum
+                            THEN NULL ELSE atlas_forum_attachments.storage_key END,
+                    knowledge_source_id = CASE
+                        WHEN atlas_forum_attachments.source_checksum != excluded.source_checksum
+                            THEN NULL ELSE atlas_forum_attachments.knowledge_source_id END,
                     mime_type = CASE
                         WHEN atlas_forum_attachments.source_checksum != excluded.source_checksum
                             THEN NULL ELSE atlas_forum_attachments.mime_type END,
@@ -285,24 +321,32 @@ def atlas_forum_attachment_complete_ocr(
     content_sha256: str,
     mime_type: str,
     size_bytes: int,
+    storage_key: str,
     text: str,
     engine: str,
 ) -> dict[str, Any]:
     checksum = str(content_sha256 or "").strip().lower()
     clean_text = str(text or "").strip()[:120_000]
-    if not _SHA256_RE.fullmatch(checksum) or len(clean_text) < 20 or int(size_bytes) <= 0:
+    clean_storage_key = str(storage_key or "").strip()[:500]
+    if (
+        not _SHA256_RE.fullmatch(checksum)
+        or not clean_storage_key
+        or len(clean_text) < 20
+        or int(size_bytes) <= 0
+    ):
         raise ValueError("atlas_forum_attachment_ocr_invalid")
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute(
             """
             UPDATE atlas_forum_attachments
-            SET status = 'review_pending', content_sha256 = ?, mime_type = ?, size_bytes = ?,
+            SET status = 'review_pending', content_sha256 = ?, storage_key = ?, mime_type = ?, size_bytes = ?,
                 ocr_text = ?, ocr_engine = ?, ocr_error = NULL, updated_at = ?
             WHERE id = ?
             """,
             (
                 checksum,
+                clean_storage_key,
                 str(mime_type or "")[:160],
                 int(size_bytes),
                 clean_text,
@@ -323,6 +367,7 @@ def atlas_forum_attachment_mark_unavailable(
     *,
     error: str,
     content_sha256: str | None = None,
+    storage_key: str | None = None,
     mime_type: str | None = None,
     size_bytes: int | None = None,
 ) -> dict[str, Any] | None:
@@ -335,12 +380,14 @@ def atlas_forum_attachment_mark_unavailable(
             """
             UPDATE atlas_forum_attachments
             SET status = 'unavailable', content_sha256 = COALESCE(?, content_sha256),
+                storage_key = COALESCE(?, storage_key),
                 mime_type = COALESCE(?, mime_type), size_bytes = COALESCE(?, size_bytes),
                 ocr_error = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 checksum or None,
+                str(storage_key or "").strip()[:500] or None,
                 str(mime_type or "")[:160] or None,
                 int(size_bytes) if size_bytes is not None else None,
                 str(error or "")[:2000],
@@ -391,36 +438,90 @@ def atlas_forum_attachment_review(
         attachment = _attachment_row(con, int(attachment_id))
         if attachment is None or int(attachment["organization_id"]) != int(organization_id):
             raise ValueError("atlas_forum_attachment_missing")
-        if str(attachment["status"]) != "review_pending":
+        resume_approval = (
+            bool(approve)
+            and str(attachment["status"]) == "approved"
+            and attachment["knowledge_source_id"] is None
+        )
+        if str(attachment["status"]) != "review_pending" and not resume_approval:
             raise ValueError("atlas_forum_attachment_review_invalid")
         status = "approved" if approve else "rejected"
-        con.execute(
-            """
-            UPDATE atlas_forum_attachments
-            SET status = ?, reviewed_by_id = ?, reviewed_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (status, int(user_id), now, now, int(attachment_id)),
-        )
-        con.execute(
-            """
-            INSERT INTO atlas_audit_events(
-                organization_id, actor_user_id, event_type, target_type,
-                target_id, summary, details_json, created_at
-            ) VALUES(?, ?, 'forum_attachment_reviewed', 'forum_attachment', ?, ?, ?, ?)
-            """,
-            (
-                int(organization_id),
-                int(user_id),
-                str(attachment_id),
-                "Подтверждён OCR вложения форума" if approve else "Отклонён OCR вложения форума",
-                _json({"approved": bool(approve), "source_id": int(attachment["source_id"])}),
-                now,
-            ),
-        )
+        if not resume_approval:
+            con.execute(
+                """
+                UPDATE atlas_forum_attachments
+                SET status = ?, reviewed_by_id = ?, reviewed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, int(user_id), now, now, int(attachment_id)),
+            )
+            con.execute(
+                """
+                INSERT INTO atlas_audit_events(
+                    organization_id, actor_user_id, event_type, target_type,
+                    target_id, summary, details_json, created_at
+                ) VALUES(?, ?, 'forum_attachment_reviewed', 'forum_attachment', ?, ?, ?, ?)
+                """,
+                (
+                    int(organization_id),
+                    int(user_id),
+                    str(attachment_id),
+                    "Подтверждён OCR вложения форума" if approve else "Отклонён OCR вложения форума",
+                    _json({"approved": bool(approve), "source_id": int(attachment["source_id"])}),
+                    now,
+                ),
+            )
         row = _attachment_row(con, int(attachment_id))
         con.commit()
-    return _row(row)
+    reviewed = _row(row)
+    if approve:
+        # A reviewed transcription becomes its own citable knowledge source.
+        # The canonical parent post remains untouched and the derivative can
+        # be archived independently when the forum revision changes.
+        from persistence import atlas_repository as atlas_storage
+
+        parent = atlas_storage.atlas_knowledge_source(int(reviewed["source_id"]))
+        if parent is None:
+            raise ValueError("atlas_forum_attachment_source_missing")
+        metadata = parent.get("metadata") if isinstance(parent.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        label = str(reviewed.get("label") or reviewed.get("filename") or "изображение").strip()
+        derivative = atlas_storage.atlas_upsert_synced_knowledge(
+            int(organization_id),
+            title=f"{str(parent.get('title') or 'Материал форума')} — {label}"[:180],
+            content=(
+                "Подтверждённая расшифровка изображения из материала форума.\n"
+                f"Оригинал: {str(reviewed.get('attachment_url') or '')}\n\n"
+                f"{str(reviewed.get('ocr_text') or '')}"
+            ),
+            source_url=str(reviewed.get("attachment_url") or ""),
+            server_code=str(parent.get("server_code") or "phoenix-15"),
+            faction_code=str(parent.get("faction_code") or "lspd"),
+            visibility_scope=str(parent.get("visibility_scope") or "server"),
+            federation_scope=str(parent.get("federation_scope") or "server"),
+            knowledge_domain=str(taxonomy.get("domain") or "") or None,
+            corpus_kind=str(taxonomy.get("corpus_kind") or "") or None,
+            feed_key=f"forum-ocr:{int(parent['id'])}",
+            metadata={
+                "derived_from_source_id": int(parent["id"]),
+                "forum_attachment_id": int(attachment_id),
+                "ocr_verified": True,
+                "ocr_engine": str(reviewed.get("ocr_engine") or ""),
+                "content_sha256": str(reviewed.get("content_sha256") or ""),
+                "original_storage_key": str(reviewed.get("storage_key") or ""),
+                "reviewed_by_id": int(user_id),
+                "reviewed_at": str(reviewed.get("reviewed_at") or now),
+            },
+        )["source"]
+        with _db_lock, connect() as con:
+            con.execute(
+                "UPDATE atlas_forum_attachments SET knowledge_source_id = ?, updated_at = ? WHERE id = ?",
+                (int(derivative["id"]), now, int(attachment_id)),
+            )
+            row = _attachment_row(con, int(attachment_id))
+            con.commit()
+        reviewed = _row(row)
+    return reviewed
 
 
 def atlas_forum_attachments(

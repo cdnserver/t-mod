@@ -242,6 +242,7 @@ class AtlasRepositoryTests(unittest.TestCase):
             content_sha256="a" * 64,
             mime_type="image/png",
             size_bytes=1234,
+            storage_key="objects/aa/aa/" + "a" * 64,
             text="Проверяемая машинная расшифровка приложенного судебного акта.",
             engine="tesseract",
         )
@@ -252,8 +253,14 @@ class AtlasRepositoryTests(unittest.TestCase):
             approve=True,
         )
         self.assertEqual(review["status"], "approved")
+        self.assertGreater(int(review["knowledge_source_id"]), 0)
+        derivative = atlas_repository.atlas_knowledge_source(
+            int(review["knowledge_source_id"])
+        )
+        self.assertEqual(derivative["status"], "pending")
+        self.assertIn("машинная расшифровка", derivative["content_text"])
         # The parent source remains the forum post; OCR has no path into the
-        # searchable source until a later explicit reviewer-to-source action.
+        # parent text. The reviewed derivative is separately citable.
         self.assertNotIn("машинная расшифровка", first["content_text"])
 
         revised = atlas_repository.atlas_upsert_synced_knowledge(
@@ -280,6 +287,11 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(reset["status"], "discovered")
         self.assertIsNone(reset["ocr_text"])
         self.assertIsNone(reset["reviewed_at"])
+        self.assertIsNone(reset["knowledge_source_id"])
+        self.assertEqual(
+            atlas_repository.atlas_knowledge_source(int(derivative["id"]))["status"],
+            "archived",
+        )
 
     def test_federation_migration_preserves_archived_source_scope(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
@@ -1946,6 +1958,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "content_text": "3.1 Правительство формирует систему органов исполнительной власти.",
                 "source_url": "https://forum.majestic-rp.ru/threads/government.9402/",
             },
+            {
+                **common,
+                "id": 9_403,
+                "title": "Закон О государственных документах штата San-Andreas",
+                "content_text": "3.1 Государственный документ имеет обязательные реквизиты.",
+                "source_url": "https://forum.majestic-rp.ru/threads/documents.9403/",
+            },
         ]
         with patch(
             "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
@@ -1962,6 +1981,21 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result[0]["source_id"], 9_402)
         self.assertIn("исполнительной власти", result[0]["text"])
+
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            audit_wording = await atlas_search(
+                77,
+                "Покажи статью 3.1 документа Закон О Правительстве штата San-Andreas",
+                expanded=True,
+            )
+
+        self.assertEqual(audit_wording[0]["source_id"], 9_402)
 
     async def test_exact_article_understands_corpus_organization_abbreviation(self) -> None:
         common = {

@@ -57,6 +57,16 @@ _LOGIN_TEXT_MARKERS = (
     "вам необходимо войти",
     "необходимо авторизоваться",
 )
+
+# A forum topic may legitimately contain a long illustrated code or a set of
+# scanned court acts.  The former cap of 16 silently discarded the rest.  The
+# limit remains bounded against malformed pages, but is high enough to retain
+# every content image in realistic XenForo topics.
+_MAX_TOPIC_ATTACHMENTS = 512
+_CONTENT_IMAGE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+)
+_NON_CONTENT_IMAGE_PATHS = ("/styles/", "/avatars/", "/smilies/", "/reactions/")
 _ACCESS_DENIED_MARKERS = (
     "you do not have permission to view this page",
     "you do not have permission to perform this action",
@@ -286,25 +296,40 @@ def _canonical_attachment_url(base_url: str, href: str) -> str | None:
         return None
     path = parsed.path or ""
     lowered = path.casefold()
-    if "/attachments/" not in lowered and "/data/attachments/" not in lowered:
+    is_attachment = "/attachments/" in lowered or "/data/attachments/" in lowered
+    is_content_image = (
+        Path(path).suffix.casefold() in _CONTENT_IMAGE_SUFFIXES
+        and not any(marker in lowered for marker in _NON_CONTENT_IMAGE_PATHS)
+    )
+    if not is_attachment and not is_content_image:
         return None
     return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
 
 
 def _forum_attachments(body: Any, page_url: str) -> tuple[AtlasForumAttachment, ...]:
-    """Extract a small, deduplicated inventory without trusting external media."""
+    """Extract every bounded, forum-owned file from the authoritative post."""
 
     discovered: list[AtlasForumAttachment] = []
     seen: set[str] = set()
     candidates: list[tuple[str, str, str | None]] = []
-    for image in body.xpath(".//img[@src or @data-src]"):
-        candidates.append(
-            (
-                str(image.get("data-src") or image.get("src") or ""),
-                "image",
-                _clean_text(str(image.get("alt") or image.get("title") or ""))[:180] or None,
-            )
-        )
+    for image in body.xpath(
+        ".//img[@src or @data-src or @data-url or @data-lazy-src]"
+    ):
+        label = _clean_text(
+            str(image.get("alt") or image.get("title") or "")
+        )[:180] or None
+        # XenForo themes use different lazy-loading attributes.  Record each
+        # candidate and let canonical URL validation/deduplication decide.
+        for attribute in ("data-url", "data-src", "data-lazy-src", "src"):
+            value = str(image.get(attribute) or "").strip()
+            if value:
+                candidates.append((value, "image", label))
+        for source in image.xpath("ancestor::picture[1]/source[@srcset or @data-srcset]"):
+            srcset = str(source.get("data-srcset") or source.get("srcset") or "")
+            for entry in srcset.split(","):
+                value = entry.strip().split(" ", 1)[0]
+                if value:
+                    candidates.append((value, "image", label))
     for link in body.xpath(".//a[@href]"):
         candidates.append(
             (
@@ -331,7 +356,7 @@ def _forum_attachments(body: Any, page_url: str) -> tuple[AtlasForumAttachment, 
                 label=label,
             )
         )
-        if len(discovered) >= 16:
+        if len(discovered) >= _MAX_TOPIC_ATTACHMENTS:
             break
     return tuple(discovered)
 

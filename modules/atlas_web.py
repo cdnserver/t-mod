@@ -1844,6 +1844,7 @@ def register_atlas_web_routes(
             raise AtlasForumSyncError(error)
         await report({"percent": 12, "stage": "fetching_original", "attachment_id": attachment_id})
         content_sha256: str | None = None
+        storage_key: str | None = None
         detected_mime: str | None = None
         size_bytes: int | None = None
         try:
@@ -1853,6 +1854,11 @@ def register_atlas_web_routes(
             size_bytes = len(raw)
             content_sha256 = hashlib.sha256(raw).hexdigest()
             detected_mime = atlas_media_detect_type(raw[:64 * 1024], declared_mime)
+            storage_key = await asyncio.to_thread(
+                media_blobs.put_bytes,
+                raw,
+                checksum_sha256=content_sha256,
+            )
             await report({"percent": 45, "stage": "recognising", "attachment_id": attachment_id})
             result = await asyncio.to_thread(
                 atlas_ocr_attachment,
@@ -1866,6 +1872,7 @@ def register_atlas_web_routes(
                 attachment_id,
                 error=f"{exc.code}: {exc}",
                 content_sha256=content_sha256,
+                storage_key=storage_key,
                 mime_type=detected_mime,
                 size_bytes=size_bytes,
             )
@@ -1887,6 +1894,7 @@ def register_atlas_web_routes(
                 attachment_id,
                 error=f"{exc.code}: {exc}",
                 content_sha256=content_sha256,
+                storage_key=storage_key,
                 mime_type=detected_mime,
                 size_bytes=size_bytes,
             )
@@ -1901,6 +1909,7 @@ def register_atlas_web_routes(
                 attachment_id,
                 error=f"{exc.code}: {exc}",
                 content_sha256=content_sha256,
+                storage_key=storage_key,
                 mime_type=detected_mime,
                 size_bytes=size_bytes,
             )
@@ -1921,6 +1930,7 @@ def register_atlas_web_routes(
             attachment_storage.atlas_forum_attachment_complete_ocr,
             attachment_id,
             content_sha256=content_sha256,
+            storage_key=str(storage_key or ""),
             mime_type=detected_mime,
             size_bytes=size_bytes,
             text=result.text,
@@ -2584,6 +2594,88 @@ def register_atlas_web_routes(
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"items": items})
+
+    async def forum_attachments(request: web.Request) -> web.Response:
+        """Review the machine transcription before it can become legal evidence."""
+
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"atlas_knowledge_admin_required"}',
+                content_type="application/json",
+            )
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        raw_attachment_id = str(request.match_info.get("attachment_id") or "").strip()
+        if request.method == "GET":
+            try:
+                limit = max(1, min(500, int(request.query.get("limit") or 100)))
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "atlas_forum_attachment_limit_invalid"}, status=400
+                )
+            items = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachments,
+                organization_id,
+                status=str(request.query.get("status") or "") or None,
+                limit=limit,
+            )
+            return web.json_response(
+                {
+                    "items": [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "storage_key"
+                        }
+                        for item in items
+                    ]
+                }
+            )
+        try:
+            attachment_id = int(raw_attachment_id)
+        except (TypeError, ValueError):
+            raise web.HTTPNotFound() from None
+        payload = await body(request, selected)
+        action = str(payload.get("action") or "").strip().lower()
+        if action not in {"approve", "reject"}:
+            return web.json_response(
+                {"error": "atlas_forum_attachment_action_invalid"}, status=400
+            )
+        try:
+            reviewed = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_review,
+                organization_id,
+                int(selected.user_id),
+                attachment_id,
+                approve=action == "approve",
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        queued = None
+        if reviewed.get("knowledge_source_id"):
+            source = await asyncio.to_thread(
+                storage.atlas_knowledge_source,
+                int(reviewed["knowledge_source_id"]),
+            )
+            if source is not None:
+                queued = await queue_knowledge_index(source)
+        return web.json_response(
+            {
+                "attachment": {
+                    key: value
+                    for key, value in reviewed.items()
+                    if key != "storage_key"
+                },
+                "job": queued,
+                "message": (
+                    "Расшифровка подтверждена и поставлена на индексацию."
+                    if action == "approve"
+                    else "Расшифровка отклонена."
+                ),
+            }
+        )
 
     async def global_search(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -3395,6 +3487,11 @@ def register_atlas_web_routes(
     app.router.add_post("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge/upload", knowledge_upload)
     app.router.add_post("/api/atlas/knowledge/import-forum", knowledge_import_forum)
+    app.router.add_get("/api/atlas/forum-attachments", forum_attachments)
+    app.router.add_post(
+        "/api/atlas/forum-attachments/{attachment_id}/review",
+        forum_attachments,
+    )
     app.router.add_get("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_get("/api/admin/atlas", admin_overview)
