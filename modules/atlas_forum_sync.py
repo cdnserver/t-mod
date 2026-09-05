@@ -944,13 +944,26 @@ class AtlasForumBrowser:
         snapshots: list[AtlasForumSnapshot] = []
         skipped_threads: list[str] = []
         for index, thread_url in enumerate(thread_urls):
-            try:
-                page = self._load(thread_url)
-                snapshots.append(parse_forum_thread(page, thread_url))
-            except AtlasForumManualActionRequired:
-                raise
-            except AtlasForumSyncError:
+            snapshot: AtlasForumSnapshot | None = None
+            for attempt in range(3):
+                try:
+                    page = self._load(thread_url)
+                    snapshot = parse_forum_thread(page, thread_url)
+                    break
+                except AtlasForumManualActionRequired:
+                    raise
+                except AtlasForumSyncError:
+                    # XenForo occasionally returns an incomplete post body
+                    # while its client-side fragments are still settling.
+                    # Retry the exact topic before declaring the inventory
+                    # partial; one transient page must not hide a new law for
+                    # the next twelve hours.
+                    if attempt < 2:
+                        time.sleep(self.config.page_delay_seconds)
+            if snapshot is None:
                 skipped_threads.append(thread_url)
+            else:
+                snapshots.append(snapshot)
             if index + 1 < len(thread_urls):
                 time.sleep(self.config.page_delay_seconds)
         if not snapshots:
@@ -1349,6 +1362,7 @@ class AtlasForumSyncRunner:
                     "corpus_kind": str(active_feed.get("corpus_kind") or ""),
                     "pages": len(snapshots),
                     "skipped": len(batch.skipped_threads),
+                    "skipped_threads": list(batch.skipped_threads[:12]),
                     "created": created,
                     "changed": changed,
                     "indexed": indexed,
@@ -1359,17 +1373,25 @@ class AtlasForumSyncRunner:
                     "missing_changes": missing_changes,
                     "inventory_complete": batch.inventory_complete,
                 }
-                partial_error = (
-                    f"Не удалось переиндексировать источников: {index_errors}"
-                    if index_errors
-                    else None
-                )
+                partial_messages: list[str] = []
+                if batch.skipped_threads:
+                    partial_messages.append(
+                        f"Не удалось прочитать тем: {len(batch.skipped_threads)}"
+                    )
+                if index_errors:
+                    partial_messages.append(
+                        f"Не удалось переиндексировать источников: {index_errors}"
+                    )
+                partial_error = "; ".join(partial_messages) or None
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
                     int(active_feed["id"]),
                     stats=stats,
                     error=partial_error,
-                    attention=bool(index_errors),
+                    attention=bool(batch.skipped_threads or index_errors),
+                    retry_after_seconds=(
+                        900 if batch.skipped_threads or index_errors else None
+                    ),
                 )
                 if changed:
                     await self._technical_log(

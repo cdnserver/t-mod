@@ -1432,6 +1432,50 @@ _ATLAS_LEGAL_DECORATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ATLAS_DOCUMENT_TITLE_GENERIC_TERMS = frozenset(
+    {
+        "andrea",
+        "закон",
+        "закона",
+        "кодекс",
+        "кодекса",
+        "сан",
+        "san",
+        "san-and",
+        "sanandr",
+        "штат",
+        "штата",
+    }
+)
+
+
+def _atlas_document_title_affinity(
+    query: str,
+    title: str,
+    sources: list[dict[str, Any]],
+) -> int:
+    """Measure which named law an exact provision belongs to.
+
+    Dozens of Atlas documents contain an article ``3.1``.  A structured
+    number match is therefore authoritative only together with the document
+    named by the user.  Morphology-tolerant terms keep Russian case endings
+    and familiar corpus abbreviations (FIB, USSS, УК) working alike.
+    """
+
+    query_terms, _query_phrases = _atlas_lexical_query_terms(query, sources)
+    title_terms, _title_phrases = _atlas_lexical_query_terms(title, sources)
+    meaningful_query = {
+        term
+        for term in query_terms
+        if not term.isdigit() and term not in _ATLAS_DOCUMENT_TITLE_GENERIC_TERMS
+    }
+    meaningful_title = {
+        term
+        for term in title_terms
+        if not term.isdigit() and term not in _ATLAS_DOCUMENT_TITLE_GENERIC_TERMS
+    }
+    return len(meaningful_query & meaningful_title)
+
 
 def _atlas_legal_search_text(value: str) -> str:
     """Remove visual forum markup while retaining the legal text verbatim enough to quote."""
@@ -1537,12 +1581,32 @@ def _atlas_structured_legal_candidates(
         )
         if marker in query_folded
     )
+    title_affinity = {
+        int(source["id"]): _atlas_document_title_affinity(
+            expanded,
+            str(source.get("title") or "Источник"),
+            sources,
+        )
+        for source in sources
+    }
+    strongest_title_affinity = max(title_affinity.values(), default=0)
+    named_document = bool(
+        re.search(r"\b(?:закон|кодекс|конституц)\w*", query_folded, re.IGNORECASE)
+    )
     candidates: list[dict[str, Any]] = []
     for source in sources:
         title = str(source.get("title") or "Источник")
         title_folded = title.casefold()
         if document_stems and not any(
             all(stem in title_folded for stem in stems) for stems in document_stems
+        ):
+            continue
+        source_affinity = title_affinity.get(int(source["id"]), 0)
+        if (
+            not document_stems
+            and named_document
+            and strongest_title_affinity > 0
+            and source_affinity < strongest_title_affinity
         ):
             continue
         content = _atlas_legal_search_text(str(source.get("content_text") or ""))
@@ -1612,7 +1676,13 @@ def _atlas_structured_legal_candidates(
                         "title": title,
                         "url": str(source.get("source_url") or "") or None,
                         "text": part[:7000],
-                        "score": round(10.0 - reference_index * 0.1 - part_index * 0.01, 4),
+                        "score": round(
+                            10.0
+                            + min(2.0, source_affinity * 0.45)
+                            - reference_index * 0.1
+                            - part_index * 0.01,
+                            4,
+                        ),
                         "chunk": 10_000 + reference_index * 100 + part_index,
                         "structured": True,
                         "reference": f"{kind}:{value}",

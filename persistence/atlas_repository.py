@@ -2025,6 +2025,7 @@ def atlas_forum_sync_finished(
     stats: dict[str, Any] | None = None,
     error: str | None = None,
     attention: bool = False,
+    retry_after_seconds: int | None = None,
 ) -> dict[str, Any]:
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -2035,9 +2036,10 @@ def atlas_forum_sync_finished(
         ).fetchone()
         if feed is None:
             raise ValueError("atlas_forum_feed_missing")
-        next_sync = (
-            now_dt + timedelta(seconds=max(3600, int(feed["interval_seconds"])))
-        ).isoformat()
+        delay_seconds = max(3600, int(feed["interval_seconds"]))
+        if retry_after_seconds is not None:
+            delay_seconds = max(60, min(delay_seconds, int(retry_after_seconds)))
+        next_sync = (now_dt + timedelta(seconds=delay_seconds)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
         success_assignment = (
             "last_success_at = last_success_at" if error else "last_success_at = ?"

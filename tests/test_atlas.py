@@ -1908,6 +1908,48 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Первая точная норма", result[0]["text"])
         self.assertNotIn("Другая вложенная норма", result[0]["text"])
 
+    async def test_exact_article_uses_the_named_law_among_duplicate_numbers(self) -> None:
+        common = {
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        sources = [
+            {
+                **common,
+                "id": 9_401,
+                "title": "Закон О статусе United States Secret Service",
+                "content_text": "3.1 Полномочия секретной службы.",
+                "source_url": "https://forum.majestic-rp.ru/threads/usss.9401/",
+            },
+            {
+                **common,
+                "id": 9_402,
+                "title": "Закон О Правительстве штата San-Andreas",
+                "content_text": "3.1 Правительство формирует систему органов исполнительной власти.",
+                "source_url": "https://forum.majestic-rp.ru/threads/government.9402/",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что написано в статье 3.1 закона о Правительстве?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 9_402)
+        self.assertIn("исполнительной власти", result[0]["text"])
+
     async def test_exact_article_is_not_displaced_by_a_planner_reference(self) -> None:
         source = {
             "id": 9_314,

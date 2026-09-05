@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -482,6 +483,31 @@ class AtlasForumParserTests(unittest.TestCase):
         with self.assertRaisesRegex(AtlasForumManualActionRequired, "список тем"):
             browser.scrape()
         self.assertEqual(loads, 3)
+
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_transient_thread_parse_failure_is_retried(self, sleep) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        listing = """
+        <html><body><div class="structItem-title">
+          <a href="/threads/law.101/">Закон</a>
+        </div></body></html>
+        """
+        thread = """
+        <html><body><h1 class="p-title-value">Закон</h1>
+          <article class="message message--post"><div class="message-body">
+            <div class="bbWrapper">Полный нормативный текст для проверки повторного чтения темы.</div>
+          </div></article>
+        </body></html>
+        """
+        responses = iter((listing, "<html><body></body></html>", thread))
+        browser._load = lambda _url: next(responses)
+
+        batch = browser.scrape()
+
+        self.assertEqual(len(batch.snapshots), 1)
+        self.assertEqual(batch.skipped_threads, ())
+        self.assertTrue(batch.inventory_complete)
+        sleep.assert_called_once_with(browser.config.page_delay_seconds)
 
 
 class AtlasForumRepositoryTests(unittest.TestCase):
@@ -1006,6 +1032,32 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["last_stats"]["changed"], 0)
         self.assertEqual(second["last_stats"]["retried"], 1)
         self.assertEqual(index.await_count, 2)
+
+    async def test_partial_forum_inventory_retries_soon_and_reports_topic(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/available.102/",
+            title="Доступный закон",
+            content="Проверенный текст доступного закона длиннее двадцати символов.",
+        )
+        missing = "https://forum.majestic-rp.ru/threads/transient.103/"
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), False, (missing,)))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=["point-partial"]),
+        )
+
+        state = await runner.sync_once()
+
+        self.assertEqual(state["status"], "attention")
+        self.assertEqual(state["last_stats"]["skipped_threads"], [missing])
+        self.assertIn("Не удалось прочитать тем: 1", state["last_error"])
+        retry_delay = datetime.fromisoformat(state["next_sync_at"]) - datetime.fromisoformat(
+            state["updated_at"]
+        )
+        self.assertLessEqual(retry_delay.total_seconds(), 901)
 
 
 if __name__ == "__main__":
