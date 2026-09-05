@@ -1968,7 +1968,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch(
             "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
-            return_value=sources,
+            # Keep the similarly named documents law first: the resolver must
+            # use the title itself rather than relying on database row order.
+            return_value=list(reversed(sources)),
         ), patch(
             "modules.atlas_ai.atlas_embed",
             AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
@@ -1984,7 +1986,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
-            return_value=sources,
+            return_value=list(reversed(sources)),
         ), patch(
             "modules.atlas_ai.atlas_embed",
             AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
