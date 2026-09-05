@@ -27,6 +27,7 @@ from modules.atlas_ai import (
     _cross_chat_context,
     _chunks,
     _compact_overlay_answer,
+    _grounded_refusal_fallback,
     _recent_user_dialog_context,
     _response_delivery_contract,
     atlas_ai_config,
@@ -1447,6 +1448,24 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "В статье 6.2 нет отдельного запрета на оказание первой помощи."
             )
         )
+
+    def test_retrieval_refusal_fallback_returns_exact_structured_evidence(self) -> None:
+        prepared = SimpleNamespace(
+            sources=[
+                {
+                    "structured": True,
+                    "text": "10.1 Кража — тайное хищение чужого имущества.",
+                    "reference": "article:10.1",
+                    "pinpoints": ["статья 10.1"],
+                }
+            ]
+        )
+
+        answer = _grounded_refusal_fallback(prepared)
+
+        self.assertIn("10.1 Кража", answer)
+        self.assertIn("[1, статья 10.1]", answer)
+        self.assertNotIn("информации нет", answer.casefold())
 
     def test_ic_legal_query_does_not_receive_an_ooc_rescue_variant(self) -> None:
         variants = _atlas_query_variants(

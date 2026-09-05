@@ -3599,6 +3599,29 @@ def _retrieval_refusal_retry_payload(
     return payload
 
 
+def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
+    """Return retrieved primary evidence when both model attempts overlook it.
+
+    Structured candidates are bounded article/chapter extracts produced by the
+    deterministic legal parser.  Showing that canonical text is safer than
+    exposing a false retrieval refusal and cannot invent a missing provision.
+    """
+
+    for index, source in enumerate(prepared.sources, 1):
+        if not source.get("structured"):
+            continue
+        text = str(source.get("text") or "").strip()
+        if len(text) < 20:
+            continue
+        reference = str(source.get("reference") or "").strip()
+        label = next(
+            (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
+            reference.replace(":", " ", 1) or "точная норма",
+        )
+        return f"По найденной норме:\n\n{text}\n\n[{index}, {label}]"
+    return ""
+
+
 async def _repair_retrieval_refusal(
     prepared: _AtlasAnswerRequest,
     answer: str,
@@ -3620,6 +3643,10 @@ async def _repair_retrieval_refusal(
         initial_route=used_route,
     )
     repaired = _answer_text(retry_body).strip()
+    if not repaired or _atlas_answer_is_retrieval_refusal(repaired):
+        grounded = _grounded_refusal_fallback(prepared)
+        if grounded:
+            return grounded, _local_exact_route()
     return (repaired or clean), retry_route
 
 
