@@ -1086,7 +1086,7 @@ def _atlas_lexical_query_terms(
             if len(root) >= 3 and root != token:
                 inflection_roots.append(root)
     raw_terms.extend(inflection_roots)
-    if re.search(r"\bубива\w*", expanded, re.IGNORECASE):
+    if re.search(r"\b(?:убива\w*|убил\w*|убить)\b", expanded, re.IGNORECASE):
         raw_terms.append("убийст")
         if (
             re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", expanded)
@@ -2098,6 +2098,14 @@ async def atlas_search(
             score += 0.2 if corpus in {"charter", "department_order"} else 0
         if re.search(r"порядок|процедур|задержан|арест|обыск", query_folded):
             score += 0.12 if corpus in {"law", "procedure"} else 0
+        if re.search(r"\b(?:задерж|арест|обыск|допрос)\w*", query_folded):
+            # The governing procedural codex must outrank laws that merely
+            # mention detention in a cross-reference or a department power.
+            score += (
+                2.25
+                if "процессуальн" in title_folded and "кодекс" in title_folded
+                else 0
+            )
         if (
             (
                 _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded)

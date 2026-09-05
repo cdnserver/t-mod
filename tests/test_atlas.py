@@ -1856,6 +1856,25 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "clause:5.1")
         self.assertIn("DM", result[0]["text"])
 
+    async def test_complaint_wording_finds_dm_rule_before_generic_clauses(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Игрок убил меня без причины и диалога. Составь жалобу.",
+                expanded=True,
+                allowed_domains=("ooc", "mixed"),
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("DM", result[0]["text"])
+
     async def test_search_returns_exact_article_instead_of_nearby_reference(self) -> None:
         source = {
             "id": 94,
