@@ -1484,6 +1484,22 @@ def _atlas_document_title_affinity(
 
     query_terms, _query_phrases = _atlas_lexical_query_terms(query, sources)
     title_terms, _title_phrases = _atlas_lexical_query_terms(title, sources)
+    # When the caller names a document verbatim (the corpus audit and the
+    # normal "статья N документа …" flow both do), prefer that identity over
+    # shared legal words.  Without this bonus, e.g. the laws on state
+    # documents and state special equipment both collapse to the single stem
+    # ``государ…`` after generic title words are removed.
+    normalized_query = " ".join(
+        re.findall(r"[a-zа-яё0-9]+", str(query or "").casefold())
+    )
+    normalized_title = " ".join(
+        re.findall(r"[a-zа-яё0-9]+", str(title or "").casefold())
+    )
+    exact_title_bonus = (
+        100
+        if normalized_title and normalized_title in normalized_query
+        else 0
+    )
     meaningful_query = {
         term
         for term in query_terms
@@ -1494,7 +1510,7 @@ def _atlas_document_title_affinity(
         for term in title_terms
         if not term.isdigit() and term not in _ATLAS_DOCUMENT_TITLE_GENERIC_TERMS
     }
-    return len(meaningful_query & meaningful_title)
+    return exact_title_bonus + len(meaningful_query & meaningful_title)
 
 
 def _atlas_legal_search_text(value: str) -> str:

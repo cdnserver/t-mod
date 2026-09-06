@@ -1999,6 +1999,45 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(audit_wording[0]["source_id"], 9_402)
 
+        similarly_named_sources = [
+            {
+                **common,
+                "id": 9_404,
+                "title": "Закон О государственных документах штата San-Andreas",
+                "content_text": "3.14 Документ прекращает действие после аннулирования.",
+            },
+            {
+                **common,
+                "id": 9_405,
+                "title": (
+                    "Закон Об обороте оружия и государственных специальных "
+                    "средств штата San-Andreas"
+                ),
+                "content_text": "3.14 Оружие хранится в установленном порядке.",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            # The shared ``государствен…`` stem must not make row order decide
+            # which law owns the article.
+            return_value=list(reversed(similarly_named_sources)),
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(
+                side_effect=AtlasAIError(
+                    "upstream_unavailable", "offline", retryable=True
+                )
+            ),
+        ):
+            documents_law = await atlas_search(
+                77,
+                "Покажи статью 3.14 документа «Закон О государственных документах штата San-Andreas»",
+                expanded=True,
+            )
+
+        self.assertEqual(documents_law[0]["source_id"], 9_404)
+        self.assertIn("аннулирования", documents_law[0]["text"])
+
     async def test_exact_article_understands_corpus_organization_abbreviation(self) -> None:
         common = {
             "organization_id": 1,
