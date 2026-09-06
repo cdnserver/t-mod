@@ -20,6 +20,7 @@ import type {
   AtlasOverlayEvent,
   AtlasOverlaySubmitResult,
   AtlasOverlaySpeechResult,
+  AtlasOverlayRuntimeStatus,
   AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
 import {
@@ -36,6 +37,7 @@ import {
   parseAtlasOverlayForegroundProbe,
   resolveAtlasOverlayDisplayArea,
   resolveAtlasOverlayForegroundGame,
+  resolveAtlasOverlayWindowBounds,
   type AtlasOverlayActiveGameWindow,
   type AtlasOverlayForegroundProbe,
 } from "./atlas-overlay-foreground";
@@ -57,6 +59,9 @@ const FOREGROUND_PROBE_WATCHDOG_MS = 1_800;
 const FOREGROUND_PROBE_RESTART_MIN_MS = 850;
 const FOREGROUND_PROBE_RESTART_MAX_MS = 12_000;
 const OVERLAY_VISIBILITY_HEAL_MS = 1_200;
+const FALLBACK_GAME_SCAN_MS = 1_500;
+const GAME_WINDOW_SOURCE_PATTERN = /^(?:grand theft auto(?:\s*v)?|gta\s*5|rage\s*(?:multiplayer|mp)|ragemp|majestic(?:\s*rp)?)(?:\s|$|[—–-])/i;
+const NON_GAME_WINDOW_SOURCE_PATTERN = /(?:chrome|edge|firefox|yandex|opera|browser|браузер)/i;
 // Full-screen GTA can briefly report an empty/transition HWND while switching
 // render surfaces, especially on laptops with hybrid graphics. Atlas remains
 // fail-closed, but an active request gets a larger grace window so a harmless
@@ -188,6 +193,7 @@ function New-TModAtlasForegroundProbe {
         title = $caption.ToString().Trim()
         processName = $processName
         processId = $processId
+        windowHandle = $hwnd.ToInt64().ToString()
         visible = $true
         minimized = $false
     }
@@ -320,9 +326,13 @@ export class AtlasOverlayController {
   private foregroundProbeWatchdog?: ReturnType<typeof setTimeout>;
   private foregroundProbeRestartTimer?: ReturnType<typeof setTimeout>;
   private foregroundProbeRestartAttempts = 0;
+  private fallbackGameScanTimer?: ReturnType<typeof setTimeout>;
+  private fallbackGameScanInFlight = false;
   private foregroundLossTimer?: ReturnType<typeof setTimeout>;
   private overlayWindowRecoveryTimer?: ReturnType<typeof setTimeout>;
   private lastOverlayVisibilityHealAt = 0;
+  private lastNativeZOrderErrorAt = 0;
+  private lastFallbackGameSeenAt = 0;
   private initializationTimer?: ReturnType<typeof setTimeout>;
   /** One cinematic handshake per T-Mod process, regardless of GTA HWND/PID changes. */
   private initializationPresented = false;
@@ -358,13 +368,14 @@ export class AtlasOverlayController {
 
   api(): Pick<
     AtlasOverlayApi,
-    "getConfig" | "getCatalog" | "saveConfig" | "moveBy" | "getVoices" | "previewVoice" |
+    "getConfig" | "getCatalog" | "getStatus" | "saveConfig" | "moveBy" | "getVoices" | "previewVoice" |
     "submitAudio" | "submitText" |
     "cancel" | "hide" | "openAtlas" | "reportSpeech"
   > {
     return {
       getConfig: async () => this.getConfig(),
       getCatalog: async () => this.getCatalog(),
+      getStatus: async () => this.getStatus(),
       saveConfig: async (patch) => this.saveConfig(patch),
       moveBy: async (deltaX, deltaY) => this.moveBy(deltaX, deltaY),
       getVoices: async () => this.getVoices(),
@@ -387,6 +398,40 @@ export class AtlasOverlayController {
       characters: this.catalog.characters.map((item) => ({ ...item })),
       servers: this.catalog.servers.map((item) => ({ ...item })),
       factions: this.catalog.factions.map((item) => ({ ...item })),
+    };
+  }
+
+  getStatus(): AtlasOverlayRuntimeStatus {
+    const game = this.activeGameWindow;
+    const windowVisible = Boolean(this.window && !this.window.isDestroyed() && this.window.isVisible());
+    if (!this.config.enabled) {
+      return { mode: "disabled", gameDetected: false, foregroundVerified: false, windowReady: this.windowReady, windowVisible, message: "Оверлей выключен" };
+    }
+    if (!this.projection?.allowed) {
+      return { mode: "denied", gameDetected: false, foregroundVerified: false, windowReady: this.windowReady, windowVisible, message: "Нет доступа к Atlas AI" };
+    }
+    if (process.platform !== "win32") {
+      return { mode: "unsupported", gameDetected: false, foregroundVerified: false, windowReady: this.windowReady, windowVisible, message: "Игровой оверлей доступен в Windows" };
+    }
+    if (game) {
+      return {
+        mode: game.foregroundVerified ? "native" : "compatibility",
+        gameDetected: true,
+        foregroundVerified: game.foregroundVerified,
+        windowReady: this.windowReady,
+        windowVisible,
+        display: { ...game.workArea },
+        message: game.foregroundVerified ? "GTA в фокусе · точный режим" : "GTA найдена · режим совместимости",
+      };
+    }
+    const recovering = !this.foregroundProbe && Boolean(this.foregroundProbeRestartTimer || this.fallbackGameScanTimer);
+    return {
+      mode: recovering ? "recovering" : "waiting",
+      gameDetected: false,
+      foregroundVerified: false,
+      windowReady: this.windowReady,
+      windowVisible,
+      message: recovering ? "Восстанавливаю детектор GTA" : "Ожидаю GTA V / RAGE MP",
     };
   }
 
@@ -600,9 +645,10 @@ export class AtlasOverlayController {
       throw new Error("atlas_overlay_position_invalid");
     }
     const area = this.activeGameWindow.workArea;
-    const margin = 18;
-    const availableWidth = Math.max(1, area.width - OVERLAY_WIDTH - margin * 2);
-    const availableHeight = Math.max(1, area.height - OVERLAY_HEIGHT - margin * 2);
+    const firstPosition = resolveAtlasOverlayWindowBounds(area, 0, 0);
+    const lastPosition = resolveAtlasOverlayWindowBounds(area, 1, 1);
+    const availableWidth = Math.max(1, lastPosition.x - firstPosition.x);
+    const availableHeight = Math.max(1, lastPosition.y - firstPosition.y);
     const next = normalizeAtlasOverlayConfig({
       ...this.config,
       positionX: this.config.positionX + Math.max(-360, Math.min(360, x)) / availableWidth,
@@ -703,6 +749,7 @@ export class AtlasOverlayController {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.manualInputTimer) clearTimeout(this.manualInputTimer);
     if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
+    if (this.fallbackGameScanTimer) clearTimeout(this.fallbackGameScanTimer);
     if (this.initializationTimer) clearTimeout(this.initializationTimer);
     if (this.overlayWindowRecoveryTimer) clearTimeout(this.overlayWindowRecoveryTimer);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
@@ -745,6 +792,7 @@ export class AtlasOverlayController {
       maximizable: false,
       fullscreenable: false,
       focusable: false,
+      alwaysOnTop: true,
       skipTaskbar: true,
       hasShadow: false,
       webPreferences: {
@@ -781,6 +829,11 @@ export class AtlasOverlayController {
     });
     overlayWindow.on("unresponsive", () => {
       this.scheduleOverlayWindowRecovery(overlayWindow, new Error("renderer_unresponsive"));
+    });
+    overlayWindow.on("always-on-top-changed", (_event, isAlwaysOnTop) => {
+      if (!isAlwaysOnTop && this.activeGameWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setAlwaysOnTop(true, "screen-saver", 1);
+      }
     });
     overlayWindow.webContents.on("render-process-gone", (_event, details) => {
       this.scheduleOverlayWindowRecovery(
@@ -821,12 +874,10 @@ export class AtlasOverlayController {
     // monitor work area, and no probe means no placement/visibility.
     const area = this.activeGameWindow?.workArea;
     if (!area) return;
-    const margin = 18;
-    const availableWidth = Math.max(0, area.width - OVERLAY_WIDTH - margin * 2);
-    const availableHeight = Math.max(0, area.height - OVERLAY_HEIGHT - margin * 2);
-    const x = area.x + margin + Math.round(availableWidth * this.config.positionX);
-    const y = area.y + margin + Math.round(availableHeight * this.config.positionY);
-    this.window.setBounds({ x, y, width: OVERLAY_WIDTH, height: OVERLAY_HEIGHT }, false);
+    this.window.setBounds(
+      resolveAtlasOverlayWindowBounds(area, this.config.positionX, this.config.positionY),
+      false,
+    );
   }
 
   private show(): void {
@@ -843,7 +894,8 @@ export class AtlasOverlayController {
     // always-on-top window when GTA switches render surfaces or GPUs.
     this.window.setAlwaysOnTop(true, "screen-saver", 1);
     this.window.showInactive();
-    this.window.moveTop();
+    this.raiseOverlayAboveGame();
+    this.window.webContents.invalidate();
     this.updateOverlayInputMode();
     this.emit({ type: "show" });
   }
@@ -1438,7 +1490,7 @@ export class AtlasOverlayController {
       this.config.enabled &&
       this.projection?.allowed &&
       this.config.showGameStatus &&
-      this.activeGameWindow,
+      this.activeGameWindow?.foregroundVerified,
     );
   }
 
@@ -1514,10 +1566,11 @@ export class AtlasOverlayController {
       });
       this.armForegroundProbeWatchdog(helper);
     } catch (error) {
-      this.options.onLog?.("Atlas overlay foreground helper could not start; overlay stays hidden", error);
+      this.options.onLog?.("Atlas foreground helper could not start; enabling compatibility detection", error);
       this.setActiveGameWindow(undefined);
       this.hide();
       this.scheduleForegroundProbeRestart(error);
+      this.startFallbackGameScan();
     }
   }
 
@@ -1528,6 +1581,9 @@ export class AtlasOverlayController {
     this.foregroundLossTimer = undefined;
     if (this.foregroundProbeRestartTimer) clearTimeout(this.foregroundProbeRestartTimer);
     this.foregroundProbeRestartTimer = undefined;
+    if (this.fallbackGameScanTimer) clearTimeout(this.fallbackGameScanTimer);
+    this.fallbackGameScanTimer = undefined;
+    this.fallbackGameScanInFlight = false;
     if (resetRestart) this.foregroundProbeRestartAttempts = 0;
     const helper = this.foregroundProbe;
     this.foregroundProbe = undefined;
@@ -1551,15 +1607,13 @@ export class AtlasOverlayController {
       return;
     }
     this.foregroundProbeRestartAttempts = 0;
+    this.stopFallbackGameScan();
     this.armForegroundProbeWatchdog(helper);
     const detected = resolveAtlasOverlayForegroundGame(probe);
     const next = detected
       ? {
           ...detected,
-          workArea: resolveAtlasOverlayDisplayArea(
-            detected.workArea,
-            screen.getAllDisplays().map((display) => ({ ...display.workArea })),
-          ),
+          workArea: this.nativeWorkAreaToDip(detected.workArea),
         }
       : undefined;
     if (!next && this.isOwnManualInputForeground(probe)) {
@@ -1620,8 +1674,9 @@ export class AtlasOverlayController {
     if (!helper.killed) helper.kill();
     this.setActiveGameWindow(undefined);
     this.cancel();
-    this.options.onLog?.("Atlas overlay foreground probe unavailable; overlay stays hidden", error);
+    this.options.onLog?.("Atlas foreground probe unavailable; enabling compatibility detection", error);
     this.scheduleForegroundProbeRestart(error);
+    this.startFallbackGameScan();
   }
 
   private foregroundLossGraceMs(): number {
@@ -1679,7 +1734,8 @@ export class AtlasOverlayController {
       } else {
         this.positionWindow();
         this.window.setAlwaysOnTop(true, "screen-saver", 1);
-        this.window.moveTop();
+        this.raiseOverlayAboveGame();
+        this.window.webContents.invalidate();
       }
     }).catch((error) => {
       this.options.onLog?.("Atlas overlay visibility self-heal failed", error);
@@ -1708,6 +1764,109 @@ export class AtlasOverlayController {
     this.updateOverlayInputMode();
   }
 
+  private nativeWorkAreaToDip(area: AtlasOverlayForegroundProbe["workArea"]): NonNullable<AtlasOverlayForegroundProbe["workArea"]> {
+    if (!area) return { ...screen.getPrimaryDisplay().workArea };
+    try {
+      const converted = process.platform === "win32"
+        ? screen.screenToDipRect(null, area)
+        : area;
+      if (converted.width >= 200 && converted.height >= 120) return converted;
+    } catch (error) {
+      this.options.onLog?.("Atlas overlay DPI conversion failed; using display matcher", error);
+    }
+    return resolveAtlasOverlayDisplayArea(
+      area,
+      screen.getAllDisplays().map((display) => ({ ...display.workArea })),
+    );
+  }
+
+  private raiseOverlayAboveGame(): void {
+    const overlayWindow = this.window;
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const mediaSourceId = this.activeGameWindow?.mediaSourceId;
+    if (mediaSourceId) {
+      try {
+        overlayWindow.moveAbove(mediaSourceId);
+        return;
+      } catch (error) {
+        const now = Date.now();
+        if (now - this.lastNativeZOrderErrorAt > 30_000) {
+          this.lastNativeZOrderErrorAt = now;
+          this.options.onLog?.("Atlas could not attach above the GTA window; using global topmost", error);
+        }
+      }
+    }
+    overlayWindow.moveTop();
+  }
+
+  /**
+   * Corporate PowerShell policies can block Add-Type on otherwise supported
+   * Windows PCs. In that case DesktopCapturer still exposes GTA's exact HWND
+   * and display id. This fallback is intentionally used only while the native
+   * foreground helper is unavailable.
+   */
+  private startFallbackGameScan(): void {
+    if (
+      this.fallbackGameScanTimer ||
+      this.fallbackGameScanInFlight ||
+      this.foregroundProbe ||
+      !this.config.enabled ||
+      !this.projection?.allowed ||
+      process.platform !== "win32"
+    ) return;
+    const scan = async () => {
+      this.fallbackGameScanTimer = undefined;
+      if (this.foregroundProbe || !this.config.enabled || !this.projection?.allowed) return;
+      this.fallbackGameScanInFlight = true;
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ["window"],
+          thumbnailSize: { width: 0, height: 0 },
+          fetchWindowIcons: false,
+        });
+        const source = sources.find((candidate) => {
+          const name = candidate.name.trim();
+          return GAME_WINDOW_SOURCE_PATTERN.test(name) && !NON_GAME_WINDOW_SOURCE_PATTERN.test(name);
+        });
+        if (!source) {
+          if (this.activeGameWindow && !this.activeGameWindow.foregroundVerified) {
+            this.setActiveGameWindow(undefined);
+            this.cancel();
+          }
+        } else {
+          const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === source.display_id)
+            || screen.getPrimaryDisplay();
+          const next: AtlasOverlayActiveGameWindow = {
+            title: source.name,
+            processName: "desktop-capturer-fallback",
+            processId: 0,
+            mediaSourceId: source.id,
+            foregroundVerified: false,
+            workArea: { ...display.workArea },
+          };
+          this.lastFallbackGameSeenAt = Date.now();
+          const changed = !this.sameGameWindow(this.activeGameWindow, next);
+          this.setActiveGameWindow(next);
+          if (changed) this.positionWindow();
+          this.healOverlayVisibility();
+        }
+      } catch (error) {
+        this.options.onLog?.("Atlas fallback game scan failed", error);
+      } finally {
+        this.fallbackGameScanInFlight = false;
+        if (!this.foregroundProbe && this.config.enabled && this.projection?.allowed) {
+          this.fallbackGameScanTimer = setTimeout(scan, FALLBACK_GAME_SCAN_MS);
+        }
+      }
+    };
+    void scan();
+  }
+
+  private stopFallbackGameScan(): void {
+    if (this.fallbackGameScanTimer) clearTimeout(this.fallbackGameScanTimer);
+    this.fallbackGameScanTimer = undefined;
+  }
+
   private showInitialization(): void {
     if (this.initializationTimer) clearTimeout(this.initializationTimer);
     this.show();
@@ -1730,6 +1889,8 @@ export class AtlasOverlayController {
     return (
       first.processName === second.processName &&
       first.processId === second.processId &&
+      first.mediaSourceId === second.mediaSourceId &&
+      first.foregroundVerified === second.foregroundVerified &&
       first.title === second.title &&
       first.workArea.x === second.workArea.x &&
       first.workArea.y === second.workArea.y &&
@@ -1758,6 +1919,12 @@ export class AtlasOverlayController {
 
   private isActiveGameProcessAlive(): boolean {
     const processId = this.activeGameWindow?.processId;
+    if (
+      this.activeGameWindow &&
+      !this.activeGameWindow.foregroundVerified &&
+      this.activeGameWindow.mediaSourceId &&
+      Date.now() - this.lastFallbackGameSeenAt < FALLBACK_GAME_SCAN_MS * 3
+    ) return true;
     if (!Number.isSafeInteger(processId) || !processId || processId < 1) return false;
     try {
       process.kill(processId, 0);

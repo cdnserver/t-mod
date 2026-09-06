@@ -18,6 +18,7 @@ import type {
   AtlasOverlayEvent,
   AtlasOverlayPttPhase,
   AtlasOverlaySpeechResult,
+  AtlasOverlayRuntimeStatus,
   AtlasOverlaySubmitResult,
   AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
@@ -88,6 +89,7 @@ contextBridge.exposeInMainWorld("tmodDesktop", api);
 const overlayApi: AtlasOverlayApi = {
   getConfig: () => ipcRenderer.invoke("atlas-overlay:get-config") as Promise<AtlasOverlayConfig>,
   getCatalog: () => ipcRenderer.invoke("atlas-overlay:get-catalog") as Promise<AtlasOverlayCatalog>,
+  getStatus: () => ipcRenderer.invoke("atlas-overlay:get-status") as Promise<AtlasOverlayRuntimeStatus>,
   saveConfig: (patch) =>
     ipcRenderer.invoke("atlas-overlay:save-config", patch) as Promise<AtlasOverlayConfig>,
   moveBy: (deltaX, deltaY) =>

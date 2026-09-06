@@ -204,9 +204,20 @@ export interface AtlasOverlaySpeechResult {
   error?: string;
 }
 
+export interface AtlasOverlayRuntimeStatus {
+  mode: "disabled" | "denied" | "unsupported" | "waiting" | "native" | "compatibility" | "recovering";
+  gameDetected: boolean;
+  foregroundVerified: boolean;
+  windowReady: boolean;
+  windowVisible: boolean;
+  display?: { x: number; y: number; width: number; height: number };
+  message: string;
+}
+
 export interface AtlasOverlayApi {
   getConfig(): Promise<AtlasOverlayConfig>;
   getCatalog(): Promise<AtlasOverlayCatalog>;
+  getStatus(): Promise<AtlasOverlayRuntimeStatus>;
   saveConfig(patch: Partial<AtlasOverlayConfig>): Promise<AtlasOverlayConfig>;
   moveBy(deltaX: number, deltaY: number): Promise<AtlasOverlayConfig>;
   getVoices(): Promise<AtlasOverlayVoiceCatalog>;

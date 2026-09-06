@@ -24,6 +24,7 @@ import type {
 import type {
   AtlasOverlayCatalog,
   AtlasOverlayConfig,
+  AtlasOverlayRuntimeStatus,
   AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
 import {
@@ -1188,6 +1189,14 @@ function AtlasSettingsPage({
   });
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
   const [microphoneStatus, setMicrophoneStatus] = useState<"idle" | "testing" | "ready" | "silent" | "error">("idle");
+  const [runtimeStatus, setRuntimeStatus] = useState<AtlasOverlayRuntimeStatus>({
+    mode: "disabled",
+    gameDetected: false,
+    foregroundVerified: false,
+    windowReady: false,
+    windowVisible: false,
+    message: "Проверяю Atlas Overlay",
+  });
   const aiVoiceAvailability = aiVoices.availability?.state ?? (aiVoices.configured ? "ready" : "unconfigured");
   const aiVoiceStatusLabel = aiVoiceAvailability === "ready"
     ? "AI-голос готов"
@@ -1228,6 +1237,16 @@ function AtlasSettingsPage({
       if (catalog) setAiVoices(catalog);
     }).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void overlayApi()?.getStatus().then((status) => {
+      if (active && status) setRuntimeStatus(status);
+    }).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 1_500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [overlayConfig.enabled, overlayAllowed]);
 
   useEffect(() => {
     void navigator.mediaDevices?.enumerateDevices().then((devices) => {
@@ -1313,14 +1332,14 @@ function AtlasSettingsPage({
     <header className="atlas-settings-page-hero">
       <div className="atlas-settings-page-orbit" aria-hidden="true"><i/><i/><span><Icon name="atlas"/></span></div>
       <div><p className="kicker">ATLAS · FIELD SYSTEM</p><h1>Пульт полевого интерфейса</h1><p>Настройте поведение Atlas поверх GTA V: от формы ожидания и голоса до управления без курсора.</p></div>
-      <div className="atlas-settings-page-state"><i className={overlayConfig.enabled && overlayAllowed ? "active" : ""}/><span><small>СОСТОЯНИЕ</small><strong>{overlayConfig.enabled && overlayAllowed ? "Готов к игре" : "Отключён"}</strong></span></div>
+      <div className="atlas-settings-page-state"><i className={runtimeStatus.gameDetected ? "active" : ""}/><span><small>СОСТОЯНИЕ</small><strong>{runtimeStatus.message}</strong></span></div>
       <button className="atlas-settings-page-close" onClick={onClose}><Icon name="back"/> Вернуться в Atlas</button>
     </header>
     <div className="atlas-settings-telemetry" aria-label="Сводка Atlas Overlay">
-      <span><small>ПРОФИЛЬ</small><strong>{overlayConfig.responseMode === "quick" ? "Точный полевой" : "Контекстный"}</strong></span>
-      <span><small>ФОРМА</small><strong>{{ orb: "Импульс", bar: "Строка", full: "Панель" }[overlayConfig.idleStyle]}</strong></span>
-      <span><small>ДВИЖЕНИЕ</small><strong>{{ cinematic: "Кинематографично", balanced: "Сбалансировано", minimal: "Производительно" }[overlayConfig.motion]}</strong></span>
-      <span><small>ОТВЕТ</small><strong>{{ brief: "Кратко", auto: "До конца речи", pinned: "Закреплён" }[overlayConfig.answerHold]}</strong></span>
+      <span><small>ДЕТЕКТОР</small><strong>{runtimeStatus.mode === "native" ? "Точный Win32" : runtimeStatus.mode === "compatibility" ? "Совместимость" : runtimeStatus.mode === "recovering" ? "Восстановление" : "Ожидание"}</strong></span>
+      <span><small>ИГРА</small><strong>{runtimeStatus.gameDetected ? "Обнаружена" : "Не в фокусе"}</strong></span>
+      <span><small>ЭКРАН</small><strong>{runtimeStatus.display ? `${runtimeStatus.display.width} × ${runtimeStatus.display.height}` : "Определится в GTA"}</strong></span>
+      <span><small>ОКНО ATLAS</small><strong>{runtimeStatus.windowReady ? runtimeStatus.windowVisible ? "На экране" : "Готово" : "Загрузка"}</strong></span>
     </div>
     <div className="atlas-settings-page-layout">
       <nav className="atlas-settings-page-nav" aria-label="Разделы настроек">
@@ -1352,6 +1371,7 @@ function AtlasSettingsPage({
             <SettingToggle label="Показывать статус в игре" hint="Компактная строка появляется при запуске GTA V, Majestic или RAGE Multiplayer" active={overlayConfig.showGameStatus} onClick={() => void onOverlayChange({ showGameStatus: !overlayConfig.showGameStatus })}/>
             <SettingToggle label="Инициализация при входе в игру" hint="Показывается только один раз за запуск T-Mod — при первом фокусе GTA V" active={overlayConfig.initializationAnimation} onClick={() => void onOverlayChange({ initializationAnimation: !overlayConfig.initializationAnimation })}/>
             <SettingToggle label="Показывать в записи и трансляции" hint="Сохраняет стабильный источник Atlas Overlay для OBS" active={overlayConfig.captureInRecordings} onClick={() => void onOverlayChange({ captureInRecordings: !overlayConfig.captureInRecordings })}/>
+            {runtimeStatus.mode === "compatibility" && <div className="overlay-access-note warning"><Icon name="shield"/><span><strong>Включён режим совместимости</strong><small>Windows ограничил точный детектор, поэтому Atlas привязан к найденному окну GTA резервным способом. Горячая клавиша и ответы продолжат работать.</small></span></div>}
             <div className="atlas-settings-section-heading"><span>02</span><div><strong>Игровой контекст</strong><small>Кто обращается к Atlas и в каком контуре</small></div></div>
             <div id="atlas-settings-persona" className="overlay-setting-block atlas-settings-anchor">
               <span className="overlay-setting-title">Персонаж</span>

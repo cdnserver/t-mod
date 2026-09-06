@@ -888,6 +888,9 @@ function registerIpc(): void {
   ipcMain.handle("atlas-overlay:get-catalog", (event) =>
     trustedOverlayOrShell(event) ? atlasOverlay?.getCatalog() : undefined,
   );
+  ipcMain.handle("atlas-overlay:get-status", (event) =>
+    trustedOverlayOrShell(event) ? atlasOverlay?.getStatus() : undefined,
+  );
   ipcMain.handle("atlas-overlay:get-voices", (event) =>
     trustedOverlayOrShell(event) ? atlasOverlay?.getVoices() : undefined,
   );
