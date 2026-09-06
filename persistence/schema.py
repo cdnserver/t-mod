@@ -2037,6 +2037,39 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_membership_application_events
             ON membership_application_events(application_id, id ASC);
 
+            -- Data-subject requests are deliberately separate from profiles
+            -- and support tickets.  A request must remain available for the
+            -- technical administrator even if the applicant later removes
+            -- their T-Mod account.  ``receipt_key`` makes browser retries
+            -- idempotent without exposing the sequential database id.
+            CREATE TABLE IF NOT EXISTS privacy_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_code TEXT NOT NULL UNIQUE,
+                receipt_key TEXT NOT NULL UNIQUE,
+                request_type TEXT NOT NULL,
+                requester_email TEXT NOT NULL,
+                account_login TEXT,
+                discord_id INTEGER,
+                account_user_id INTEGER,
+                scope TEXT NOT NULL,
+                details TEXT,
+                status TEXT NOT NULL DEFAULT 'received',
+                remote_hash TEXT,
+                user_agent TEXT,
+                notification_attempts INTEGER NOT NULL DEFAULT 0,
+                notification_sent_at TEXT,
+                notification_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_privacy_requests_work_queue
+            ON privacy_requests(status, created_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_privacy_requests_identity
+            ON privacy_requests(discord_id, account_user_id, created_at);
+
             CREATE TABLE IF NOT EXISTS admin_broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,

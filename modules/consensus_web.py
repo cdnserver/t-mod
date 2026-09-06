@@ -57,6 +57,7 @@ from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
 from modules.global_log_runtime import global_log_web_middleware, runtime_health as global_log_runtime_health
 from modules.global_log_web import register_global_log_web_routes
+from modules.legal_web import register_legal_web_routes
 from persistence import activity_repository as meta_storage
 from persistence import consensus_preparation_repository as preparation_storage
 from persistence import tvrs_repository as tvrs_storage
@@ -1011,6 +1012,10 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = REACTOR_WEB_PUBLIC_URL
     elif belongs_to("/reactor") or belongs_to("/games"):
         target_url = PORTAL_WEB_PUBLIC_URL
+    elif path.rstrip("/") in {
+        "/legal", "/privacy", "/terms", "/cookies", "/data-request"
+    }:
+        target_url = PORTAL_WEB_PUBLIC_URL
     elif belongs_to("/atlas"):
         target_url = ATLAS_WEB_PUBLIC_URL
     elif belongs_to("/sgl"):
@@ -1170,11 +1175,20 @@ def create_consensus_web_app(
             )
         request[_GLOBAL_BAN_REQUEST_KEY] = ban
         if ban is not None:
+            legal_access = request.path.rstrip("/") in {
+                "/legal",
+                "/privacy",
+                "/terms",
+                "/cookies",
+                "/data-request",
+                "/api/privacy/requests",
+            }
             allowed = (
                 request.path in {"/banned", "/api/banned", "/api/health", "/favicon.ico"}
                 or request.path.startswith("/assets/")
                 or request.path.startswith("/global-log")
                 or request.path.startswith("/api/global-log")
+                or legal_access
             )
             if not allowed:
                 if request.path.startswith("/api/"):
@@ -2120,6 +2134,12 @@ def create_consensus_web_app(
         authenticate=authenticated_request,
     )
     register_admission_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+    )
+    register_legal_web_routes(
         app,
         bot,
         guild_id=int(guild_id),

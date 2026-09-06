@@ -870,6 +870,17 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "https://atlas.tvr.lat/atlas",
         )
 
+        privacy = SimpleNamespace(
+            path="/privacy",
+            query={},
+            host="atlas.tvr.lat",
+            rel_url="/privacy",
+        )
+        self.assertEqual(
+            _canonical_surface_location(privacy),  # type: ignore[arg-type]
+            "https://tvr.lat/privacy",
+        )
+
         # A marker from a public/untrusted hop must not override the internal
         # host, preventing clients from spoofing cookie scope or routing.
         untrusted = SimpleNamespace(
