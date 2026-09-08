@@ -98,6 +98,60 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(updated["revision"], workspace["revision"])
         self.assertEqual(clarification, generated.clarification)
 
+    def test_ai_generation_keeps_returned_workspace_separate_from_new_draft(self) -> None:
+        returned, _ = create_workspace(77, 101, "Автор")
+        returned = save_workspace(77, 101, self.complete_payload(returned))
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE tvrs_bill_workspaces
+                SET status = 'moderation',
+                    moderation_status = 'pending',
+                    revision = revision + 1
+                WHERE id = ?
+                """,
+                (returned["id"],),
+            )
+            con.commit()
+        new_draft, created = create_workspace(77, 101, "Автор")
+        self.assertTrue(created)
+        self.assertNotEqual(new_draft["id"], returned["id"])
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE tvrs_bill_workspaces
+                SET status = 'changes_requested',
+                    moderation_status = 'changes_requested',
+                    revision = revision + 1
+                WHERE id = ?
+                """,
+                (returned["id"],),
+            )
+            con.commit()
+        returned = workspace_storage.get_bill_workspace(returned["id"])
+
+        payload = self.complete_payload(returned)
+        generated = BillEditorDraft(
+            title="Исправленный справочник участников",
+            summary="Создать исправленный справочник участников с учётом замечаний модерации.",
+            materials=None,
+            decision_category="ordinary",
+            implementation_plan="Подготовить исправленную форму и открыть справочник.",
+            leadership_actions="Проверить исправления и назначить ответственного.",
+        )
+        with patch(
+            "modules.reactor_legislation.generate_bill_editor_draft",
+            return_value=generated,
+        ):
+            updated, _ = generate_workspace_draft(77, 101, payload)
+
+        self.assertEqual(updated["status"], "changes_requested")
+        self.assertEqual(updated["title"], generated.title)
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(new_draft["id"])["status"],
+            "draft",
+        )
+
     def test_invalid_ids_lengths_and_stale_revisions_return_domain_errors(self) -> None:
         workspace, _ = create_workspace(77, 101, "Автор")
         payload = self.complete_payload(workspace)

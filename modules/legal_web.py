@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import logging
 import re
 import time
 from collections import defaultdict, deque
@@ -16,6 +18,7 @@ from aiohttp import web
 from modules.consensus_web_auth import signed_session_identity
 from modules.control_center_runtime import resolve_registered_channel
 from modules.global_log_runtime import emit_global_event, hash_remote
+from modules.privacy_export import build_personal_data_archive
 from persistence import privacy_repository as privacy_storage
 
 
@@ -30,6 +33,7 @@ _TYPE_LABELS = {
     "object": "Возражение против обработки",
     "question": "Вопрос о данных",
 }
+logger = logging.getLogger(__name__)
 
 
 def _remote_address(request: web.Request) -> str:
@@ -94,6 +98,62 @@ def register_legal_web_routes(
             error=None if delivered else "technical_channel_unavailable",
         )
         return delivered
+
+    async def deliver_verified_access_copy(item: dict[str, Any]) -> bool:
+        claimed = await asyncio.to_thread(
+            privacy_storage.claim_verified_access_request,
+            int(item["id"]),
+        )
+        if claimed is None:
+            return False
+        try:
+            archive = await asyncio.to_thread(build_personal_data_archive, claimed)
+            if len(archive) > 24 * 1024 * 1024:
+                raise RuntimeError("privacy_archive_too_large_for_discord")
+            user_id = int(claimed["account_user_id"])
+            user = bot.get_user(user_id)
+            if user is None:
+                user = await asyncio.wait_for(bot.fetch_user(user_id), timeout=8.0)
+            filename = f"tmod-personal-data-{claimed['request_code']}.zip"
+            await asyncio.wait_for(
+                user.send(
+                    (
+                        f"Ваш запрос **{claimed['request_code']}** выполнен. "
+                        "В архиве находится копия данных, связанных с вашим "
+                        "T-Mod аккаунтом. Не пересылайте архив третьим лицам."
+                    ),
+                    file=discord.File(io.BytesIO(archive), filename=filename),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                ),
+                timeout=30.0,
+            )
+            await asyncio.to_thread(
+                privacy_storage.complete_verified_access_request,
+                int(claimed["id"]),
+            )
+            emit_global_event(
+                {
+                    "source_service": "legal",
+                    "source_type": "privacy_request",
+                    "event_type": "privacy_access_copy_delivered",
+                    "severity": "info",
+                    "actor_user_id": user_id,
+                    "guild_id": int(guild_id),
+                    "target_type": "privacy_request",
+                    "target_id": str(claimed.get("request_code") or ""),
+                    "summary": "Копия персональных данных доставлена владельцу аккаунта",
+                    "details": {"archive_size_bytes": len(archive)},
+                }
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - durable retry queue
+            logger.exception("Could not deliver verified privacy access copy")
+            await asyncio.to_thread(
+                privacy_storage.fail_verified_access_request,
+                int(claimed["id"]),
+                f"{type(exc).__name__}: {exc}",
+            )
+            return False
 
     async def create_request(request: web.Request) -> web.Response:
         if request.content_type != "application/json":
@@ -230,6 +290,12 @@ def register_legal_web_routes(
             )
             for item in pending:
                 await deliver_notification(item)
+            access_requests = await asyncio.to_thread(
+                privacy_storage.list_verified_access_requests,
+                5,
+            )
+            for item in access_requests:
+                await deliver_verified_access_copy(item)
             await asyncio.sleep(300)
 
     async def start_notification_retry(_: web.Application) -> None:

@@ -2059,6 +2059,9 @@ def init_db() -> None:
                 notification_attempts INTEGER NOT NULL DEFAULT 0,
                 notification_sent_at TEXT,
                 notification_error TEXT,
+                response_attempts INTEGER NOT NULL DEFAULT 0,
+                response_sent_at TEXT,
+                response_error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 resolved_at TEXT
@@ -2638,6 +2641,9 @@ def init_db() -> None:
         _add_column_if_missing(con, "market_items", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(con, "market_item_history", "external_id", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "market_item_history", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(con, "privacy_requests", "response_attempts", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(con, "privacy_requests", "response_sent_at", "TEXT")
+        _add_column_if_missing(con, "privacy_requests", "response_error", "TEXT")
         con.execute(
             "UPDATE market_items SET external_id = CAST(item_id AS TEXT) WHERE external_id IS NULL OR external_id = ''"
         )

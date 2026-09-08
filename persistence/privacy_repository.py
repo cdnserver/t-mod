@@ -160,6 +160,76 @@ def list_unnotified_privacy_requests(limit: int = 20) -> list[dict[str, Any]]:
     return [_row_payload(row) for row in rows]
 
 
+def list_verified_access_requests(limit: int = 5) -> list[dict[str, Any]]:
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM privacy_requests
+            WHERE request_type IN ('access', 'export')
+              AND status IN ('received', 'delivery_failed')
+              AND account_user_id IS NOT NULL
+              AND discord_id = account_user_id
+              AND COALESCE(response_attempts, 0) < 5
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 20)),),
+        ).fetchall()
+    return [_row_payload(row) for row in rows]
+
+
+def claim_verified_access_request(request_id: int) -> dict[str, Any] | None:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            """
+            UPDATE privacy_requests
+            SET status = 'processing', response_attempts = COALESCE(response_attempts, 0) + 1,
+                response_error = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('received', 'delivery_failed')
+              AND request_type IN ('access', 'export')
+              AND account_user_id IS NOT NULL AND discord_id = account_user_id
+            """,
+            (now, int(request_id)),
+        )
+        if changed.rowcount != 1:
+            con.rollback()
+            return None
+        row = con.execute("SELECT * FROM privacy_requests WHERE id = ?", (int(request_id),)).fetchone()
+        con.commit()
+    return _row_payload(row) if row is not None else None
+
+
+def complete_verified_access_request(request_id: int) -> None:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            UPDATE privacy_requests
+            SET status = 'resolved', response_sent_at = ?, response_error = NULL,
+                resolved_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'processing'
+            """,
+            (now, now, now, int(request_id)),
+        )
+        con.commit()
+
+
+def fail_verified_access_request(request_id: int, error: str) -> None:
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            UPDATE privacy_requests
+            SET status = 'delivery_failed', response_error = ?, updated_at = ?
+            WHERE id = ? AND status = 'processing'
+            """,
+            (str(error or "privacy_delivery_failed")[:1000], now, int(request_id)),
+        )
+        con.commit()
+
+
 def record_privacy_notification(
     request_id: int,
     *,
@@ -193,6 +263,10 @@ __all__ = [
     "PRIVACY_REQUEST_TYPES",
     "create_privacy_request",
     "get_privacy_request",
+    "list_verified_access_requests",
+    "claim_verified_access_request",
+    "complete_verified_access_request",
+    "fail_verified_access_request",
     "list_unnotified_privacy_requests",
     "record_privacy_notification",
 ]

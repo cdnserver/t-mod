@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import io
+import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import storage
 from modules.legal_web import register_legal_web_routes
+from modules.privacy_export import build_personal_data_archive
 from persistence import privacy_repository
 
 
@@ -66,6 +70,36 @@ class PrivacyRepositoryTests(unittest.TestCase):
                 remote_hash=None,
                 user_agent=None,
             )
+
+    def test_verified_access_request_builds_redacted_archive_and_can_be_completed(self) -> None:
+        item, _ = privacy_repository.create_privacy_request(
+            receipt_key="privacy-access-receipt-123456",
+            request_type="access",
+            requester_email="owner@example.com",
+            account_login="owner",
+            discord_id="697452945083727962",
+            account_user_id=697452945083727962,
+            scope="Все данные",
+            details=None,
+            remote_hash="hashed-address",
+            user_agent="test",
+        )
+        pending = privacy_repository.list_verified_access_requests()
+        self.assertEqual([row["id"] for row in pending], [item["id"]])
+        claimed = privacy_repository.claim_verified_access_request(item["id"])
+        self.assertEqual(claimed["status"], "processing")
+
+        archive = build_personal_data_archive(claimed)
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            payload = json.loads(bundle.read("personal-data.json"))
+        self.assertEqual(payload["subject"]["discord_user_id"], 697452945083727962)
+        record = payload["main_database"]["privacy_requests"]["records"][0]
+        self.assertEqual(record["receipt_key"], "[не раскрывается для безопасности аккаунта]")
+
+        privacy_repository.complete_verified_access_request(item["id"])
+        resolved = privacy_repository.get_privacy_request(item["request_code"])
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertIsNotNone(resolved["response_sent_at"])
 
 
 class PrivacyWebTests(unittest.IsolatedAsyncioTestCase):

@@ -626,6 +626,28 @@ def search_events(filters: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def personal_data_events(actor_user_id: int, *, limit: int = 50_000) -> tuple[int, list[dict[str, Any]]]:
+    """Return the subject's own audit events for a verified access request."""
+
+    initialize_global_log()
+    selected_limit = max(1, min(100_000, int(limit)))
+    names = _EVENT_COLUMNS
+    pool = _connection_pool()
+    with pool.connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM global_log_events WHERE actor_user_id = %s",
+            (int(actor_user_id),),
+        )
+        count = int(cursor.fetchone()[0])
+        cursor.execute(
+            "SELECT " + ", ".join(names)
+            + " FROM global_log_events WHERE actor_user_id = %s ORDER BY id ASC LIMIT %s",
+            (int(actor_user_id), selected_limit),
+        )
+        rows = cursor.fetchall()
+    return count, [_event_dict(row, names) for row in rows]
+
+
 def related_events(event_id: int, *, limit: int = 120) -> dict[str, Any]:
     """Return a scored, chronological reconstruction around one event."""
     initialize_global_log()
@@ -805,6 +827,6 @@ def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
 __all__ = [
     "allowed_user_ids", "append_event", "append_events", "canonical_event_payload", "consume_login_code",
     "facets", "global_log_database_name", "global_log_enabled", "initialize_global_log",
-    "issue_login_code", "prepare_event", "related_events", "resolve_session", "revoke_session", "search_events",
+    "issue_login_code", "personal_data_events", "prepare_event", "related_events", "resolve_session", "revoke_session", "search_events",
     "user_is_allowed", "verify_chain",
 ]
