@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -55,9 +54,13 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
 @dataclass(frozen=True, slots=True)
 class AtlasForumEngineConfig:
     enabled: bool = True
-    initial_delay_seconds: int = 90
-    scheduler_poll_seconds: int = 30
+    # The open complaint feed is an alerting surface, not a slow indexing job.
+    # Five-second scheduler ticks plus a 45-second feed lease keep discovery
+    # inside the promised one-minute window without continuously driving Chrome.
+    initial_delay_seconds: int = 15
+    scheduler_poll_seconds: int = 5
     hydration_batch_size: int = 50
+    hot_hydration_batch_size: int = 4
     full_scan_interval_seconds: int = 43_200
 
     @classmethod
@@ -65,38 +68,21 @@ class AtlasForumEngineConfig:
         return cls(
             enabled=_flag("ATLAS_FORUM_ENGINE_ENABLED", True),
             initial_delay_seconds=_bounded_int(
-                "ATLAS_FORUM_ENGINE_INITIAL_DELAY_SECONDS", 90, 5, 900
+                "ATLAS_FORUM_ENGINE_INITIAL_DELAY_SECONDS", 15, 2, 900
             ),
             scheduler_poll_seconds=_bounded_int(
-                "ATLAS_FORUM_ENGINE_POLL_SECONDS", 30, 15, 300
+                "ATLAS_FORUM_ENGINE_POLL_SECONDS", 5, 2, 60
             ),
             hydration_batch_size=_bounded_int(
                 "ATLAS_FORUM_ENGINE_HYDRATION_BATCH", 50, 5, 150
+            ),
+            hot_hydration_batch_size=_bounded_int(
+                "ATLAS_FORUM_ENGINE_HOT_HYDRATION_BATCH", 4, 1, 12
             ),
             full_scan_interval_seconds=_bounded_int(
                 "ATLAS_FORUM_ENGINE_FULL_SCAN_SECONDS", 43_200, 1800, 604_800
             ),
         )
-
-
-def _parse_time(value: object) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _full_scan_due(feed: dict[str, Any], interval_seconds: int) -> bool:
-    if not feed.get("baseline_completed_at"):
-        return True
-    last = _parse_time(feed.get("last_full_scan_at"))
-    return last is None or last <= datetime.now(timezone.utc) - timedelta(seconds=interval_seconds)
 
 
 def _snapshot_fingerprint(snapshot: AtlasForumSnapshot) -> str:
@@ -299,7 +285,10 @@ class AtlasForumEngineRunner:
         if claimed is None:
             return {"status": "skipped"}
         baseline_exists = bool(claimed.get("baseline_completed_at"))
-        full_scan = force or _full_scan_due(claimed, self.config.full_scan_interval_seconds)
+        # Deep archive traversal is deliberate (`force`) because hundreds of
+        # Selenium pages would otherwise block the hot feed and make a fresh
+        # complaint arrive late. Normal cycles always inspect the newest pages.
+        full_scan = force
         max_pages = int(claimed["full_pages"] if full_scan else claimed["hot_pages"])
         try:
             inventory = await self.forum.fetch_inventory(
@@ -327,20 +316,31 @@ class AtlasForumEngineRunner:
                         "sticky": entry.sticky,
                         "monitor_feed": str(claimed["feed_key"]),
                     },
-                    notify=baseline_exists,
+                    # A forced archive backfill must never flood members with
+                    # historical complaints which merely became known today.
+                    notify=baseline_exists and not full_scan,
                 )
                 created += 1 if result["created"] else 0
                 changed += 1 if result["listing_changed"] else 0
                 status_changes += 1 if result["section_changed"] else 0
                 if result["created"] or result["listing_changed"]:
                     changed_urls.append(entry.url)
-                    notify_by_url[entry.url] = baseline_exists
+                    notify_by_url[entry.url] = baseline_exists and not full_scan
+            # A deep archive backfill may hydrate a large batch. The hot path is
+            # intentionally tiny: fresh URLs are first and one slow historical
+            # topic cannot hold the shared browser long enough to miss the next
+            # minute-long alert window.
+            hydration_limit = (
+                self.config.hydration_batch_size
+                if full_scan
+                else self.config.hot_hydration_batch_size
+            )
             backlog = await asyncio.to_thread(
                 storage.complaints_needing_hydration,
                 self.guild_id,
-                limit=self.config.hydration_batch_size,
+                limit=hydration_limit,
             )
-            fetch_urls = list(dict.fromkeys(changed_urls + backlog))[: self.config.hydration_batch_size]
+            fetch_urls = list(dict.fromkeys(changed_urls + backlog))[:hydration_limit]
             snapshots: tuple[AtlasForumSnapshot, ...] = ()
             skipped: tuple[str, ...] = ()
             hydrated = {"hydrated": 0, "matched": 0, "events": 0}
@@ -392,6 +392,7 @@ class AtlasForumEngineRunner:
                 error=error,
                 attention=attention,
                 full_scan=full_scan and inventory.inventory_complete,
+                baseline_completed=not baseline_exists,
             )
         except (AtlasForumManualActionRequired, AtlasForumSyncError) as exc:
             await asyncio.to_thread(

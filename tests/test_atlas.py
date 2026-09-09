@@ -3594,6 +3594,62 @@ class AtlasKnowledgeFileTests(unittest.TestCase):
 
 
 class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_crafts_returns_live_private_projection_and_etag(self) -> None:
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        plan = {
+            "id": 74,
+            "stage": "crafting",
+            "product_name_snapshot": "Бронепластины",
+            "responsible_id": 42,
+            "responsible_display": "Администратор",
+            "attempts_total": 100,
+            "attempts_queued": 20,
+            "attempts_completed": 20,
+            "product_stock": 20,
+            "materials": [],
+            "active_batch": None,
+            "recipe": {"product_name": "Бронепластины"},
+            "purchase_cost_total": 999_999,
+        }
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        with patch("modules.atlas_web.craft_storage.craft_active_plans", return_value=[plan]):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/atlas/overlay/crafts")
+                payload = await response.json()
+                cached = await client.get(
+                    "/api/atlas/overlay/crafts",
+                    headers={"If-None-Match": response.headers["ETag"]},
+                )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(cached.status, 304)
+        self.assertEqual(payload["attention_count"], 1)
+        self.assertTrue(payload["plans"][0]["mine"])
+        self.assertTrue(payload["plans"][0]["needs_next_batch"])
+        self.assertNotIn("purchase_cost_total", payload["plans"][0])
+
     async def test_overlay_transcribe_accepts_raw_webm_and_returns_compatibility_fields(self) -> None:
         selected = ConsensusWebPrincipal(
             user_id=42,

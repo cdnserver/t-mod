@@ -55,35 +55,43 @@ def ensure_default_monitor_feeds(guild_id: int) -> list[dict[str, Any]]:
             "phoenix-player-complaints-open",
             "open",
             "https://forum.majestic-rp.ru/forums/zhaloby-na-igrokov.1253/",
+            45,
         ),
         (
             "phoenix-player-complaints-accepted",
             "accepted",
             "https://forum.majestic-rp.ru/forums/rassmotrennyye-zhaloby.1254/",
+            45,
         ),
         (
             "phoenix-player-complaints-rejected",
             "rejected",
             "https://forum.majestic-rp.ru/forums/otklonennyye-zhaloby.1255/",
+            45,
         ),
     )
     now = utc_now_iso()
     with _db_lock, connect() as con:
-        for feed_key, section_kind, root_url in defaults:
+        for feed_key, section_kind, root_url, interval_seconds in defaults:
             con.execute(
                 """
                 INSERT INTO atlas_forum_monitor_feeds(
                     guild_id, project_code, server_code, feed_key,
                     section_kind, root_url, interval_seconds, hot_pages,
                     full_pages, status, next_scan_at, created_at, updated_at
-                ) VALUES(?, 'majestic-rp', 'phoenix-15', ?, ?, ?, 300, 3, 300,
+                ) VALUES(?, 'majestic-rp', 'phoenix-15', ?, ?, ?, ?, 1, 300,
                          'pending', ?, ?, ?)
                 ON CONFLICT(guild_id, feed_key) DO UPDATE SET
                     root_url = excluded.root_url,
                     section_kind = excluded.section_kind,
+                    interval_seconds = excluded.interval_seconds,
+                    hot_pages = excluded.hot_pages,
                     updated_at = excluded.updated_at
                 """,
-                (int(guild_id), feed_key, section_kind, root_url, now, now, now),
+                (
+                    int(guild_id), feed_key, section_kind, root_url,
+                    int(interval_seconds), now, now, now,
+                ),
             )
         rows = con.execute(
             """
@@ -142,6 +150,7 @@ def finish_monitor_feed(
     error: str | None = None,
     attention: bool = False,
     full_scan: bool = False,
+    baseline_completed: bool = False,
 ) -> dict[str, Any]:
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -152,9 +161,9 @@ def finish_monitor_feed(
         ).fetchone()
         if feed is None:
             raise ValueError("atlas_forum_monitor_feed_missing")
-        interval = max(120, int(feed["interval_seconds"] or 300))
+        interval = max(15, int(feed["interval_seconds"] or 45))
         if error:
-            interval = min(interval, 180)
+            interval = min(interval, 45)
         next_scan = (now_dt + timedelta(seconds=interval)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
         con.execute(
@@ -170,7 +179,7 @@ def finish_monitor_feed(
             """,
             (
                 status,
-                1 if full_scan and not error else 0,
+                1 if (baseline_completed or full_scan) and not error else 0,
                 feed["baseline_completed_at"],
                 now,
                 1 if full_scan else 0,

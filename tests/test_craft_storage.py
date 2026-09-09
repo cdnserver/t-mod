@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import storage
+from modules.atlas_web import _overlay_craft_snapshot
 
 
 class CraftStorageTests(unittest.TestCase):
@@ -101,6 +102,29 @@ class CraftStorageTests(unittest.TestCase):
         )
         self.assertEqual(plan["stage"], "procurement")
 
+    def test_atlas_overlay_projection_tracks_live_cycle_without_finance_data(self) -> None:
+        self.procure_all()
+        self.exact_finance_balance()
+        started = storage.craft_start_batch(
+            guild_id=1,
+            plan_id=self.plan["id"],
+            quantity=10,
+            actor_id=20,
+            actor_display="Responsible",
+            log_channel_id=300,
+            admin_user_id=400,
+        )
+        active = _overlay_craft_snapshot(1, 20)
+        projected = active["plans"][0]
+        self.assertTrue(projected["mine"])
+        self.assertEqual(projected["active_batch"]["id"], started["batch"]["id"])
+        self.assertNotIn("purchase_cost_total", projected)
+
+        due = datetime.fromisoformat(started["batch"]["due_at"]) + timedelta(seconds=1)
+        storage.craft_complete_due_batches(due.isoformat())
+        waiting = _overlay_craft_snapshot(1, 20)["plans"][0]
+        self.assertTrue(waiting["needs_next_batch"])
+        self.assertTrue(str(waiting["alarm_key"]).startswith(f"craft:{self.plan['id']}:next:"))
     def test_unbound_plan_can_be_cleaned_up_after_discord_failure(self) -> None:
         self.assertTrue(storage.craft_delete_unbound_plan(self.plan["id"]))
         self.assertIsNone(storage.craft_get_plan(self.plan["id"]))

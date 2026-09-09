@@ -502,7 +502,11 @@ docker logs --tail 80 minecraft
 exit /b 1
 
 :check_consensus_health
-for /l %%i in (1,1,24) do (
+rem Discord reconciliation, PostgreSQL warm-up and the first web projection can
+rem legitimately take longer than 72 seconds after replacing all three split
+rem services. Keep rollback bounded, but do not reject a healthy release while
+rem the gateway is still warming up.
+for /l %%i in (1,1,80) do (
   powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/health?ready=1' -TimeoutSec 3; if ($r.status -eq 'ok' -and $r.discord_ready) { exit 0 } } catch {}; exit 1" >nul 2>nul
   if not errorlevel 1 (
     call :ok "Consensus web panel is healthy"
@@ -512,8 +516,14 @@ for /l %%i in (1,1,24) do (
   call :sleep 3
 )
 echo.
-call :warn "The bot is running, but the web panel did not answer within 72 seconds."
-call :warn "Check: docker logs --tail 100 tmod-discord-bot"
+call :warn "The bot is running, but the web panel did not answer within 240 seconds."
+docker compose ps tmod-discord-bot tmod-web tmod-worker
+echo --- tmod-discord-bot ---
+docker compose logs --no-color --tail 120 tmod-discord-bot
+echo --- tmod-web ---
+docker compose logs --no-color --tail 120 tmod-web
+echo --- tmod-worker ---
+docker compose logs --no-color --tail 120 tmod-worker
 exit /b 1
 
 :postgres_accepts_connections

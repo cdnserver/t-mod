@@ -10,6 +10,7 @@ import json
 import sqlite3
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
@@ -70,6 +71,7 @@ from persistence import atlas_case_repository as case_storage
 from persistence import atlas_document_repository as document_storage
 from persistence import atlas_media_repository as media_storage
 from persistence import atlas_search_repository as search_storage
+from persistence import craft_repository as craft_storage
 from persistence import web_auth_repository as web_auth_storage
 
 
@@ -94,6 +96,89 @@ _ATLAS_OVERLAY_AUDIO_TYPES = {
     "audio/x-wav",
     "application/octet-stream",
 }
+
+
+def _overlay_craft_snapshot(guild_id: int, user_id: int) -> dict[str, Any]:
+    """Return a small, non-administrative projection for the field overlay."""
+
+    now = datetime.now(timezone.utc)
+    plans = []
+    for plan in craft_storage.craft_active_plans(int(guild_id), limit=30):
+        recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        batch = plan.get("active_batch") if isinstance(plan.get("active_batch"), dict) else None
+        materials = []
+        for item in plan.get("materials") or []:
+            if not isinstance(item, dict):
+                continue
+            required = max(0, int(item.get("required_total") or 0))
+            available = max(0, int(item.get("stock_quantity") or 0))
+            materials.append(
+                {
+                    "name": str(item.get("material_name") or "Материал")[:80],
+                    "required": required,
+                    "available": available,
+                    "ready": available >= required,
+                }
+            )
+        attempts_total = max(0, int(plan.get("attempts_total") or 0))
+        attempts_queued = max(0, int(plan.get("attempts_queued") or 0))
+        attempts_completed = max(0, int(plan.get("attempts_completed") or 0))
+        stage = str(plan.get("stage") or "procurement")
+        needs_next_batch = bool(
+            stage == "crafting"
+            and batch is None
+            and attempts_queued < attempts_total
+        )
+        plan_id = int(plan.get("id") or 0)
+        responsible_id = int(plan.get("responsible_id") or 0)
+        item = {
+            "id": plan_id,
+            "product_name": str(
+                plan.get("product_name_snapshot")
+                or recipe.get("product_name")
+                or "Крафт"
+            )[:100],
+            "stage": stage,
+            "responsible": str(plan.get("responsible_display") or "Не назначен")[:100],
+            "mine": responsible_id == int(user_id),
+            "attempts_total": attempts_total,
+            "attempts_queued": attempts_queued,
+            "attempts_completed": attempts_completed,
+            "remaining_to_queue": max(0, attempts_total - attempts_queued),
+            "product_stock": max(0, int(plan.get("product_stock") or 0)),
+            "materials": materials,
+            "active_batch": (
+                {
+                    "id": int(batch.get("id") or 0),
+                    "quantity": max(0, int(batch.get("quantity") or 0)),
+                    "started_at": batch.get("started_at"),
+                    "due_at": batch.get("due_at"),
+                }
+                if batch else None
+            ),
+            "needs_next_batch": needs_next_batch,
+            "alarm_key": (
+                f"craft:{plan_id}:next:{attempts_completed}:{attempts_queued}"
+                if needs_next_batch else None
+            ),
+            "updated_at": plan.get("updated_at"),
+        }
+        plans.append(item)
+    plans.sort(
+        key=lambda item: (
+            not bool(item["needs_next_batch"]),
+            not bool(item["mine"]),
+            str((item.get("active_batch") or {}).get("due_at") or "9999"),
+            -int(item["id"]),
+        )
+    )
+    raw_revision = json.dumps(plans, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "server_time": now.isoformat(),
+        "revision": hashlib.sha256(raw_revision.encode("utf-8")).hexdigest()[:20],
+        "plans": plans,
+        "attention_count": sum(1 for item in plans if item["needs_next_batch"]),
+    }
 
 
 def _forum_engine_status_view(value: dict[str, Any], *, administrator: bool) -> dict[str, Any]:
@@ -560,6 +645,35 @@ def register_atlas_web_routes(
                 },
             }
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    async def overlay_crafts(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not selected.guild_member:
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "craft_membership_required",
+                        "message": "Контур крафтов доступен участникам Товарищества.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        snapshot = await asyncio.to_thread(
+            _overlay_craft_snapshot,
+            int(guild_id),
+            int(selected.user_id),
+        )
+        etag = f'"{snapshot["revision"]}"'
+        if request.headers.get("If-None-Match") == etag:
+            response = web.Response(status=304)
+        else:
+            response = web.json_response(snapshot)
+        response.headers["ETag"] = etag
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
@@ -3590,6 +3704,7 @@ def register_atlas_web_routes(
     app.router.add_get("/api/atlas/bootstrap", bootstrap)
     app.router.add_get("/api/atlas/overlay/context", overlay_context_get)
     app.router.add_post("/api/atlas/overlay/context", overlay_context_set)
+    app.router.add_get("/api/atlas/overlay/crafts", overlay_crafts)
     app.router.add_post("/api/atlas/overlay/transcribe", overlay_transcribe)
     app.router.add_get("/api/atlas/overlay/tts/voices", overlay_tts_voices)
     app.router.add_post("/api/atlas/overlay/tts/preview", overlay_tts_preview)

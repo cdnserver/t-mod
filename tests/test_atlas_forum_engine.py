@@ -140,6 +140,22 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertIsNone(duplicate)
 
+    def test_default_feeds_keep_hot_monitoring_inside_one_minute(self) -> None:
+        feeds = forum_engine.ensure_default_monitor_feeds(77)
+        self.assertEqual({int(item["interval_seconds"]) for item in feeds}, {45})
+        self.assertEqual({int(item["hot_pages"]) for item in feeds}, {1})
+
+        claimed = forum_engine.claim_monitor_feed(int(feeds[0]["id"]))
+        self.assertIsNotNone(claimed)
+        finished = forum_engine.finish_monitor_feed(
+            int(feeds[0]["id"]),
+            stats={"mode": "hot"},
+            baseline_completed=True,
+        )
+        delay = datetime.fromisoformat(str(finished["next_scan_at"])) - datetime.now(timezone.utc)
+        self.assertLessEqual(delay.total_seconds(), 46)
+        self.assertTrue(finished["baseline_completed_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

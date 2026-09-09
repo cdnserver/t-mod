@@ -607,8 +607,8 @@ def init_db() -> None:
                 section_kind TEXT NOT NULL
                     CHECK(section_kind IN ('open', 'accepted', 'rejected')),
                 root_url TEXT NOT NULL,
-                interval_seconds INTEGER NOT NULL DEFAULT 300,
-                hot_pages INTEGER NOT NULL DEFAULT 3,
+                interval_seconds INTEGER NOT NULL DEFAULT 45,
+                hot_pages INTEGER NOT NULL DEFAULT 1,
                 full_pages INTEGER NOT NULL DEFAULT 300,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
