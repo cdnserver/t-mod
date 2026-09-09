@@ -1268,15 +1268,17 @@ def craft_reminder_candidates(guild_id: int) -> list[dict[str, Any]]:
 def craft_claim_reminder(plan_id: int, reminder_key: str) -> bool:
     now = utc_now_iso()
     with _db_lock, connect() as con:
-        try:
-            con.execute(
-                "INSERT INTO craft_reminders(plan_id, reminder_key, message_id, created_at, deleted_at) VALUES(?, ?, NULL, ?, NULL)",
-                (plan_id, reminder_key, now),
-            )
-            con.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        cursor = con.execute(
+            """
+            INSERT INTO craft_reminders(
+                plan_id, reminder_key, message_id, created_at, deleted_at
+            ) VALUES(?, ?, NULL, ?, NULL)
+            ON CONFLICT(plan_id, reminder_key) DO NOTHING
+            """,
+            (plan_id, reminder_key, now),
+        )
+        con.commit()
+        return int(cursor.rowcount or 0) > 0
 
 
 def craft_set_reminder_message(plan_id: int, reminder_key: str, message_id: int) -> None:

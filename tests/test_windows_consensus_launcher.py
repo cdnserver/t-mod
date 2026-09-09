@@ -39,6 +39,9 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}', compose)
         self.assertIn('copy "%~dp0.env.persistent.example"', launcher)
         self.assertIn('copy "%~dp0localization.example.json"', launcher)
+        self.assertNotIn("timeout /t", launcher.lower())
+        self.assertIn(":sleep", launcher)
+        self.assertIn("ping 127.0.0.1", launcher)
 
     def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(
         self,
@@ -324,6 +327,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("type=bind,source=$CandidateDir,target=/candidate,readonly", updater)
         self.assertIn('"--workdir", "/candidate"', updater)
         self.assertIn('"PYTHONPATH=/candidate"', updater)
+        self.assertIn('"PYTHONPYCACHEPREFIX=/tmp/tmod-pycache"', updater)
         self.assertIn("Candidate Caddy configuration validation failed", updater)
         self.assertNotIn("& docker exec tmod-postgres pg_dump", updater)
         self.assertNotIn("& docker cp \"tmod-postgres:", updater)

@@ -209,7 +209,11 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn("Get-FileHash", self.remote)
         self.assertRegex(manifest["sha256"]["tmod_remote_windows.bat"], r"^[a-f0-9]{64}$")
         for file_name, expected_hash in manifest["sha256"].items():
-            actual_hash = hashlib.sha256((ROOT / file_name).read_bytes()).hexdigest()
+            # Git may materialize batch files with CRLF on the Windows server,
+            # while raw.githubusercontent.com (the self-update source) serves
+            # the canonical LF blob recorded in the manifest.
+            canonical = (ROOT / file_name).read_bytes().replace(b"\r\n", b"\n")
+            actual_hash = hashlib.sha256(canonical).hexdigest()
             self.assertEqual(actual_hash, expected_hash)
         self.assertIn("Move-Item", self.remote)
         self.assertIn("TotalHours -ge 6", self.remote)

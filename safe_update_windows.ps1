@@ -483,6 +483,7 @@ try {
         Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
             "run", "--rm", "--entrypoint", "python",
             "--workdir", "/candidate", "--env", "PYTHONPATH=/candidate",
+            "--env", "PYTHONPYCACHEPREFIX=/tmp/tmod-pycache",
             "--mount", "type=bind,source=$CandidateDir,target=/candidate,readonly",
             "tmod-discord-bot:latest",
             "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"

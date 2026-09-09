@@ -298,7 +298,7 @@ for /l %%i in (1,1,30) do (
     set CADDY_READY=1
     goto :caddy_ready
   )
-  timeout /t 2 /nobreak >nul
+  call :sleep 2
 )
 :caddy_ready
 if not "%CADDY_READY%"=="1" (
@@ -403,7 +403,7 @@ for /l %%i in (1,1,30) do (
     goto :split_runtime_ready
   )
   <nul set /p "=."
-  timeout /t 2 /nobreak >nul
+  call :sleep 2
 )
 
 echo.
@@ -420,7 +420,7 @@ for /l %%i in (1,1,30) do (
     goto :split_runtime_ready
   )
   <nul set /p "=."
-  timeout /t 2 /nobreak >nul
+  call :sleep 2
 )
 
 :split_runtime_failed
@@ -455,7 +455,7 @@ for /l %%i in (1,1,90) do (
     goto :minecraft_runtime_ready
   )
   <nul set /p "=."
-  timeout /t 2 /nobreak >nul
+  call :sleep 2
 )
 :minecraft_runtime_ready
 if "%MINECRAFT_RUNTIME_READY%"=="1" (
@@ -486,7 +486,7 @@ for /l %%i in (1,1,60) do (
         call :ok "Minecraft RCON secret accepted"
         exit /b 0
       )
-      timeout /t 5 /nobreak >nul
+      call :sleep 5
     )
     call :fail "Minecraft is healthy, but RCON did not respond within 60 seconds."
     call :warn "The generated secret and server.properties may be unsynchronized."
@@ -494,7 +494,7 @@ for /l %%i in (1,1,60) do (
     exit /b 1
   )
   <nul set /p "=."
-  timeout /t 5 /nobreak >nul
+  call :sleep 5
 )
 echo.
 call :fail "Minecraft did not become healthy within 300 seconds."
@@ -509,7 +509,7 @@ for /l %%i in (1,1,24) do (
     exit /b 0
   )
   <nul set /p "=."
-  timeout /t 3 /nobreak >nul
+  call :sleep 3
 )
 echo.
 call :warn "The bot is running, but the web panel did not answer within 72 seconds."
@@ -537,7 +537,7 @@ for /l %%i in (1,1,%~1) do (
     if not errorlevel 1 exit /b 0
   )
   <nul set /p "=."
-  timeout /t 5 /nobreak >nul
+  call :sleep 5
 )
 echo.
 exit /b 1
@@ -596,7 +596,7 @@ for /l %%i in (1,1,36) do (
     exit /b 0
   )
   <nul set /p "=."
-  timeout /t 5 /nobreak >nul
+  call :sleep 5
 )
 
 echo.
@@ -646,6 +646,12 @@ exit /b 0
 
 :module
 echo   [LOAD] %~1
-timeout /t 1 /nobreak >nul
+call :sleep 1
 echo   [ OK ] %~1
+exit /b 0
+
+:sleep
+set /a "_TMOD_SLEEP_PINGS=%~1+1" >nul 2>&1
+ping 127.0.0.1 -n %_TMOD_SLEEP_PINGS% -w 1000 >nul
+set "_TMOD_SLEEP_PINGS="
 exit /b 0
