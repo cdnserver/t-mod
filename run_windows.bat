@@ -533,7 +533,10 @@ rem execute a minimal SQL statement: pg_isready alone is not a usable database
 rem readiness guarantee if PostgreSQL is still recovering.
 docker exec tmod-postgres pg_isready -q -h 127.0.0.1 -p 5432 -U tmod -d tmod -t 15 >nul 2>nul
 if errorlevel 1 exit /b 1
-docker exec tmod-postgres psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT 1" 2>nul | findstr /X /C:"1" >nul
+rem The SQL process exit code is the readiness signal. Piping its CRLF output
+rem through findstr /X is unreliable across Docker Desktop/Windows code pages
+rem and previously made a healthy database wait through the full recovery path.
+docker exec tmod-postgres psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT 1" >nul 2>nul
 if errorlevel 1 exit /b 1
 exit /b 0
 

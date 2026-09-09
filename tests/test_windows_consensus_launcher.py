@@ -198,6 +198,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("call :wait_for_postgres_health 30", launcher)
         self.assertIn("call :postgres_accepts_connections", launcher)
         self.assertIn(
+            'psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT 1" >nul 2>nul',
+            launcher,
+        )
+        self.assertNotIn('"SELECT 1" 2>nul | findstr', launcher)
+        self.assertIn(
             "docker compose up -d --no-deps --force-recreate tmod-postgres",
             launcher,
         )
