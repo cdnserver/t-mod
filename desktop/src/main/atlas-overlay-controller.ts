@@ -17,6 +17,7 @@ import type {
   AtlasOverlayBootstrapProjection,
   AtlasOverlayCatalog,
   AtlasOverlayConfig,
+  AtlasOverlayCraftSnapshot,
   AtlasOverlayEvent,
   AtlasOverlaySubmitResult,
   AtlasOverlaySpeechResult,
@@ -48,6 +49,7 @@ const ATLAS_TRANSCRIBE_URL = "https://atlas.tvr.lat/api/atlas/overlay/transcribe
 const ATLAS_TTS_VOICES_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/voices";
 const ATLAS_TTS_PREVIEW_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/preview";
 const ATLAS_TTS_SYNTHESIZE_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/synthesize";
+const ATLAS_CRAFTS_URL = "https://atlas.tvr.lat/api/atlas/overlay/crafts";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_AUDIO_DURATION_MS = 25_000;
 const MAX_SCREEN_CONTEXT_BYTES = 1_200_000;
@@ -72,6 +74,9 @@ const POST_SPEECH_HOLD_MS = 4_500;
 const INITIALIZATION_VISIBLE_MS = 3_300;
 const MANUAL_INPUT_TIMEOUT_MS = 35_000;
 const MAX_STREAMED_AI_PHRASES = 8;
+const CRAFT_POLL_MS = 5_000;
+const CRAFT_AUTH_RETRY_MS = 30_000;
+const CRAFT_ACCESS_RETRY_MS = 300_000;
 
 interface AtlasOverlaySpeechSession {
   requestId: string;
@@ -318,6 +323,7 @@ export class AtlasOverlayController {
   private activeThreadId?: number;
   private hotkeyHelper?: ChildProcess;
   private fallbackHotkey = "";
+  private craftHotkey = "";
   private fallbackListening = false;
   private bindingDirty = true;
   private screenContext?: Promise<string | undefined>;
@@ -349,6 +355,12 @@ export class AtlasOverlayController {
   private speechPlaybackActive = false;
   private speechSynthesisPending = 0;
   private settleAfterSpeech = false;
+  private craftPollTimer?: ReturnType<typeof setTimeout>;
+  private craftPollInFlight = false;
+  private craftEtag = "";
+  private craftSnapshot?: AtlasOverlayCraftSnapshot;
+  private readonly acknowledgedCraftAlarms = new Set<string>();
+  private disposed = false;
 
   constructor(options: AtlasOverlayControllerOptions) {
     this.options = options;
@@ -364,6 +376,7 @@ export class AtlasOverlayController {
     }
     if (this.config.enabled) await this.ensureWindow();
     this.bindPtt();
+    this.scheduleCraftPoll(250);
   }
 
   api(): Pick<
@@ -542,6 +555,7 @@ export class AtlasOverlayController {
       this.cancel();
       this.stopGameDetection();
       this.hide();
+      this.stopCraftPolling();
     } else if (this.config.enabled) {
       await this.ensureWindow();
       // Desktop refreshes its bootstrap periodically. Reusing the healthy
@@ -549,6 +563,7 @@ export class AtlasOverlayController {
       // answer that is still visible or being spoken.
       if (!this.foregroundProbe) this.startForegroundProbe();
       else if (this.activeGameWindow) this.healOverlayVisibility();
+      this.scheduleCraftPoll(0);
     }
   }
 
@@ -561,6 +576,9 @@ export class AtlasOverlayController {
     this.csrfToken = "";
     this.activeThreadId = undefined;
     this.bindingDirty = true;
+    this.craftEtag = "";
+    this.craftSnapshot = undefined;
+    this.stopCraftPolling();
     this.cancelSpeechDelivery();
   }
 
@@ -605,7 +623,11 @@ export class AtlasOverlayController {
       await this.persistConfig();
       throw error;
     }
-    if (previous.hotkey !== next.hotkey || previous.enabled !== next.enabled) this.bindPtt();
+    if (
+      previous.hotkey !== next.hotkey ||
+      previous.craftHotkey !== next.craftHotkey ||
+      previous.enabled !== next.enabled
+    ) this.bindPtt();
     if (
       previous.anchor !== next.anchor ||
       previous.positionX !== next.positionX ||
@@ -615,8 +637,12 @@ export class AtlasOverlayController {
       this.window?.setContentProtection(!next.captureInRecordings);
     }
     this.emit({ type: "config", config: this.getConfig() });
+    if (previous.workspaceMode !== next.workspaceMode && this.craftSnapshot) {
+      this.emit({ type: "crafts", snapshot: this.craftSnapshot });
+    }
     if (next.enabled && this.projection?.allowed) {
       await this.ensureWindow();
+      this.scheduleCraftPoll(0);
       if (!this.foregroundProbe) {
         this.syncGameDetection();
       } else if (this.activeGameWindow) {
@@ -627,6 +653,7 @@ export class AtlasOverlayController {
         this.hide();
       }
     } else {
+      this.stopCraftPolling();
       this.stopGameDetection();
       this.hide();
     }
@@ -743,9 +770,11 @@ export class AtlasOverlayController {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.cancel();
     this.unbindPtt();
     this.stopGameDetection();
+    this.stopCraftPolling();
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.manualInputTimer) clearTimeout(this.manualInputTimer);
     if (this.foregroundLossTimer) clearTimeout(this.foregroundLossTimer);
@@ -1489,7 +1518,7 @@ export class AtlasOverlayController {
     return Boolean(
       this.config.enabled &&
       this.projection?.allowed &&
-      this.config.showGameStatus &&
+      (this.config.showGameStatus || this.config.workspaceMode !== "assistant") &&
       this.activeGameWindow?.foregroundVerified,
     );
   }
@@ -1968,9 +1997,11 @@ export class AtlasOverlayController {
           this.registerToggleFallback();
         }
       });
+      this.registerCraftHotkey();
       return;
     }
     this.registerToggleFallback();
+    this.registerCraftHotkey();
   }
 
   private handlePttLine(line: string): void {
@@ -2075,11 +2106,107 @@ export class AtlasOverlayController {
     this.fallbackHotkey = this.config.hotkey;
   }
 
+  private registerCraftHotkey(): void {
+    if (!this.config.enabled || this.config.craftHotkey === this.config.hotkey) return;
+    if (!globalShortcut.register(this.config.craftHotkey, () => {
+      const next = this.config.workspaceMode === "crafts" ? "assistant" : "crafts";
+      void this.saveConfig({ workspaceMode: next }).then(() => {
+        if (!this.activeGameWindow) return;
+        this.show();
+        if (this.craftSnapshot) this.emit({ type: "crafts", snapshot: this.craftSnapshot });
+      }).catch((error) => this.options.onLog?.("Atlas craft mode toggle failed", error));
+    })) {
+      this.options.onLog?.("Atlas craft hotkey registration failed", this.config.craftHotkey);
+      return;
+    }
+    this.craftHotkey = this.config.craftHotkey;
+  }
+
   private unbindPtt(): void {
     if (this.fallbackHotkey) globalShortcut.unregister(this.fallbackHotkey);
+    if (this.craftHotkey) globalShortcut.unregister(this.craftHotkey);
     this.fallbackHotkey = "";
+    this.craftHotkey = "";
     this.fallbackListening = false;
     if (this.hotkeyHelper && !this.hotkeyHelper.killed) this.hotkeyHelper.kill();
     this.hotkeyHelper = undefined;
+  }
+
+  private stopCraftPolling(): void {
+    if (this.craftPollTimer) clearTimeout(this.craftPollTimer);
+    this.craftPollTimer = undefined;
+  }
+
+  private scheduleCraftPoll(delay = CRAFT_POLL_MS): void {
+    if (this.craftPollTimer) clearTimeout(this.craftPollTimer);
+    this.craftPollTimer = undefined;
+    if (this.disposed || !this.config.enabled || !this.projection?.allowed) return;
+    this.craftPollTimer = setTimeout(() => {
+      this.craftPollTimer = undefined;
+      void this.refreshCraftSnapshot();
+    }, Math.max(0, delay));
+  }
+
+  private async refreshCraftSnapshot(): Promise<void> {
+    if (this.craftPollInFlight || !this.config.enabled || !this.projection?.allowed) {
+      this.scheduleCraftPoll();
+      return;
+    }
+    this.craftPollInFlight = true;
+    let nextPollDelay = CRAFT_POLL_MS;
+    try {
+      const response = await this.options.networkSession().fetch(ATLAS_CRAFTS_URL, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          ...(this.craftEtag ? { "If-None-Match": this.craftEtag } : {}),
+        },
+      });
+      if (response.status === 304) return;
+      if (response.status === 401) {
+        this.csrfToken = "";
+        nextPollDelay = CRAFT_AUTH_RETRY_MS;
+        return;
+      }
+      if (response.status === 403) {
+        // Atlas can also be granted to non-members. They do not have the craft
+        // contour, so avoid hammering a forbidden endpoint every five seconds.
+        nextPollDelay = CRAFT_ACCESS_RETRY_MS;
+        return;
+      }
+      if (!response.ok) throw new Error(`Atlas crafts ${response.status}`);
+      const payload = await response.json() as AtlasOverlayCraftSnapshot;
+      if (!payload || !Array.isArray(payload.plans) || typeof payload.revision !== "string") {
+        throw new Error("atlas_crafts_payload_invalid");
+      }
+      this.craftEtag = String(response.headers.get("etag") || "");
+      this.craftSnapshot = payload;
+      this.emit({ type: "crafts", snapshot: payload });
+      const alarm = payload.plans.find((plan) =>
+        plan.needs_next_batch &&
+        Boolean(plan.alarm_key) &&
+        !this.acknowledgedCraftAlarms.has(String(plan.alarm_key)),
+      );
+      if (alarm?.alarm_key) {
+        const key = String(alarm.alarm_key);
+        this.acknowledgedCraftAlarms.add(key);
+        while (this.acknowledgedCraftAlarms.size > 80) {
+          const oldest = this.acknowledgedCraftAlarms.values().next().value;
+          if (typeof oldest !== "string") break;
+          this.acknowledgedCraftAlarms.delete(oldest);
+        }
+        if (this.config.craftAlerts) {
+          if (this.config.craftAutoExpand && this.activeGameWindow) this.show();
+          this.emit({ type: "craft-alert", snapshot: payload, alarmKey: key });
+        }
+      }
+    } catch (error) {
+      this.options.onLog?.("Atlas craft synchronization failed", error);
+    } finally {
+      this.craftPollInFlight = false;
+      this.scheduleCraftPoll(nextPollDelay);
+    }
   }
 }

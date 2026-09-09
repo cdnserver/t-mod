@@ -19,6 +19,44 @@ export type AtlasOverlayTheme = "cosmos" | "graphite" | "emerald" | "amber" | "c
 export type AtlasOverlayMotion = "cinematic" | "balanced" | "minimal";
 export type AtlasOverlayAnswerHold = "brief" | "auto" | "pinned";
 export type AtlasOverlayPttPhase = "down" | "up" | "cancel";
+export type AtlasOverlayWorkspaceMode = "assistant" | "crafts" | "auto";
+
+export interface AtlasOverlayCraftMaterial {
+  name: string;
+  required: number;
+  available: number;
+  ready: boolean;
+}
+
+export interface AtlasOverlayCraftPlan {
+  id: number;
+  product_name: string;
+  stage: string;
+  responsible: string;
+  mine: boolean;
+  attempts_total: number;
+  attempts_queued: number;
+  attempts_completed: number;
+  remaining_to_queue: number;
+  product_stock: number;
+  materials: AtlasOverlayCraftMaterial[];
+  active_batch?: {
+    id: number;
+    quantity: number;
+    started_at?: string;
+    due_at?: string;
+  } | null;
+  needs_next_batch: boolean;
+  alarm_key?: string | null;
+  updated_at?: string;
+}
+
+export interface AtlasOverlayCraftSnapshot {
+  server_time: string;
+  revision: string;
+  plans: AtlasOverlayCraftPlan[];
+  attention_count: number;
+}
 
 export interface AtlasOverlayCharacter {
   id: string;
@@ -101,6 +139,12 @@ export interface AtlasOverlayConfig {
   positionX: number;
   positionY: number;
   screenContextEnabled: boolean;
+  workspaceMode: AtlasOverlayWorkspaceMode;
+  craftHotkey: string;
+  craftAlerts: boolean;
+  craftAlertVolume: number;
+  craftAutoExpand: boolean;
+  craftShowAll: boolean;
 }
 
 export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
@@ -137,6 +181,12 @@ export const DEFAULT_ATLAS_OVERLAY_CONFIG: Readonly<AtlasOverlayConfig> = {
   positionX: 1,
   positionY: 0.5,
   screenContextEnabled: false,
+  workspaceMode: "assistant",
+  craftHotkey: "Control+Shift+C",
+  craftAlerts: true,
+  craftAlertVolume: 0.82,
+  craftAutoExpand: true,
+  craftShowAll: false,
 };
 
 export interface AtlasOverlayCitation {
@@ -150,6 +200,8 @@ export type AtlasOverlayEvent =
   | { type: "show" | "hide" | "idle" }
   | { type: "initialized"; name: string }
   | { type: "config"; config: AtlasOverlayConfig }
+  | { type: "crafts"; snapshot: AtlasOverlayCraftSnapshot }
+  | { type: "craft-alert"; snapshot: AtlasOverlayCraftSnapshot; alarmKey: string }
   | { type: "manual-query" }
   | { type: "speech"; audio?: ArrayBuffer; mimeType?: string; fallbackText?: string }
   | {
@@ -289,6 +341,9 @@ export function reduceAtlasOverlayState(
       };
     case "config":
       return state;
+    case "crafts":
+    case "craft-alert":
+      return state;
     case "speech":
       return state;
     case "manual-query":
@@ -403,6 +458,7 @@ export function normalizeAtlasOverlayConfig(
   const answerHeight = Number(source.answerHeight);
   const fontScale = Number(source.fontScale);
   const cueVolume = Number(source.cueVolume);
+  const craftAlertVolume = Number(source.craftAlertVolume);
   const anchor = ["top-right", "right", "bottom-right"].includes(String(source.anchor))
     ? source.anchor as AtlasOverlayAnchor
     : "right";
@@ -465,6 +521,18 @@ export function normalizeAtlasOverlayConfig(
       ? Math.max(0, Math.min(1, positionY))
       : fallbackPositionY,
     screenContextEnabled: source.screenContextEnabled === true,
+    workspaceMode: ["assistant", "crafts", "auto"].includes(String(source.workspaceMode))
+      ? source.workspaceMode as AtlasOverlayWorkspaceMode
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.workspaceMode,
+    craftHotkey: isValidAtlasOverlayHotkey(source.craftHotkey)
+      ? source.craftHotkey
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.craftHotkey,
+    craftAlerts: source.craftAlerts !== false,
+    craftAlertVolume: Number.isFinite(craftAlertVolume)
+      ? Math.max(0, Math.min(1, craftAlertVolume))
+      : DEFAULT_ATLAS_OVERLAY_CONFIG.craftAlertVolume,
+    craftAutoExpand: source.craftAutoExpand !== false,
+    craftShowAll: source.craftShowAll === true,
   };
 }
 

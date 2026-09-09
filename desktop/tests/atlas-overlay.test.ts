@@ -98,6 +98,12 @@ describe("Atlas Overlay hotkey contract", () => {
       showLatency: true,
       calibrationMode: true,
       screenContextEnabled: false,
+      workspaceMode: "crafts",
+      craftHotkey: "Control+Shift+C",
+      craftAlertVolume: 5,
+      craftAlerts: true,
+      craftAutoExpand: true,
+      craftShowAll: true,
     });
     expect(config.hotkey).toBe("Control+Shift+A");
     expect(config.speechRate).toBe(1.45);
@@ -120,6 +126,21 @@ describe("Atlas Overlay hotkey contract", () => {
     expect(config.showCitations).toBe(false);
     expect(config.showLatency).toBe(true);
     expect(config.screenContextEnabled).toBe(false);
+    expect(config.workspaceMode).toBe("crafts");
+    expect(config.craftHotkey).toBe("Control+Shift+C");
+    expect(config.craftAlertVolume).toBe(1);
+    expect(config.craftAlerts).toBe(true);
+    expect(config.craftAutoExpand).toBe(true);
+    expect(config.craftShowAll).toBe(true);
+  });
+
+  it("keeps craft telemetry out of the conversational reducer", () => {
+    const previous = { ...initialAtlasOverlayState, visible: true, stage: "answer" as const, answer: "Ответ" };
+    const next = reduceAtlasOverlayState(previous, {
+      type: "crafts",
+      snapshot: { server_time: "2026-09-09T12:00:00Z", revision: "r1", plans: [], attention_count: 0 },
+    });
+    expect(next).toEqual(previous);
   });
 });
 

@@ -1424,7 +1424,31 @@ function AtlasSettingsPage({
                 />
               </div>
             </div>
-            <div className="atlas-settings-section-heading"><span>03</span><div><strong>Голос и управление</strong><small>Запрос без курсора и спокойная озвучка</small></div></div>
+            <div className="atlas-settings-section-heading"><span>03</span><div><strong>Режим крафтов</strong><small>Живые циклы, таймеры и тревога поверх GTA</small></div></div>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Рабочий контур</span><small>Авто показывает крафты только когда требуется действие</small></div>
+              <div className="overlay-preset-grid compact">
+                {([['assistant', 'Atlas AI'], ['crafts', 'Крафты'], ['auto', 'Авто']] as const).map(([value, label]) => <button key={value} className={overlayConfig.workspaceMode === value ? "active" : ""} onClick={() => void onOverlayChange({ workspaceMode: value })}>{label}</button>)}
+              </div>
+            </div>
+            <div className="overlay-setting-block split">
+              <div><span className="overlay-setting-title">Клавиша крафтов</span><small>Переключает Atlas AI ↔ производственный пульт без курсора</small></div>
+              <input
+                key={overlayConfig.craftHotkey}
+                className="overlay-hotkey-input"
+                defaultValue={overlayConfig.craftHotkey}
+                maxLength={64}
+                spellCheck={false}
+                aria-label="Комбинация режима крафтов"
+                onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                onBlur={(event) => void onOverlayChange({ craftHotkey: event.currentTarget.value })}
+              />
+            </div>
+            <SettingToggle label="Звуковая тревога крафта" hint="Один мягкий сигнал на каждый готовый цикл — без повторов при каждом обновлении" active={overlayConfig.craftAlerts} onClick={() => void onOverlayChange({ craftAlerts: !overlayConfig.craftAlerts })}/>
+            <SettingToggle label="Разворачивать при готовности" hint="Показывает карточку нужного крафта, не забирая фокус и курсор у игры" active={overlayConfig.craftAutoExpand} onClick={() => void onOverlayChange({ craftAutoExpand: !overlayConfig.craftAutoExpand })}/>
+            <SettingToggle label="Показывать все планы" hint="По умолчанию Atlas ставит наверх только крафты, где вы назначены ответственным" active={overlayConfig.craftShowAll} onClick={() => void onOverlayChange({ craftShowAll: !overlayConfig.craftShowAll })}/>
+            <OverlayRange label="Громкость тревоги" value={overlayConfig.craftAlertVolume} min={0} max={1} step={.02} display={`${Math.round(overlayConfig.craftAlertVolume * 100)}%`} onPreview={(value) => onOverlayPreview({ craftAlertVolume: value })} onCommit={(value) => onOverlayChange({ craftAlertVolume: value })}/>
+            <div className="atlas-settings-section-heading"><span>04</span><div><strong>Голос и управление</strong><small>Запрос без курсора и спокойная озвучка</small></div></div>
             <div id="atlas-settings-voice" className="overlay-setting-block split overlay-device-row atlas-settings-anchor">
               <div><span className="overlay-setting-title">Микрофон</span><small>{microphoneStatus === "testing" ? "Слушаю 1 секунду…" : microphoneStatus === "ready" ? "Сигнал отличный" : microphoneStatus === "silent" ? "Сигнал слишком тихий" : microphoneStatus === "error" ? "Нет доступа к микрофону" : "Выберите вход и проверьте сигнал"}</small></div>
               <div className="overlay-device-controls">
@@ -1484,7 +1508,7 @@ function AtlasSettingsPage({
                 [0, 1, "↙"], [.5, 1, "↓"], [1, 1, "↘"],
               ] as const).map(([x, y, label]) => <button key={`${x}-${y}`} className={Math.abs(overlayConfig.positionX - x) < .06 && Math.abs(overlayConfig.positionY - y) < .06 ? "active" : ""} onClick={() => void onOverlayChange({ positionX: x, positionY: y, anchor: y === 0 ? "top-right" : y === 1 ? "bottom-right" : "right" })}>{label}</button>)}</div>
             </div>
-            <div className="atlas-settings-section-heading"><span>04</span><div><strong>Визуальный профиль</strong><small>Форма, цвет, движение и плотность интерфейса</small></div></div>
+            <div className="atlas-settings-section-heading"><span>05</span><div><strong>Визуальный профиль</strong><small>Форма, цвет, движение и плотность интерфейса</small></div></div>
             <div id="atlas-settings-visual" className="overlay-setting-block overlay-visual-controls atlas-settings-anchor">
               <span className="overlay-setting-title">Готовые профили</span>
               <div className="atlas-visual-preset-grid">
@@ -1520,7 +1544,7 @@ function AtlasSettingsPage({
               <OverlayPlacementPreview config={overlayConfig} onChange={onOverlayChange}/>
             </div>
             <SettingToggle label="Настройка прямо в GTA" hint={`${overlayConfig.hotkey.replaceAll("Control", "CTRL")} + Tab — режим; стрелки — позиция; +/− — размер; [ ] — ширина; Enter — готово`} active={overlayConfig.calibrationMode} onClick={() => void onOverlayChange({ calibrationMode: !overlayConfig.calibrationMode })}/>
-            <div className="atlas-settings-section-heading"><span>05</span><div><strong>Ответ и интеллект</strong><small>Что остаётся на экране и какие данные получает Atlas</small></div></div>
+            <div className="atlas-settings-section-heading"><span>06</span><div><strong>Ответ и интеллект</strong><small>Что остаётся на экране и какие данные получает Atlas</small></div></div>
             <div id="atlas-settings-intelligence" className="atlas-settings-anchor">
               <SettingToggle label="Контекст с экрана" hint="Только один кадр при запросе; без записи, хранения и управления игрой" active={overlayConfig.screenContextEnabled} onClick={() => void onOverlayChange({ screenContextEnabled: !overlayConfig.screenContextEnabled })}/>
             </div>
