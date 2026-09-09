@@ -33,6 +33,7 @@ from modules.atlas_forum_sync import (
     AtlasForumSyncError,
     AtlasForumSyncRunner,
 )
+from modules.atlas_forum_engine import AtlasForumEngineRunner
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
@@ -62,6 +63,7 @@ from modules.consensus_web_auth import (
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_forum_engine_repository as forum_engine_storage
 from persistence import atlas_forum_attachment_repository as attachment_storage
 from persistence import atlas_job_repository as job_storage
 from persistence import atlas_case_repository as case_storage
@@ -92,6 +94,45 @@ _ATLAS_OVERLAY_AUDIO_TYPES = {
     "audio/x-wav",
     "application/octet-stream",
 }
+
+
+def _forum_engine_status_view(value: dict[str, Any], *, administrator: bool) -> dict[str, Any]:
+    """Keep operational diagnostics private while exposing useful monitor state."""
+
+    if administrator:
+        return value
+    feeds = []
+    for item in value.get("feeds", []) if isinstance(value, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        feeds.append(
+            {
+                "section_kind": str(item.get("section_kind") or ""),
+                "status": str(item.get("status") or "pending"),
+                "baseline_completed": bool(item.get("baseline_completed_at")),
+                "last_success_at": item.get("last_success_at"),
+                "next_scan_at": item.get("next_scan_at"),
+            }
+        )
+    return {
+        "feeds": feeds,
+        "complaints": int(value.get("complaints") or 0),
+        "open": int(value.get("open") or 0),
+        "pending_hydration": int(value.get("pending_hydration") or 0),
+    }
+
+
+def _forum_engine_items_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed = (
+        "id", "thread_url", "title", "author", "section_kind", "post_count",
+        "last_changed_at", "latest_post_at", "latest_post_author", "locked",
+        "static_id", "nickname", "event_count",
+    )
+    return [
+        {key: item.get(key) for key in allowed}
+        for item in items
+        if isinstance(item, dict)
+    ]
 
 
 def _is_tmod_desktop_request(request: web.Request) -> bool:
@@ -203,8 +244,10 @@ def register_atlas_web_routes(
     index_lock = asyncio.Lock()
     rebuild_task: asyncio.Task[None] | None = None
     forum_sync_task: asyncio.Task[None] | None = None
+    forum_engine_task: asyncio.Task[None] | None = None
     attachment_ocr_task: asyncio.Task[None] | None = None
     forum_sync_runner: AtlasForumSyncRunner | None = None
+    forum_engine_runner: AtlasForumEngineRunner | None = None
     job_worker = AtlasJobWorker(
         concurrency=2,
         lease_seconds=180,
@@ -423,11 +466,31 @@ def register_atlas_web_routes(
                 },
                 "catalog": await asyncio.to_thread(storage.atlas_catalog),
             }
-        dashboard, health, forum_sync = await asyncio.gather(
+        dashboard, health, forum_sync, forum_engine, forum_complaints, forum_characters = await asyncio.gather(
             user_dashboard(request, selected),
             atlas_ai_health(),
             asyncio.to_thread(storage.atlas_forum_sync_status, int(guild_id)),
+            asyncio.to_thread(forum_engine_storage.forum_monitor_status, int(guild_id)),
+            asyncio.to_thread(
+                forum_engine_storage.user_forum_complaints,
+                int(guild_id),
+                int(selected.user_id),
+                limit=50,
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.list_monitored_characters,
+                int(guild_id),
+            ),
         )
+        own_forum_characters = [
+            {
+                "id": int(item["character_id"]),
+                "nickname": str(item.get("nickname") or ""),
+                "static_id": str(item.get("static_id") or ""),
+            }
+            for item in forum_characters
+            if int(item["user_id"]) == int(selected.user_id)
+        ]
         return {
             **dashboard,
             "viewer": {
@@ -442,6 +505,15 @@ def register_atlas_web_routes(
             "forum_sync": forum_sync or {
                 "status": "waiting" if forum_sync_runner and forum_sync_runner.config.enabled else "disabled",
                 "last_stats": {},
+            },
+            "forum_engine": {
+                **_forum_engine_status_view(
+                    forum_engine,
+                    administrator=bool(selected.administrator),
+                ),
+                "items": _forum_engine_items_view(forum_complaints),
+                "characters": own_forum_characters,
+                "enabled": bool(forum_engine_runner and forum_engine_runner.config.enabled),
             },
             "capabilities": [
                 "chat",
@@ -2423,6 +2495,11 @@ def register_atlas_web_routes(
         int(guild_id),
         index_callback=index_synced_source,
     )
+    forum_engine_runner = AtlasForumEngineRunner(
+        bot,
+        int(guild_id),
+        forum_sync_runner,
+    )
 
     async def start_index_reconciliation(_: web.Application) -> None:
         queue_index_reconciliation()
@@ -2460,6 +2537,15 @@ def register_atlas_web_routes(
             name="atlas-forum-sync",
         )
 
+    async def start_forum_engine(_: web.Application) -> None:
+        nonlocal forum_engine_task
+        if forum_engine_runner is None or not forum_engine_runner.config.enabled:
+            return
+        forum_engine_task = asyncio.create_task(
+            forum_engine_runner.run(),
+            name="atlas-forum-engine",
+        )
+
     async def stop_index_reconciliation(_: web.Application) -> None:
         for task in tuple(indexing_tasks):
             task.cancel()
@@ -2487,9 +2573,18 @@ def register_atlas_web_routes(
             forum_sync_task.cancel()
             await asyncio.gather(forum_sync_task, return_exceptions=True)
 
+    async def stop_forum_engine(_: web.Application) -> None:
+        if forum_engine_runner is not None:
+            await forum_engine_runner.close()
+        if forum_engine_task is not None:
+            forum_engine_task.cancel()
+            await asyncio.gather(forum_engine_task, return_exceptions=True)
+
     app.on_startup.append(start_index_reconciliation)
     app.on_startup.append(start_atlas_jobs)
     app.on_startup.append(start_forum_sync)
+    app.on_startup.append(start_forum_engine)
+    app.on_cleanup.append(stop_forum_engine)
     app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
     app.on_cleanup.append(stop_forum_attachment_ocr)
@@ -3435,6 +3530,60 @@ def register_atlas_web_routes(
             status=202 if request.method == "POST" else 200,
         )
 
+    async def forum_engine_control(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        if request.method == "POST":
+            await require_atlas_admin(selected)
+            await body(request, selected)
+            if forum_engine_runner is None or not forum_engine_runner.trigger():
+                return web.json_response(
+                    {
+                        "error": "atlas_forum_engine_disabled",
+                        "message": "Atlas Forum Engine сейчас отключён.",
+                    },
+                    status=409,
+                )
+        status, items, characters = await asyncio.gather(
+            asyncio.to_thread(
+                forum_engine_storage.forum_monitor_status,
+                int(guild_id),
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.user_forum_complaints,
+                int(guild_id),
+                int(selected.user_id),
+                limit=100,
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.list_monitored_characters,
+                int(guild_id),
+            ),
+        )
+        own_characters = [
+            {
+                "id": int(item["character_id"]),
+                "nickname": str(item.get("nickname") or ""),
+                "static_id": str(item.get("static_id") or ""),
+            }
+            for item in characters
+            if int(item["user_id"]) == int(selected.user_id)
+        ]
+        return web.json_response(
+            {
+                "accepted": request.method == "POST",
+                "enabled": bool(forum_engine_runner and forum_engine_runner.config.enabled),
+                "status": _forum_engine_status_view(
+                    status,
+                    administrator=bool(selected.administrator),
+                ),
+                "characters": own_characters,
+                "items": _forum_engine_items_view(items),
+            },
+            status=202 if request.method == "POST" else 200,
+        )
+
     app.router.add_get("/atlas", atlas_index)
     app.router.add_get("/atlas/", atlas_index)
     app.router.add_get("/atlas/assets/{name}", atlas_asset)
@@ -3494,6 +3643,8 @@ def register_atlas_web_routes(
     )
     app.router.add_get("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
+    app.router.add_get("/api/atlas/forum-engine", forum_engine_control)
+    app.router.add_post("/api/atlas/forum-engine", forum_engine_control)
     app.router.add_get("/api/admin/atlas", admin_overview)
     app.router.add_post("/api/admin/atlas/catalog", admin_catalog_control)
     app.router.add_post("/api/admin/atlas/spaces", admin_space_control)

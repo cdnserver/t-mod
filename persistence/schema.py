@@ -594,6 +594,141 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_source
             ON atlas_forum_attachments(source_id, id);
 
+            -- Atlas Forum Engine keeps complaint monitoring separate from the
+            -- normative RAG corpus. A complaint is operational evidence, not
+            -- a law, and therefore must never influence legal answers merely
+            -- because it appeared in a watched forum section.
+            CREATE TABLE IF NOT EXISTS atlas_forum_monitor_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
+                server_code TEXT NOT NULL,
+                feed_key TEXT NOT NULL,
+                section_kind TEXT NOT NULL
+                    CHECK(section_kind IN ('open', 'accepted', 'rejected')),
+                root_url TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL DEFAULT 300,
+                hot_pages INTEGER NOT NULL DEFAULT 3,
+                full_pages INTEGER NOT NULL DEFAULT 300,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
+                baseline_completed_at TEXT,
+                last_full_scan_at TEXT,
+                last_started_at TEXT,
+                last_success_at TEXT,
+                next_scan_at TEXT,
+                last_error TEXT,
+                last_stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, feed_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_monitor_feeds_due
+            ON atlas_forum_monitor_feeds(status, next_scan_at, id);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
+                server_code TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                thread_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                author TEXT,
+                section_kind TEXT NOT NULL
+                    CHECK(section_kind IN ('open', 'accepted', 'rejected')),
+                listing_fingerprint TEXT NOT NULL,
+                content_fingerprint TEXT,
+                first_post_excerpt TEXT,
+                latest_post_excerpt TEXT,
+                latest_post_author TEXT,
+                latest_post_role TEXT,
+                latest_post_at TEXT,
+                post_count INTEGER NOT NULL DEFAULT 0,
+                locked INTEGER NOT NULL DEFAULT 0,
+                notifications_armed INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                last_changed_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, project_code, server_code, thread_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaints_status
+            ON atlas_forum_complaints(guild_id, server_code, section_kind, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER,
+                static_id TEXT NOT NULL,
+                nickname TEXT,
+                first_matched_at TEXT NOT NULL,
+                last_matched_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, user_id, static_id),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(character_id) REFERENCES profile_characters(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_subjects_user
+            ON atlas_forum_complaint_subjects(guild_id, user_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                event_kind TEXT NOT NULL
+                    CHECK(event_kind IN ('discovered', 'reply', 'staff_reply', 'updated', 'status_changed')),
+                event_fingerprint TEXT NOT NULL,
+                previous_section_kind TEXT,
+                section_kind TEXT NOT NULL,
+                actor TEXT,
+                actor_role TEXT,
+                excerpt TEXT,
+                occurred_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(complaint_id, event_kind, event_fingerprint),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_events_topic
+            ON atlas_forum_complaint_events(complaint_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                complaint_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                static_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'retry', 'sent', 'dead', 'suppressed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                dm_message_id INTEGER,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                delivered_at TEXT,
+                UNIQUE(event_id, user_id),
+                FOREIGN KEY(event_id) REFERENCES atlas_forum_complaint_events(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_deliveries_due
+            ON atlas_forum_complaint_deliveries(status, next_attempt_at, id);
+
             CREATE TABLE IF NOT EXISTS atlas_document_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER,

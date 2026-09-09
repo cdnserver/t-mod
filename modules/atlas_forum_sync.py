@@ -255,6 +255,51 @@ class AtlasForumSnapshot:
     author: str | None = None
     source_updated_at: str | None = None
     attachments: tuple[AtlasForumAttachment, ...] = ()
+    posts: tuple["AtlasForumPost", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumPost:
+    index: int
+    author: str | None
+    author_role: str | None
+    posted_at: str | None
+    content: str
+    is_staff: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumListingEntry:
+    url: str
+    title: str
+    author: str | None = None
+    last_post_author: str | None = None
+    last_post_at: str | None = None
+    reply_count: int | None = None
+    locked: bool = False
+    sticky: bool = False
+
+    @property
+    def fingerprint(self) -> str:
+        value = "\0".join(
+            (
+                self.url,
+                self.title,
+                self.author or "",
+                self.last_post_author or "",
+                self.last_post_at or "",
+                str(self.reply_count if self.reply_count is not None else ""),
+                "1" if self.locked else "0",
+            )
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumInventory:
+    entries: tuple[AtlasForumListingEntry, ...]
+    inventory_complete: bool
+    listing_pages: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,25 +407,96 @@ def _forum_attachments(body: Any, page_url: str) -> tuple[AtlasForumAttachment, 
 
 
 def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str | None]:
+    entries, next_url = parse_forum_listing_entries(page_html, page_url)
+    return [entry.url for entry in entries], next_url
+
+
+def _optional_int(value: object) -> int | None:
+    text = re.sub(r"[^0-9]", "", str(value or ""))
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def parse_forum_listing_entries(
+    page_html: str,
+    page_url: str,
+) -> tuple[list[AtlasForumListingEntry], str | None]:
     try:
         tree = html.fromstring(str(page_html or ""))
     except (TypeError, ValueError) as exc:
         raise AtlasForumSyncError("atlas_forum_listing_invalid") from exc
-    links: list[str] = []
+    entries: list[AtlasForumListingEntry] = []
     seen: set[str] = set()
-    selectors = (
-        "//div[contains(@class,'structItem-title')]//a[contains(@href,'/threads/')]/@href",
-        "//a[contains(@class,'PreviewTooltip') and contains(@href,'/threads/')]/@href",
-        "//a[contains(@href,'/threads/')]/@href",
+    rows = tree.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem--thread ')]"
     )
-    for selector in selectors:
-        for href in tree.xpath(selector):
-            url = _canonical_url(page_url, str(href))
-            if url and "/threads/" in url and url not in seen:
-                seen.add(url)
-                links.append(url)
-        if links:
-            break
+    for row in rows:
+        title_links = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-title ')]"
+            "//a[contains(@href,'/threads/')][not(contains(@class,'labelLink'))]"
+        )
+        if not title_links:
+            continue
+        title_link = title_links[-1]
+        url = _canonical_url(page_url, str(title_link.get("href") or ""))
+        if not url or "/threads/" not in url or url in seen:
+            continue
+        seen.add(url)
+        authors = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-parts ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        )
+        latest = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-cell--latest ')]"
+        )
+        latest_authors = latest[0].xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        ) if latest else []
+        latest_times = latest[0].xpath(".//time/@datetime") if latest else []
+        reply_values = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-cell--meta ')]"
+            "//dl[.//*[contains(translate(normalize-space(.), 'REPLIESОТВЕТЫ', 'repliesответы'), 'ответ') "
+            "or contains(translate(normalize-space(.), 'REPLIES', 'replies'), 'repl')]]/dd/text()"
+        )
+        classes = str(row.get("class") or "").casefold()
+        entries.append(
+            AtlasForumListingEntry(
+                url=url,
+                title=_clean_text(title_link.text_content())[:240] or "Тема форума",
+                author=_clean_text(authors[0].text_content())[:120] if authors else None,
+                last_post_author=(
+                    _clean_text(latest_authors[-1].text_content())[:120]
+                    if latest_authors else None
+                ),
+                last_post_at=str(latest_times[-1])[:100] if latest_times else None,
+                reply_count=_optional_int(reply_values[0]) if reply_values else None,
+                locked="is-locked" in classes or "locked" in classes,
+                sticky="is-sticky" in classes or "sticky" in classes,
+            )
+        )
+    if not entries:
+        selectors = (
+            "//div[contains(@class,'structItem-title')]//a[contains(@href,'/threads/')]",
+            "//a[contains(@class,'PreviewTooltip') and contains(@href,'/threads/')]",
+            "//a[contains(@href,'/threads/')]",
+        )
+        for selector in selectors:
+            for node in tree.xpath(selector):
+                url = _canonical_url(page_url, str(node.get("href") or ""))
+                if url and "/threads/" in url and url not in seen:
+                    seen.add(url)
+                    entries.append(
+                        AtlasForumListingEntry(
+                            url=url,
+                            title=_clean_text(node.text_content())[:240] or "Тема форума",
+                        )
+                    )
+            if entries:
+                break
     next_url = None
     next_candidates = tree.xpath(
         "//a[contains(@class,'pageNav-jump--next') or @rel='next']/@href"
@@ -389,7 +505,62 @@ def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str |
         candidate = _canonical_url(page_url, str(next_candidates[0]))
         if candidate and "/forums/" in candidate:
             next_url = candidate
-    return links, next_url
+    return entries, next_url
+
+
+def parse_forum_thread_next_page(page_html: str, page_url: str) -> str | None:
+    """Return the next page of the same XenForo topic without widening SSRF scope."""
+
+    try:
+        tree = html.fromstring(str(page_html or ""))
+    except (TypeError, ValueError):
+        return None
+    candidates = tree.xpath(
+        "//a[@rel='next' and contains(@href,'/threads/')]/@href"
+        " | //a[contains(@class,'pageNav-jump--next') and contains(@href,'/threads/')]/@href"
+    )
+    if not candidates:
+        return None
+    current = urlsplit(str(page_url or ""))
+    root_match = re.match(r"^(/threads/[^/]+\.\d+)(?:/.*)?$", current.path, re.IGNORECASE)
+    if current.scheme not in {"http", "https"} or not current.netloc or not root_match:
+        return None
+    absolute = urlsplit(urljoin(page_url, str(candidates[0])))
+    expected_root = root_match.group(1).rstrip("/")
+    if (
+        absolute.scheme not in {"http", "https"}
+        or absolute.netloc.casefold() != current.netloc.casefold()
+        or not absolute.path.rstrip("/").casefold().startswith(f"{expected_root}/page-".casefold())
+    ):
+        return None
+    return urlunsplit(("https", absolute.netloc.lower(), absolute.path, "", ""))
+
+
+def _post_body(article: Any) -> Any | None:
+    candidates = article.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
+    )
+    if not candidates:
+        candidates = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
+        )
+    if not candidates:
+        candidates = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
+        )
+    return candidates[0] if candidates else None
+
+
+def _post_text(body: Any) -> str:
+    for unwanted in body.xpath(
+        ".//script | .//style | .//*[contains(@class,'bbCodeBlock--quote')] "
+        "| .//*[contains(@class,'message-signature')]"
+    ):
+        parent = unwanted.getparent()
+        if parent is not None:
+            parent.remove(unwanted)
+    return _clean_text("\n".join(body.itertext()))
 
 
 def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
@@ -404,6 +575,9 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     if title_nodes:
         node = title_nodes[0]
         title = _clean_text(node if isinstance(node, str) else node.text_content())
+    articles = tree.xpath(
+        "//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
+    )
     body_nodes = tree.xpath(
         "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
@@ -438,19 +612,13 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     if not body_nodes:
         raise AtlasForumSyncError("atlas_forum_thread_body_missing")
     body = body_nodes[0]
-    for unwanted in body.xpath(
-        ".//script | .//style | .//*[contains(@class,'bbCodeBlock--quote')] "
-        "| .//*[contains(@class,'message-signature')]"
-    ):
-        parent = unwanted.getparent()
-        if parent is not None:
-            parent.remove(unwanted)
+    attachments = _forum_attachments(body, str(page_url))
     # XenForo documents frequently keep articles, tables and numbered clauses
     # in nested div/span nodes rather than p/li elements. Selecting only a few
     # block tags silently reduced whole codes to a handful of list items. Every
     # text node inside the first post is authoritative after quotes/scripts
     # have been removed, so preserve all of them in document order.
-    content = _clean_text("\n".join(body.itertext()))
+    content = _post_text(body)
     if not title:
         title = content.splitlines()[0][:180] if content else "Материал форума"
     if len(content) < 20:
@@ -462,13 +630,58 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     time_values = tree.xpath(
         "(//article[contains(@class,'message')]//time[contains(@class,'u-dt')]/@datetime)[1]"
     )
+    posts: list[AtlasForumPost] = []
+    for index, article in enumerate(articles, start=1):
+        post_body = _post_body(article)
+        if post_body is None:
+            continue
+        post_content = content if index == 1 else _post_text(post_body)
+        if not post_content:
+            continue
+        author_values = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-name ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        )
+        role_values = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-userTitle ')]"
+            " | .//*[contains(concat(' ', normalize-space(@class), ' '), ' userBanner ')]"
+        )
+        role = _clean_text(" · ".join(item.text_content() for item in role_values))[:180] or None
+        role_folded = str(role or "").casefold()
+        article_classes = str(article.get("class") or "").casefold()
+        is_staff = any(
+            marker in role_folded or marker in article_classes
+            for marker in ("администратор", "administrator", "куратор", "модератор", "staff")
+        )
+        post_times = article.xpath(".//time[contains(@class,'u-dt')]/@datetime | .//time/@datetime")
+        posts.append(
+            AtlasForumPost(
+                index=index,
+                author=_clean_text(author_values[0].text_content())[:120] if author_values else None,
+                author_role=role,
+                posted_at=str(post_times[0])[:100] if post_times else None,
+                content=post_content[:80_000],
+                is_staff=is_staff,
+            )
+        )
+    if not posts:
+        posts.append(
+            AtlasForumPost(
+                index=1,
+                author=_clean_text(author_nodes[0].text_content())[:120] if author_nodes else None,
+                author_role=None,
+                posted_at=str(time_values[0])[:100] if time_values else None,
+                content=content[:80_000],
+            )
+        )
     return AtlasForumSnapshot(
         url=str(page_url),
         title=title[:180],
         content=content[:250000],
         author=_clean_text(author_nodes[0].text_content())[:120] if author_nodes else None,
         source_updated_at=str(time_values[0])[:100] if time_values else None,
-        attachments=_forum_attachments(body, str(page_url)),
+        attachments=attachments,
+        posts=tuple(posts),
     )
 
 
@@ -1004,6 +1217,46 @@ class AtlasForumBrowser:
             skipped_threads=tuple(skipped_threads),
         )
 
+    def scrape_inventory(
+        self,
+        url: str,
+        *,
+        max_pages: int,
+    ) -> AtlasForumInventory:
+        """Read listing metadata across pagination without opening every topic."""
+
+        listing_url = _canonical_url(self.config.root_url, str(url or ""))
+        if listing_url is None or "/forums/" not in listing_url:
+            raise AtlasForumSyncError("atlas_forum_listing_url_invalid")
+        page_limit = max(1, min(int(max_pages), 500))
+        current: str | None = listing_url
+        visited: set[str] = set()
+        entries: list[AtlasForumListingEntry] = []
+        seen_threads: set[str] = set()
+        next_after_limit: str | None = None
+        while current and current not in visited and len(visited) < page_limit:
+            page = self._load(current)
+            page_entries, next_url = parse_forum_listing_entries(page, current)
+            if not page_entries:
+                raise AtlasForumManualActionRequired(
+                    "Форум не показал список тем. Проверьте авторизацию в Chromium Atlas."
+                )
+            visited.add(current)
+            for entry in page_entries:
+                if entry.url in seen_threads:
+                    continue
+                seen_threads.add(entry.url)
+                entries.append(entry)
+            next_after_limit = next_url
+            current = next_url
+            if current and len(visited) < page_limit:
+                time.sleep(self.config.page_delay_seconds)
+        return AtlasForumInventory(
+            entries=tuple(entries),
+            inventory_complete=not bool(next_after_limit),
+            listing_pages=len(visited),
+        )
+
     def scrape(self) -> AtlasForumScrapeBatch:
         return self._scrape_listing(self.config.root_url)
 
@@ -1022,6 +1275,57 @@ class AtlasForumBrowser:
         if thread_url is None or "/threads/" not in thread_url:
             raise AtlasForumSyncError("atlas_forum_thread_url_invalid")
         return parse_forum_thread(self._load(thread_url), thread_url)
+
+    def scrape_thread_history(
+        self,
+        url: str,
+        *,
+        max_pages: int = 50,
+    ) -> AtlasForumSnapshot:
+        """Read all reply pages for operational monitoring, preserving page one as truth."""
+
+        thread_url = _canonical_url(self.config.root_url, str(url or ""))
+        if thread_url is None or "/threads/" not in thread_url:
+            raise AtlasForumSyncError("atlas_forum_thread_url_invalid")
+        current: str | None = thread_url
+        visited: set[str] = set()
+        first: AtlasForumSnapshot | None = None
+        posts: list[AtlasForumPost] = []
+        limit = max(1, min(int(max_pages), 100))
+        while current and current not in visited and len(visited) < limit:
+            page = self._load(current)
+            snapshot = parse_forum_thread(page, current)
+            visited.add(current)
+            if first is None:
+                first = snapshot
+            for post in snapshot.posts:
+                posts.append(
+                    AtlasForumPost(
+                        index=len(posts) + 1,
+                        author=post.author,
+                        author_role=post.author_role,
+                        posted_at=post.posted_at,
+                        content=post.content,
+                        is_staff=post.is_staff,
+                    )
+                )
+            current = parse_forum_thread_next_page(page, current)
+            if current and current not in visited:
+                time.sleep(self.config.page_delay_seconds)
+        if first is None:
+            raise AtlasForumSyncError("atlas_forum_thread_body_missing")
+        if current and current not in visited:
+            raise AtlasForumSyncError("atlas_forum_thread_page_limit")
+        latest_at = posts[-1].posted_at if posts else first.source_updated_at
+        return AtlasForumSnapshot(
+            url=thread_url,
+            title=first.title,
+            content=first.content,
+            author=first.author,
+            source_updated_at=latest_at,
+            attachments=first.attachments,
+            posts=tuple(posts) or first.posts,
+        )
 
     def close(self) -> None:
         driver, self._driver = self._driver, None
@@ -1182,6 +1486,63 @@ class AtlasForumSyncRunner:
             else:
                 await asyncio.to_thread(self.browser.close)
                 return snapshot
+
+    async def fetch_inventory(
+        self,
+        url: str,
+        *,
+        max_pages: int,
+    ) -> AtlasForumInventory:
+        """Reuse the authenticated browser for a lightweight paginated scan."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        async with self._lock:
+            try:
+                inventory = await asyncio.to_thread(
+                    self.browser.scrape_inventory,
+                    url,
+                    max_pages=max_pages,
+                )
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint(self.browser)
+                raise
+            else:
+                await asyncio.to_thread(self.browser.close)
+                return inventory
+
+    async def fetch_threads(
+        self,
+        urls: list[str] | tuple[str, ...],
+    ) -> tuple[tuple[AtlasForumSnapshot, ...], tuple[str, ...]]:
+        """Read changed topics in one browser session and isolate bad topics."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        selected = list(dict.fromkeys(str(item or "").strip() for item in urls if item))[:500]
+        snapshots: list[AtlasForumSnapshot] = []
+        skipped: list[str] = []
+        async with self._lock:
+            try:
+                for index, url in enumerate(selected):
+                    try:
+                        snapshots.append(
+                            await asyncio.to_thread(self.browser.scrape_thread_history, url)
+                        )
+                    except AtlasForumManualActionRequired:
+                        raise
+                    except AtlasForumSyncError:
+                        skipped.append(url)
+                    if index + 1 < len(selected):
+                        await asyncio.sleep(self.config.page_delay_seconds)
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint(self.browser)
+                raise
+            finally:
+                await asyncio.to_thread(self.browser.close)
+        return tuple(snapshots), tuple(skipped)
 
     async def fetch_attachment(self, url: str) -> tuple[bytes, str]:
         """Read a verified same-origin attachment without broadening browser access."""
@@ -1579,12 +1940,17 @@ __all__ = [
     "AtlasForumBrowser",
     "AtlasForumAttachment",
     "AtlasForumManualActionRequired",
+    "AtlasForumInventory",
+    "AtlasForumListingEntry",
+    "AtlasForumPost",
     "AtlasForumScrapeBatch",
     "AtlasForumSnapshot",
     "AtlasForumSyncConfig",
     "AtlasForumSyncError",
     "AtlasForumSyncRunner",
     "forum_interstitial_kind",
+    "parse_forum_listing_entries",
     "parse_forum_listing",
     "parse_forum_thread",
+    "parse_forum_thread_next_page",
 ]

@@ -732,6 +732,83 @@ function renderForumSync(value) {
   button.firstChild.textContent = state === "running" ? "Проверка уже выполняется " : "Проверить обновления сейчас ";
 }
 
+function renderForumEngine(value) {
+  const engine = value && typeof value === "object" ? value : {};
+  const feeds = Array.isArray(engine.feeds) ? engine.feeds : [];
+  const items = Array.isArray(engine.items) ? engine.items : [];
+  const characters = Array.isArray(engine.characters) ? engine.characters : [];
+  let state = engine.enabled === false ? "disabled" : (engine.status || "pending");
+  if (feeds.some((item) => item.status === "running")) state = "running";
+  else if (feeds.some((item) => item.status === "error")) state = "error";
+  else if (feeds.some((item) => item.status === "attention")) state = "attention";
+  else if (feeds.length && feeds.every((item) => item.status === "ok")) state = "ok";
+  const labels = {
+    disabled: "Наблюдение временно отключено",
+    pending: "Строим первую карту жалоб без старых уведомлений",
+    running: "Сверяем разделы форума прямо сейчас",
+    ok: "Наблюдение активно · изменения придут автоматически",
+    attention: "Форум ждёт подтверждения · сохранённые данные доступны",
+    error: "Сверка будет повторена автоматически",
+  };
+  byId("forum-engine-pulse").className = state;
+  byId("forum-engine-state").textContent = labels[state] || labels.pending;
+  byId("forum-engine-total").textContent = String(engine.complaints || 0);
+  byId("forum-engine-open").textContent = String(engine.open || 0);
+  const grouped = new Map();
+  items.forEach((item) => {
+    const key = String(item.id || item.thread_url || "");
+    const existing = grouped.get(key);
+    const character = `${item.nickname || "Персонаж"} · ${item.static_id || "—"}`;
+    if (existing) {
+      if (!existing.characters.includes(character)) existing.characters.push(character);
+    } else grouped.set(key, { ...item, characters: [character] });
+  });
+  byId("forum-engine-mine").textContent = String(grouped.size);
+  byId("forum-engine-characters").textContent = String(characters.length);
+  const characterList = byId("forum-engine-character-list");
+  clear(characterList);
+  characters.forEach((item) => characterList.append(
+    element("span", "", `${item.nickname || "Персонаж"} · ${item.static_id || "—"}`),
+  ));
+  if (!characters.length) characterList.append(
+    element("span", "", "Добавьте персонажа и статик в T‑Mod Account."),
+  );
+  const list = byId("forum-engine-list");
+  clear(list);
+  const sectionLabels = {
+    open: "На рассмотрении",
+    accepted: "Принята",
+    rejected: "Отклонена",
+  };
+  [...grouped.values()].forEach((item) => {
+    const link = element("a", `forum-engine-item ${item.section_kind || "open"}`);
+    link.href = String(item.thread_url || "#");
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    const copy = element("span");
+    copy.append(
+      element("strong", "", item.title || "Жалоба на форуме"),
+      element(
+        "small",
+        "",
+        `${sectionLabels[item.section_kind] || "Статус уточняется"} · ${item.characters.join(", ")} · ${readableTime(item.last_changed_at, "без даты")}`,
+      ),
+    );
+    link.append(element("i"), copy, element("b", "", "↗"));
+    list.append(link);
+  });
+  if (!grouped.size) list.append(element(
+    "div",
+    "empty",
+    characters.length
+      ? "Жалоб на привязанных персонажей пока не найдено."
+      : "После добавления персонажа Atlas свяжет его с картой форума.",
+  ));
+  const button = byId("forum-engine-now");
+  button.hidden = !Boolean(appState.data?.viewer?.administrator);
+  button.disabled = state === "running" || state === "disabled";
+}
+
 const timelineKindLabels = {
   incident: "Инцидент",
   activity: "Действие",
@@ -834,6 +911,7 @@ function render(data) {
   renderTimeline(data.timeline || [], data.timeline_summary || {});
   renderKnowledgeSources(data.knowledge_sources || []);
   renderForumSync(data.forum_sync);
+  renderForumEngine(data.forum_engine);
   renderThreads(data.threads || []);
   renderOnboarding(membership);
 
@@ -1550,6 +1628,18 @@ async function loadForumSync() {
   return appState.data.forum_sync;
 }
 
+async function loadForumEngine() {
+  const result = await api("/api/atlas/forum-engine");
+  appState.data.forum_engine = {
+    ...(result.status || {}),
+    enabled: Boolean(result.enabled),
+    items: result.items || [],
+    characters: result.characters || [],
+  };
+  renderForumEngine(appState.data.forum_engine);
+  return appState.data.forum_engine;
+}
+
 const searchKindLabels = { case: "ДЕЛО", document: "ДОКУМЕНТ", timeline_event: "СОБЫТИЕ", media_asset: "МЕДИА", knowledge_source: "ЗНАНИЯ" };
 
 function openGlobalSearch() {
@@ -2007,6 +2097,21 @@ function bind() {
       renderForumSync(appState.data?.forum_sync || {});
     }
   });
+  byId("forum-engine-now").addEventListener("click", async () => {
+    const button = byId("forum-engine-now");
+    button.disabled = true;
+    try {
+      await api("/api/atlas/forum-engine", { method: "POST", body: "{}" });
+      renderForumEngine({ ...(appState.data?.forum_engine || {}), status: "running" });
+      byId("forum-engine-pulse").className = "running";
+      byId("forum-engine-state").textContent = "Сверяем разделы форума прямо сейчас";
+      showToast("Atlas Forum Engine начал сверку.");
+      setTimeout(() => void loadForumEngine().catch(() => {}), 2200);
+    } catch (error) {
+      showToast(error.message || "Не удалось запустить сверку жалоб.", true);
+      renderForumEngine(appState.data?.forum_engine || {});
+    }
+  });
   byId("global-search").addEventListener("click", openGlobalSearch);
   byId("atlas-search-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2046,7 +2151,10 @@ async function bootstrap() {
       setTimeout(() => openDialog(byId("onboarding-dialog")), 380);
     }
     setInterval(() => {
-      if (!document.hidden && appState.screen === "forum") void loadForumSync().catch(() => {});
+      if (!document.hidden && appState.screen === "forum") {
+        void loadForumSync().catch(() => {});
+        void loadForumEngine().catch(() => {});
+      }
     }, 30000);
   } catch (error) {
     if (!String(error.message).includes("Требуется вход")) {

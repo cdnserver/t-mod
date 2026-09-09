@@ -13,6 +13,7 @@ from modules.atlas_forum_sync import (
     AtlasForumAttachment,
     AtlasForumBrowser,
     AtlasForumManualActionRequired,
+    AtlasForumListingEntry,
     AtlasForumScrapeBatch,
     AtlasForumSnapshot,
     AtlasForumSyncConfig,
@@ -20,7 +21,9 @@ from modules.atlas_forum_sync import (
     AtlasForumSyncRunner,
     forum_interstitial_kind,
     parse_forum_listing,
+    parse_forum_listing_entries,
     parse_forum_thread,
+    parse_forum_thread_next_page,
 )
 from persistence import atlas_repository
 
@@ -126,6 +129,48 @@ class AtlasForumParserTests(unittest.TestCase):
             links,
             ["https://forum.majestic-rp.ru/threads/zakon.100/"],
         )
+
+    def test_listing_records_change_metadata_for_complaint_monitoring(self) -> None:
+        page = """
+        <div class="structItem structItem--thread is-locked">
+          <div class="structItem-title"><a href="/threads/report.908/">Жалоба на 228392</a></div>
+          <div class="structItem-parts"><a class="username">Applicant</a></div>
+          <div class="structItem-cell--meta"><dl><dt>Ответы</dt><dd>12</dd></dl></div>
+          <div class="structItem-cell--latest"><a class="username">Administrator</a><time datetime="2026-09-09T08:00:00+03:00"></time></div>
+        </div>
+        """
+
+        entries, _next = parse_forum_listing_entries(page, ROOT_URL)
+
+        self.assertEqual(len(entries), 1)
+        self.assertIsInstance(entries[0], AtlasForumListingEntry)
+        self.assertEqual(entries[0].reply_count, 12)
+        self.assertEqual(entries[0].last_post_author, "Administrator")
+        self.assertTrue(entries[0].locked)
+
+    def test_thread_history_follows_pagination_and_keeps_original_statement(self) -> None:
+        first_page = """
+        <h1 class="p-title-value">Жалоба на 228392</h1>
+        <article class="message message--post"><div class="message-name"><span class="username">Reporter</span></div><div class="message-body"><div class="bbWrapper">Исходное описание нарушения со статиком 228392.</div></div></article>
+        <a rel="next" href="/threads/report.908/page-2">Далее</a>
+        """
+        second_page = """
+        <h1 class="p-title-value">Жалоба на 228392</h1>
+        <article class="message message--post"><div class="message-name"><span class="username">Moderator</span></div><div class="message-userTitle">Администратор</div><time datetime="2026-09-09T08:00:00+03:00"></time><div class="message-body"><div class="bbWrapper">Жалоба рассмотрена, меры приняты администрацией.</div></div></article>
+        """
+        browser = AtlasForumBrowser(sync_config())
+        pages = iter((first_page, second_page))
+        browser._load = lambda _url: next(pages)
+
+        with patch("modules.atlas_forum_sync.time.sleep"):
+            snapshot = browser.scrape_thread_history(
+                "https://forum.majestic-rp.ru/threads/report.908/"
+            )
+
+        self.assertEqual(snapshot.content, "Исходное описание нарушения со статиком 228392.")
+        self.assertEqual(len(snapshot.posts), 2)
+        self.assertTrue(snapshot.posts[-1].is_staff)
+        self.assertIsNone(parse_forum_thread_next_page(second_page, snapshot.url))
 
     def test_thread_extracts_only_first_post_without_quote(self) -> None:
         page = """
