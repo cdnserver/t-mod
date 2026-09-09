@@ -477,9 +477,14 @@ try {
         ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
             -FailureMessage "Candidate Docker Compose build failed"
         # Candidate test command: unittest discover (kept as separate argv so
-        # PowerShell 5.1 does not reinterpret the test pattern).
+        # PowerShell 5.1 does not reinterpret the test pattern).  The full
+        # candidate tree is mounted because deployment-only files and test
+        # fixtures are intentionally excluded from the production image.
         Invoke-BoundedNativeOrThrow -File "docker.exe" -Arguments @(
-            "run", "--rm", "--entrypoint", "python", "tmod-discord-bot:latest",
+            "run", "--rm", "--entrypoint", "python",
+            "--workdir", "/candidate", "--env", "PYTHONPATH=/candidate",
+            "--mount", "type=bind,source=$CandidateDir,target=/candidate,readonly",
+            "tmod-discord-bot:latest",
             "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"
         ) -WorkingDirectory $CandidateDir -TimeoutSeconds $CommandTimeoutSeconds `
             -FailureMessage "Candidate test suite failed"
