@@ -23,6 +23,8 @@ $TargetCommit = "unknown"
 $BackupPath = $null
 $RollbackImage = $null
 $RollbackSupervisorImage = $null
+$PreviousDockerConfig = [Environment]::GetEnvironmentVariable("DOCKER_CONFIG", "Process")
+$UpdateDockerConfigDir = Join-Path $UpdateRoot "docker-cli-public"
 $UpdateMutex = New-Object System.Threading.Mutex($false, "Local\TModSafeUpdate")
 $MutexAcquired = $UpdateMutex.WaitOne(0)
 if (-not $MutexAcquired) {
@@ -125,7 +127,11 @@ function Invoke-BoundedNativeOrThrow {
     $result = Invoke-BoundedNative -File $File -Arguments $Arguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
     if ($result.timed_out) { throw "${FailureMessage}: timeout after ${TimeoutSeconds}s" }
     if ($result.exit_code -ne 0) { throw "$FailureMessage (exit code $($result.exit_code))" }
-    return $result
+    # This helper is used for validation side effects only.  Emitting the
+    # PSCustomObject here polluted callers' assignment pipelines (notably
+    # New-PreUpdateBackup), turning a backup path into an object array and
+    # breaking rollback path handling with PSCustomObject.StartsWith.
+    return
 }
 
 function Invoke-GitFetchBounded {
@@ -379,6 +385,21 @@ function Restore-DatabaseIfCorrupt {
 try {
     $ProjectDir = (Resolve-Path -LiteralPath $ProjectDir).Path
     New-Item -ItemType Directory -Path $UpdateRoot -Force | Out-Null
+    # Docker Desktop's normal config delegates registry authentication to a
+    # helper tied to the interactive Windows logon. SSH and service sessions
+    # cannot call that helper, which breaks even public base-image metadata.
+    # T-Mod builds only from public base images, so the updater uses an
+    # isolated anonymous config without modifying the user's Docker settings.
+    New-Item -ItemType Directory -Path $UpdateDockerConfigDir -Force | Out-Null
+    $dockerConfigPath = Join-Path $UpdateDockerConfigDir "config.json"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    # An explicit anonymous Docker Hub entry plus an empty credsStore prevents
+    # the CLI from falling back to docker-credential-desktop in a non-
+    # interactive session. "anonymous:" is public, contains no secret and is
+    # accepted by Docker Hub's token flow for public images.
+    $publicDockerConfig = '{"auths":{"https://index.docker.io/v1/":{"auth":"YW5vbnltb3VzOg=="}},"credsStore":""}'
+    [IO.File]::WriteAllText($dockerConfigPath, $publicDockerConfig, $utf8NoBom)
+    $env:DOCKER_CONFIG = $UpdateDockerConfigDir
     $OldCommit = (& git -C $ProjectDir rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Project is not a Git repository" }
 
@@ -543,6 +564,12 @@ catch {
     }
 }
 finally {
+    if ($null -eq $PreviousDockerConfig) {
+        Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DOCKER_CONFIG = $PreviousDockerConfig
+    }
     if ($CandidateDir -and (Test-Path -LiteralPath $CandidateDir)) {
         & git -C $ProjectDir worktree remove --force $CandidateDir *> $null
     }

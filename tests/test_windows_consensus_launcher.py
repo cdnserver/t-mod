@@ -307,6 +307,12 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
 
         self.assertIn("function Invoke-BoundedNative", updater)
         self.assertIn("function Invoke-BoundedNativeOrThrow", updater)
+        self.assertNotIn("return $result", updater)
+        self.assertIn('$UpdateDockerConfigDir = Join-Path $UpdateRoot "docker-cli-public"', updater)
+        self.assertIn('"credsStore":""', updater)
+        self.assertIn("YW5vbnltb3VzOg==", updater)
+        self.assertIn("$env:DOCKER_CONFIG = $UpdateDockerConfigDir", updater)
+        self.assertIn("Remove-Item Env:DOCKER_CONFIG", updater)
         self.assertIn("WaitForExit($TimeoutSeconds * 1000)", updater)
         self.assertIn("taskkill.exe /PID $process.Id /T /F", updater)
         self.assertIn("CommandTimeoutSeconds", updater)
