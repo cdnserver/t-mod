@@ -131,11 +131,29 @@ call :module "Minecraft Paper 26.1.2-74"
 call :module "Minecraft Lifecycle Supervisor"
 
 call :stage "07" "Docker engine"
-call :ensure_docker_engine
-if errorlevel 1 (
+set DOCKER_ENGINE_READY=0
+docker info >nul 2>nul
+if not errorlevel 1 set DOCKER_ENGINE_READY=1
+if "%DOCKER_ENGINE_READY%"=="0" (
+  call :warn "Docker engine is not responding. Trying to start Docker Desktop..."
+  if exist "%DOCKER_DESKTOP_EXE%" (
+    start "" "%DOCKER_DESKTOP_EXE%"
+  ) else (
+    call :warn "Docker Desktop exe not found at: %DOCKER_DESKTOP_EXE%"
+  )
+  for /l %%i in (1,1,36) do (
+    docker info >nul 2>nul
+    if not errorlevel 1 set DOCKER_ENGINE_READY=1
+    if "!DOCKER_ENGINE_READY!"=="0" ping 127.0.0.1 -n 6 -w 1000 >nul
+  )
+)
+if not "%DOCKER_ENGINE_READY%"=="1" (
+  call :fail "Docker Desktop Linux Engine did not start."
+  call :warn "Open Docker Desktop, wait for Engine running, then retry."
   call :pause_if_interactive
   exit /b 1
 )
+call :ok "Docker engine is running"
 
 call :stage "08" "Retired service cleanup"
 docker stop sgl-discord-bot >nul 2>nul
@@ -585,43 +603,6 @@ exit /b %errorlevel%
 :pause_if_interactive
 if not "%TMOD_NONINTERACTIVE%"=="1" pause
 exit /b 0
-
-:ensure_docker_engine
-docker info >nul 2>nul
-if not errorlevel 1 (
-  call :ok "Docker engine is running"
-  exit /b 0
-)
-
-call :warn "Docker engine is not responding."
-call :warn "Trying to start Docker Desktop..."
-
-if exist "%DOCKER_DESKTOP_EXE%" (
-  start "" "%DOCKER_DESKTOP_EXE%"
-) else (
-  call :warn "Docker Desktop exe not found at: %DOCKER_DESKTOP_EXE%"
-)
-
-for /l %%i in (1,1,36) do (
-  docker info >nul 2>nul
-  if not errorlevel 1 (
-    call :ok "Docker engine is ready"
-    exit /b 0
-  )
-  <nul set /p "=."
-  call :sleep 5
-)
-
-echo.
-call :fail "Docker Desktop Linux Engine did not start."
-echo.
-echo What to do:
-echo   1. Open Docker Desktop manually.
-echo   2. Wait until it says Engine running.
-echo   3. If it still fails, run: repair_docker_desktop_windows.bat
-echo   4. Then run this file again.
-echo.
-exit /b 1
 
 :banner
 cls

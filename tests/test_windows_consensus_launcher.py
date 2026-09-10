@@ -189,6 +189,15 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]', compose)
         self.assertIn("http://127.0.0.1:8792/ready", compose)
 
+    def test_docker_readiness_is_inline_and_cannot_corrupt_batch_return_stack(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertNotIn("call :ensure_docker_engine", launcher)
+        self.assertNotIn(":ensure_docker_engine", launcher)
+        self.assertIn("set DOCKER_ENGINE_READY=0", launcher)
+        self.assertIn('if not errorlevel 1 set DOCKER_ENGINE_READY=1', launcher)
+        self.assertIn('if not "%DOCKER_ENGINE_READY%"=="1"', launcher)
+
     def test_launcher_recovers_stale_postgres_health_without_accepting_running_as_ready(
         self,
     ) -> None:

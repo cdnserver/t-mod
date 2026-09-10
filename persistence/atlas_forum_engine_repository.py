@@ -105,6 +105,29 @@ def ensure_default_monitor_feeds(guild_id: int) -> list[dict[str, Any]]:
     return [_row(item) for item in rows if item is not None]
 
 
+def recover_interrupted_monitor_feeds(guild_id: int) -> int:
+    """Release leases left behind by the previous web runtime.
+
+    Only one Forum Engine is hosted by the Discord/web application process.
+    Consequently a ``running`` lease still present during that process' next
+    startup is necessarily interrupted work, not a live competing scan.
+    """
+
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            UPDATE atlas_forum_monitor_feeds
+            SET status = 'pending', next_scan_at = ?,
+                last_error = NULL, updated_at = ?
+            WHERE guild_id = ? AND status = 'running'
+            """,
+            (now, now, int(guild_id)),
+        )
+        con.commit()
+    return max(0, int(cursor.rowcount or 0))
+
+
 def due_monitor_feeds(guild_id: int, *, force: bool = False) -> list[dict[str, Any]]:
     now = utc_now_iso()
     stale = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
@@ -166,27 +189,36 @@ def finish_monitor_feed(
             interval = min(interval, 45)
         next_scan = (now_dt + timedelta(seconds=interval)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
+        # Do not put untyped placeholders inside ``CASE ... IS NULL`` here.
+        # SQLite accepts that construct, but PostgreSQL cannot infer the type
+        # of the timestamp placeholder when the compared value is NULL and
+        # rejects every completed pass with IndeterminateDatatype.  Resolve
+        # the conditional values in Python, then assign them directly so the
+        # target columns provide PostgreSQL with an unambiguous type.
+        baseline_completed_at = feed["baseline_completed_at"]
+        if (baseline_completed or full_scan) and not error and baseline_completed_at is None:
+            baseline_completed_at = now
+        last_full_scan_at = feed["last_full_scan_at"]
+        if full_scan and not error:
+            last_full_scan_at = now
+        last_success_at = feed["last_success_at"]
+        if error is None:
+            last_success_at = now
         con.execute(
             """
             UPDATE atlas_forum_monitor_feeds
             SET status = ?,
-                baseline_completed_at = CASE
-                    WHEN ? = 1 AND ? IS NULL THEN ? ELSE baseline_completed_at END,
-                last_full_scan_at = CASE WHEN ? = 1 AND ? IS NULL THEN ? ELSE last_full_scan_at END,
-                last_success_at = CASE WHEN ? IS NULL THEN ? ELSE last_success_at END,
+                baseline_completed_at = ?,
+                last_full_scan_at = ?,
+                last_success_at = ?,
                 next_scan_at = ?, last_error = ?, last_stats_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 status,
-                1 if (baseline_completed or full_scan) and not error else 0,
-                feed["baseline_completed_at"],
-                now,
-                1 if full_scan else 0,
-                error,
-                now,
-                error,
-                now,
+                baseline_completed_at,
+                last_full_scan_at,
+                last_success_at,
                 next_scan,
                 str(error or "")[:2000] or None,
                 _json(stats),

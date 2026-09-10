@@ -48,6 +48,9 @@ class PostgresCompatibilityTests(unittest.TestCase):
         craft = (ROOT / "persistence/craft_repository.py").read_text(encoding="utf-8")
         finance = (ROOT / "persistence/finance_repository.py").read_text(encoding="utf-8")
         atlas = (ROOT / "persistence/atlas_repository.py").read_text(encoding="utf-8")
+        forum_engine = (ROOT / "persistence/atlas_forum_engine_repository.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("count = activity_counters.count + 1", activity)
         self.assertIn(
@@ -58,6 +61,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("SELECT MAX(reason) AS reason", finance)
         self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE indexed_at END", atlas)
         self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE last_success_at END", atlas)
+        self.assertNotIn("WHEN ? = 1 AND ? IS NULL THEN ?", forum_engine)
 
     def test_legacy_values_are_validated_before_postgres_copy(self) -> None:
         self.assertEqual(_coerce_value("1488", "bigint", False), 1488)

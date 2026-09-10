@@ -140,6 +140,21 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertIsNone(duplicate)
 
+    def test_startup_releases_running_leases_from_previous_process(self) -> None:
+        feeds = forum_engine.ensure_default_monitor_feeds(77)
+        for feed in feeds[:2]:
+            self.assertIsNotNone(forum_engine.claim_monitor_feed(int(feed["id"])))
+
+        recovered = forum_engine.recover_interrupted_monitor_feeds(77)
+        status = forum_engine.forum_monitor_status(77)
+
+        self.assertEqual(recovered, 2)
+        self.assertNotIn("running", {item["status"] for item in status["feeds"]})
+        self.assertEqual(
+            {int(item["id"]) for item in forum_engine.due_monitor_feeds(77)},
+            {int(item["id"]) for item in feeds},
+        )
+
     def test_default_feeds_keep_hot_monitoring_inside_one_minute(self) -> None:
         feeds = forum_engine.ensure_default_monitor_feeds(77)
         self.assertEqual({int(item["interval_seconds"]) for item in feeds}, {45})

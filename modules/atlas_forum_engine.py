@@ -554,6 +554,7 @@ class AtlasForumEngineRunner:
         if not self.config.enabled:
             return
         await asyncio.to_thread(storage.ensure_default_monitor_feeds, self.guild_id)
+        await asyncio.to_thread(storage.recover_interrupted_monitor_feeds, self.guild_id)
         try:
             await asyncio.wait_for(
                 self._wake.wait(), timeout=self.config.initial_delay_seconds
@@ -571,7 +572,8 @@ class AtlasForumEngineRunner:
             except Exception as exc:
                 await self._technical_log(
                     "Atlas Forum Engine временно остановил проход",
-                    "Сохранённые жалобы и уведомления не потеряны; повтор запланирован.",
+                    "Сохранённые жалобы и уведомления не потеряны; повтор запланирован.\n"
+                    f"Причина: `{type(exc).__name__}: {str(exc)[:600]}`",
                     level="warning",
                     dedupe_key=f"atlas-forum-engine-loop:{type(exc).__name__}",
                     exception=exc,
