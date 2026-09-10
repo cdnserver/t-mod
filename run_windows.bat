@@ -466,8 +466,10 @@ rem the stricter RCON verification below.
 for /l %%i in (1,1,90) do (
   set MC_HEALTH=
   set MC_SUPERVISOR_HEALTH=
+  set MC_SUPERVISOR_ID=
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft 2^>nul') do set MC_HEALTH=%%H
-  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft-supervisor 2^>nul') do set MC_SUPERVISOR_HEALTH=%%H
+  for /f "delims=" %%C in ('docker compose ps -q minecraft-supervisor 2^>nul') do set MC_SUPERVISOR_ID=%%C
+  if defined MC_SUPERVISOR_ID for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" !MC_SUPERVISOR_ID! 2^>nul') do set MC_SUPERVISOR_HEALTH=%%H
   if /I "!MC_HEALTH!"=="healthy" if /I "!MC_SUPERVISOR_HEALTH!"=="healthy" (
     set MINECRAFT_RUNTIME_READY=1
     goto :minecraft_runtime_ready
@@ -494,8 +496,9 @@ exit /b 1
 
 :check_minecraft_rcon
 for /l %%i in (1,1,60) do (
-  docker inspect --format "{{.State.Health.Status}}" minecraft 2>nul | findstr /I /X /C:"healthy" >nul
-  if not errorlevel 1 (
+  set MC_RCON_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" minecraft 2^>nul') do set MC_RCON_HEALTH=%%H
+  if /I "!MC_RCON_HEALTH!"=="healthy" (
     rem mc-health may become healthy before RCON finishes binding. Retry the
     rem command for a bounded 60 seconds before declaring auth/config failure.
     for /l %%r in (1,1,12) do (

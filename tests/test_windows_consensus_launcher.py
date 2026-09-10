@@ -184,6 +184,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("call :ensure_minecraft_runtime", launcher)
         self.assertIn("Minecraft and lifecycle supervisor are healthy", launcher)
         self.assertIn("within 180 seconds", launcher)
+        self.assertIn("docker compose ps -q minecraft-supervisor", launcher)
+        self.assertNotIn(
+            'docker inspect --format "{{.State.Health.Status}}" minecraft-supervisor',
+            launcher,
+        )
         self.assertIn("docker compose up -d tmod-caddy", launcher)
         self.assertIn("Caddy did not become healthy", launcher)
         self.assertIn('test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]', compose)
@@ -259,6 +264,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("call :check_minecraft_rcon", launcher)
         self.assertIn("docker exec minecraft rcon-cli list", launcher)
         self.assertIn("Minecraft RCON secret accepted", launcher)
+        self.assertIn("set MC_RCON_HEALTH=", launcher)
+        self.assertNotIn('findstr /I /X /C:"healthy"', launcher)
         self.assertIn("server.properties may be unsynchronized", launcher)
 
     def test_transactional_updater_tests_backs_up_and_rolls_back(self) -> None:
