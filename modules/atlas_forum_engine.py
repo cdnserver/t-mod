@@ -301,12 +301,13 @@ class AtlasForumEngineRunner:
                 str(complaint.get("first_post_excerpt") or ""),
                 characters,
             )
-            if matched:
-                linked += await asyncio.to_thread(
-                    storage.reconcile_complaint_subjects,
-                    int(complaint["id"]),
-                    matched,
-                )
+            # Reconciliation is authoritative even when nothing matches: that
+            # empty result removes false subjects created by older parsers.
+            linked += await asyncio.to_thread(
+                storage.reconcile_complaint_subjects,
+                int(complaint["id"]),
+                matched,
+            )
         self._character_revision = revision
         return linked
 
