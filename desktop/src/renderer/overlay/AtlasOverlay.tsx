@@ -222,6 +222,7 @@ export function AtlasOverlay() {
     ? previewParams.get("preview")
     : null;
   const previewEnabled = Boolean(preview && !api);
+  const craftPreviewState = previewParams.get("craftState") === "active" ? "active" : "alert";
   const [state, dispatch] = useReducer(
     reduceAtlasOverlayState,
     initialAtlasOverlayState,
@@ -307,8 +308,8 @@ export function AtlasOverlay() {
   const [crafts, setCrafts] = useState<AtlasOverlayCraftSnapshot | null>(() => preview === "crafts" ? {
     server_time: new Date().toISOString(),
     revision: "preview-crafts",
-    attention_count: 1,
-    plans: [
+    attention_count: craftPreviewState === "alert" ? 1 : 0,
+    plans: craftPreviewState === "alert" ? [
       {
         id: 74, product_name: "Бронепластины", stage: "crafting", responsible: "Роберт",
         mine: true, attempts_total: 120, attempts_queued: 40, attempts_completed: 40,
@@ -322,9 +323,19 @@ export function AtlasOverlay() {
         active_batch: { id: 9, quantity: 15, due_at: new Date(Date.now() + 12 * 60_000 + 34_000).toISOString() },
         needs_next_batch: false,
       },
+    ] : [
+      {
+        id: 71, product_name: "Промышленные металлы", stage: "crafting", responsible: "Роберт",
+        mine: true, attempts_total: 90, attempts_queued: 60, attempts_completed: 45,
+        remaining_to_queue: 30, product_stock: 45, materials: [],
+        active_batch: { id: 9, quantity: 15, due_at: new Date(Date.now() + 12 * 60_000 + 34_000).toISOString() },
+        needs_next_batch: false,
+      },
     ],
   } : null);
-  const [craftAlarmKey, setCraftAlarmKey] = useState("");
+  const [craftAlarmKey, setCraftAlarmKey] = useState(
+    preview === "crafts" && craftPreviewState === "alert" ? "preview-next" : "",
+  );
   const [clock, setClock] = useState(() => Date.now());
 
   const stopAiAudio = useCallback(() => {
