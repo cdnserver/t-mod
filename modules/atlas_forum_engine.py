@@ -106,18 +106,53 @@ def _matches_character(text: str, static_id: str) -> bool:
     return clean.casefold() in re.sub(r"\s+", "", text).casefold()
 
 
+_TARGET_STATIC_RE = re.compile(
+    r"(?:статическ(?:ий|ого)\s*)?(?:#\s*)?id\s*(?:#\s*)?"
+    r"(?:нарушителя|игрока|ответчика)\s*[:#№-]*\s*(\d{1,12})",
+    re.IGNORECASE,
+)
+
+
+def _complaint_target_static_ids(content: str) -> set[str]:
+    """Extract only the accused player's IDs from a structured complaint."""
+
+    return {match.group(1) for match in _TARGET_STATIC_RE.finditer(str(content or ""))}
+
+
+def _match_complaint_characters(
+    title: str,
+    content: str,
+    characters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    explicit_targets = _complaint_target_static_ids(content)
+    if explicit_targets:
+        return [
+            character
+            for character in characters
+            if re.sub(r"\s+", "", str(character.get("static_id") or ""))
+            in explicit_targets
+        ]
+    # Older free-form templates commonly put the accused static in the title.
+    # Prefer it over the body, which can mention witnesses and the reporter.
+    title_matches = [
+        character
+        for character in characters
+        if _matches_character(title, str(character.get("static_id") or ""))
+    ]
+    if title_matches:
+        return title_matches
+    return [
+        character
+        for character in characters
+        if _matches_character(content, str(character.get("static_id") or ""))
+    ]
+
+
 def _matched_characters(
     snapshot: AtlasForumSnapshot,
     characters: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    # Only the complaint title and initial statement identify the target.
-    # Later replies can mention unrelated statics and must not subscribe them.
-    identity_text = f"{snapshot.title}\n{snapshot.content}"
-    return [
-        character
-        for character in characters
-        if _matches_character(identity_text, str(character.get("static_id") or ""))
-    ]
+    return _match_complaint_characters(snapshot.title, snapshot.content, characters)
 
 
 class AtlasForumEngineRunner:
@@ -256,15 +291,11 @@ class AtlasForumEngineRunner:
         )
         linked = 0
         for complaint in identities:
-            identity_text = (
-                f"{complaint.get('title') or ''}\n"
-                f"{complaint.get('first_post_excerpt') or ''}"
+            matched = _match_complaint_characters(
+                str(complaint.get("title") or ""),
+                str(complaint.get("first_post_excerpt") or ""),
+                characters,
             )
-            matched = [
-                item
-                for item in characters
-                if _matches_character(identity_text, str(item.get("static_id") or ""))
-            ]
             if matched:
                 linked += await asyncio.to_thread(
                     storage.reconcile_complaint_subjects,

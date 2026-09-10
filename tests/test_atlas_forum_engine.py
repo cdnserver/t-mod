@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import storage
-from modules.atlas_forum_engine import _matches_character
+from modules.atlas_forum_engine import _match_complaint_characters, _matches_character
 from persistence import atlas_forum_engine_repository as forum_engine
 
 
@@ -60,6 +60,28 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
     def test_static_matching_uses_exact_numeric_boundaries(self) -> None:
         self.assertTrue(_matches_character("Игрок 228392 нарушил правило", "228392"))
         self.assertFalse(_matches_character("Игрок 12283920 нарушил правило", "228392"))
+
+    def test_structured_complaint_matches_accused_not_reporter(self) -> None:
+        reporter = {
+            "character_id": 1,
+            "user_id": 10,
+            "nickname": "Reporter",
+            "static_id": "316622",
+        }
+        accused = {
+            "character_id": 2,
+            "user_id": 20,
+            "nickname": "Accused",
+            "static_id": "270160",
+        }
+
+        matched = _match_complaint_characters(
+            "Жалоба на сотрудника",
+            "Ваш статический ID # 316622 Статический #ID нарушителя 270160",
+            [reporter, accused],
+        )
+
+        self.assertEqual([item["user_id"] for item in matched], [20])
 
     def test_baseline_hydration_arms_future_alerts_without_old_discovery_dm(self) -> None:
         complaint = self._listing(notify=False)["complaint"]
