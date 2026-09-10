@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
-_THREAD_ID_RE = re.compile(r"\.(\d+)(?:/)?$")
+_THREAD_ID_RE = re.compile(r"/threads/(?:[^/]*\.)?(\d+)(?:/)?$", re.IGNORECASE)
 _OPEN_DELIVERY_STATUSES = ("pending", "retry")
 
 
@@ -431,6 +431,20 @@ def record_complaint_snapshot(
         notifications_armed = bool(existing["notifications_armed"])
         content_changed = bool(previous_fingerprint and previous_fingerprint != content_fingerprint)
         first_hydration = not previous_fingerprint
+        matched_keys = {
+            (int(character["user_id"]), str(character["static_id"]))
+            for character in characters
+        }
+        existing_subjects = con.execute(
+            "SELECT id, user_id, static_id FROM atlas_forum_complaint_subjects WHERE complaint_id = ?",
+            (int(complaint_id),),
+        ).fetchall()
+        for subject in existing_subjects:
+            if (int(subject["user_id"]), str(subject["static_id"])) not in matched_keys:
+                con.execute(
+                    "DELETE FROM atlas_forum_complaint_subjects WHERE id = ?",
+                    (int(subject["id"]),),
+                )
         for character in characters:
             con.execute(
                 """
@@ -652,6 +666,21 @@ def reconcile_complaint_subjects(
         if complaint is None:
             return 0
         changed = 0
+        matched_keys = {
+            (int(character["user_id"]), str(character["static_id"]))
+            for character in characters
+        }
+        existing_subjects = con.execute(
+            "SELECT id, user_id, static_id FROM atlas_forum_complaint_subjects WHERE complaint_id = ?",
+            (int(complaint_id),),
+        ).fetchall()
+        for subject in existing_subjects:
+            if (int(subject["user_id"]), str(subject["static_id"])) not in matched_keys:
+                con.execute(
+                    "DELETE FROM atlas_forum_complaint_subjects WHERE id = ?",
+                    (int(subject["id"]),),
+                )
+                changed += 1
         for character in characters:
             cursor = con.execute(
                 """

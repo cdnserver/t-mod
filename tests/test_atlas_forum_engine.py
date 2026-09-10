@@ -144,6 +144,18 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
         self.assertEqual(len(forum_engine.user_forum_complaints(77, 99)), 1)
         self.assertEqual(forum_engine.pending_complaint_deliveries(), [])
 
+    def test_subject_reconciliation_removes_stale_false_match(self) -> None:
+        complaint = self._listing(notify=False)["complaint"]
+        forum_engine.reconcile_complaint_subjects(
+            int(complaint["id"]), self.characters
+        )
+        self.assertEqual(len(forum_engine.user_forum_complaints(77, 42)), 1)
+
+        changed = forum_engine.reconcile_complaint_subjects(int(complaint["id"]), [])
+
+        self.assertGreaterEqual(changed, 1)
+        self.assertEqual(forum_engine.user_forum_complaints(77, 42), [])
+
     def test_stale_running_feed_is_reclaimed_after_interrupted_process(self) -> None:
         feed = forum_engine.ensure_default_monitor_feeds(77)[0]
         stale = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()

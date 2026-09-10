@@ -325,7 +325,9 @@ def _canonical_url(base_url: str, href: str) -> str | None:
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
         return None
     path = parsed.path
-    thread_match = re.match(r"^(/threads/[^/]+\.\d+)(?:/.*)?$", path, re.IGNORECASE)
+    thread_match = re.match(
+        r"^(/threads/(?:[^/]*\.)?\d+)(?:/.*)?$", path, re.IGNORECASE
+    )
     if thread_match:
         path = f"{thread_match.group(1)}/"
     return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
@@ -441,7 +443,13 @@ def parse_forum_listing_entries(
         )
         if not title_links:
             continue
-        title_link = title_links[-1]
+        # Some XenForo layouts append a short numeric permalink (rendered as
+        # "-") after the human title. Select the most descriptive anchor so
+        # the monitor keeps the canonical slug and meaningful title.
+        title_link = max(
+            title_links,
+            key=lambda item: len(_clean_text(item.text_content())),
+        )
         url = _canonical_url(page_url, str(title_link.get("href") or ""))
         if not url or "/threads/" not in url or url in seen:
             continue

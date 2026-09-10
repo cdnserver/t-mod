@@ -148,6 +148,25 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertEqual(entries[0].last_post_author, "Administrator")
         self.assertTrue(entries[0].locked)
 
+    def test_listing_prefers_human_title_over_numeric_permalink(self) -> None:
+        page = """
+        <div class="structItem structItem--thread">
+          <div class="structItem-title">
+            <a href="/threads/restart-v-naruchnikakh.3620061/">Restart в наручниках</a>
+            <a href="/threads/3620061/">-</a>
+          </div>
+        </div>
+        """
+
+        entries, _next = parse_forum_listing_entries(page, ROOT_URL)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].title, "Restart в наручниках")
+        self.assertEqual(
+            entries[0].url,
+            "https://forum.majestic-rp.ru/threads/restart-v-naruchnikakh.3620061/",
+        )
+
     def test_thread_history_follows_pagination_and_keeps_original_statement(self) -> None:
         first_page = """
         <h1 class="p-title-value">Жалоба на 228392</h1>
