@@ -172,6 +172,35 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertTrue(snapshot.posts[-1].is_staff)
         self.assertIsNone(parse_forum_thread_next_page(second_page, snapshot.url))
 
+    def test_complaint_template_includes_custom_fields_and_regular_body(self) -> None:
+        page = """
+        <h1 class="p-title-value">Жалоба на игрока 270160</h1>
+        <article class="message message--post">
+          <div class="message-name"><span class="username">Reporter</span></div>
+          <div class="message-userContent">
+            <div class="message-fields message-fields--before">
+              <dl class="pairs pairs--customField"><dt>Ваш статический ID #</dt><dd>316622</dd></dl>
+              <dl class="pairs pairs--customField"><dt>Статический #ID нарушителя</dt><dd>270160</dd></dl>
+              <dl class="pairs pairs--customField"><dt>Краткое описание ситуации</dt><dd>Подробное описание нарушения.</dd></dl>
+            </div>
+            <article class="message-body"><div class="bbWrapper">Жалоба</div></article>
+          </div>
+        </article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/report.908/",
+        )
+
+        self.assertIn("Ваш статический ID #", snapshot.content)
+        self.assertIn("316622", snapshot.content)
+        self.assertIn("Статический #ID нарушителя", snapshot.content)
+        self.assertIn("270160", snapshot.content)
+        self.assertIn("Подробное описание нарушения", snapshot.content)
+        self.assertIn("Жалоба", snapshot.content)
+        self.assertEqual(snapshot.posts[0].content, snapshot.content)
+
     def test_thread_extracts_only_first_post_without_quote(self) -> None:
         page = """
         <html><head><meta property="og:title" content="Уголовный кодекс" /></head><body>

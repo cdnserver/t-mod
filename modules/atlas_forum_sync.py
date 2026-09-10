@@ -537,6 +537,18 @@ def parse_forum_thread_next_page(page_html: str, page_url: str) -> str | None:
 
 
 def _post_body(article: Any) -> Any | None:
+    # XenForo question/complaint templates keep the useful answers (nickname,
+    # static ID, description and evidence) in ``message-fields`` immediately
+    # before the regular message body. Returning only ``bbWrapper`` reduced
+    # such complaints to the word "Жалоба" and made the monitor treat a
+    # complete topic as empty. Use the complete user-content envelope when
+    # custom fields are present; ordinary posts retain the narrower node.
+    candidates = article.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-userContent ')]"
+        "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' message-fields ')]]"
+    )
+    if candidates:
+        return candidates[0]
     candidates = article.xpath(
         ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
@@ -578,11 +590,8 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     articles = tree.xpath(
         "//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
     )
-    body_nodes = tree.xpath(
-        "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
-        "//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
-        "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
-    )
+    first_post_body = _post_body(articles[0]) if articles else None
+    body_nodes = [first_post_body] if first_post_body is not None else []
     if not body_nodes:
         body_nodes = tree.xpath(
             "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"

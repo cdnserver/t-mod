@@ -39,6 +39,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}', compose)
         self.assertIn('copy "%~dp0.env.persistent.example"', launcher)
         self.assertIn('copy "%~dp0localization.example.json"', launcher)
+        self.assertIn('-ProjectDir "%CD%"', launcher)
+        self.assertNotIn('-ProjectDir "%~dp0"', launcher)
         self.assertNotIn("timeout /t", launcher.lower())
         self.assertIn(":sleep", launcher)
         self.assertIn("ping 127.0.0.1", launcher)

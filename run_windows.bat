@@ -359,7 +359,7 @@ docker compose ps
 
 set "CONTROL_INSTALLER=%~dp0install_tmod_control_windows.ps1"
 if exist "%CONTROL_INSTALLER%" (
-  powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%CONTROL_INSTALLER%" -ProjectDir "%~dp0" -Quiet
+  powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%CONTROL_INSTALLER%" -ProjectDir "%CD%" -Quiet
   if errorlevel 1 (
     call :warn "Native T-Mod Control could not be refreshed; server startup remains successful"
   ) else (
@@ -370,7 +370,7 @@ if exist "%CONTROL_INSTALLER%" (
 )
 
 if exist "%~dp0configure_auto_update_windows.ps1" (
-  powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0configure_auto_update_windows.ps1" -ProjectDir "%~dp0" -IntervalMinutes 2
+  powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0configure_auto_update_windows.ps1" -ProjectDir "%CD%" -IntervalMinutes 2
   if errorlevel 1 (
     call :warn "Automatic GitHub update watcher could not be registered"
   ) else (
