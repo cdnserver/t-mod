@@ -1526,7 +1526,10 @@ class AtlasForumSyncRunner:
                     self._start_auth_checkpoint(self.browser)
                 raise
             else:
-                await asyncio.to_thread(self.browser.close)
+                # Complaint monitoring immediately follows the listing with
+                # topic reads and repeats every minute. Keep this one signed-in
+                # Chromium session instead of starting six Chrome processes per
+                # cycle; _connect() already replaces it if Grid reports it dead.
                 return inventory
 
     async def fetch_threads(
@@ -1557,8 +1560,9 @@ class AtlasForumSyncRunner:
                 if bool(getattr(self.browser, "active", False)):
                     self._start_auth_checkpoint(self.browser)
                 raise
-            finally:
-                await asyncio.to_thread(self.browser.close)
+            # Keep the monitor session warm between open/accepted/rejected
+            # feeds. Scheduled full-corpus sync and runner shutdown still close
+            # it explicitly, so this never creates an unbounded session pool.
         return tuple(snapshots), tuple(skipped)
 
     async def fetch_attachment(self, url: str) -> tuple[bytes, str]:

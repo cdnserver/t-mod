@@ -83,6 +83,15 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
 
         self.assertEqual([item["user_id"] for item in matched], [20])
 
+    def test_short_static_is_not_guessed_from_legacy_timecode(self) -> None:
+        matched = _match_complaint_characters(
+            "Sheldon-0029",
+            "Видео нарушения начинается на таймкоде 0:12.",
+            [{"user_id": 10, "character_id": 1, "static_id": "12"}],
+        )
+
+        self.assertEqual(matched, [])
+
     def test_baseline_hydration_arms_future_alerts_without_old_discovery_dm(self) -> None:
         complaint = self._listing(notify=False)["complaint"]
         first = self._snapshot(int(complaint["id"]), fingerprint="body-1", posts=1, staff=False)

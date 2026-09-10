@@ -144,7 +144,12 @@ def _match_complaint_characters(
     return [
         character
         for character in characters
-        if _matches_character(content, str(character.get("static_id") or ""))
+        # Very short statics are indistinguishable from dates, timecodes and
+        # rule numbers in legacy free-form archives. They are matched only by
+        # the explicit accused field or title above; guessing here would send
+        # another player's complaint to the wrong person.
+        if len(re.sub(r"\s+", "", str(character.get("static_id") or ""))) >= 4
+        and _matches_character(content, str(character.get("static_id") or ""))
     ]
 
 
