@@ -749,6 +749,21 @@ function renderForumEngine(value) {
   const archiveComplete = Boolean(
     feeds.length && feeds.every((item) => item.backfill_completed || item.backfill_completed_at),
   );
+  const feedErrors = feeds
+    .map((item) => String(item.last_error || "").toLowerCase())
+    .filter(Boolean);
+  const routeUnavailable = feedErrors.some((error) => (
+    error.includes("err_connection_refused")
+    || error.includes("connecttimeout")
+    || error.includes("connection to") && error.includes("timed out")
+  ));
+  const authorizationRequired = feedErrors.some((error) => (
+    error.includes("login") || error.includes("authorization") || error.includes("manual")
+  ));
+  const retryTimes = feeds
+    .map((item) => new Date(item.next_scan_at || "").getTime())
+    .filter((value) => Number.isFinite(value));
+  const nextRetry = retryTimes.length ? new Date(Math.min(...retryTimes)) : null;
   const labels = {
     disabled: "Наблюдение временно отключено",
     pending: "Запускаем наблюдение и продолжаем собирать архив",
@@ -756,7 +771,11 @@ function renderForumEngine(value) {
     ok: archiveComplete
       ? "Наблюдение активно · архив полностью сохранён"
       : "Наблюдение активно · исторический архив пополняется в фоне",
-    attention: "Форум временно недоступен · данные сохранены, повтор автоматический",
+    attention: routeUnavailable
+      ? `Серверный маршрут к Majestic недоступен · следующий повтор ${readableTime(nextRetry, "автоматически")}`
+      : authorizationRequired
+        ? "Форум ожидает подтверждения входа в локальном браузере Atlas"
+        : "Форум временно недоступен · данные сохранены, повтор автоматический",
     error: "Браузер форума перезапускается · повтор автоматический",
   };
   byId("forum-engine-pulse").className = state;
