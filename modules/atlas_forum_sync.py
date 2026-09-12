@@ -114,6 +114,11 @@ class AtlasForumSyncConfig:
     # untrusted and may be intentionally oversized.
     attachment_max_bytes: int = 16 * 1024 * 1024
     attachment_timeout_seconds: int = 60
+    # A Selenium session is intentionally recycled before Grid accumulates a
+    # multi-day command executor.  The old never-ending session eventually
+    # left Grid reporting HTTP 200 while rejecting every new browser request.
+    browser_session_max_seconds: int = 900
+    browser_session_max_loads: int = 180
 
     @classmethod
     def from_env(cls) -> "AtlasForumSyncConfig":
@@ -221,6 +226,12 @@ class AtlasForumSyncConfig:
             attachment_timeout_seconds=bounded_env(
                 "ATLAS_FORUM_ATTACHMENT_TIMEOUT_SECONDS", 60, 10, 180
             ),
+            browser_session_max_seconds=bounded_env(
+                "ATLAS_FORUM_BROWSER_SESSION_MAX_SECONDS", 900, 120, 3600
+            ),
+            browser_session_max_loads=bounded_env(
+                "ATLAS_FORUM_BROWSER_SESSION_MAX_LOADS", 180, 20, 1000
+            ),
         )
 
 
@@ -300,6 +311,7 @@ class AtlasForumInventory:
     entries: tuple[AtlasForumListingEntry, ...]
     inventory_complete: bool
     listing_pages: int
+    next_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,6 +755,8 @@ class AtlasForumBrowser:
     def __init__(self, config: AtlasForumSyncConfig) -> None:
         self.config = config
         self._driver: Any | None = None
+        self._driver_started_at = 0.0
+        self._driver_loads = 0
 
     def _grid_root(self) -> str:
         parsed = urlsplit(self.config.selenium_url)
@@ -818,7 +832,13 @@ class AtlasForumBrowser:
             pass
         path = Path(cookie_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
+        # The knowledge synchronizer and complaint monitor may checkpoint the
+        # same authenticated forum session concurrently.  A unique temporary
+        # name keeps their atomic writes from deleting each other's staging
+        # file on Windows bind mounts.
+        temporary = path.with_name(
+            f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
         serialized = json.dumps(
             {
                 "version": 1,
@@ -849,7 +869,10 @@ class AtlasForumBrowser:
         except OSError:
             # chmod is not supported by every Docker Desktop bind mount.
             pass
-        temporary.replace(path)
+        try:
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return len(cookies)
 
     def _restore_cookies(self, driver: Any) -> int:
@@ -1059,6 +1082,15 @@ class AtlasForumBrowser:
 
     def _connect(self) -> Any:
         if self._driver is not None:
+            expired = bool(
+                self._driver_started_at
+                and time.monotonic() - self._driver_started_at
+                >= int(self.config.browser_session_max_seconds)
+            )
+            exhausted = self._driver_loads >= int(self.config.browser_session_max_loads)
+            if expired or exhausted:
+                self.close()
+        if self._driver is not None:
             try:
                 _ = self._driver.current_url
                 return self._driver
@@ -1080,6 +1112,8 @@ class AtlasForumBrowser:
         self._release_orphaned_sessions()
         try:
             self._driver = self._open_driver(options)
+            self._driver_started_at = time.monotonic()
+            self._driver_loads = 0
             self._restore_cookies(self._driver)
             return self._driver
         except Exception:
@@ -1088,6 +1122,8 @@ class AtlasForumBrowser:
         try:
             self._release_orphaned_sessions()
             self._driver = self._open_driver(options)
+            self._driver_started_at = time.monotonic()
+            self._driver_loads = 0
             self._restore_cookies(self._driver)
             return self._driver
         except Exception as exc:
@@ -1102,6 +1138,7 @@ class AtlasForumBrowser:
         driver = self._connect()
         try:
             driver.get(url)
+            self._driver_loads += 1
             deadline = time.monotonic() + self.config.challenge_wait_seconds
             while True:
                 source = str(driver.page_source or "")
@@ -1272,6 +1309,7 @@ class AtlasForumBrowser:
             entries=tuple(entries),
             inventory_complete=not bool(next_after_limit),
             listing_pages=len(visited),
+            next_url=next_after_limit,
         )
 
     def scrape(self) -> AtlasForumScrapeBatch:
@@ -1346,6 +1384,8 @@ class AtlasForumBrowser:
 
     def close(self) -> None:
         driver, self._driver = self._driver, None
+        self._driver_started_at = 0.0
+        self._driver_loads = 0
         if driver is not None:
             try:
                 self._save_cookies(driver)

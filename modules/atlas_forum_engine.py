@@ -55,12 +55,14 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
 class AtlasForumEngineConfig:
     enabled: bool = True
     # The open complaint feed is an alerting surface, not a slow indexing job.
-    # Five-second scheduler ticks plus a 45-second feed lease keep discovery
+    # Five-second scheduler ticks plus a 30-second feed lease keep discovery
     # inside the promised one-minute window without continuously driving Chrome.
     initial_delay_seconds: int = 15
     scheduler_poll_seconds: int = 5
     hydration_batch_size: int = 50
     hot_hydration_batch_size: int = 4
+    archive_listing_batch_pages: int = 8
+    archive_hydration_batch_size: int = 8
     full_scan_interval_seconds: int = 43_200
 
     @classmethod
@@ -78,6 +80,12 @@ class AtlasForumEngineConfig:
             ),
             hot_hydration_batch_size=_bounded_int(
                 "ATLAS_FORUM_ENGINE_HOT_HYDRATION_BATCH", 4, 1, 12
+            ),
+            archive_listing_batch_pages=_bounded_int(
+                "ATLAS_FORUM_ENGINE_ARCHIVE_PAGE_BATCH", 8, 1, 40
+            ),
+            archive_hydration_batch_size=_bounded_int(
+                "ATLAS_FORUM_ENGINE_ARCHIVE_HYDRATION_BATCH", 8, 1, 40
             ),
             full_scan_interval_seconds=_bounded_int(
                 "ATLAS_FORUM_ENGINE_FULL_SCAN_SECONDS", 43_200, 1800, 604_800
@@ -111,12 +119,38 @@ _TARGET_STATIC_RE = re.compile(
     r"(?:нарушителя|игрока|ответчика)\s*[:#№-]*\s*(\d{1,12})",
     re.IGNORECASE,
 )
+_REPORTER_STATIC_PATTERNS = (
+    re.compile(
+        r"(?:ваш|мой)\s+(?:статическ\w*\s+)?#?\s*"
+        r"(?:id|айди|статик)\s*[:#№-]*\s*(\d{1,12})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:статическ\w*\s+)?#?\s*(?:id|айди|статик)\s*"
+        r"(?:заявителя|автора(?:\s+жалобы)?)\s*[:#№-]*\s*(\d{1,12})",
+        re.IGNORECASE,
+    ),
+)
 
 
 def _complaint_target_static_ids(content: str) -> set[str]:
     """Extract only the accused player's IDs from a structured complaint."""
 
     return {match.group(1) for match in _TARGET_STATIC_RE.finditer(str(content or ""))}
+
+
+def _complaint_participant_statics(title: str, content: str) -> dict[str, set[str]]:
+    body = str(content or "")
+    targets = _complaint_target_static_ids(body)
+    if not targets:
+        # Legacy topics often encode the accused static only in their title.
+        targets = set(re.findall(r"(?<!\d)(\d{3,12})(?!\d)", str(title or "")))
+    reporters = {
+        match.group(1)
+        for pattern in _REPORTER_STATIC_PATTERNS
+        for match in pattern.finditer(body)
+    }
+    return {"reporter": reporters, "target": targets}
 
 
 def _match_complaint_characters(
@@ -249,6 +283,21 @@ class AtlasForumEngineRunner:
                 post_count=max(len(posts) if posts else 1, listed_post_count),
                 matched_characters=matched,
                 notify=bool(notify_by_url.get(snapshot.url, True)),
+                posts=(
+                    {
+                        "index": post.index,
+                        "author": post.author,
+                        "author_role": post.author_role,
+                        "posted_at": post.posted_at,
+                        "content": post.content,
+                        "is_staff": post.is_staff,
+                    }
+                    for post in posts
+                ),
+                participant_statics=_complaint_participant_statics(
+                    snapshot.title,
+                    snapshot.content,
+                ),
             )
             summary["hydrated"] += 1
             summary["matched"] += int(result["matched"])
@@ -311,67 +360,136 @@ class AtlasForumEngineRunner:
         self._character_revision = revision
         return linked
 
+    async def _record_inventory(
+        self,
+        claimed: dict[str, Any],
+        inventory: Any,
+        *,
+        notify: bool,
+    ) -> dict[str, Any]:
+        changed_urls: list[str] = []
+        created = changed = status_changes = 0
+        for entry in inventory.entries:
+            result = await asyncio.to_thread(
+                storage.record_complaint_listing,
+                guild_id=self.guild_id,
+                project_code=str(claimed["project_code"]),
+                server_code=str(claimed["server_code"]),
+                section_kind=str(claimed["section_kind"]),
+                thread_url=entry.url,
+                title=entry.title,
+                author=entry.author,
+                listing_fingerprint=entry.fingerprint,
+                locked=entry.locked,
+                metadata={
+                    "last_post_author": entry.last_post_author,
+                    "last_post_at": entry.last_post_at,
+                    "reply_count": entry.reply_count,
+                    "sticky": entry.sticky,
+                    "monitor_feed": str(claimed["feed_key"]),
+                },
+                notify=notify,
+            )
+            created += 1 if result["created"] else 0
+            changed += 1 if result["listing_changed"] else 0
+            status_changes += 1 if result["section_changed"] else 0
+            if result["created"] or result["listing_changed"]:
+                changed_urls.append(entry.url)
+        return {
+            "created": created,
+            "changed": changed,
+            "status_changes": status_changes,
+            "changed_urls": changed_urls,
+        }
+
     async def _scan_feed(
         self,
         feed: dict[str, Any],
         *,
-        force: bool,
+        archive: bool,
         characters: list[dict[str, Any]],
     ) -> dict[str, Any]:
         claimed = await asyncio.to_thread(storage.claim_monitor_feed, int(feed["id"]))
         if claimed is None:
             return {"status": "skipped"}
         baseline_exists = bool(claimed.get("baseline_completed_at"))
-        # Deep archive traversal is deliberate (`force`) because hundreds of
-        # Selenium pages would otherwise block the hot feed and make a fresh
-        # complaint arrive late. Normal cycles always inspect the newest pages.
-        full_scan = force
-        max_pages = int(claimed["full_pages"] if full_scan else claimed["hot_pages"])
         try:
-            inventory = await self.forum.fetch_inventory(
-                str(claimed["root_url"]), max_pages=max_pages
+            # The first page is the alerting lane and is always read first. A
+            # user pressing “check now” never starts a multi-hour archive job.
+            hot_inventory = await self.forum.fetch_inventory(
+                str(claimed["root_url"]),
+                max_pages=int(claimed["hot_pages"]),
             )
-            changed_urls: list[str] = []
-            notify_by_url: dict[str, bool] = {}
-            created = changed = status_changes = 0
-            for entry in inventory.entries:
-                result = await asyncio.to_thread(
-                    storage.record_complaint_listing,
-                    guild_id=self.guild_id,
-                    project_code=str(claimed["project_code"]),
-                    server_code=str(claimed["server_code"]),
-                    section_kind=str(claimed["section_kind"]),
-                    thread_url=entry.url,
-                    title=entry.title,
-                    author=entry.author,
-                    listing_fingerprint=entry.fingerprint,
-                    locked=entry.locked,
-                    metadata={
-                        "last_post_author": entry.last_post_author,
-                        "last_post_at": entry.last_post_at,
-                        "reply_count": entry.reply_count,
-                        "sticky": entry.sticky,
-                        "monitor_feed": str(claimed["feed_key"]),
-                    },
-                    # A forced archive backfill must never flood members with
-                    # historical complaints which merely became known today.
-                    notify=baseline_exists and not full_scan,
+            hot = await self._record_inventory(
+                claimed,
+                hot_inventory,
+                notify=baseline_exists,
+            )
+
+            archive_inventory = None
+            archive_ran = False
+            archive_pages = 0
+            archive_topics = 0
+            archive_result = {
+                "created": 0,
+                "changed": 0,
+                "status_changes": 0,
+                "changed_urls": [],
+            }
+            backfill_state = claimed
+            if archive and not claimed.get("backfill_completed_at"):
+                cursor_url = str(
+                    claimed.get("backfill_cursor_url") or claimed["root_url"]
                 )
-                created += 1 if result["created"] else 0
-                changed += 1 if result["listing_changed"] else 0
-                status_changes += 1 if result["section_changed"] else 0
-                if result["created"] or result["listing_changed"]:
-                    changed_urls.append(entry.url)
-                    notify_by_url[entry.url] = baseline_exists and not full_scan
-            # A deep archive backfill may hydrate a large batch. The hot path is
-            # intentionally tiny: fresh URLs are first and one slow historical
-            # topic cannot hold the shared browser long enough to miss the next
-            # minute-long alert window.
-            hydration_limit = (
-                self.config.hydration_batch_size
-                if full_scan
-                else self.config.hot_hydration_batch_size
+                archive_ran = True
+                next_url = None
+                if cursor_url == str(claimed["root_url"]):
+                    # Page one was already read by the alert lane above. Count
+                    # it once, then continue from its next page. Apart from
+                    # saving a browser roundtrip this prevents an archive
+                    # baseline from overriding a genuine new-topic alert.
+                    archive_pages = hot_inventory.listing_pages
+                    archive_topics = len(hot_inventory.entries)
+                    next_url = hot_inventory.next_url
+                    remaining = max(0, self.config.archive_listing_batch_pages - 1)
+                    if next_url and remaining:
+                        archive_inventory = await self.forum.fetch_inventory(
+                            next_url,
+                            max_pages=remaining,
+                        )
+                else:
+                    archive_inventory = await self.forum.fetch_inventory(
+                        cursor_url,
+                        max_pages=self.config.archive_listing_batch_pages,
+                    )
+                if archive_inventory is not None:
+                    archive_result = await self._record_inventory(
+                        claimed,
+                        archive_inventory,
+                        notify=False,
+                    )
+                    archive_pages += archive_inventory.listing_pages
+                    archive_topics += len(archive_inventory.entries)
+                    next_url = archive_inventory.next_url
+                backfill_state = await asyncio.to_thread(
+                    storage.advance_monitor_backfill,
+                    int(claimed["id"]),
+                    next_url=next_url,
+                    pages_scanned=archive_pages,
+                    topics_seen=archive_topics,
+                )
+
+            changed_urls = list(
+                dict.fromkeys(hot["changed_urls"] + archive_result["changed_urls"])
             )
+            notify_by_url = {
+                url: baseline_exists for url in hot["changed_urls"]
+            }
+            for url in archive_result["changed_urls"]:
+                notify_by_url.setdefault(url, False)
+            hydration_limit = self.config.hot_hydration_batch_size
+            if archive_ran:
+                hydration_limit += self.config.archive_hydration_batch_size
             backlog = await asyncio.to_thread(
                 storage.complaints_needing_hydration,
                 self.guild_id,
@@ -388,12 +506,23 @@ class AtlasForumEngineRunner:
                     characters=characters,
                     notify_by_url=notify_by_url,
                 )
+                if skipped:
+                    await asyncio.to_thread(
+                        storage.mark_complaint_hydration_failed,
+                        self.guild_id,
+                        skipped,
+                        error="forum_thread_read_failed",
+                    )
+            created = int(hot["created"]) + int(archive_result["created"])
+            changed = int(hot["changed"]) + int(archive_result["changed"])
+            status_changes = int(hot["status_changes"]) + int(
+                archive_result["status_changes"]
+            )
             stats = {
                 "section": str(claimed["section_kind"]),
-                "mode": "full" if full_scan else "hot",
-                "listing_pages": inventory.listing_pages,
-                "inventory_complete": inventory.inventory_complete,
-                "topics": len(inventory.entries),
+                "mode": "hot+archive" if archive_ran else "hot",
+                "listing_pages": hot_inventory.listing_pages,
+                "topics": len(hot_inventory.entries),
                 "created": created,
                 "changed": changed,
                 "status_changes": status_changes,
@@ -401,20 +530,24 @@ class AtlasForumEngineRunner:
                 "matched": hydrated["matched"],
                 "events": hydrated["events"],
                 "skipped": len(skipped),
+                "archive_pages": archive_pages,
+                "archive_topics": archive_topics,
+                "archive_pages_total": int(
+                    backfill_state.get("backfill_pages_scanned") or 0
+                ),
+                "archive_topics_total": int(
+                    backfill_state.get("backfill_topics_seen") or 0
+                ),
+                "archive_complete": bool(
+                    backfill_state.get("backfill_completed_at")
+                ),
             }
-            attention = bool(skipped or (full_scan and not inventory.inventory_complete))
-            error = (
-                f"Не удалось прочитать тем: {len(skipped)}"
-                if skipped else
-                "Полный обход достиг ограничения страниц"
-                if full_scan and not inventory.inventory_complete else None
-            )
             emit_global_event(
                 {
                     "source_service": "atlas",
                     "source_type": "forum_engine",
                     "event_type": "forum_complaint_feed_scanned",
-                    "severity": "warning" if attention else "info",
+                    "severity": "warning" if skipped else "info",
                     "guild_id": self.guild_id,
                     "target_type": "forum_feed",
                     "target_id": str(claimed["feed_key"]),
@@ -426,13 +559,16 @@ class AtlasForumEngineRunner:
                 storage.finish_monitor_feed,
                 int(claimed["id"]),
                 stats=stats,
-                error=error,
-                attention=attention,
-                full_scan=full_scan and inventory.inventory_complete,
+                error=None,
+                attention=False,
+                full_scan=bool(
+                    archive_ran
+                    and backfill_state.get("backfill_completed_at")
+                ),
                 baseline_completed=not baseline_exists,
             )
         except (AtlasForumManualActionRequired, AtlasForumSyncError) as exc:
-            await asyncio.to_thread(
+            finished = await asyncio.to_thread(
                 storage.finish_monitor_feed,
                 int(claimed["id"]),
                 stats={"section": str(claimed["section_kind"]), "phase": "forum_read"},
@@ -440,13 +576,24 @@ class AtlasForumEngineRunner:
                 attention=True,
                 full_scan=False,
             )
-            await self._technical_log(
-                "Atlas Forum Engine ждёт форум",
-                f"Раздел: `{claimed['feed_key']}`. Последняя карта жалоб сохранена.",
-                level="warning",
-                dedupe_key=f"atlas-forum-engine-attention:{claimed['id']}",
-                exception=exc,
-            )
+            failure_count = int(finished.get("failure_count") or 0)
+            if failure_count in {1, 5, 20}:
+                manual = isinstance(exc, AtlasForumManualActionRequired)
+                await self._technical_log(
+                    (
+                        "Atlas Forum Engine требует подтверждения форума"
+                        if manual
+                        else "Atlas Forum Engine временно не видит браузер форума"
+                    ),
+                    f"Раздел: `{claimed['feed_key']}`. Сохранённая карта цела; "
+                    "повтор выполняется автоматически.\n"
+                    f"Причина: `{str(exc)[:700]}`",
+                    level="warning",
+                    dedupe_key=(
+                        f"atlas-forum-engine-read:{claimed['id']}:{failure_count}"
+                    ),
+                    exception=exc,
+                )
             return {"status": "attention", "error": str(exc)}
         except Exception as exc:
             await asyncio.to_thread(
@@ -571,10 +718,25 @@ class AtlasForumEngineRunner:
             characters = await asyncio.to_thread(storage.list_monitored_characters, self.guild_id)
             reconciled = await self._reconcile_existing_subjects(characters)
             results = []
+            archive_candidates = [
+                item for item in feeds if not item.get("backfill_completed_at")
+            ]
+            archive_feed_id = None
+            if archive_candidates:
+                selected_archive = min(
+                    archive_candidates,
+                    key=lambda item: (
+                        str(item.get("last_backfill_at") or ""),
+                        int(item["id"]),
+                    ),
+                )
+                archive_feed_id = int(selected_archive["id"])
             for feed in feeds:
                 results.append(
                     await self._scan_feed(
-                        feed, force=force, characters=characters
+                        feed,
+                        archive=int(feed["id"]) == archive_feed_id,
+                        characters=characters,
                     )
                 )
             delivery = await self.deliver_pending()

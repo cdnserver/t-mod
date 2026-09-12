@@ -614,6 +614,12 @@ def init_db() -> None:
                     CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
                 baseline_completed_at TEXT,
                 last_full_scan_at TEXT,
+                backfill_cursor_url TEXT,
+                backfill_pages_scanned INTEGER NOT NULL DEFAULT 0,
+                backfill_topics_seen INTEGER NOT NULL DEFAULT 0,
+                backfill_completed_at TEXT,
+                last_backfill_at TEXT,
+                failure_count INTEGER NOT NULL DEFAULT 0,
                 last_started_at TEXT,
                 last_success_at TEXT,
                 next_scan_at TEXT,
@@ -640,6 +646,9 @@ def init_db() -> None:
                     CHECK(section_kind IN ('open', 'accepted', 'rejected')),
                 listing_fingerprint TEXT NOT NULL,
                 content_fingerprint TEXT,
+                hydration_attempts INTEGER NOT NULL DEFAULT 0,
+                hydration_next_attempt_at TEXT,
+                hydration_last_error TEXT,
                 first_post_excerpt TEXT,
                 latest_post_excerpt TEXT,
                 latest_post_author TEXT,
@@ -702,6 +711,44 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_events_topic
             ON atlas_forum_complaint_events(complaint_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                post_index INTEGER NOT NULL,
+                author TEXT,
+                author_role TEXT,
+                posted_at TEXT,
+                content TEXT NOT NULL,
+                is_staff INTEGER NOT NULL DEFAULT 0,
+                content_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, post_index),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_posts_topic
+            ON atlas_forum_complaint_posts(complaint_id, post_index);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_participants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                participant_role TEXT NOT NULL
+                    CHECK(participant_role IN ('reporter', 'target')),
+                static_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, participant_role, static_id),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_participants_static
+            ON atlas_forum_complaint_participants(static_id, participant_role, complaint_id);
 
             CREATE TABLE IF NOT EXISTS atlas_forum_complaint_deliveries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2779,6 +2826,31 @@ def init_db() -> None:
         _add_column_if_missing(con, "privacy_requests", "response_attempts", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(con, "privacy_requests", "response_sent_at", "TEXT")
         _add_column_if_missing(con, "privacy_requests", "response_error", "TEXT")
+        for column, definition in {
+            "backfill_cursor_url": "TEXT",
+            "backfill_pages_scanned": "INTEGER NOT NULL DEFAULT 0",
+            "backfill_topics_seen": "INTEGER NOT NULL DEFAULT 0",
+            "backfill_completed_at": "TEXT",
+            "last_backfill_at": "TEXT",
+            "failure_count": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            _add_column_if_missing(
+                con,
+                "atlas_forum_monitor_feeds",
+                column,
+                definition,
+            )
+        for column, definition in {
+            "hydration_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "hydration_next_attempt_at": "TEXT",
+            "hydration_last_error": "TEXT",
+        }.items():
+            _add_column_if_missing(
+                con,
+                "atlas_forum_complaints",
+                column,
+                definition,
+            )
         con.execute(
             "UPDATE market_items SET external_id = CAST(item_id AS TEXT) WHERE external_id IS NULL OR external_id = ''"
         )

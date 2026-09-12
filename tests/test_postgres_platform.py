@@ -162,6 +162,15 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8787/gateway-ready", compose)
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
+        self.assertIn("  atlas-forum-eye-browser:", compose)
+        self.assertIn(
+            'ATLAS_FORUM_ENGINE_SELENIUM_URL: "http://atlas-forum-eye-browser:4444/wd/hub"',
+            compose,
+        )
+        self.assertGreaterEqual(
+            compose.count(r"""grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true'"""),
+            2,
+        )
 
         bot_service = compose.split("  tmod-web:", 1)[0].split(
             "  tmod-discord-bot:", 1

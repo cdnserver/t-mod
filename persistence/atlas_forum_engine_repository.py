@@ -55,19 +55,19 @@ def ensure_default_monitor_feeds(guild_id: int) -> list[dict[str, Any]]:
             "phoenix-player-complaints-open",
             "open",
             "https://forum.majestic-rp.ru/forums/zhaloby-na-igrokov.1253/",
-            45,
+            30,
         ),
         (
             "phoenix-player-complaints-accepted",
             "accepted",
             "https://forum.majestic-rp.ru/forums/rassmotrennyye-zhaloby.1254/",
-            45,
+            30,
         ),
         (
             "phoenix-player-complaints-rejected",
             "rejected",
             "https://forum.majestic-rp.ru/forums/otklonennyye-zhaloby.1255/",
-            45,
+            30,
         ),
     )
     now = utc_now_iso()
@@ -78,19 +78,24 @@ def ensure_default_monitor_feeds(guild_id: int) -> list[dict[str, Any]]:
                 INSERT INTO atlas_forum_monitor_feeds(
                     guild_id, project_code, server_code, feed_key,
                     section_kind, root_url, interval_seconds, hot_pages,
-                    full_pages, status, next_scan_at, created_at, updated_at
+                    full_pages, backfill_cursor_url, status, next_scan_at,
+                    created_at, updated_at
                 ) VALUES(?, 'majestic-rp', 'phoenix-15', ?, ?, ?, ?, 1, 300,
-                         'pending', ?, ?, ?)
+                         ?, 'pending', ?, ?, ?)
                 ON CONFLICT(guild_id, feed_key) DO UPDATE SET
                     root_url = excluded.root_url,
                     section_kind = excluded.section_kind,
                     interval_seconds = excluded.interval_seconds,
                     hot_pages = excluded.hot_pages,
+                    backfill_cursor_url = COALESCE(
+                        atlas_forum_monitor_feeds.backfill_cursor_url,
+                        excluded.backfill_cursor_url
+                    ),
                     updated_at = excluded.updated_at
                 """,
                 (
                     int(guild_id), feed_key, section_kind, root_url,
-                    int(interval_seconds), now, now, now,
+                    int(interval_seconds), root_url, now, now, now,
                 ),
             )
         rows = con.execute(
@@ -186,9 +191,10 @@ def finish_monitor_feed(
             raise ValueError("atlas_forum_monitor_feed_missing")
         interval = max(15, int(feed["interval_seconds"] or 45))
         if error:
-            interval = min(interval, 45)
+            interval = min(interval, 30)
         next_scan = (now_dt + timedelta(seconds=interval)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
+        failure_count = int(feed["failure_count"] or 0) + 1 if error else 0
         # Do not put untyped placeholders inside ``CASE ... IS NULL`` here.
         # SQLite accepts that construct, but PostgreSQL cannot infer the type
         # of the timestamp placeholder when the compared value is NULL and
@@ -211,7 +217,8 @@ def finish_monitor_feed(
                 baseline_completed_at = ?,
                 last_full_scan_at = ?,
                 last_success_at = ?,
-                next_scan_at = ?, last_error = ?, last_stats_json = ?, updated_at = ?
+                next_scan_at = ?, last_error = ?, failure_count = ?,
+                last_stats_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -221,7 +228,55 @@ def finish_monitor_feed(
                 last_success_at,
                 next_scan,
                 str(error or "")[:2000] or None,
+                failure_count,
                 _json(stats),
+                now,
+                int(feed_id),
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM atlas_forum_monitor_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        con.commit()
+    return _row(row) or {}
+
+
+def advance_monitor_backfill(
+    feed_id: int,
+    *,
+    next_url: str | None,
+    pages_scanned: int,
+    topics_seen: int,
+) -> dict[str, Any]:
+    """Persist one bounded archive window so a restart loses no progress."""
+
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        feed = con.execute(
+            "SELECT * FROM atlas_forum_monitor_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        if feed is None:
+            raise ValueError("atlas_forum_monitor_feed_missing")
+        completed_at = feed["backfill_completed_at"]
+        if not next_url and completed_at is None:
+            completed_at = now
+        con.execute(
+            """
+            UPDATE atlas_forum_monitor_feeds
+            SET backfill_cursor_url = ?,
+                backfill_pages_scanned = backfill_pages_scanned + ?,
+                backfill_topics_seen = backfill_topics_seen + ?,
+                backfill_completed_at = ?, last_backfill_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                str(next_url or "")[:1000] or None,
+                max(0, int(pages_scanned)),
+                max(0, int(topics_seen)),
+                completed_at,
+                now,
                 now,
                 int(feed_id),
             ),
@@ -415,9 +470,12 @@ def record_complaint_snapshot(
     post_count: int,
     matched_characters: Iterable[dict[str, Any]],
     notify: bool,
+    posts: Iterable[dict[str, Any]] = (),
+    participant_statics: dict[str, Iterable[str]] | None = None,
 ) -> dict[str, Any]:
     now = utc_now_iso()
     characters = list(matched_characters)
+    snapshot_posts = [dict(item) for item in posts if isinstance(item, dict)]
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         existing = con.execute(
@@ -471,6 +529,8 @@ def record_complaint_snapshot(
             SET content_fingerprint = ?, first_post_excerpt = ?,
                 latest_post_excerpt = ?, latest_post_author = ?, latest_post_role = ?,
                 latest_post_at = ?, post_count = ?,
+                hydration_attempts = 0, hydration_next_attempt_at = NULL,
+                hydration_last_error = NULL,
                 notifications_armed = 1,
                 last_changed_at = CASE WHEN ? = 1 THEN ? ELSE last_changed_at END,
                 updated_at = ?
@@ -484,6 +544,94 @@ def record_complaint_snapshot(
                 int(complaint_id),
             ),
         )
+        for position, post in enumerate(snapshot_posts, start=1):
+            try:
+                post_index = max(1, int(post.get("index") or position))
+            except (TypeError, ValueError):
+                post_index = position
+            content = str(post.get("content") or "").strip()
+            if not content:
+                continue
+            post_fingerprint = hashlib.sha256(
+                "\0".join(
+                    (
+                        str(post_index),
+                        str(post.get("author") or ""),
+                        str(post.get("posted_at") or ""),
+                        content,
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            con.execute(
+                """
+                INSERT INTO atlas_forum_complaint_posts(
+                    complaint_id, post_index, author, author_role, posted_at,
+                    content, is_staff, content_fingerprint, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(complaint_id, post_index) DO UPDATE SET
+                    author = excluded.author,
+                    author_role = excluded.author_role,
+                    posted_at = excluded.posted_at,
+                    content = excluded.content,
+                    is_staff = excluded.is_staff,
+                    content_fingerprint = excluded.content_fingerprint,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(complaint_id),
+                    post_index,
+                    str(post.get("author") or "")[:120] or None,
+                    str(post.get("author_role") or "")[:180] or None,
+                    str(post.get("posted_at") or "")[:100] or None,
+                    content,
+                    1 if post.get("is_staff") else 0,
+                    post_fingerprint,
+                    now,
+                    now,
+                ),
+            )
+        if participant_statics is not None:
+            previous_participants = {
+                (str(row["participant_role"]), str(row["static_id"])):
+                    str(row["first_seen_at"] or now)
+                for row in con.execute(
+                    """
+                    SELECT participant_role, static_id, first_seen_at
+                    FROM atlas_forum_complaint_participants
+                    WHERE complaint_id = ?
+                    """,
+                    (int(complaint_id),),
+                ).fetchall()
+            }
+            con.execute(
+                "DELETE FROM atlas_forum_complaint_participants WHERE complaint_id = ?",
+                (int(complaint_id),),
+            )
+            for participant_role in ("reporter", "target"):
+                values = participant_statics.get(participant_role, ())
+                statics = {
+                    re.sub(r"\D", "", str(value or ""))
+                    for value in values
+                }
+                for static_id in sorted(item for item in statics if item):
+                    con.execute(
+                        """
+                        INSERT INTO atlas_forum_complaint_participants(
+                            complaint_id, participant_role, static_id,
+                            first_seen_at, last_seen_at, created_at, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(complaint_id, participant_role, static_id) DO UPDATE SET
+                            last_seen_at = excluded.last_seen_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            int(complaint_id), participant_role, static_id,
+                            previous_participants.get(
+                                (participant_role, static_id), now
+                            ),
+                            now, now, now,
+                        ),
+                    )
         event_kind = None
         if first_hydration:
             event_kind = "discovered"
@@ -534,18 +682,71 @@ def record_complaint_snapshot(
 
 
 def complaints_needing_hydration(guild_id: int, *, limit: int = 60) -> list[str]:
+    now = utc_now_iso()
     with connect_readonly() as con:
         rows = con.execute(
             """
             SELECT thread_url FROM atlas_forum_complaints
             WHERE guild_id = ? AND content_fingerprint IS NULL
+              AND (hydration_next_attempt_at IS NULL OR hydration_next_attempt_at <= ?)
             ORDER BY CASE section_kind WHEN 'open' THEN 0 ELSE 1 END,
                      first_seen_at DESC, id DESC
             LIMIT ?
             """,
-            (int(guild_id), max(1, min(int(limit), 200))),
+            (int(guild_id), now, max(1, min(int(limit), 200))),
         ).fetchall()
     return [str(row["thread_url"]) for row in rows]
+
+
+def mark_complaint_hydration_failed(
+    guild_id: int,
+    thread_urls: Iterable[str],
+    *,
+    error: str = "forum_thread_unavailable",
+) -> int:
+    """Back off unreadable archive topics without blocking the whole feed."""
+
+    urls = list(dict.fromkeys(str(item or "").strip() for item in thread_urls if item))
+    if not urls:
+        return 0
+    now_dt = datetime.now(timezone.utc)
+    changed = 0
+    with _db_lock, connect() as con:
+        for url in urls[:500]:
+            try:
+                thread_id = forum_thread_id(url)
+            except ValueError:
+                continue
+            row = con.execute(
+                """
+                SELECT id, hydration_attempts FROM atlas_forum_complaints
+                WHERE guild_id = ? AND thread_id = ?
+                """,
+                (int(guild_id), thread_id),
+            ).fetchone()
+            if row is None:
+                continue
+            attempts = int(row["hydration_attempts"] or 0) + 1
+            delay = min(86_400, 300 * (2 ** min(attempts - 1, 8)))
+            next_attempt = (now_dt + timedelta(seconds=delay)).isoformat()
+            cursor = con.execute(
+                """
+                UPDATE atlas_forum_complaints
+                SET hydration_attempts = ?, hydration_next_attempt_at = ?,
+                    hydration_last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    attempts,
+                    next_attempt,
+                    str(error or "forum_thread_unavailable")[:1000],
+                    now_dt.isoformat(),
+                    int(row["id"]),
+                ),
+            )
+            changed += max(0, int(cursor.rowcount or 0))
+        con.commit()
+    return changed
 
 
 def pending_complaint_deliveries(*, limit: int = 50) -> list[dict[str, Any]]:
@@ -739,8 +940,18 @@ def forum_monitor_status(guild_id: int) -> dict[str, Any]:
             """
             SELECT COUNT(*) AS complaints,
                    SUM(CASE WHEN section_kind = 'open' THEN 1 ELSE 0 END) AS open_count,
-                   SUM(CASE WHEN content_fingerprint IS NULL THEN 1 ELSE 0 END) AS pending_hydration
+                   SUM(CASE WHEN content_fingerprint IS NULL THEN 1 ELSE 0 END) AS pending_hydration,
+                   SUM(CASE WHEN content_fingerprint IS NOT NULL THEN 1 ELSE 0 END) AS hydrated
             FROM atlas_forum_complaints WHERE guild_id = ?
+            """,
+            (int(guild_id),),
+        ).fetchone()
+        post_total = con.execute(
+            """
+            SELECT COUNT(*) AS post_count
+            FROM atlas_forum_complaint_posts AS post
+            JOIN atlas_forum_complaints AS complaint ON complaint.id = post.complaint_id
+            WHERE complaint.guild_id = ?
             """,
             (int(guild_id),),
         ).fetchone()
@@ -749,10 +960,58 @@ def forum_monitor_status(guild_id: int) -> dict[str, Any]:
         "complaints": int(totals["complaints"] or 0) if totals else 0,
         "open": int(totals["open_count"] or 0) if totals else 0,
         "pending_hydration": int(totals["pending_hydration"] or 0) if totals else 0,
+        "hydrated": int(totals["hydrated"] or 0) if totals else 0,
+        "posts": int(post_total["post_count"] or 0) if post_total else 0,
+    }
+
+
+def forum_static_profile(
+    guild_id: int,
+    static_id: str,
+    *,
+    limit: int = 30,
+) -> dict[str, Any]:
+    """Return Forum Eye-style filed/received history for one public static."""
+
+    normalized = re.sub(r"\D", "", str(static_id or ""))
+    if not normalized or len(normalized) > 12:
+        raise ValueError("atlas_forum_static_invalid")
+    with connect_readonly() as con:
+        counts = con.execute(
+            """
+            SELECT participant.participant_role, COUNT(DISTINCT participant.complaint_id) AS amount
+            FROM atlas_forum_complaint_participants AS participant
+            JOIN atlas_forum_complaints AS complaint ON complaint.id = participant.complaint_id
+            WHERE complaint.guild_id = ? AND participant.static_id = ?
+            GROUP BY participant.participant_role
+            """,
+            (int(guild_id), normalized),
+        ).fetchall()
+        rows = con.execute(
+            """
+            SELECT complaint.id, complaint.thread_url, complaint.title,
+                   complaint.author, complaint.section_kind, complaint.post_count,
+                   complaint.last_changed_at, complaint.latest_post_at,
+                   complaint.latest_post_author, participant.participant_role
+            FROM atlas_forum_complaint_participants AS participant
+            JOIN atlas_forum_complaints AS complaint ON complaint.id = participant.complaint_id
+            WHERE complaint.guild_id = ? AND participant.static_id = ?
+            ORDER BY complaint.last_changed_at DESC, complaint.id DESC
+            LIMIT ?
+            """,
+            (int(guild_id), normalized, max(1, min(int(limit), 100))),
+        ).fetchall()
+    totals = {str(row["participant_role"]): int(row["amount"] or 0) for row in counts}
+    return {
+        "static_id": normalized,
+        "filed": int(totals.get("reporter", 0)),
+        "received": int(totals.get("target", 0)),
+        "items": [_row(row) for row in rows if row is not None],
     }
 
 
 __all__ = [
+    "advance_monitor_backfill",
     "claim_monitor_feed",
     "complaint_identities",
     "complaint_by_thread",
@@ -761,9 +1020,11 @@ __all__ = [
     "ensure_default_monitor_feeds",
     "finish_monitor_feed",
     "forum_monitor_status",
+    "forum_static_profile",
     "forum_thread_id",
     "list_monitored_characters",
     "mark_complaint_delivery",
+    "mark_complaint_hydration_failed",
     "pending_complaint_deliveries",
     "record_complaint_listing",
     "record_complaint_snapshot",

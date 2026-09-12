@@ -7,9 +7,11 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from collections import defaultdict, deque
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -31,6 +33,7 @@ from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
 from modules.atlas_forum_sync import (
+    AtlasForumSyncConfig,
     AtlasForumSyncError,
     AtlasForumSyncRunner,
 )
@@ -197,6 +200,9 @@ def _forum_engine_status_view(value: dict[str, Any], *, administrator: bool) -> 
                 "baseline_completed": bool(item.get("baseline_completed_at")),
                 "last_success_at": item.get("last_success_at"),
                 "next_scan_at": item.get("next_scan_at"),
+                "backfill_pages_scanned": int(item.get("backfill_pages_scanned") or 0),
+                "backfill_topics_seen": int(item.get("backfill_topics_seen") or 0),
+                "backfill_completed": bool(item.get("backfill_completed_at")),
             }
         )
     return {
@@ -204,6 +210,8 @@ def _forum_engine_status_view(value: dict[str, Any], *, administrator: bool) -> 
         "complaints": int(value.get("complaints") or 0),
         "open": int(value.get("open") or 0),
         "pending_hydration": int(value.get("pending_hydration") or 0),
+        "hydrated": int(value.get("hydrated") or 0),
+        "posts": int(value.get("posts") or 0),
     }
 
 
@@ -211,7 +219,7 @@ def _forum_engine_items_view(items: list[dict[str, Any]]) -> list[dict[str, Any]
     allowed = (
         "id", "thread_url", "title", "author", "section_kind", "post_count",
         "last_changed_at", "latest_post_at", "latest_post_author", "locked",
-        "static_id", "nickname", "event_count",
+        "static_id", "nickname", "event_count", "participant_role",
     )
     return [
         {key: item.get(key) for key in allowed}
@@ -332,6 +340,7 @@ def register_atlas_web_routes(
     forum_engine_task: asyncio.Task[None] | None = None
     attachment_ocr_task: asyncio.Task[None] | None = None
     forum_sync_runner: AtlasForumSyncRunner | None = None
+    forum_engine_browser: AtlasForumSyncRunner | None = None
     forum_engine_runner: AtlasForumEngineRunner | None = None
     job_worker = AtlasJobWorker(
         concurrency=2,
@@ -2604,15 +2613,31 @@ def register_atlas_web_routes(
         job_worker.wake()
         return queued
 
+    forum_config = AtlasForumSyncConfig.from_env()
     forum_sync_runner = AtlasForumSyncRunner(
         bot,
         int(guild_id),
+        config=forum_config,
+        index_callback=index_synced_source,
+    )
+    forum_engine_browser = AtlasForumSyncRunner(
+        bot,
+        int(guild_id),
+        config=replace(
+            forum_config,
+            selenium_url=str(
+                os.getenv(
+                    "ATLAS_FORUM_ENGINE_SELENIUM_URL",
+                    forum_config.selenium_url,
+                )
+            ).strip(),
+        ),
         index_callback=index_synced_source,
     )
     forum_engine_runner = AtlasForumEngineRunner(
         bot,
         int(guild_id),
-        forum_sync_runner,
+        forum_engine_browser,
     )
 
     async def start_index_reconciliation(_: web.Application) -> None:
@@ -2693,6 +2718,8 @@ def register_atlas_web_routes(
         if forum_engine_task is not None:
             forum_engine_task.cancel()
             await asyncio.gather(forum_engine_task, return_exceptions=True)
+        if forum_engine_browser is not None:
+            await forum_engine_browser.close()
 
     app.on_startup.append(start_index_reconciliation)
     app.on_startup.append(start_atlas_jobs)
@@ -3698,6 +3725,32 @@ def register_atlas_web_routes(
             status=202 if request.method == "POST" else 200,
         )
 
+    async def forum_engine_profile(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        try:
+            profile = await asyncio.to_thread(
+                forum_engine_storage.forum_static_profile,
+                int(guild_id),
+                str(request.query.get("static_id") or ""),
+                limit=40,
+            )
+        except ValueError:
+            return web.json_response(
+                {
+                    "error": "atlas_forum_static_invalid",
+                    "message": "Укажите корректный числовой статик.",
+                },
+                status=400,
+            )
+        return web.json_response(
+            {
+                **profile,
+                "items": _forum_engine_items_view(profile.get("items", [])),
+            }
+        )
+
     app.router.add_get("/atlas", atlas_index)
     app.router.add_get("/atlas/", atlas_index)
     app.router.add_get("/atlas/assets/{name}", atlas_asset)
@@ -3760,6 +3813,7 @@ def register_atlas_web_routes(
     app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_get("/api/atlas/forum-engine", forum_engine_control)
     app.router.add_post("/api/atlas/forum-engine", forum_engine_control)
+    app.router.add_get("/api/atlas/forum-engine/profile", forum_engine_profile)
     app.router.add_get("/api/admin/atlas", admin_overview)
     app.router.add_post("/api/admin/atlas/catalog", admin_catalog_control)
     app.router.add_post("/api/admin/atlas/spaces", admin_space_control)

@@ -742,17 +742,28 @@ function renderForumEngine(value) {
   else if (feeds.some((item) => item.status === "error")) state = "error";
   else if (feeds.some((item) => item.status === "attention")) state = "attention";
   else if (feeds.length && feeds.every((item) => item.status === "ok")) state = "ok";
+  const archivePages = feeds.reduce(
+    (total, item) => total + Number(item.backfill_pages_scanned || 0),
+    0,
+  );
+  const archiveComplete = Boolean(
+    feeds.length && feeds.every((item) => item.backfill_completed || item.backfill_completed_at),
+  );
   const labels = {
     disabled: "Наблюдение временно отключено",
-    pending: "Строим первую карту жалоб без старых уведомлений",
-    running: "Сверяем разделы форума прямо сейчас",
-    ok: "Наблюдение активно · изменения придут автоматически",
-    attention: "Форум ждёт подтверждения · сохранённые данные доступны",
-    error: "Сверка будет повторена автоматически",
+    pending: "Запускаем наблюдение и продолжаем собирать архив",
+    running: "Проверяем новые жалобы · архив продолжается в фоне",
+    ok: archiveComplete
+      ? "Наблюдение активно · архив полностью сохранён"
+      : "Наблюдение активно · исторический архив пополняется в фоне",
+    attention: "Форум временно недоступен · данные сохранены, повтор автоматический",
+    error: "Браузер форума перезапускается · повтор автоматический",
   };
   byId("forum-engine-pulse").className = state;
   byId("forum-engine-state").textContent = labels[state] || labels.pending;
   byId("forum-engine-total").textContent = String(engine.complaints || 0);
+  byId("forum-engine-hydrated").textContent = String(engine.hydrated || 0);
+  byId("forum-engine-pages").textContent = String(archivePages);
   byId("forum-engine-open").textContent = String(engine.open || 0);
   const grouped = new Map();
   items.forEach((item) => {
@@ -764,7 +775,6 @@ function renderForumEngine(value) {
     } else grouped.set(key, { ...item, characters: [character] });
   });
   byId("forum-engine-mine").textContent = String(grouped.size);
-  byId("forum-engine-characters").textContent = String(characters.length);
   const characterList = byId("forum-engine-character-list");
   clear(characterList);
   characters.forEach((item) => characterList.append(
@@ -807,6 +817,43 @@ function renderForumEngine(value) {
   const button = byId("forum-engine-now");
   button.hidden = !Boolean(appState.data?.viewer?.administrator);
   button.disabled = state === "running" || state === "disabled";
+}
+
+function renderForumStaticProfile(profile) {
+  const root = byId("forum-engine-profile");
+  clear(root);
+  root.hidden = false;
+  const summary = element("header");
+  const title = element("span");
+  title.append(
+    element("small", "", `СТАТИК ${profile.static_id || "—"}`),
+    element("strong", "", "Форумный профиль"),
+  );
+  const counters = element("div");
+  counters.append(
+    element("span", "", `Подал · ${Number(profile.filed || 0)}`),
+    element("span", "", `Получил · ${Number(profile.received || 0)}`),
+  );
+  summary.append(title, counters);
+  root.append(summary);
+  const list = element("div", "forum-engine-profile-items");
+  const labels = { reporter: "Подал", target: "Получил" };
+  (profile.items || []).slice(0, 12).forEach((item) => {
+    const link = element("a");
+    link.href = String(item.thread_url || "#");
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    link.append(
+      element("i", item.participant_role || "target", labels[item.participant_role] || "Жалоба"),
+      element("span", "", item.title || "Жалоба на форуме"),
+      element("b", "", "↗"),
+    );
+    list.append(link);
+  });
+  if (!(profile.items || []).length) list.append(
+    element("div", "empty", "В уже оцифрованной части архива совпадений пока нет."),
+  );
+  root.append(list);
 }
 
 const timelineKindLabels = {
@@ -2110,6 +2157,26 @@ function bind() {
     } catch (error) {
       showToast(error.message || "Не удалось запустить сверку жалоб.", true);
       renderForumEngine(appState.data?.forum_engine || {});
+    }
+  });
+  byId("forum-engine-profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = byId("forum-engine-profile-static");
+    const staticId = String(input.value || "").replace(/\D/g, "");
+    if (!staticId) {
+      input.focus();
+      return;
+    }
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      const profile = await api(`/api/atlas/forum-engine/profile?static_id=${encodeURIComponent(staticId)}`);
+      renderForumStaticProfile(profile);
+    } catch (error) {
+      showToast(error.message || "Не удалось открыть форумный профиль.", true);
+    } finally {
+      button.disabled = false;
     }
   });
   byId("global-search").addEventListener("click", openGlobalSearch);

@@ -420,6 +420,31 @@ class AtlasForumParserTests(unittest.TestCase):
         self.assertEqual(len(batch.snapshots), 1)
         self.assertFalse(batch.inventory_complete)
 
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_inventory_returns_the_exact_durable_next_page(self, _sleep) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        page_one = """
+        <div class="structItem-title"><a href="/threads/one.1/">One</a></div>
+        <a class="pageNav-jump pageNav-jump--next" href="/forums/reports.10/page-2">Next</a>
+        """
+        page_two = """
+        <div class="structItem-title"><a href="/threads/two.2/">Two</a></div>
+        <a class="pageNav-jump pageNav-jump--next" href="/forums/reports.10/page-3">Next</a>
+        """
+        browser._load = lambda url: page_two if "page-2" in url else page_one
+
+        inventory = browser.scrape_inventory(
+            "https://forum.majestic-rp.ru/forums/reports.10/",
+            max_pages=2,
+        )
+
+        self.assertEqual(inventory.listing_pages, 2)
+        self.assertFalse(inventory.inventory_complete)
+        self.assertEqual(
+            inventory.next_url,
+            "https://forum.majestic-rp.ru/forums/reports.10/page-3",
+        )
+
     def test_browser_indexes_other_threads_when_one_thread_is_unreadable(self) -> None:
         browser = AtlasForumBrowser(sync_config())
         listing = """
