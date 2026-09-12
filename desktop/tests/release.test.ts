@@ -55,6 +55,12 @@ describe("desktop release contract", () => {
     expect(main).toContain('ipcMain.handle("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
+    expect(main).toContain("loadOrCreateDesktopInstallToken");
+    expect(main).toContain('"X-TMod-Install-Token"');
+    expect(main).toContain('"X-TMod-Device-Fingerprint"');
+    expect(main).toContain("stableSystemIdentifier");
+    expect(main).toContain("safeStorage.encryptString");
+    expect(main).not.toContain("wmic");
   });
 
   it("keeps login authoritative across transient network and bootstrap races", () => {

@@ -996,6 +996,21 @@ function Home({
   }
 
   if (!bootstrap.authenticated) {
+    if (bootstrap.error === "globally_banned") {
+      return (
+        <section className="desktop-ban-stage" role="alert">
+          <div className="desktop-ban-sigil" aria-hidden="true"><i/><span>⦸</span><i/></div>
+          <p className="kicker">IDENTITY LOCKDOWN</p>
+          <h1>Доступ<br/>прекращён.</h1>
+          <p>Глобальная блокировка действует во всех сервисах T‑Mod, Desktop и связанных Discord‑пространствах.</p>
+          <dl>
+            <div><dt>Основание</dt><dd>{bootstrap.ban?.reason || "Решение администратора T-Mod."}</dd></div>
+            <div><dt>Запись</dt><dd>{bootstrap.ban?.reference || "—"}</dd></div>
+          </dl>
+          <small>Смена аккаунта в этой установке не отменяет решение. Доступ может восстановить только администратор T‑Mod.</small>
+        </section>
+      );
+    }
     const messages: Record<NonNullable<DesktopLoginResult["error"]>, string> = {
       invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
       locked: "Слишком много попыток. Подождите несколько минут и попробуйте снова.",

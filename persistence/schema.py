@@ -303,6 +303,7 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
                 reason TEXT NOT NULL,
+                source_user_id INTEGER,
                 issued_by_id INTEGER NOT NULL,
                 issued_by_display TEXT NOT NULL,
                 issued_at TEXT NOT NULL,
@@ -320,6 +321,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_global_bans_active
             ON global_bans(guild_id, active, issued_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_global_bans_user_active
+            ON global_bans(user_id, active, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS global_ban_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -335,6 +339,52 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_global_ban_events_subject
             ON global_ban_events(guild_id, user_id, id DESC);
+
+            -- Desktop uses a random, OS-protected installation credential.
+            -- Only its SHA-256 digest is stored server-side: no MAC address,
+            -- disk serial, Windows SID or other raw hardware identifier ever
+            -- enters the T-Mod database.
+            CREATE TABLE IF NOT EXISTS desktop_installations (
+                guild_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL,
+                installation_ref TEXT NOT NULL,
+                device_hash TEXT,
+                platform TEXT,
+                app_version TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, token_hash)
+            );
+
+            CREATE TABLE IF NOT EXISTS desktop_installation_accounts (
+                guild_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, token_hash, user_id),
+                FOREIGN KEY (guild_id, token_hash)
+                    REFERENCES desktop_installations(guild_id, token_hash)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_installation_accounts_user
+            ON desktop_installation_accounts(guild_id, user_id, last_seen_at DESC);
+
+            CREATE TABLE IF NOT EXISTS desktop_device_accounts (
+                guild_id INTEGER NOT NULL,
+                device_hash TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, device_hash, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_device_accounts_user
+            ON desktop_device_accounts(guild_id, user_id, last_seen_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_installations_device
+            ON desktop_installations(guild_id, device_hash);
 
             CREATE TABLE IF NOT EXISTS reactor_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2809,6 +2859,8 @@ def init_db() -> None:
             "reset_required",
             "INTEGER NOT NULL DEFAULT 0",
         )
+        _add_column_if_missing(con, "global_bans", "source_user_id", "INTEGER")
+        _add_column_if_missing(con, "desktop_installations", "device_hash", "TEXT")
         _add_column_if_missing(
             con,
             "tvrs_consensus_sessions",

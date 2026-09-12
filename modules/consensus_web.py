@@ -1162,17 +1162,40 @@ def create_consensus_web_app(
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
+        # Static assets and health never expose an account or protected data.
+        # Avoid two DB reads per font/image request from the Desktop shell.
+        if (
+            request.path in {"/api/health", "/favicon.ico"}
+            or request.path.startswith("/assets/")
+        ):
+            return await handler(request)
+        desktop_token = str(
+            request.headers.get("X-TMod-Install-Token") or ""
+        ).strip()
         identity = signed_session_identity(
             request,
             expected_guild_id=int(guild_id),
         )
-        ban = None
+        ban = await asyncio.to_thread(
+            global_ban_storage.get_desktop_installation_ban,
+            int(guild_id),
+            desktop_token,
+            str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+        ) if desktop_token else None
         if identity is not None:
-            ban = await asyncio.to_thread(
+            ban = ban or await asyncio.to_thread(
                 global_ban_storage.get_global_ban,
                 int(guild_id),
                 int(identity[1]),
             )
+        if ban is not None and (
+            identity is None or int(identity[1]) != int(ban.get("user_id") or 0)
+        ):
+            # Shared devices must not disclose another account's ban reason.
+            ban = {
+                **ban,
+                "reason": "Доступ с этой установки T-Mod Desktop ограничен.",
+            }
         request[_GLOBAL_BAN_REQUEST_KEY] = ban
         if ban is not None:
             legal_access = request.path.rstrip("/") in {
@@ -1191,11 +1214,13 @@ def create_consensus_web_app(
                 or legal_access
             )
             if not allowed:
-                if request.path.startswith("/api/"):
+                if request.path.startswith("/api/") or desktop_token:
                     return web.json_response(
                         {
                             "error": "globally_banned",
                             "message": "Доступ к экосистеме T-Mod заблокирован.",
+                            "reason": str(ban.get("reason") or "Причина не указана."),
+                            "reference": f"GB-{int(ban.get('revision') or 1):03d}",
                         },
                         status=423,
                     )
@@ -1652,6 +1677,19 @@ def create_consensus_web_app(
             int(result.credential.user_id),
         ):
             raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
+        desktop_token = str(
+            request.headers.get("X-TMod-Install-Token") or ""
+        ).strip()
+        if desktop_token:
+            await asyncio.to_thread(
+                global_ban_storage.bind_desktop_installation,
+                int(guild_id),
+                int(result.credential.user_id),
+                desktop_token,
+                platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
+                app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
+                device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+            )
         guild = bot.get_guild(int(guild_id))
         member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
         if member is None and guild is not None:

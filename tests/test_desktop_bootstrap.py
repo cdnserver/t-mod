@@ -83,7 +83,15 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 "modules.consensus_web.resolve_principal",
                 AsyncMock(return_value=principal),
             ):
-                response = await client.get("/api/desktop/v1/bootstrap")
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={
+                        "X-TMod-Install-Token": "C" * 43,
+                        "X-TMod-Desktop-Platform": "win32",
+                        "X-TMod-Desktop-Version": "1.3.6",
+                        "X-TMod-Device-Fingerprint": "3" * 64,
+                    },
+                )
             payload = await response.json()
             services = {item["id"]: item for item in payload["services"]}
             self.assertEqual(response.status, 200)
@@ -93,6 +101,9 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(services["admin"]["enabled"])
             self.assertIn("unread", payload["notifications"])
             self.assertTrue(payload["atlas_overlay"]["allowed"])
+            self.assertTrue(payload["device"]["trusted"])
+            self.assertTrue(payload["device"]["hardware_bound"])
+            self.assertTrue(payload["device"]["installation_ref"].startswith("TD-"))
             self.assertEqual(
                 payload["atlas_overlay"]["selected_character"]["nickname"],
                 "Saul Goodman",

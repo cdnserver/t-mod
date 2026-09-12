@@ -26,6 +26,7 @@ _SUBJECT_COLUMNS = frozenset(
         "actor_user_id",
         "assigned_user_id",
         "target_user_id",
+        "source_user_id",
         "host_user_id",
         "guest_user_id",
         "author_id",
@@ -38,7 +39,7 @@ _SUBJECT_COLUMNS = frozenset(
     }
 )
 _SECURITY_COLUMNS = re.compile(
-    r"(?:password|pin_hash|secret|token|cookie|session_key|code_hash|receipt_key)",
+    r"(?:password|pin_hash|secret|token|cookie|session_key|code_hash|receipt_key|device_hash|fingerprint)",
     re.IGNORECASE,
 )
 _MAX_GLOBAL_EVENTS = 50_000

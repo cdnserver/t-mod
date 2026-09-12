@@ -74,6 +74,7 @@ from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import atlas_repository as atlas_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
+from persistence import global_ban_repository as global_ban_storage
 from persistence import market_repository as market_storage
 from persistence import ovr_repository as ovr_storage
 from persistence import admission_repository as admission_storage
@@ -1701,6 +1702,16 @@ def register_reactor_web_routes(
                 status=401,
             )
 
+        installation = await asyncio.to_thread(
+            global_ban_storage.bind_desktop_installation,
+            int(guild_id),
+            int(principal.user_id),
+            str(request.headers.get("X-TMod-Install-Token") or ""),
+            platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
+            app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
+            device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+        )
+
         guild_member = bool(principal.guild_member)
         administrator = bool(principal.administrator)
         grants: list[dict[str, Any]] = []
@@ -1779,6 +1790,7 @@ def register_reactor_web_routes(
                 "administrator": administrator,
                 "sections": granted_sections,
             },
+            "device": installation or {"trusted": False},
             "services": [
                 service(
                     "reactor",

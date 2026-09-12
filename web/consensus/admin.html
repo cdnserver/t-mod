@@ -1422,7 +1422,7 @@
               <div>
                 <span class="section-number">12 / IDENTITY SECURITY</span>
                 <h2>Глобальные блокировки</h2>
-                <p>Единая точка управления доступом к Discord и всей веб‑экосистеме T‑Mod.</p>
+                <p>Единая точка управления доступом к Discord, Desktop и всей экосистеме T‑Mod.</p>
               </div>
               <span class="security-live"><i></i> защита активна</span>
             </div>
@@ -1440,7 +1440,7 @@
                 <div>
                   <span class="panel-kicker">IDENTITY LOCKDOWN</span>
                   <h2>Выдать глобальный бан</h2>
-                  <p>Сначала T‑Mod мгновенно закрывает сайты и сессии, затем подтверждает блокировку в Discord.</p>
+                  <p>T‑Mod отзывает сессии, закрывает связанные установки и аккаунты, затем удерживает решение во всех доступных Discord‑серверах.</p>
                 </div>
                 <span id="global-ban-count" class="global-ban-count">0 активных</span>
               </header>
@@ -1449,12 +1449,13 @@
                 <label class="global-ban-reason"><span>Причина блокировки</span><div class="global-ban-field"><i>!</i><input name="reason" minlength="5" maxlength="1000" placeholder="Основание, которое увидит пользователь" autocomplete="off" required></div></label>
                 <button class="global-ban-submit" type="submit"><span>Заблокировать везде</span><i>⦸</i></button>
               </form>
-              <div class="global-ban-warning"><i></i><span>Результат фиксируется до обращения к Discord. Даже при временном сбое Discord доступ к сайтам уже будет закрыт, а синхронизация повторится автоматически.</span></div>
+              <div class="global-ban-warning"><i></i><span>Решение фиксируется до обращения к Discord. Аккаунты с той же установки или устройства Desktop блокируются вместе. Общим компьютером могут пользоваться разные люди: перед подтверждением проверьте показанные связанные ID. Владелец сервера и системные личности не получают отдельного бана.</span></div>
               <div class="hard-ban-perimeter" aria-label="Контур жёсткой блокировки">
                 <span><b>01</b> Все веб-сессии отозваны</span>
                 <span><b>02</b> Повторный вход запрещён</span>
                 <span><b>03</b> Discord-бан удерживается</span>
                 <span><b>04</b> Личные сервисы остановлены</span>
+                <span><b>05</b> Desktop и связанные входы закрыты</span>
               </div>
               <div class="global-ban-toolbar">
                 <label><span>Поиск</span><input id="global-ban-search" type="search" placeholder="Discord ID, имя или причина"></label>

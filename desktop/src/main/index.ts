@@ -6,6 +6,7 @@ import {
   ipcMain,
   nativeTheme,
   powerMonitor,
+  safeStorage,
   screen,
   session,
   shell,
@@ -13,6 +14,9 @@ import {
 } from "electron";
 import type { WebContents } from "electron";
 import { fileURLToPath } from "node:url";
+import { createHash, randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import log from "electron-log/main";
 import electronUpdater from "electron-updater";
@@ -99,6 +103,7 @@ let idleLockTimer: ReturnType<typeof setInterval> | undefined;
 let desktopLocked = false;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
+let lastKnownBan: BootstrapResult["ban"];
 let bootstrapRevision = 0;
 let bootstrapInFlight: {
   revision: number;
@@ -110,6 +115,8 @@ let serviceRetryAttempt = 0;
 let serviceRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let authProjectionTimer: ReturnType<typeof setTimeout> | undefined;
 let authCookieObserverInstalled = false;
+let desktopInstallToken = "";
+let desktopDeviceFingerprint = "";
 let lastMainFrameHttpStatus = 0;
 let atlasOverlay: AtlasOverlayController | undefined;
 let updateState: DesktopUpdateState = {
@@ -123,6 +130,110 @@ nativeTheme.themeSource = "dark";
 
 function desktopSession() {
   return session.fromPartition(DESKTOP_PARTITION, { cache: true });
+}
+
+const INSTALL_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
+
+async function loadOrCreateDesktopInstallToken(): Promise<string> {
+  const directory = app.getPath("userData");
+  const destination = path.join(directory, "desktop-installation.json");
+  try {
+    const record = JSON.parse(await readFile(destination, "utf8")) as {
+      protected?: boolean;
+      value?: string;
+    };
+    const stored = String(record.value || "");
+    const token = record.protected
+      ? safeStorage.decryptString(Buffer.from(stored, "base64"))
+      : Buffer.from(stored, "base64").toString("utf8");
+    if (INSTALL_TOKEN_PATTERN.test(token)) return token;
+  } catch {
+    // Missing, damaged or no longer decryptable local state is replaced with
+    // a new random installation credential. No hardware identifier is read.
+  }
+  const token = randomBytes(32).toString("base64url");
+  const protect = safeStorage.isEncryptionAvailable();
+  const value = protect
+    ? safeStorage.encryptString(token).toString("base64")
+    : Buffer.from(token, "utf8").toString("base64");
+  try {
+    await mkdir(directory, { recursive: true });
+    const temporary = `${destination}.${process.pid}.tmp`;
+    await writeFile(
+      temporary,
+      JSON.stringify({ version: 1, protected: protect, value }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(temporary, destination);
+    await chmod(destination, 0o600).catch(() => undefined);
+  } catch (error) {
+    // A read-only userData folder must not prevent the desktop shell starting.
+    // The device fingerprint still enforces bans across installation resets.
+    log.warn("Desktop installation credential could not be persisted", error);
+  }
+  return token;
+}
+
+function execFileText(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      { encoding: "utf8", timeout: 4_000, windowsHide: true, maxBuffer: 64 * 1024 },
+      (error, stdout) => error ? reject(error) : resolve(String(stdout || "")),
+    );
+  });
+}
+
+async function stableSystemIdentifier(): Promise<string> {
+  if (process.platform === "win32") {
+    const output = await execFileText("reg.exe", [
+      "QUERY",
+      "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+      "/v",
+      "MachineGuid",
+    ]);
+    const match = output.match(/MachineGuid\s+REG_\w+\s+([^\r\n]+)/i);
+    if (match?.[1]) return match[1].trim();
+  } else if (process.platform === "darwin") {
+    const output = await execFileText("/usr/sbin/ioreg", [
+      "-rd1",
+      "-c",
+      "IOPlatformExpertDevice",
+    ]);
+    const match = output.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/i);
+    if (match?.[1]) return match[1].trim();
+  } else {
+    const machineId = (await readFile("/etc/machine-id", "utf8")).trim();
+    if (machineId) return machineId;
+  }
+  throw new Error("stable_system_identifier_unavailable");
+}
+
+async function buildDesktopDeviceFingerprint(): Promise<string> {
+  try {
+    const systemIdentifier = await stableSystemIdentifier();
+    return createHash("sha256")
+      .update(`tmod-desktop-hwid-v1\0${process.platform}\0${systemIdentifier}`, "utf8")
+      .digest("hex");
+  } catch (error) {
+    // Never mislabel an installation identifier as a machine binding.
+    log.warn("Stable system identifier unavailable; using installation binding", error);
+    return "";
+  }
+}
+
+function desktopIdentityHeaders(): Record<string, string> {
+  return desktopInstallToken
+    ? {
+        "X-TMod-Install-Token": desktopInstallToken,
+        "X-TMod-Desktop-Platform": process.platform,
+        "X-TMod-Desktop-Version": app.getVersion(),
+        ...(desktopDeviceFingerprint
+          ? { "X-TMod-Device-Fingerprint": desktopDeviceFingerprint }
+          : {}),
+      }
+    : { "X-TMod-Desktop-Version": app.getVersion() };
 }
 
 function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {}): void {
@@ -522,6 +633,14 @@ function wait(milliseconds: number): Promise<void> {
 }
 
 function bootstrapUnavailable(error: string): BootstrapResult {
+  if (lastKnownBan) {
+    return {
+      authenticated: false,
+      online: false,
+      error: "globally_banned",
+      ban: lastKnownBan,
+    };
+  }
   if (lastSuccessfulBootstrap) {
     return {
       authenticated: true,
@@ -558,7 +677,7 @@ async function fetchBootstrapCandidate(): Promise<Response | undefined> {
       credentials: "include",
       headers: {
         Accept: "application/json",
-        "X-TMod-Desktop-Version": app.getVersion(),
+        ...desktopIdentityHeaders(),
       },
       signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
     });
@@ -603,12 +722,43 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       const current = revision === bootstrapRevision;
       if (response.status === 401) {
         if (current) {
+          lastKnownBan = undefined;
           lastSuccessfulBootstrap = undefined;
           clearServiceManifest();
           reconcileActiveServiceAccess();
           await applyAtlasOverlayBootstrapSafely(undefined);
         }
         return { authenticated: false, online: true, error: "login_required" };
+      }
+      if (response.status === 423) {
+        let decision = { reason: "Решение администратора T-Mod.", reference: "—" };
+        try {
+          const payload = await response.json() as Partial<typeof decision>;
+          decision = {
+            reason: String(payload.reason || decision.reason),
+            reference: String(payload.reference || decision.reference),
+          };
+        } catch {
+          // A valid 423 is authoritative even if a proxy stripped its body.
+        }
+        if (current) {
+          lastKnownBan = decision;
+          lastSuccessfulBootstrap = undefined;
+          lastSuccessfulBootstrapAt = undefined;
+          clearServiceManifest();
+          activeService = "home";
+          serviceLoading = false;
+          lastServiceError = undefined;
+          syncServiceVisibility();
+          await applyAtlasOverlayBootstrapSafely(undefined);
+          emitState();
+        }
+        return {
+          authenticated: false,
+          online: true,
+          error: "globally_banned",
+          ban: decision,
+        };
       }
       if (!response.ok) {
         return {
@@ -630,6 +780,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         };
       }
       if (current) {
+        lastKnownBan = undefined;
         if (!applyServiceManifest(data)) {
           clearServiceManifest();
           reconcileActiveServiceAccess();
@@ -713,6 +864,7 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
             headers: {
               Accept: "text/html,application/xhtml+xml",
               "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+              ...desktopIdentityHeaders(),
             },
             body: form.toString(),
             signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
@@ -727,7 +879,10 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
       }
     }
     if (!response) return { ok: false, error: "network_unavailable" };
-    if (response.status === 403) return { ok: false, error: "banned" };
+    if (response.status === 403 || response.status === 423) {
+      if (response.status === 423) await bootstrap();
+      return { ok: false, error: "banned" };
+    }
     const error = loginErrorFromLocation(response.headers.get("location") || response.url);
     if (error) return { ok: false, error };
     let result: BootstrapResult | undefined;
@@ -933,6 +1088,8 @@ function registerIpc(): void {
 
 async function createWindow(): Promise<void> {
   log.info("Creating T-Mod desktop window");
+  desktopInstallToken = await loadOrCreateDesktopInstallToken();
+  desktopDeviceFingerprint = await buildDesktopDeviceFingerprint();
   const { workArea } = screen.getPrimaryDisplay();
   const width = Math.min(workArea.width, Math.max(960, Math.round(workArea.width * .96)));
   const height = Math.min(workArea.height, Math.max(640, Math.round(workArea.height * .94)));
@@ -974,6 +1131,17 @@ async function createWindow(): Promise<void> {
   const networkSession = desktopSession();
   const desktopUserAgent = `${networkSession.getUserAgent()} TModDesktop/${app.getVersion()}`;
   networkSession.setUserAgent(desktopUserAgent);
+  networkSession.webRequest.onBeforeSendHeaders(
+    { urls: ["https://tvr.lat/*", "https://*.tvr.lat/*"] },
+    (details, callback) => {
+      callback({
+        requestHeaders: {
+          ...details.requestHeaders,
+          ...desktopIdentityHeaders(),
+        },
+      });
+    },
+  );
   networkSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   networkSession.setPermissionCheckHandler(() => false);
   if (!authCookieObserverInstalled) {
@@ -1089,7 +1257,11 @@ async function createWindow(): Promise<void> {
   });
   serviceView.webContents.on("did-navigate", (_event, url, httpResponseCode) => {
     lastMainFrameHttpStatus = Number(httpResponseCode || 0);
-    if (lastMainFrameHttpStatus === 401 || isTModAuthenticationUrl(url)) {
+    if (
+      lastMainFrameHttpStatus === 401 ||
+      lastMainFrameHttpStatus === 423 ||
+      isTModAuthenticationUrl(url)
+    ) {
       scheduleAuthProjectionRefresh();
     }
     emitState();
