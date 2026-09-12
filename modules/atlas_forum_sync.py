@@ -798,7 +798,7 @@ class AtlasForumBrowser:
             command_executor=self.config.selenium_url,
             options=options,
         )
-        driver.set_page_load_timeout(60)
+        driver.set_page_load_timeout(35)
         return driver
 
     def _save_cookies(self, driver: Any) -> int:
@@ -1107,7 +1107,10 @@ class AtlasForumBrowser:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        options.set_capability("pageLoadStrategy", "normal")
+        # Forum pages keep loading decorative/network resources long after the
+        # XenForo DOM is ready. Waiting for the full `load` event made one
+        # listing consume 60 seconds and starved the alert lane.
+        options.set_capability("pageLoadStrategy", "eager")
         options.set_capability("se:name", "T-Mod Atlas forum sync")
         self._release_orphaned_sessions()
         try:
@@ -1137,7 +1140,17 @@ class AtlasForumBrowser:
     def _load(self, url: str) -> str:
         driver = self._connect()
         try:
-            driver.get(url)
+            try:
+                driver.get(url)
+            except Exception as exc:
+                if type(exc).__name__ != "TimeoutException":
+                    raise
+                # DOMContentLoaded may already have produced the complete
+                # listing even if a third-party resource never finished.
+                try:
+                    driver.execute_script("window.stop();")
+                except Exception:
+                    pass
             self._driver_loads += 1
             deadline = time.monotonic() + self.config.challenge_wait_seconds
             while True:
@@ -1190,7 +1203,11 @@ class AtlasForumBrowser:
             raise
         except Exception as exc:
             self.close()
-            raise AtlasForumSyncError(f"atlas_forum_page_failed:{type(exc).__name__}") from exc
+            detail = self._exception_detail(exc)
+            raise AtlasForumSyncError(
+                f"atlas_forum_page_failed:{type(exc).__name__}"
+                f"{f':{detail}' if detail else ''}"
+            ) from exc
 
     def _scrape_listing(self, root_url: str) -> AtlasForumScrapeBatch:
         listing_queue = [root_url]

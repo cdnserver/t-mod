@@ -400,6 +400,23 @@ class AtlasForumParserTests(unittest.TestCase):
             "access",
         )
 
+    def test_page_load_timeout_keeps_an_already_rendered_forum_dom(self) -> None:
+        class TimeoutException(Exception):
+            pass
+
+        driver = SimpleNamespace(
+            get=Mock(side_effect=TimeoutException("decorative resource stalled")),
+            execute_script=Mock(),
+            page_source="<html><body><main>Готовая страница форума</main></body></html>",
+        )
+        browser = AtlasForumBrowser(sync_config())
+        browser._connect = lambda: driver
+
+        page = browser._load("https://forum.majestic-rp.ru/forums/reports.10/")
+
+        self.assertIn("Готовая страница форума", page)
+        driver.execute_script.assert_called_once_with("window.stop();")
+
     def test_browser_marks_capped_inventory_as_incomplete(self) -> None:
         config = replace(sync_config(), max_threads=1)
         browser = AtlasForumBrowser(config)

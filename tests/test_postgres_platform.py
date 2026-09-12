@@ -168,9 +168,10 @@ class PostgresCompatibilityTests(unittest.TestCase):
             compose,
         )
         self.assertGreaterEqual(
-            compose.count(r"""grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true'"""),
+            compose.count(r'''\"ready\"[[:space:]]*:[[:space:]]*true'''),
             2,
         )
+        self.assertGreaterEqual(compose.count(r'''|\"sessionId\"'''), 2)
 
         bot_service = compose.split("  tmod-web:", 1)[0].split(
             "  tmod-discord-bot:", 1

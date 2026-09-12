@@ -200,9 +200,9 @@ services:
       # noVNC is bound to host loopback only, so a second password is unnecessary.
       SE_VNC_NO_PASSWORD: "true"
     healthcheck:
-      # An HTTP 200 does not mean Selenium can accept a session.  The old
-      # check kept a Grid with `ready:false` marked healthy for days.
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:4444/status | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true'"]
+      # `ready:false` is normal while the single live slot is occupied. The
+      # application probes that session and rotates it on a bounded schedule.
+      test: ["CMD-SHELL", "body=$$(curl --fail --silent --max-time 5 http://127.0.0.1:4444/status) || exit 1; echo \"$$body\" | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true|\"sessionId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'"]
       interval: 20s
       timeout: 5s
       retries: 8
@@ -226,7 +226,7 @@ services:
       SE_SESSION_REQUEST_TIMEOUT: "20"
       SE_VNC_NO_PASSWORD: "true"
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:4444/status | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true'"]
+      test: ["CMD-SHELL", "body=$$(curl --fail --silent --max-time 5 http://127.0.0.1:4444/status) || exit 1; echo \"$$body\" | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true|\"sessionId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'"]
       interval: 20s
       timeout: 5s
       retries: 8
