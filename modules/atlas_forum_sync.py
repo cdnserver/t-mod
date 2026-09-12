@@ -119,6 +119,10 @@ class AtlasForumSyncConfig:
     # left Grid reporting HTTP 200 while rejecting every new browser request.
     browser_session_max_seconds: int = 900
     browser_session_max_loads: int = 180
+    # Optional trusted egress for installations whose public address is
+    # rejected by the forum. Credentials are deliberately forbidden here:
+    # Chromium exposes command-line flags to the local Grid diagnostics.
+    proxy_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "AtlasForumSyncConfig":
@@ -155,6 +159,25 @@ class AtlasForumSyncConfig:
         corpus_kind = str(
             os.getenv("ATLAS_FORUM_CORPUS_KIND", "law")
         ).strip() or None
+        proxy_url: str | None = None
+        raw_proxy_url = str(os.getenv("ATLAS_FORUM_PROXY_URL", "")).strip()
+        if raw_proxy_url:
+            parsed_proxy = urlsplit(raw_proxy_url)
+            try:
+                proxy_port = parsed_proxy.port
+            except ValueError:
+                proxy_port = None
+            if (
+                parsed_proxy.scheme.casefold() in {"http", "https", "socks5"}
+                and parsed_proxy.hostname
+                and proxy_port
+                and not parsed_proxy.username
+                and not parsed_proxy.password
+                and not parsed_proxy.path.rstrip("/")
+                and not parsed_proxy.query
+                and not parsed_proxy.fragment
+            ):
+                proxy_url = raw_proxy_url.rstrip("/")
         # Existing installations copied the retired global/project defaults
         # into their persistent .env. Transparently repair that exact legacy
         # combination for the Phoenix legislative root; deliberate custom
@@ -232,6 +255,7 @@ class AtlasForumSyncConfig:
             browser_session_max_loads=bounded_env(
                 "ATLAS_FORUM_BROWSER_SESSION_MAX_LOADS", 180, 20, 1000
             ),
+            proxy_url=proxy_url,
         )
 
 
@@ -1107,6 +1131,8 @@ class AtlasForumBrowser:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
+        if self.config.proxy_url:
+            options.add_argument(f"--proxy-server={self.config.proxy_url}")
         # Forum pages keep loading decorative/network resources long after the
         # XenForo DOM is ready. Waiting for the full `load` event made one
         # listing consume 60 seconds and starved the alert lane.

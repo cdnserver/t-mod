@@ -51,6 +51,29 @@ def sync_config() -> AtlasForumSyncConfig:
 
 
 class AtlasForumParserTests(unittest.TestCase):
+    def test_forum_proxy_accepts_only_private_credential_free_endpoint_shape(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"ATLAS_FORUM_PROXY_URL": "socks5://10.8.0.3:1080"},
+            clear=False,
+        ):
+            self.assertEqual(
+                AtlasForumSyncConfig.from_env().proxy_url,
+                "socks5://10.8.0.3:1080",
+            )
+
+        for unsafe in (
+            "http://user:secret@10.8.0.3:8080",
+            "file:///tmp/socket",
+            "https://proxy.example/path",
+            "http://proxy.example:99999",
+            "javascript:alert(1)",
+        ):
+            with self.subTest(unsafe=unsafe), patch.dict(
+                "os.environ", {"ATLAS_FORUM_PROXY_URL": unsafe}, clear=False
+            ):
+                self.assertIsNone(AtlasForumSyncConfig.from_env().proxy_url)
+
     def test_legacy_global_law_defaults_are_repaired_to_server_scope(self) -> None:
         with patch.dict(
             "os.environ",
