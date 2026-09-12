@@ -231,6 +231,35 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
         self.assertLessEqual(delay.total_seconds(), 31)
         self.assertTrue(finished["baseline_completed_at"])
 
+    def test_repeated_forum_failure_backs_off_then_success_restores_hot_lane(self) -> None:
+        feed = forum_engine.ensure_default_monitor_feeds(77)[0]
+        delays = []
+        for _ in range(6):
+            finished = forum_engine.finish_monitor_feed(
+                int(feed["id"]),
+                stats={"phase": "forum_read"},
+                error="atlas_forum_page_failed:WebDriverException",
+                attention=True,
+            )
+            delays.append(
+                (
+                    datetime.fromisoformat(str(finished["next_scan_at"]))
+                    - datetime.now(timezone.utc)
+                ).total_seconds()
+            )
+
+        self.assertGreater(delays[-1], delays[0])
+        self.assertLessEqual(delays[-1], 901)
+        recovered = forum_engine.finish_monitor_feed(
+            int(feed["id"]), stats={"mode": "hot"}
+        )
+        recovered_delay = (
+            datetime.fromisoformat(str(recovered["next_scan_at"]))
+            - datetime.now(timezone.utc)
+        ).total_seconds()
+        self.assertLessEqual(recovered_delay, 31)
+        self.assertEqual(recovered["failure_count"], 0)
+
     def test_archive_cursor_progress_is_durable_and_bounded(self) -> None:
         feed = forum_engine.ensure_default_monitor_feeds(77)[0]
         first = forum_engine.advance_monitor_backfill(

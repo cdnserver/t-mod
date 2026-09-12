@@ -189,12 +189,16 @@ def finish_monitor_feed(
         ).fetchone()
         if feed is None:
             raise ValueError("atlas_forum_monitor_feed_missing")
+        failure_count = int(feed["failure_count"] or 0) + 1 if error else 0
         interval = max(15, int(feed["interval_seconds"] or 45))
         if error:
-            interval = min(interval, 30)
+            # A blocked or unreachable forum must not be hammered every thirty
+            # seconds forever: that can prolong an upstream IP cooldown.  A
+            # successful pass resets this immediately back to the normal hot
+            # interval, so healthy new-complaint detection remains sub-minute.
+            interval = min(900, max(30, interval) * (2 ** min(failure_count - 1, 5)))
         next_scan = (now_dt + timedelta(seconds=interval)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
-        failure_count = int(feed["failure_count"] or 0) + 1 if error else 0
         # Do not put untyped placeholders inside ``CASE ... IS NULL`` here.
         # SQLite accepts that construct, but PostgreSQL cannot infer the type
         # of the timestamp placeholder when the compared value is NULL and

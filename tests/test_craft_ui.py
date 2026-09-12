@@ -9,6 +9,7 @@ import discord
 
 from modules.craft import (
     BatchQuantityModal,
+    BatchTimeSkipModal,
     CraftPlanView,
     completion_embed,
     create_craft_plan,
@@ -175,6 +176,7 @@ class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
             PurchaseModal(7, material),
             InventoryModal(plan),
             BatchQuantityModal(7, 10),
+            BatchTimeSkipModal(7, 100),
             FinalOutputModal(7, 100),
             PriceModal(7),
             ListingModal(7, 90),
@@ -211,6 +213,7 @@ class CraftComponentTests(unittest.IsolatedAsyncioTestCase):
         )
         active_crafting = CraftPlanView(sample_plan("crafting", active=True))
         self.assertTrue(all(item.disabled for item in active_crafting.children[:3]))
+        self.assertIn("Скип времени", [item.label for item in active_crafting.children])
 
         self.assertEqual([item.label for item in CraftPlanView(sample_plan("awaiting_output")).children], ["Указать результат", "Сверка склада"])
         self.assertEqual([item.label for item in CraftPlanView(sample_plan("listing")).children], ["Цена за 1 шт.", "Выставил на маркет", "Сверка склада"])
