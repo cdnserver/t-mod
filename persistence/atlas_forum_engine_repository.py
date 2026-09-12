@@ -147,7 +147,26 @@ def due_monitor_feeds(guild_id: int, *, force: bool = False) -> list[dict[str, A
             """,
             (int(guild_id), stale, 1 if force else 0, now),
         ).fetchall()
-    return [_row(item) for item in rows if item is not None]
+    result = [_row(item) for item in rows if item is not None]
+    if not force:
+        return result
+    # “Check now” may bypass the ordinary 30-second cadence, but it must not
+    # bypass a route-level anti-DDoS cooldown persisted by the engine.
+    safe: list[dict[str, Any]] = []
+    now_dt = datetime.now(timezone.utc)
+    for item in result:
+        stats = item.get("last_stats") if isinstance(item, dict) else None
+        if isinstance(stats, dict) and stats.get("phase") == "network_cooldown":
+            try:
+                until = datetime.fromisoformat(str(stats.get("until") or ""))
+                if until.tzinfo is None:
+                    until = until.replace(tzinfo=timezone.utc)
+                if until.astimezone(timezone.utc) > now_dt:
+                    continue
+            except ValueError:
+                pass
+        safe.append(item)
+    return safe
 
 
 def claim_monitor_feed(feed_id: int) -> dict[str, Any] | None:
@@ -169,6 +188,40 @@ def claim_monitor_feed(feed_id: int) -> dict[str, Any] | None:
         ).fetchone()
         con.commit()
     return _row(row) if int(cursor.rowcount or 0) else None
+
+
+def defer_monitor_feeds_for_network_cooldown(
+    guild_id: int,
+    *,
+    seconds: int,
+    error: str,
+) -> int:
+    """Open one durable circuit after a route-level Majestic failure."""
+
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    bounded_seconds = max(3600, min(int(seconds), 86_400))
+    until = (now_dt + timedelta(seconds=bounded_seconds)).isoformat()
+    details = _json(
+        {
+            "phase": "network_cooldown",
+            "until": until,
+            "reason": "majestic_route_unavailable",
+        }
+    )
+    safe_error = f"atlas_forum_network_cooldown:{str(error or '')}"[:2000]
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            UPDATE atlas_forum_monitor_feeds
+            SET status = 'attention', next_scan_at = ?, last_error = ?,
+                last_stats_json = ?, updated_at = ?
+            WHERE guild_id = ? AND status != 'disabled'
+            """,
+            (until, safe_error, details, now, int(guild_id)),
+        )
+        con.commit()
+    return max(0, int(cursor.rowcount or 0))
 
 
 def finish_monitor_feed(
@@ -1020,6 +1073,7 @@ __all__ = [
     "complaint_identities",
     "complaint_by_thread",
     "complaints_needing_hydration",
+    "defer_monitor_feeds_for_network_cooldown",
     "due_monitor_feeds",
     "ensure_default_monitor_feeds",
     "finish_monitor_feed",

@@ -8,6 +8,7 @@ from modules.atlas_forum_engine import (
     AtlasForumEngineConfig,
     AtlasForumEngineRunner,
     _complaint_participant_statics,
+    _is_network_route_failure,
     _match_complaint_characters,
     _matches_character,
 )
@@ -230,6 +231,35 @@ class AtlasForumEngineRepositoryTests(unittest.TestCase):
         delay = datetime.fromisoformat(str(finished["next_scan_at"])) - datetime.now(timezone.utc)
         self.assertLessEqual(delay.total_seconds(), 31)
         self.assertTrue(finished["baseline_completed_at"])
+
+    def test_network_failure_opens_one_durable_cooldown_for_all_feeds(self) -> None:
+        feeds = forum_engine.ensure_default_monitor_feeds(77)
+
+        changed = forum_engine.defer_monitor_feeds_for_network_cooldown(
+            77,
+            seconds=21_600,
+            error="net::ERR_CONNECTION_REFUSED",
+        )
+        status = forum_engine.forum_monitor_status(77)
+
+        self.assertEqual(changed, len(feeds))
+        self.assertEqual(forum_engine.due_monitor_feeds(77), [])
+        self.assertEqual(forum_engine.due_monitor_feeds(77, force=True), [])
+        self.assertTrue(all(item["status"] == "attention" for item in status["feeds"]))
+        self.assertTrue(
+            all(item["last_stats"]["phase"] == "network_cooldown" for item in status["feeds"])
+        )
+        remaining = min(
+            datetime.fromisoformat(str(item["next_scan_at"])) - datetime.now(timezone.utc)
+            for item in status["feeds"]
+        )
+        self.assertGreater(remaining.total_seconds(), 21_500)
+
+    def test_only_route_level_failures_trip_the_shared_circuit(self) -> None:
+        self.assertTrue(_is_network_route_failure("net::ERR_CONNECTION_REFUSED"))
+        self.assertTrue(_is_network_route_failure("ConnectTimeout to forum"))
+        self.assertFalse(_is_network_route_failure("atlas_forum_login_required"))
+        self.assertFalse(_is_network_route_failure("thread body missing"))
 
     def test_repeated_forum_failure_backs_off_then_success_restores_hot_lane(self) -> None:
         feed = forum_engine.ensure_default_monitor_feeds(77)[0]

@@ -35,6 +35,21 @@ _EVENT_TITLES = {
     "updated": "Материалы жалобы изменились",
     "status_changed": "Статус жалобы изменён",
 }
+_NETWORK_ROUTE_ERROR_MARKERS = (
+    "net::err_connection_refused",
+    "net::err_connection_timed_out",
+    "connecttimeout",
+    "connection timed out",
+    "connection refused",
+    "network is unreachable",
+    "no route to host",
+    "net::err_name_not_resolved",
+)
+
+
+def _is_network_route_failure(error: object) -> bool:
+    value = str(error or "").casefold()
+    return any(marker in value for marker in _NETWORK_ROUTE_ERROR_MARKERS)
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -61,9 +76,12 @@ class AtlasForumEngineConfig:
     scheduler_poll_seconds: int = 5
     hydration_batch_size: int = 50
     hot_hydration_batch_size: int = 4
-    archive_listing_batch_pages: int = 8
-    archive_hydration_batch_size: int = 8
+    archive_listing_batch_pages: int = 2
+    archive_hydration_batch_size: int = 3
     full_scan_interval_seconds: int = 43_200
+    # Retrying an upstream TCP rejection can extend an anti-DDoS cooldown.
+    # One failed feed therefore pauses every Majestic complaint feed together.
+    network_cooldown_seconds: int = 21_600
 
     @classmethod
     def from_env(cls) -> "AtlasForumEngineConfig":
@@ -82,13 +100,16 @@ class AtlasForumEngineConfig:
                 "ATLAS_FORUM_ENGINE_HOT_HYDRATION_BATCH", 4, 1, 12
             ),
             archive_listing_batch_pages=_bounded_int(
-                "ATLAS_FORUM_ENGINE_ARCHIVE_PAGE_BATCH", 8, 1, 40
+                "ATLAS_FORUM_ENGINE_ARCHIVE_PAGE_BATCH", 2, 1, 20
             ),
             archive_hydration_batch_size=_bounded_int(
-                "ATLAS_FORUM_ENGINE_ARCHIVE_HYDRATION_BATCH", 8, 1, 40
+                "ATLAS_FORUM_ENGINE_ARCHIVE_HYDRATION_BATCH", 3, 1, 20
             ),
             full_scan_interval_seconds=_bounded_int(
                 "ATLAS_FORUM_ENGINE_FULL_SCAN_SECONDS", 43_200, 1800, 604_800
+            ),
+            network_cooldown_seconds=_bounded_int(
+                "ATLAS_FORUM_NETWORK_COOLDOWN_SECONDS", 21_600, 3600, 86_400
             ),
         )
 
@@ -568,6 +589,7 @@ class AtlasForumEngineRunner:
                 baseline_completed=not baseline_exists,
             )
         except (AtlasForumManualActionRequired, AtlasForumSyncError) as exc:
+            network_route_failure = _is_network_route_failure(exc)
             finished = await asyncio.to_thread(
                 storage.finish_monitor_feed,
                 int(claimed["id"]),
@@ -576,6 +598,13 @@ class AtlasForumEngineRunner:
                 attention=True,
                 full_scan=False,
             )
+            if network_route_failure:
+                await asyncio.to_thread(
+                    storage.defer_monitor_feeds_for_network_cooldown,
+                    self.guild_id,
+                    seconds=self.config.network_cooldown_seconds,
+                    error=str(exc),
+                )
             failure_count = int(finished.get("failure_count") or 0)
             if failure_count in {1, 5, 20}:
                 manual = isinstance(exc, AtlasForumManualActionRequired)
@@ -594,7 +623,11 @@ class AtlasForumEngineRunner:
                     ),
                     exception=exc,
                 )
-            return {"status": "attention", "error": str(exc)}
+            return {
+                "status": "attention",
+                "error": str(exc),
+                "network_cooldown": network_route_failure,
+            }
         except Exception as exc:
             await asyncio.to_thread(
                 storage.finish_monitor_feed,
@@ -732,13 +765,14 @@ class AtlasForumEngineRunner:
                 )
                 archive_feed_id = int(selected_archive["id"])
             for feed in feeds:
-                results.append(
-                    await self._scan_feed(
-                        feed,
-                        archive=int(feed["id"]) == archive_feed_id,
-                        characters=characters,
-                    )
+                result = await self._scan_feed(
+                    feed,
+                    archive=int(feed["id"]) == archive_feed_id,
+                    characters=characters,
                 )
+                results.append(result)
+                if result.get("network_cooldown"):
+                    break
             delivery = await self.deliver_pending()
             return {
                 "status": "complete",
