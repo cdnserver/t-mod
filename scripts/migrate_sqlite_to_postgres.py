@@ -228,7 +228,7 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                             occupied.append(table)
                     # init_db can create reference rows. They are safe to replace;
                     # user-owned rows in any other table indicate an unsafe retry.
-                    allowed_seed_tables = {"atlas_servers", "atlas_factions", "meta"}
+                    allowed_seed_tables = {"atlas_projects", "atlas_servers", "atlas_factions", "meta"}
                     unexpected = sorted(set(occupied) - allowed_seed_tables)
                     if unexpected:
                         raise RuntimeError(

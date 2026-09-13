@@ -8,13 +8,14 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable
 
 import aiohttp
 
 from modules.atlas_taxonomy import atlas_classify_knowledge
 from modules.atlas_agents import AtlasAgent, atlas_agent_catalog, atlas_resolve_agent
+from modules.atlas_model_registry import AtlasModelRoute, select_atlas_model_route
 from persistence import atlas_repository as atlas_storage
 
 
@@ -30,6 +31,7 @@ _CREATIVE_REQUEST_RE = re.compile(
 )
 _ATLAS_ECONOMY_MODEL = "openai/gpt-5-mini"
 _ATLAS_DIRECT_MODEL = "x-ai/grok-4.3"
+_ATLAS_INDEX_VERSION = 3
 _ATLAS_RETIRED_DIRECT_MODELS = frozenset({"x-ai/grok-4.1-fast"})
 _ATLAS_DIRECT_PREFIX_RE = re.compile(
     r"^\s*атлас\s*2\s*[,;:—–-]\s*",
@@ -54,19 +56,72 @@ _ATLAS_SEARCH_STOP_WORDS = frozenset(
         "без",
         "в",
         "во",
+        "за",
         "для",
         "и",
         "или",
         "как",
+        "какая",
+        "какие",
+        "какой",
+        "какую",
         "на",
         "о",
         "об",
         "по",
         "про",
+        "покажи",
+        "показать",
+        "расскажи",
+        "напиши",
+        "найди",
+        "назови",
+        "нужно",
+        "можно",
+        "мне",
         "такое",
         "что",
         "это",
+        "укажи",
+        "указать",
+        "статья",
+        "статью",
     }
+)
+_ATLAS_RULE_GENERIC_TERMS = frozenset(
+    {
+        "правил",
+        "правило",
+        "пункт",
+        "пункты",
+        "укажи",
+        "указать",
+        "какой",
+        "какие",
+        "другой",
+        "другому",
+        "другом",
+        "игрок",
+        "игроку",
+        "ли",
+        "свой",
+        "своего",
+        "наказан",
+    }
+)
+_ATLAS_RULE_SHORT_SIGNALS = frozenset(
+    {"dm", "db", "pg", "mg", "rk", "nlr", "sk", "tk", "ooc", "ic", "warn", "mute", "ban"}
+)
+_ATLAS_NUMBERED_RULE_RE = re.compile(
+    # XenForo exports sometimes render ``1. 3`` instead of ``1.3``. Accept
+    # both forms so one parsed clause cannot accidentally swallow the rest of
+    # a multi-page ruleset and inherit unrelated keywords from later rules.
+    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.)\s*)?(\d+(?:\.\s*\d+){1,3})"
+    r"(?![\d.])(?=[.)\s:—-]|$)"
+)
+_ATLAS_EXPLICIT_RULE_REFERENCE_RE = re.compile(
+    r"\b(?:пункт|п\.)\s*(?:№\s*)?(\d+(?:\.\d+){1,3})\b",
+    re.IGNORECASE,
 )
 _ATLAS_EVIDENCE_STOP_WORDS = _ATLAS_SEARCH_STOP_WORDS | frozenset(
     {
@@ -119,6 +174,15 @@ class AtlasAIConfig:
     referer: str
     title: str
     direct_model: str = _ATLAS_DIRECT_MODEL
+    together_key: str = ""
+    together_url: str = "https://api.together.ai/v1/chat/completions"
+    fine_tuned_model: str = ""
+    fine_tuned_enabled: bool = False
+    fine_tuned_provider: str = "together"
+    fine_tuned_agents: str = "atlas-tvr-a"
+    fine_tuned_projects: str = ""
+    fine_tuned_fallback: bool = True
+    fine_tuned_rollouts: str = ""
 
     @property
     def configured(self) -> bool:
@@ -186,6 +250,11 @@ class _AtlasAnswerRequest:
     latency_mode: str
     screen_context_used: bool
     direct_mode: bool
+    project_code: str
+    server_code: str
+    faction_code: str
+    model_route: AtlasModelRoute
+    fallback_model_route: AtlasModelRoute | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +413,22 @@ def atlas_ai_config() -> AtlasAIConfig:
         collection=os.getenv("ATLAS_QDRANT_COLLECTION", "tmod_atlas_v1").strip() or "tmod_atlas_v1",
         referer=os.getenv("OPENROUTER_REFERER", "https://atlas.tvr.lat").strip(),
         title=os.getenv("ATLAS_OPENROUTER_TITLE", "T-Mod Atlas").strip(),
+        together_key=os.getenv("TOGETHER_API_KEY", "").strip(),
+        together_url=os.getenv(
+            "ATLAS_TOGETHER_API_URL",
+            "https://api.together.ai/v1/chat/completions",
+        ).strip(),
+        fine_tuned_model=os.getenv("ATLAS_FINE_TUNED_MODEL", "").strip(),
+        fine_tuned_enabled=str(
+            os.getenv("ATLAS_FINE_TUNED_ENABLED", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"},
+        fine_tuned_provider=os.getenv("ATLAS_FINE_TUNED_PROVIDER", "together").strip(),
+        fine_tuned_agents=os.getenv("ATLAS_FINE_TUNED_AGENTS", "atlas-tvr-a").strip(),
+        fine_tuned_projects=os.getenv("ATLAS_FINE_TUNED_PROJECTS", "").strip(),
+        fine_tuned_fallback=str(
+            os.getenv("ATLAS_FINE_TUNED_FALLBACK", "true")
+        ).strip().lower() not in {"0", "false", "no", "off"},
+        fine_tuned_rollouts=os.getenv("ATLAS_FINE_TUNED_ROLLOUTS_JSON", "").strip(),
     )
 
 
@@ -378,6 +463,54 @@ def _openrouter_headers(config: AtlasAIConfig) -> dict[str, str]:
     if config.title:
         headers["X-OpenRouter-Title"] = config.title
     return headers
+
+
+def atlas_model_route(
+    config: AtlasAIConfig,
+    *,
+    agent: AtlasAgent,
+    project_code: str,
+    direct_mode: bool = False,
+    latency_mode: str = "standard",
+) -> tuple[AtlasModelRoute, AtlasModelRoute | None, str]:
+    """Select a deployed answer model without changing retrieval providers.
+
+    Planning, embeddings and the vector index deliberately retain their
+    existing OpenRouter path.  A future fine-tuned release is only responsible
+    for the final visible answer, so it can be switched off or rolled back
+    without rebuilding the knowledge library.
+    """
+
+    selected_latency = str(latency_mode or "standard").strip().lower()
+    special_model = (
+        str(os.getenv("ATLAS_OVERLAY_MODEL") or "").strip()
+        if selected_latency == "overlay"
+        else config.direct_model
+        if direct_mode
+        else ""
+    )
+    selection = select_atlas_model_route(
+        openrouter_key=config.openrouter_key,
+        openrouter_url=config.openrouter_url,
+        openrouter_model=config.chat_model,
+        openrouter_referer=config.referer,
+        openrouter_title=config.title,
+        together_key=config.together_key,
+        together_url=config.together_url,
+        fine_tuned_model=config.fine_tuned_model,
+        fine_tuned_enabled=config.fine_tuned_enabled,
+        fine_tuned_provider=config.fine_tuned_provider,
+        fine_tuned_agents=config.fine_tuned_agents,
+        fine_tuned_projects=config.fine_tuned_projects,
+        fine_tuned_fallback=config.fine_tuned_fallback,
+        fine_tuned_rollouts=config.fine_tuned_rollouts,
+        agent_id=agent.id,
+        project_code=project_code,
+        direct_mode=direct_mode,
+        latency_mode=selected_latency,
+        special_model=special_model,
+    )
+    return selection.primary, selection.fallback, selection.reason
 
 
 def _qdrant_headers(config: AtlasAIConfig) -> dict[str, str]:
@@ -436,8 +569,18 @@ def _adaptive_output_token_limit(
     if mode == "aristotle" or task.depth == "deep":
         return configured
     if task.depth == "quick":
+        # Reasoning-capable models count hidden reasoning against this budget.
+        # A 520-token cap routinely left only 20–90 visible Russian words and
+        # cut the final sentence in half even though the editorial contract
+        # requested a concise answer. The contract controls length; this is a
+        # completion safety margin, not a target.
         return min(configured, 1100)
-    return min(configured, 1600)
+    if task.intent == "drafting":
+        # A ready-to-send complaint or document still needs structure, but the
+        # old 1000-token allowance routinely produced several screens of
+        # duplicated advice after the actual draft.
+        return min(configured, 1400)
+    return min(configured, 1000)
 
 
 _QDRANT_CORRUPTION_MARKERS = (
@@ -584,7 +727,7 @@ async def atlas_probe_collection() -> dict[str, Any]:
             return {"status": "corrupted", "points_count": None}
         raise
     try:
-        await _json_request(
+        sample = await _json_request(
             "POST",
             f"{url}/points/scroll",
             headers=_qdrant_headers(config),
@@ -596,9 +739,22 @@ async def atlas_probe_collection() -> dict[str, Any]:
             return {"status": "corrupted", "points_count": None}
         raise
     result = details.get("result") if isinstance(details.get("result"), dict) else {}
+    sample_result = sample.get("result") if isinstance(sample.get("result"), dict) else {}
+    sample_points = sample_result.get("points") if isinstance(sample_result, dict) else []
+    sample_payload = (
+        sample_points[0].get("payload")
+        if isinstance(sample_points, list) and sample_points and isinstance(sample_points[0], dict)
+        else None
+    )
+    points_count = int(result.get("points_count") or 0)
+    if points_count and (
+        not isinstance(sample_payload, dict)
+        or str(sample_payload.get("index_version") or "") != str(_ATLAS_INDEX_VERSION)
+    ):
+        return {"status": "stale", "points_count": points_count}
     return {
         "status": "ok",
-        "points_count": int(result.get("points_count") or 0),
+        "points_count": points_count,
     }
 
 
@@ -644,9 +800,30 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
         raise AtlasAIError("knowledge_empty", "Источник не содержит текста для индексации.")
     organization_id = int(source["organization_id"])
     source_id = int(source["id"])
-    server_code = str(source.get("server_code") or "phoenix-15")
-    faction_code = str(source.get("faction_code") or "lspd")
-    visibility_scope = str(source.get("visibility_scope") or "workspace")
+    try:
+        scope = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            str(source.get("server_code") or "phoenix-15"),
+            str(source.get("faction_code") or "lspd"),
+            federation_scope=str(source.get("federation_scope") or "") or None,
+            legacy_visibility_scope=str(source.get("visibility_scope") or "workspace"),
+        )
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_source_scope_invalid",
+            "Источник Atlas имеет недопустимую область доступа.",
+        ) from exc
+    project_code = str(scope["project_code"])
+    server_code = str(scope["server_code"])
+    faction_code = str(scope["faction_code"])
+    federation_scope = str(scope["federation_scope"])
+    visibility_scope = str(scope["visibility_scope"])
+    stored_project = str(source.get("project_code") or "").strip().lower()
+    if stored_project and stored_project != project_code:
+        raise AtlasAIError(
+            "atlas_source_project_invalid",
+            "Источник Atlas привязан к другому проекту, чем выбранный сервер.",
+        )
     title = str(source.get("title") or "Источник")[:300]
     source_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     taxonomy = source_metadata.get("taxonomy") if isinstance(source_metadata.get("taxonomy"), dict) else {}
@@ -664,10 +841,11 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
     vectors = await atlas_embed([f"{embedding_prefix}{chunk}" for chunk in chunks])
     await atlas_ensure_collection(len(vectors[0]))
     access_scope = _atlas_access_scope(
+        project_code,
         organization_id,
         server_code,
         faction_code,
-        visibility_scope,
+        federation_scope,
     )
     points = []
     point_ids = []
@@ -681,16 +859,20 @@ async def atlas_index_source(source: dict[str, Any]) -> list[str]:
                 "payload": {
                     "organization_id": organization_id,
                     "source_id": source_id,
+                    "project_code": project_code,
                     "server_code": server_code,
                     "faction_code": faction_code,
                     "visibility_scope": visibility_scope,
+                    "federation_scope": federation_scope,
                     "access_scope": access_scope,
+                    "checksum": str(source.get("checksum") or ""),
                     "title": title,
                     "source_url": str(source.get("source_url") or "")[:1000] or None,
                     "source_kind": str(source.get("source_kind") or "memo"),
                     "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                     "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                     "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+                    "index_version": _ATLAS_INDEX_VERSION,
                     "chunk": index,
                     "text": chunk,
                 },
@@ -726,8 +908,20 @@ def _atlas_corpus_abbreviations(
     """Derive aliases from the corpus instead of importing real-world code names."""
 
     candidates: dict[str, dict[str, set[str]]] = {}
+    latin_candidates: dict[str, set[str]] = {}
     for source in sources:
         title = " ".join(str(source.get("title") or "").split())
+        latin_name = re.search(
+            r"\bстатус\w*\s+([a-z][a-z\s-]*)",
+            title,
+            re.IGNORECASE,
+        )
+        if latin_name:
+            words = re.findall(r"[a-z]+", latin_name.group(1), re.IGNORECASE)
+            alias = "".join(word[0] for word in words).casefold()
+            identity = " ".join(words)
+            if 2 <= len(alias) <= 6 and identity:
+                latin_candidates.setdefault(alias, set()).add(identity)
         words = re.findall(r"[а-яё]+", title.casefold())
         if "кодекс" not in words:
             continue
@@ -753,7 +947,16 @@ def _atlas_corpus_abbreviations(
         if len(identities) == 1:
             titles = next(iter(identities.values()))
             aliases[alias] = max(titles, key=len)
+    for alias, identities in latin_candidates.items():
+        if len(identities) == 1 and alias not in aliases:
+            aliases[alias] = next(iter(identities))
     return aliases
+
+
+def _atlas_source_domain(source: dict[str, Any]) -> str:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+    return str(taxonomy.get("domain") or "mixed").strip().lower()
 
 
 def _atlas_query_variants(
@@ -776,22 +979,93 @@ def _atlas_query_variants(
     if expanded != clean:
         variants.extend((expanded, *matched_expansions))
     lowered = expanded.casefold()
-    if not re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", lowered):
+    ooc_rules_question = bool(
+        _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered)
+        or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", lowered)
+    )
+    ic_legal_question = bool(_ATLAS_LEGAL_RE.search(lowered)) and not ooc_rules_question
+    # Short natural questions rarely contain the formal title of the right
+    # codex. Embeddings alone are not reliable enough here: ``статья за
+    # убийство`` used to retrieve neighbouring laws while the complete
+    # Criminal Code was already present in the canonical store. Add narrow
+    # document routes before the generic IC/OOC lanes so both lexical and
+    # semantic retrieval inspect the governing primary source.
+    if not ooc_rules_question and re.search(
+        r"\b(?:убийств|убил|убить|похищ|краж|ограб|разбо|террор|взятк|"
+        r"наркот|оружи|преступлен|розыск|лишени\w*\s+свобод)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nУголовный Кодекс штата San Andreas: применимая статья, состав и наказание"
+        )
+    if not ooc_rules_question and re.search(
+        r"\b(?:задерж|арест|обыск|допрос|адвокат|ордер|мер[аы]\s+пресечен|"
+        r"процессуальн)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПроцессуальный Кодекс штата San Andreas: основание, порядок и сроки"
+        )
+    if re.search(r"\b(?:дорожн|пдд|парковк|скорост|движени|водител)\w*", lowered):
+        variants.append(
+            f"{clean}\nДорожный Кодекс штата San Andreas: применимая статья и ответственность"
+        )
+    if re.search(
+        r"\bправил\w*\s+(?:государственн\w*\s+структур|гос\.?\s*структур|"
+        r"госорганизац)\w*",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПравила государственных структур: точный пункт и полное условие"
+        )
+    if re.search(
+        r"\b(?:сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\b",
+        lowered,
+        re.IGNORECASE,
+    ):
+        variants.append(
+            f"{clean}\nПравила проверки на стороннее ПО: порядок проверки, права и последствия"
+        )
+    if (
+        not ooc_rules_question
+        and not re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", lowered)
+    ):
         variants.append(f"{clean}\nIC законодательство, полномочия и применимые нормы")
-    if not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered):
+    if ooc_rules_question or (
+        not ic_legal_question
+        and not re.search(r"\b(?:ic|и[сc]|закон|кодекс|устав)\b", lowered)
+    ):
         variants.append(f"{clean}\nOOC правила сервера и требования проекта")
     if re.search(r"суд|иск|жалоб|прокур|адвокат|дел[аоу]", lowered):
         variants.append(f"{clean}\nсудебная практика, решения, иски и процессуальные документы")
     if re.search(r"организац|фракц|департамент|полиц|правительств|устав|ранг", lowered):
         variants.append(f"{clean}\nустав организации, внутренний регламент и зона полномочий")
-    return list(dict.fromkeys(item for item in variants if item))[:6]
+    return list(dict.fromkeys(item for item in variants if item))[:8]
 
 
-def _atlas_lexical_candidates(
+def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
+    """Build stable title stems for the canonical-store rescue path."""
+
+    terms: list[str] = []
+    for token in re.findall(r"[a-zа-яё0-9-]{3,}", str(query or "").casefold()):
+        if token in _ATLAS_SEARCH_STOP_WORDS or token.isdigit():
+            continue
+        # Six characters preserve useful distinctions while matching common
+        # Russian endings: ``уголовный`` / ``уголовного`` and similar forms.
+        terms.append(token[:7] if len(token) >= 9 else token[:6])
+    return _ordered_distinct(terms, limit=12)
+
+
+def _atlas_lexical_query_terms(
     query: str,
     sources: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    focused_query = query[-2500:]
+) -> tuple[list[str], list[str]]:
+    """Build morphology-tolerant terms shared by lexical and clause search."""
+
+    focused_query = str(query or "")[-2500:]
     expanded = focused_query
     abbreviations = _atlas_corpus_abbreviations(sources)
     for abbreviation, meaning in abbreviations.items():
@@ -802,19 +1076,321 @@ def _atlas_lexical_candidates(
             flags=re.IGNORECASE,
         )
     expanded = expanded.casefold()
-    raw_terms = [
-        token
-        for token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE)
-        if token not in _ATLAS_SEARCH_STOP_WORDS
-    ]
+    raw_terms: list[str] = []
+    for raw_token in re.findall(r"[a-zа-яё0-9-]{2,}", expanded, re.IGNORECASE):
+        # OOC-information and similar forum wording may use either a hyphen
+        # or a space. Keep the whole term, its parts and its compact spelling.
+        candidates = (raw_token, *raw_token.split("-"), raw_token.replace("-", ""))
+        raw_terms.extend(
+            token for token in candidates if token and token not in _ATLAS_SEARCH_STOP_WORDS
+        )
+    # Natural Russian queries use inflected forms while statutes use the
+    # nominative (``кражу`` / ``кража``, ``дачу`` / ``дача``). Keep a compact
+    # root beside the ordinary conservative stem. Also bridge the common
+    # colloquial wording ``убивать без причины`` to the DM definition without
+    # forcing an OOC interpretation when the user explicitly asks for the UK.
+    inflection_roots: list[str] = []
+    for token in raw_terms:
+        if len(token) >= 4:
+            root = re.sub(
+                r"(?:иями|ями|ами|ого|ему|ому|ими|ыми|иям|ием|иях|ую|юю|ая|яя|"
+                r"ое|ее|ые|ие|ов|ев|ам|ям|ах|ях|ом|ем|ой|ей|ы|и|а|я|у|ю|е|о)$",
+                "",
+                token,
+            )
+            if len(root) >= 3 and root != token:
+                inflection_roots.append(root)
+    raw_terms.extend(inflection_roots)
+    if re.search(r"\b(?:убива\w*|убил\w*|убить)\b", expanded, re.IGNORECASE):
+        raw_terms.append("убийст")
+        if (
+            re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", expanded)
+            or re.search(r"\bбез\s+(?:ic[- ]?)?причин\w*\b", expanded)
+            or _ATLAS_OOC_RULE_SIGNAL_RE.search(expanded)
+        ):
+            raw_terms.append("dm")
+    # Exact substrings alone miss ordinary Russian morphology (for example,
+    # ``задержали`` versus ``задержание``). Rank with conservative stems and
+    # retain dotted article numbers verbatim.
     terms = list(
-        dict.fromkeys(reversed(raw_terms))
-    )[:16]
+        dict.fromkeys(
+            token
+            if re.fullmatch(r"\d+(?:\.\d+)+", token)
+            else token[:7]
+            if len(token) >= 9
+            else token[:6]
+            if len(token) >= 7
+            else token
+            for token in reversed(raw_terms)
+        )
+    )[:18]
     phrases = [
         meaning
         for abbreviation, meaning in abbreviations.items()
         if re.search(rf"(?<!\w){re.escape(abbreviation)}(?!\w)", query, re.IGNORECASE)
     ]
+    return terms, phrases
+
+
+def _atlas_is_numbered_rule_source(source: dict[str, Any]) -> bool:
+    """Recognize OOC rules, including forum rows imported before taxonomy v1."""
+
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+    if str(taxonomy.get("corpus_kind") or "").strip().lower() == "server_rule":
+        return True
+    return (
+        str(source.get("source_kind") or "").strip().lower() == "forum"
+        and "правил" in str(source.get("title") or "").casefold()
+    )
+
+
+def _atlas_numbered_rule_sections(content: str) -> list[tuple[str, str]]:
+    """Split a forum ruleset into numbered clauses without losing descendants."""
+
+    clean = _atlas_legal_search_text(content)
+    matches = list(_ATLAS_NUMBERED_RULE_RE.finditer(clean))
+    result: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        number = re.sub(r"\s+", "", str(match.group(1)))
+        end = len(clean)
+        nested_prefix = f"{number}."
+        for following in matches[index + 1 :]:
+            # A request for 2.2 needs the full clause, including 2.2.1, but
+            # must stop before siblings such as 2.3 and lookalikes such as 2.20.
+            following_number = re.sub(r"\s+", "", str(following.group(1)))
+            if following_number.startswith(nested_prefix):
+                continue
+            end = following.start()
+            break
+        section = clean[match.start() : end].strip()
+        if len(section) >= 20:
+            result.append((number, section))
+    return result
+
+
+def _atlas_numbered_rule_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prioritize direct OOC-rule clauses over broad semantic forum chunks."""
+
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
+    explicit_references = {
+        str(match.group(1))
+        for match in _ATLAS_EXPLICIT_RULE_REFERENCE_RE.finditer(str(query or ""))
+    }
+    if not terms and not phrases and not explicit_references:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        if not _atlas_is_numbered_rule_source(source):
+            continue
+        title_folded = str(source.get("title") or "").casefold()
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        ranked: list[tuple[float, int, str, str]] = []
+        for clause_index, (number, section) in enumerate(
+            _atlas_numbered_rule_sections(str(source.get("content_text") or ""))
+        ):
+            number = re.sub(r"\s+", "", number)
+            folded = section.casefold()
+            matched_terms = [term for term in terms if term in folded]
+            meaningful_hits = [
+                term for term in matched_terms if term not in _ATLAS_RULE_GENERIC_TERMS
+            ]
+            phrase_hits = sum(phrase.casefold() in folded for phrase in phrases)
+            explicit = number in explicit_references
+            short_signal = any(term in _ATLAS_RULE_SHORT_SIGNALS for term in meaningful_hits)
+            title_hits = sum(
+                term in title_folded
+                for term in terms
+                if term not in _ATLAS_RULE_GENERIC_TERMS
+            )
+            clause_body = re.sub(
+                r"^\s*\d+(?:\.\s*\d+){1,3}\s*[.)\s:—-]*",
+                "",
+                folded,
+                count=1,
+            )
+            opening = clause_body[:320]
+            opening_hits = sum(term in opening for term in meaningful_hits)
+            direct_short_signal = any(
+                term in _ATLAS_RULE_SHORT_SIGNALS
+                and re.match(rf"{re.escape(term)}\b", clause_body, re.IGNORECASE)
+                for term in terms
+            )
+            if not explicit and not phrase_hits and not meaningful_hits:
+                continue
+            if not explicit and not phrase_hits and len(meaningful_hits) < 2 and not short_signal:
+                continue
+            score = (
+                11.0
+                if explicit
+                else 8.4
+                + min(1.2, len(meaningful_hits) * 0.42)
+                + min(0.6, phrase_hits * 0.3)
+                + (0.55 if short_signal else 0.0)
+                + min(1.4, title_hits * 0.55)
+                + min(0.9, opening_hits * 0.45)
+                + (1.35 if direct_short_signal else 0.0)
+            )
+            ranked.append((score, clause_index, number, section))
+        for score, clause_index, number, section in sorted(
+            ranked, key=lambda item: (-item[0], item[1])
+        )[:3]:
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "ooc"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "server_rule"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "project"),
+                    "title": str(source.get("title") or "Правила сервера"),
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": section[:7000],
+                    "score": round(score, 4),
+                    # Synthetic clause ids cannot collide with Qdrant chunks.
+                    "chunk": 20_000 + clause_index,
+                    "structured": True,
+                    "reference": f"clause:{number}",
+                }
+            )
+    return candidates
+
+
+_ATLAS_THEMATIC_LEGAL_GENERIC_TERMS = _ATLAS_RULE_GENERIC_TERMS | frozenset(
+    {
+        "назови",
+        "назват",
+        "статью",
+        "статья",
+        "кодекс",
+        "штата",
+        "andreas",
+        "примени",
+        "состав",
+        "ответст",
+    }
+)
+
+
+def _atlas_thematic_legal_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Extract the actual article for a colloquial offence description.
+
+    Exact lookup handles ``статья 17.3``. This companion handles the inverse
+    question — ``какая статья за убийство`` — by ranking complete numbered
+    articles instead of arbitrary fixed-size chunks or cross-references.
+    """
+
+    lowered = str(query or "").casefold()
+    if _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered) or not (
+        _ATLAS_LEGAL_RE.search(lowered)
+        or re.search(
+            r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
+            r"преступлен|задерж|арест|обыск)\w*",
+            lowered,
+            re.IGNORECASE,
+        )
+    ):
+        return []
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
+    meaningful_terms = [
+        term for term in terms if term not in _ATLAS_THEMATIC_LEGAL_GENERIC_TERMS
+    ]
+    if not meaningful_terms and not phrases:
+        return []
+    criminal_route = bool(
+        re.search(
+            r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
+            r"преступлен|розыск|лишени\w*\s+свобод)\w*",
+            lowered,
+            re.IGNORECASE,
+        )
+    )
+    candidates: list[dict[str, Any]] = []
+    for source in sources:
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        domain = str(taxonomy.get("domain") or "mixed").strip().lower()
+        corpus = str(taxonomy.get("corpus_kind") or "other").strip().lower()
+        title = str(source.get("title") or "Источник")
+        title_folded = title.casefold()
+        if domain == "ooc" or not (
+            corpus in {"law", "procedure", "department_order"}
+            or "кодекс" in title_folded
+            or "закон" in title_folded
+        ):
+            continue
+        if criminal_route and not (
+            "уголовн" in title_folded and "кодекс" in title_folded
+        ):
+            continue
+        ranked: list[tuple[float, int, str, str]] = []
+        for article_index, (number, section) in enumerate(
+            _atlas_numbered_rule_sections(str(source.get("content_text") or ""))
+        ):
+            folded = section.casefold()
+            term_hits = [term for term in meaningful_terms if term in folded]
+            phrase_hits = [phrase for phrase in phrases if phrase.casefold() in folded]
+            if not term_hits and not phrase_hits:
+                continue
+            opening = re.sub(
+                r"^\s*\d+(?:\.\s*\d+){1,3}\s*[.)\s:—-]*(?:\([a-z/]+\)\s*)?",
+                "",
+                folded,
+                count=1,
+                flags=re.IGNORECASE,
+            )[:260]
+            opening_hits = sum(term in opening for term in meaningful_terms)
+            score = (
+                8.8
+                + min(1.2, len(term_hits) * 0.38)
+                + min(0.5, len(phrase_hits) * 0.25)
+                + min(0.8, opening_hits * 0.4)
+                + (0.45 if criminal_route else 0.0)
+            )
+            ranked.append((score, article_index, number, section))
+        for score, article_index, number, section in sorted(
+            ranked,
+            key=lambda item: (-item[0], item[1]),
+        )[:3]:
+            candidates.append(
+                {
+                    "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
+                    "server_code": str(source.get("server_code") or ""),
+                    "faction_code": str(source.get("faction_code") or ""),
+                    "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
+                    "knowledge_domain": str(taxonomy.get("domain") or "ic"),
+                    "corpus_kind": str(taxonomy.get("corpus_kind") or "law"),
+                    "authority_scope": str(taxonomy.get("authority_scope") or "server"),
+                    "title": title,
+                    "url": str(source.get("source_url") or "") or None,
+                    "text": section[:7000],
+                    "score": round(score, 4),
+                    "chunk": 30_000 + article_index,
+                    "structured": True,
+                    "reference": f"article:{number}",
+                }
+            )
+    return candidates
+
+
+def _atlas_lexical_candidates(
+    query: str,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    terms, phrases = _atlas_lexical_query_terms(query, sources)
     if not terms and not phrases:
         return []
     candidates: list[dict[str, Any]] = []
@@ -848,9 +1424,11 @@ def _atlas_lexical_candidates(
             candidates.append(
                 {
                     "source_id": int(source["id"]),
+                    "project_code": str(source.get("project_code") or ""),
                     "server_code": str(source.get("server_code") or ""),
                     "faction_code": str(source.get("faction_code") or ""),
                     "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                    "federation_scope": str(source.get("federation_scope") or "workspace"),
                     "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                     "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                     "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
@@ -869,6 +1447,71 @@ _ATLAS_LEGAL_DECORATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ATLAS_DOCUMENT_TITLE_GENERIC_TERMS = frozenset(
+    {
+        "andrea",
+        "закон",
+        "закона",
+        "кодекс",
+        "кодекса",
+        "докуме",
+        "докумен",
+        "документ",
+        "документа",
+        "документе",
+        "сан",
+        "san",
+        "san-and",
+        "sanandr",
+        "штат",
+        "штата",
+    }
+)
+
+
+def _atlas_document_title_affinity(
+    query: str,
+    title: str,
+    sources: list[dict[str, Any]],
+) -> int:
+    """Measure which named law an exact provision belongs to.
+
+    Dozens of Atlas documents contain an article ``3.1``.  A structured
+    number match is therefore authoritative only together with the document
+    named by the user.  Morphology-tolerant terms keep Russian case endings
+    and familiar corpus abbreviations (FIB, USSS, УК) working alike.
+    """
+
+    query_terms, _query_phrases = _atlas_lexical_query_terms(query, sources)
+    title_terms, _title_phrases = _atlas_lexical_query_terms(title, sources)
+    # When the caller names a document verbatim (the corpus audit and the
+    # normal "статья N документа …" flow both do), prefer that identity over
+    # shared legal words.  Without this bonus, e.g. the laws on state
+    # documents and state special equipment both collapse to the single stem
+    # ``государ…`` after generic title words are removed.
+    normalized_query = " ".join(
+        re.findall(r"[a-zа-яё0-9]+", str(query or "").casefold())
+    )
+    normalized_title = " ".join(
+        re.findall(r"[a-zа-яё0-9]+", str(title or "").casefold())
+    )
+    exact_title_bonus = (
+        100
+        if normalized_title and normalized_title in normalized_query
+        else 0
+    )
+    meaningful_query = {
+        term
+        for term in query_terms
+        if not term.isdigit() and term not in _ATLAS_DOCUMENT_TITLE_GENERIC_TERMS
+    }
+    meaningful_title = {
+        term
+        for term in title_terms
+        if not term.isdigit() and term not in _ATLAS_DOCUMENT_TITLE_GENERIC_TERMS
+    }
+    return exact_title_bonus + len(meaningful_query & meaningful_title)
+
 
 def _atlas_legal_search_text(value: str) -> str:
     """Remove visual forum markup while retaining the legal text verbatim enough to quote."""
@@ -879,6 +1522,10 @@ def _atlas_legal_search_text(value: str) -> str:
     text = text.replace("\u200b", "").replace("\ufeff", "")
     text = text.replace("&nbsp;", " ").replace("&#160;", " ")
     text = _ATLAS_LEGAL_DECORATION_RE.sub("", text)
+    # Forum exports and manually pasted sources often retain Markdown bold
+    # markers around headings.  Leaving ``**Глава 16**`` intact prevents the
+    # exact legal parser from seeing a heading at the start of the line.
+    text = text.replace("**", "").replace("__", "")
     text = re.sub(
         r"</?(?:strong|b|em|i|u|span|font|center|p|div|h[1-6]|br)(?:\s+[^>]*)?>",
         "",
@@ -970,12 +1617,32 @@ def _atlas_structured_legal_candidates(
         )
         if marker in query_folded
     )
+    title_affinity = {
+        int(source["id"]): _atlas_document_title_affinity(
+            expanded,
+            str(source.get("title") or "Источник"),
+            sources,
+        )
+        for source in sources
+    }
+    strongest_title_affinity = max(title_affinity.values(), default=0)
+    named_document = bool(
+        re.search(r"\b(?:закон|кодекс|конституц)\w*", query_folded, re.IGNORECASE)
+    )
     candidates: list[dict[str, Any]] = []
     for source in sources:
         title = str(source.get("title") or "Источник")
         title_folded = title.casefold()
         if document_stems and not any(
             all(stem in title_folded for stem in stems) for stems in document_stems
+        ):
+            continue
+        source_affinity = title_affinity.get(int(source["id"]), 0)
+        if (
+            not document_stems
+            and named_document
+            and strongest_title_affinity > 0
+            and source_affinity < strongest_title_affinity
         ):
             continue
         content = _atlas_legal_search_text(str(source.get("content_text") or ""))
@@ -1034,16 +1701,24 @@ def _atlas_structured_legal_candidates(
                 candidates.append(
                     {
                         "source_id": int(source["id"]),
+                        "project_code": str(source.get("project_code") or ""),
                         "server_code": str(source.get("server_code") or ""),
                         "faction_code": str(source.get("faction_code") or ""),
                         "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+                        "federation_scope": str(source.get("federation_scope") or "workspace"),
                         "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
                         "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
                         "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
                         "title": title,
                         "url": str(source.get("source_url") or "") or None,
                         "text": part[:7000],
-                        "score": round(10.0 - reference_index * 0.1 - part_index * 0.01, 4),
+                        "score": round(
+                            10.0
+                            + min(2.0, source_affinity * 0.45)
+                            - reference_index * 0.1
+                            - part_index * 0.01,
+                            4,
+                        ),
                         "chunk": 10_000 + reference_index * 100 + part_index,
                         "structured": True,
                         "reference": f"{kind}:{value}",
@@ -1062,10 +1737,22 @@ def _atlas_pinpoint_labels(item: dict[str, Any]) -> list[str]:
             "article": "статья",
             "chapter": "глава",
             "section": "раздел",
+            "clause": "пункт",
         }.get(kind, kind)
         return [f"{label} {value}".strip()]
     text = str(item.get("text") or "")
     labels: list[str] = []
+    seen: set[str] = set()
+    if str(item.get("corpus_kind") or "").strip().lower() == "server_rule":
+        for match in _ATLAS_NUMBERED_RULE_RE.finditer(text):
+            value = f"пункт {match.group(1)}"
+            fingerprint = value.casefold()
+            if fingerprint in seen:
+                continue
+            labels.append(value)
+            seen.add(fingerprint)
+            if len(labels) >= 8:
+                return labels
     patterns = (
         (
             "статья",
@@ -1089,7 +1776,6 @@ def _atlas_pinpoint_labels(item: dict[str, Any]) -> list[str]:
             ),
         ),
     )
-    seen: set[str] = set()
     for label, pattern in patterns:
         for match in pattern.finditer(text):
             value = f"{label} {match.group(1)}"
@@ -1140,7 +1826,16 @@ def _atlas_merge_source_fragments(items: list[dict[str, Any]]) -> list[dict[str,
         selected["score"] = max(float(item.get("score") or 0) for item in fragments)
         selected["structured"] = bool(structured)
         selected["fragment_count"] = len(texts)
-        selected["pinpoints"] = _atlas_pinpoint_labels(selected)
+        selected["pinpoints"] = list(
+            _ordered_distinct(
+                [
+                    pinpoint
+                    for fragment in fragments
+                    for pinpoint in _atlas_pinpoint_labels(fragment)
+                ],
+                limit=12,
+            )
+        )
         merged.append(selected)
     if any(item.get("structured") for item in merged):
         exact = [item for item in merged if item.get("structured")]
@@ -1223,20 +1918,28 @@ async def atlas_search(
     limit: int = 6,
     expanded: bool = False,
     query_variants: list[str] | None = None,
+    allowed_domains: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
-    clean_server = str(server_code or "phoenix-15")
-    clean_faction = str(faction_code or "lspd")
     try:
-        canonical_sources = await asyncio.to_thread(
-            atlas_storage.atlas_searchable_knowledge_sources,
-            int(organization_id),
-            server_code=clean_server,
-            faction_code=clean_faction,
+        access_context = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            str(server_code or "phoenix-15"),
+            str(faction_code or "lspd"),
         )
-    except Exception:
-        canonical_sources = []
-    corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_scope_invalid",
+            "Выбранный проект, сервер или фракция Atlas недоступны.",
+        ) from exc
+    clean_project = str(access_context["project_code"])
+    clean_server = str(access_context["server_code"])
+    clean_faction = str(access_context["faction_code"])
+    permitted_domains = {
+        str(value or "").strip().lower()
+        for value in (allowed_domains or ())
+        if str(value or "").strip()
+    }
     raw_queries = list(
         dict.fromkeys(
             item
@@ -1247,13 +1950,89 @@ async def atlas_search(
             if item.strip()
         )
     )[:6]
+    # Deterministic document routes must participate in the canonical DB
+    # lookup too. Previously they were created only after that lookup and sent
+    # solely to Qdrant, which made an indexed law appear absent whenever a
+    # short user phrase did not resemble the document title.
+    repository_queries = list(raw_queries)
+    if expanded:
+        for raw_query in raw_queries:
+            for item in _atlas_query_variants(raw_query):
+                if item and item not in repository_queries:
+                    repository_queries.append(item)
+                if len(repository_queries) >= 12:
+                    break
+            if len(repository_queries) >= 12:
+                break
+    repository_terms = _atlas_repository_query_terms("\n".join(repository_queries))
+    try:
+        canonical_sources = await asyncio.to_thread(
+            atlas_storage.atlas_searchable_knowledge_sources,
+            int(organization_id),
+            server_code=clean_server,
+            faction_code=clean_faction,
+            query_terms=repository_terms,
+        )
+    except Exception:
+        canonical_sources = []
+    if permitted_domains:
+        canonical_sources = [
+            source
+            for source in canonical_sources
+            if _atlas_source_domain(source) in permitted_domains
+        ]
+    corpus_abbreviations = _atlas_corpus_abbreviations(canonical_sources)
+    retrieval_queries: list[str] = list(raw_queries)
+    if expanded:
+        for raw_query in raw_queries:
+            for item in _atlas_query_variants(raw_query, corpus_abbreviations):
+                if item and item not in retrieval_queries:
+                    retrieval_queries.append(item)
+                if len(retrieval_queries) >= 12:
+                    break
+            if len(retrieval_queries) >= 12:
+                break
     structured_candidates: list[dict[str, Any]] = []
+    rule_candidates: list[dict[str, Any]] = []
+    thematic_candidates: list[dict[str, Any]] = []
     lexical_candidates: list[dict[str, Any]] = []
-    for query_index, raw_query in enumerate(raw_queries):
-        for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
-            candidate = dict(item)
-            candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
-            structured_candidates.append(candidate)
+    primary_query = raw_queries[0] if raw_queries else ""
+    extract_numbered_rules = bool(
+        _ATLAS_OOC_RULE_SIGNAL_RE.search(primary_query)
+        or re.search(
+            r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b",
+            primary_query,
+            re.IGNORECASE,
+        )
+        or _ATLAS_EXPLICIT_RULE_REFERENCE_RE.search(primary_query)
+    )
+    for query_index, raw_query in enumerate(retrieval_queries):
+        # A concrete chapter/article number is trusted only when it came from
+        # the user's own question. Planner variants may mention neighbouring
+        # provisions for verification and must never replace the requested one.
+        if query_index == 0:
+            for item in _atlas_structured_legal_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]), 4)
+                structured_candidates.append(candidate)
+        # A numbered OOC rule is deliberately very highly ranked.  Do not run
+        # that extractor for an ordinary IC situation such as "меня задержали":
+        # generic words like "сотрудник" and "действия" otherwise promote an
+        # unrelated event rule above the Process Code.
+        # Generic rescue variants contain words such as ``информация`` and
+        # ``сервер`` that occur in many clauses. They improve document-level
+        # retrieval but must not outrank the user's own wording inside a
+        # numbered ruleset.
+        if extract_numbered_rules and query_index < len(raw_queries):
+            for item in _atlas_numbered_rule_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
+                rule_candidates.append(candidate)
+        if query_index == 0 and not _ATLAS_EXACT_LOOKUP_RE.search(primary_query):
+            for item in _atlas_thematic_legal_candidates(raw_query, canonical_sources):
+                candidate = dict(item)
+                candidate["score"] = round(float(candidate["score"]) - query_index * 0.02, 4)
+                thematic_candidates.append(candidate)
         for item in _atlas_lexical_candidates(raw_query, canonical_sources):
             candidate = dict(item)
             candidate["score"] = round(float(candidate["score"]) - query_index * 0.025, 4)
@@ -1261,21 +2040,13 @@ async def atlas_search(
     # Search every independently planned question before spending the small
     # embedding budget on generic IC/OOC expansions. Previously the first raw
     # query could consume all eight lanes, silently dropping later checks.
-    variants: list[str] = list(raw_queries)
-    if expanded:
-        for raw_query in raw_queries:
-            for item in _atlas_query_variants(raw_query, corpus_abbreviations):
-                if item and item not in variants:
-                    variants.append(item)
-                if len(variants) >= 8:
-                    break
-            if len(variants) >= 8:
-                break
+    variants = retrieval_queries[:8]
     access_scopes = [
-        "global",
-        f"server:{clean_server}",
-        f"faction:{clean_server}:{clean_faction}",
-        f"workspace:{int(organization_id)}:{clean_server}:{clean_faction}",
+        "platform",
+        f"project:{clean_project}",
+        f"server:{clean_project}:{clean_server}",
+        f"faction:{clean_project}:{clean_server}:{clean_faction}",
+        f"workspace:{clean_project}:{int(organization_id)}:{clean_server}:{clean_faction}",
     ]
     filters: list[dict[str, Any]] = [
         {"key": "access_scope", "match": {"any": access_scopes}}
@@ -1305,7 +2076,7 @@ async def atlas_search(
         # accelerator, not a single point of failure: when embeddings or
         # Qdrant are temporarily unavailable, keep answering from exact and
         # abbreviation-expanded matches already found in the saved corpus.
-        if lexical_candidates or structured_candidates:
+        if lexical_candidates or structured_candidates or rule_candidates or thematic_candidates:
             bodies = []
         elif exc.code == "upstream_not_found":
             raise AtlasAIError(
@@ -1322,6 +2093,7 @@ async def atlas_search(
         else:
             raise
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
+    semantic_hits: list[tuple[int, int, float, dict[str, Any]]] = []
     for variant_index, body in enumerate(bodies):
         result = body.get("result")
         points = result.get("points") if isinstance(result, dict) else result
@@ -1331,28 +2103,74 @@ async def atlas_search(
             payload = point.get("payload") if isinstance(point, dict) else None
             if not isinstance(payload, dict):
                 continue
-            source_id = int(payload.get("source_id") or 0)
-            chunk = int(payload.get("chunk") or 0)
+            try:
+                source_id = int(payload.get("source_id") or 0)
+                chunk = int(payload.get("chunk") or 0)
+            except (TypeError, ValueError):
+                continue
+            if source_id <= 0:
+                continue
             score = float(point.get("score") or 0) + (0.018 if variant_index == 0 else 0)
-            item = {
-                "source_id": source_id,
-                "server_code": str(payload.get("server_code") or ""),
-                "faction_code": str(payload.get("faction_code") or ""),
-                "visibility_scope": str(payload.get("visibility_scope") or "workspace"),
-                "knowledge_domain": str(payload.get("knowledge_domain") or "mixed"),
-                "corpus_kind": str(payload.get("corpus_kind") or "other"),
-                "authority_scope": str(payload.get("authority_scope") or "operational"),
-                "title": str(payload.get("title") or "Источник"),
-                "url": str(payload.get("source_url") or "") or None,
-                "text": str(payload.get("text") or "")[:7000],
-                "score": round(score, 4),
-                "chunk": chunk,
-            }
-            key = (source_id, chunk)
-            if key not in candidates or float(candidates[key]["score"]) < score:
-                candidates[key] = item
+            semantic_hits.append((source_id, chunk, score, payload))
 
-    for item in [*structured_candidates, *lexical_candidates]:
+    # A Qdrant payload is derived, eventually consistent data. Re-authorize
+    # every source id against PostgreSQL/SQLite so archived, stale and foreign
+    # project vectors cannot surface even if an old point survived a failed
+    # reindex. The checksum check additionally rejects an old revision of a
+    # still-visible source.
+    try:
+        canonical_by_id = await asyncio.to_thread(
+            atlas_storage.atlas_visible_knowledge_sources_by_id,
+            int(organization_id),
+            [source_id for source_id, _chunk, _score, _payload in semantic_hits],
+            server_code=clean_server,
+            faction_code=clean_faction,
+            allowed_domains=tuple(sorted(permitted_domains)) or None,
+        )
+    except Exception:
+        canonical_by_id = {}
+    for source_id, chunk, score, payload in semantic_hits:
+        source = canonical_by_id.get(source_id)
+        if source is None:
+            continue
+        source_checksum = str(source.get("checksum") or "")
+        if not source_checksum or str(payload.get("checksum") or "") != source_checksum:
+            continue
+        if (
+            str(payload.get("project_code") or "") != str(source.get("project_code") or "")
+            or str(payload.get("federation_scope") or "")
+            != str(source.get("federation_scope") or "")
+            or str(payload.get("access_scope") or "") not in access_scopes
+        ):
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
+        item = {
+            "source_id": source_id,
+            "project_code": str(source.get("project_code") or ""),
+            "server_code": str(source.get("server_code") or ""),
+            "faction_code": str(source.get("faction_code") or ""),
+            "visibility_scope": str(source.get("visibility_scope") or "workspace"),
+            "federation_scope": str(source.get("federation_scope") or "workspace"),
+            "knowledge_domain": str(taxonomy.get("domain") or "mixed"),
+            "corpus_kind": str(taxonomy.get("corpus_kind") or "other"),
+            "authority_scope": str(taxonomy.get("authority_scope") or "operational"),
+            "title": str(source.get("title") or payload.get("title") or "Источник"),
+            "url": str(source.get("source_url") or payload.get("source_url") or "") or None,
+            "text": str(payload.get("text") or "")[:7000],
+            "score": round(score, 4),
+            "chunk": chunk,
+        }
+        key = (source_id, chunk)
+        if key not in candidates or float(candidates[key]["score"]) < score:
+            candidates[key] = item
+
+    for item in [
+        *structured_candidates,
+        *rule_candidates,
+        *thematic_candidates,
+        *lexical_candidates,
+    ]:
         key = (int(item["source_id"]), int(item.get("chunk") or 0))
         if key not in candidates or float(candidates[key]["score"]) < float(item["score"]):
             candidates[key] = item
@@ -1373,8 +2191,11 @@ async def atlas_search(
         score = float(item.get("score") or 0)
         domain = str(item.get("knowledge_domain") or "mixed")
         corpus = str(item.get("corpus_kind") or "other")
-        if re.search(r"\b(?:ooc|оо[сc]|правил[ао]\s+(?:сервера|проекта))\b", query_folded):
+        title_folded = str(item.get("title") or "").casefold()
+        if re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
+        elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
+            score += 0.42 if corpus == "server_rule" or domain == "ooc" else -0.12 if domain == "ic" else 0
         elif _ATLAS_LEGAL_RE.search(query_folded):
             score += 0.18 if domain == "ic" else 0
         if re.search(r"суд|иск|жалоб|прецедент|практик", query_folded):
@@ -1383,6 +2204,27 @@ async def atlas_search(
             score += 0.2 if corpus in {"charter", "department_order"} else 0
         if re.search(r"порядок|процедур|задержан|арест|обыск", query_folded):
             score += 0.12 if corpus in {"law", "procedure"} else 0
+        if re.search(r"\b(?:задерж|арест|обыск|допрос)\w*", query_folded):
+            # The governing procedural codex must outrank laws that merely
+            # mention detention in a cross-reference or a department power.
+            score += (
+                2.25
+                if "процессуальн" in title_folded and "кодекс" in title_folded
+                else 0
+            )
+        if (
+            (
+                _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded)
+                or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", query_folded)
+            )
+            and not re.search(
+                r"\b(?:банк|ограб|похищ|остров|кайо|форт|захват|теракт|постав|"
+                r"цех|дилер|семейн|лидер)\w*",
+                query_folded,
+            )
+            and "основные правил" in title_folded
+        ):
+            score += 1.15
         return score
 
     for item in sorted(candidates.values(), key=relevance_score, reverse=True):
@@ -1398,18 +2240,21 @@ async def atlas_search(
 
 
 def _atlas_access_scope(
+    project_code: str,
     organization_id: int,
     server_code: str,
     faction_code: str,
-    visibility_scope: str,
+    federation_scope: str,
 ) -> str:
-    if visibility_scope == "global":
-        return "global"
-    if visibility_scope == "server":
-        return f"server:{server_code}"
-    if visibility_scope == "faction":
-        return f"faction:{server_code}:{faction_code}"
-    return f"workspace:{int(organization_id)}:{server_code}:{faction_code}"
+    if federation_scope == "platform":
+        return "platform"
+    if federation_scope == "project":
+        return f"project:{project_code}"
+    if federation_scope == "server":
+        return f"server:{project_code}:{server_code}"
+    if federation_scope == "faction":
+        return f"faction:{project_code}:{server_code}:{faction_code}"
+    return f"workspace:{project_code}:{int(organization_id)}:{server_code}:{faction_code}"
 
 
 def atlas_normalize_response_mode(value: str | None) -> str:
@@ -1421,8 +2266,9 @@ _ATLAS_EXACT_LOOKUP_RE = re.compile(
     r"\b(?:покаж(?:и|ите)|привед(?:и|ите)|напиш(?:и|ите))?\s*"
     r"(?:мне\s+)?(?:(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|ст\.|раздел)\s*"
     r"(?:№\s*)?(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})|"
+    r"(?:пункт|п\.)\s*(?:№\s*)?\d+(?:\.\d+){1,3}|"
     r"(?:\d+(?:\.\d+){0,3}|[ivxlcdm]{1,8})\s+"
-    r"(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|раздел))\b",
+    r"(?:глав(?:а|у|ы|е)|стать(?:я|ю|и|е)|раздел|пункт))\b",
     re.IGNORECASE,
 )
 _ATLAS_FOLLOWUP_RE = re.compile(
@@ -1440,6 +2286,12 @@ _ATLAS_LEGAL_RE = re.compile(
     r"\b(?:закон|кодекс|стать|глав|норм|прав[оа]|полномочи|наказани|"
     r"задержан|арест|обыск|суд|иск|жалоб|доказательств|устав|регламент|"
     r"ic|и[сc]|ooc|оо[сc])\w*",
+    re.IGNORECASE,
+)
+_ATLAS_OOC_RULE_SIGNAL_RE = re.compile(
+    r"\b(?:аккаунт|мультиаккаунт|permban|hardban|demorgan|gunban|warn|mute|"
+    r"dm|db|pg|mg|rk|nlr|sk|tk|nonrp|ooc|оо[сc]|оскорблен|родствен|администрац|"
+    r"жалоб[аыуе]?|бан|сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\w*",
     re.IGNORECASE,
 )
 _ATLAS_PROCEDURE_RE = re.compile(
@@ -1529,16 +2381,20 @@ def _atlas_task_profile(
         intent = "social"
     elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
-    elif _ATLAS_SUMMARY_RE.search(routed_text):
-        intent = "summary"
     elif _CREATIVE_REQUEST_RE.search(routed_text):
         intent = "drafting"
     elif _ATLAS_BRAINSTORM_RE.search(routed_text):
         intent = "brainstorm"
     elif _ATLAS_PROCEDURE_RE.search(routed_text):
         intent = "procedural_advice"
-    elif _ATLAS_LEGAL_RE.search(routed_text):
+    elif (
+        _ATLAS_LEGAL_RE.search(routed_text)
+        or _ATLAS_OOC_RULE_SIGNAL_RE.search(routed_text)
+        or re.search(r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b", routed_text, re.IGNORECASE)
+    ):
         intent = "legal_analysis"
+    elif _ATLAS_SUMMARY_RE.search(routed_text):
+        intent = "summary"
     elif is_followup:
         intent = "followup"
     else:
@@ -1546,8 +2402,12 @@ def _atlas_task_profile(
 
     if mode == "aristotle" or _ATLAS_DEEP_RE.search(clean) or len(clean) > 900:
         depth = "deep"
-    elif intent in {"social", "exact_lookup", "summary"} or (
-        len(clean) < 120 and re.match(r"^(?:что|кто|где|когда|можно\s+ли)\b", lowered)
+    elif intent in {"social", "exact_lookup", "summary"} or _ATLAS_SUMMARY_RE.search(clean) or (
+        len(clean) < 120
+        and re.match(
+            r"^(?:что|кто|где|когда|можно\s+ли|назови|укажи|какая|какой|какую)\b",
+            lowered,
+        )
     ):
         depth = "quick"
     else:
@@ -1609,6 +2469,10 @@ def _atlas_task_profile(
         "high"
         if depth == "deep"
         else "medium"
+        if intent == "drafting"
+        else "low"
+        if depth == "quick"
+        else "medium"
         if mode == "creative" or intent in {"legal_analysis", "procedural_advice", "drafting"}
         else "low"
     )
@@ -1630,14 +2494,23 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         length = (
             "Приведи найденную норму полностью; после неё допускается не более 120 слов пояснения."
         )
-    elif re.search(r"\b(?:кратко|коротко|в\s+двух\s+словах|без\s+подробностей)\b", clean, re.IGNORECASE):
-        length = "Уложись примерно в 80–160 слов."
+    elif re.search(
+        r"\b(?:кратк\w*|коротк\w*|в\s+двух\s+словах|без\s+подробностей)\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        length = "Цель — 80–130 слов, жёсткий предел — 160 слов; обязательно закончи последнюю фразу."
     elif task.depth == "quick":
-        length = "Обычно достаточно 120–220 слов."
+        length = "Цель — 120–180 слов, жёсткий предел — 220 слов; обязательно закончи последнюю фразу."
     elif task.depth == "deep":
         length = "Ориентир — 600–1000 слов, только если каждая часть добавляет новую пользу."
     elif task.intent == "drafting":
-        length = "Готовый текст важнее комментариев; без явного требования обычно достаточно 350–700 слов."
+        length = (
+            "Готовый текст важнее комментариев; без явного требования уложись примерно в "
+            "180–300 слов и не добавляй после него повторный разбор тех же норм. Используй как факты "
+            "только обстоятельства, прямо названные пользователем; неизвестные реквизиты обозначай "
+            "полями [укажите ...], а неизвестное поведение не утверждай вовсе."
+        )
     else:
         length = "Ориентир — 220–450 слов; не расширяй ответ ради солидности."
 
@@ -1677,7 +2550,8 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         f"Редакторский контракт: {length} {choices[variant]} "
         "Не используй по привычке постоянные рубрики «Подтверждённые факты», «Выводы» и "
         "«Практические шаги»; вводи заголовки лишь когда без них этот ответ реально труднее читать. "
-        "Не пересказывай список источников — ссылки ставь рядом с тезисами."
+        "Не пересказывай список источников — ссылки ставь рядом с тезисами. Не добавляй порядок "
+        "подачи жалобы, обжалования или иное продолжение, если пользователь об этом не спрашивал."
     )
 
 
@@ -1771,7 +2645,10 @@ def _should_build_intelligence_brief(
     if task.depth == "deep":
         return True
     if task.intent in {"legal_analysis", "procedural_advice"}:
-        return task.depth != "quick"
+        # A short legal question is not a cheap question. It is exactly where
+        # colloquial wording needs a planning pass to identify the governing
+        # document before retrieval.
+        return True
     expanded = task.retrieval_query
     for abbreviation, meaning in _ATLAS_ABBREVIATIONS.items():
         expanded = re.sub(
@@ -2194,6 +3071,20 @@ async def _prepare_atlas_answer(
         raise AtlasAIError("atlas_model_invalid", "Выбранная модель Atlas недоступна.") from None
     if not config.configured:
         raise AtlasAIError("atlas_ai_not_configured", "ИИ-контур Atlas ещё не настроен администратором.")
+    try:
+        trusted_scope = await asyncio.to_thread(
+            atlas_storage.atlas_resolve_federation_scope,
+            server_code,
+            faction_code,
+        )
+    except ValueError as exc:
+        raise AtlasAIError(
+            "atlas_scope_invalid",
+            "Выбранный проект, сервер или фракция Atlas недоступны.",
+        ) from exc
+    project_code = str(trusted_scope["project_code"])
+    server_code = str(trusted_scope["server_code"])
+    faction_code = str(trusted_scope["faction_code"])
     started = time.monotonic()
     requested_mode = atlas_normalize_response_mode(response_mode)
     profile = dict(user_profile or {})
@@ -2262,9 +3153,15 @@ async def _prepare_atlas_answer(
                 int(organization_id),
                 server_code=server_code,
                 faction_code=faction_code,
+                query_terms=_atlas_repository_query_terms(clean_question),
             )
         except Exception:
             catalog_sources = []
+        catalog_sources = [
+            source
+            for source in catalog_sources
+            if _atlas_source_domain(source) in set(selected_agent.knowledge_domains)
+        ]
         intelligence_brief = await _build_intelligence_brief(
             config,
             clean_question,
@@ -2327,6 +3224,7 @@ async def _prepare_atlas_answer(
         # route and social greetings deliberately skip retrieval altogether.
         expanded=selected_latency != "overlay" or overlay_legal,
         query_variants=research_queries,
+        allowed_domains=selected_agent.knowledge_domains,
     )
     sources = _atlas_merge_source_fragments(sources)
     if selected_latency == "overlay":
@@ -2359,7 +3257,17 @@ async def _prepare_atlas_answer(
     context = "\n\n".join(context_parts) or (
         "Для обычного приветствия внешние источники не требуются."
         if task_profile.intent == "social"
-        else "Подходящих подтверждённых источников для этого запроса не найдено."
+        else (
+            "Продолжай разбор по доступному игровому праву. Не выдумывай номер нормы: установи "
+            "правовую область, дай безопасный порядок действий и задай только один вопрос, если "
+            "без него действительно нельзя различить две применимые нормы. Не отвечай отчётом "
+            "о состоянии библиотеки или поиска."
+            if task_profile.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
+            else
+            "Внешний источник для этого запроса не требуется. Используй общие "
+            "знания, рассуждение и творческие способности; не выдавай неподтверждённые игровые "
+            "нормы за действующие и не отвечай шаблонным отказом о библиотеке."
+        )
     )
     agent_reports: list[dict[str, str]] = []
     if research_plan:
@@ -2423,7 +3331,9 @@ async def _prepare_atlas_answer(
         "приоритет над общим редакторским контрактом выше. "
         "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
         "Если вопрос касается статьи, нарушения, задержания, обыска, наказания или полномочия, "
-        "в первой же фразе назови точную статью или прямо скажи, что точная статья не найдена. "
+        "в первой же фразе назови наиболее применимую точную статью. Если формулировка неоднозначна, "
+        "назови основную норму и одно короткое условие, "
+        "которое может изменить квалификацию. Не сообщай пользователю состояние поиска. "
         "Оставь только применимое сейчас: действие, одно критичное условие и точную норму. "
         "Не используй таблицы, повтор вопроса, приветствие и "
         "длинные оговорки. Если нужно уточнение, сначала дай безопасное действие, затем задай один "
@@ -2452,13 +3362,14 @@ async def _prepare_atlas_answer(
         if direct_mode
         else ""
     )
-    selected_model = (
-        str(os.getenv("ATLAS_OVERLAY_MODEL") or "").strip()
-        if selected_latency == "overlay"
-        else config.direct_model
-        if direct_mode
-        else ""
-    ) or config.chat_model
+    model_route, fallback_model_route, _route_reason = atlas_model_route(
+        config,
+        agent=selected_agent,
+        project_code=project_code,
+        direct_mode=direct_mode,
+        latency_mode=selected_latency,
+    )
+    selected_model = model_route.model
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -2477,8 +3388,9 @@ async def _prepare_atlas_answer(
                 "ссылку рядом с ним, а не одну общую ссылку в конце ответа. "
                 "Не переноси названия, сокращения и структуру кодексов из российского или иного "
                 "реального права в Majestic RP. Используй только фактические названия документов "
-                "из библиотеки Atlas; если введённого пользователем кодекса там нет, прямо уточни "
-                "это и предложи существующий документ, не выдумывая соответствие. "
+                "из библиотеки Atlas; если пользователь использовал привычное, но неофициальное "
+                "название кодекса, сначала сопоставь его с фактическим названием документа и дай "
+                "ответ по этому документу, не выдумывая соответствие. "
                 "Строго различай IC-законодательство игрового мира и OOC-правила сервера: не подменяй "
                 "одно другим. Устав действует внутри соответствующей организации; судебная практика "
                 "помогает толковать применение, но не становится законом автоматически. "
@@ -2499,10 +3411,12 @@ async def _prepare_atlas_answer(
                 "Не копируй одну и ту же композицию ответа из сообщения в сообщение. Заголовки, списки, "
                 "таблицы и блоки «вывод/основания/шаги» используй только когда они действительно делают "
                 "этот конкретный ответ понятнее. Не добавляй дежурное предложение помощи в конце. "
-                "Если нужной нормы нет среди найденных фрагментов, говори именно о пробеле текущей "
-                "библиотеки, а не о секретности документа или отсутствии нормы вообще. Не придумывай "
-                "причины недоступности. Если запрошена конкретная глава или статья и она присутствует "
+                "Не заменяй ответ сообщением о состоянии библиотеки, индекса или поиска. Если вопрос "
+                "допускает несколько квалификаций, перечисли применимые варианты и условие выбора между "
+                "ними. Если запрошена конкретная глава или статья и она присутствует "
                 "в источниках, приведи её текст полностью и не заменяй его общим пересказом. "
+                "Фрагмент с опорным местом «пункт N.N» — это прямой текст OOC-правила: если он "
+                "отвечает на вопрос, назови этот пункт и не утверждай, что прямой нормы не найдено. "
                 "Перед отправкой молча проведи финальную проверку результата: дан ли прямой ответ на "
                 "реальный вопрос пользователя; подтверждено ли каждое существенное проверяемое утверждение; "
                 "учтены ли исключения, компетенция и порядок действий; не противоречат ли друг другу выбранные "
@@ -2518,6 +3432,21 @@ async def _prepare_atlas_answer(
             "content": f"ПОДТВЕРЖДЁННЫЕ ИСТОЧНИКИ:\n{context}",
         },
     ]
+    if selected_agent.id == "atlas-complaints":
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "ФИНАЛЬНЫЙ КОНТРОЛЬ ЖАЛОБЫ: сначала назови точное нарушение и основной пункт. "
+                    "В готовом тексте утверждай только обстоятельства из сообщения пользователя. "
+                    "Все неизвестные дата, время, ID, место и ссылка должны остаться полями "
+                    "[укажите ...]. Не утверждай отсутствие угрозы, сопротивления, конфликта, "
+                    "исключений или иных событий, о которых пользователь не сообщил. Без отдельного "
+                    "запроса не добавляй срок хранения доказательств, минимальную длительность видео, "
+                    "площадку или технический порядок подачи."
+                ),
+            }
+        )
     if intelligence_brief is not None:
         messages.append(
             {
@@ -2619,6 +3548,11 @@ async def _prepare_atlas_answer(
         latency_mode=selected_latency,
         screen_context_used=bool(clean_screen_context),
         direct_mode=direct_mode,
+        project_code=project_code,
+        server_code=server_code,
+        faction_code=faction_code,
+        model_route=model_route,
+        fallback_model_route=fallback_model_route,
     )
 
 
@@ -2654,6 +3588,12 @@ def _answer_text(body: dict[str, Any], *, streamed: bool = False) -> str:
             if text:
                 return text
     return _content_text(selected.get("text"))
+
+
+def _completion_finish_reason(body: dict[str, Any]) -> str:
+    choices = body.get("choices")
+    selected = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    return str(selected.get("finish_reason") or "").strip().lower()
 
 
 def _completion_error(body: dict[str, Any]) -> AtlasAIError | None:
@@ -2701,25 +3641,260 @@ def _empty_output_retry_payload(prepared: _AtlasAnswerRequest) -> dict[str, Any]
     return payload
 
 
-async def _retry_empty_completion(prepared: _AtlasAnswerRequest) -> str:
-    """Retry once with space reserved for the visible final answer."""
+def _truncated_output_retry_payload(
+    prepared: _AtlasAnswerRequest,
+    *,
+    partial_answer: str = "",
+) -> dict[str, Any]:
+    """Give a cut-off completion enough room without encouraging longer prose."""
 
-    body = await _json_request(
-        "POST",
-        prepared.config.openrouter_url,
-        headers=_openrouter_headers(prepared.config),
-        payload=_empty_output_retry_payload(prepared),
-        timeout=90,
+    payload = dict(prepared.payload)
+    try:
+        current_limit = int(payload.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        current_limit = 0
+    payload["max_tokens"] = min(4000, max(1800, current_limit * 2))
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict):
+        payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
+    messages = list(payload.get("messages") or [])
+    if partial_answer:
+        messages.extend(
+            (
+                {"role": "assistant", "content": partial_answer[-24_000:]},
+                {
+                    "role": "user",
+                    "content": (
+                        "Продолжи ровно с места обрыва, не повторяя уже написанное. "
+                        "Заверши ответ кратко и обязательно закончи последнее предложение."
+                    ),
+                },
+            )
+        )
+    else:
+        instruction = {
+            "role": "system",
+            "content": (
+                "Предыдущая генерация исчерпала технический лимит. Дай тот же ответ заново, "
+                "но компактнее, целиком и без оборванных предложений."
+            ),
+        }
+        messages.insert(max(0, len(messages) - 1), instruction)
+    payload["messages"] = messages
+    return payload
+
+
+_ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
+    r"(?:"
+    r"(?:не\s+(?:могу|удалось)\s+(?:найти|назвать|определить|подтвердить))"
+    r"|(?:в\s+(?:текущей\s+)?(?:библиотеке|базе|источниках|материалах)[^.\n]{0,100}"
+    r"(?:нет|не\s+найден|отсутств))"
+    r"|(?:(?:нет|не\s+найден|отсутств)[^.\n]{0,100}"
+    r"(?:информац|данн|текст|стать|норм|источник|материал))"
+    r"|(?:(?:информац|данн|текст|стать|норм|источник|материал)[^.\n]{0,100}"
+    r"(?:нет|не\s+найден|отсутств))"
+    r"|(?:точн\w*\s+(?:фрагмент|норм|стать)[^.\n]{0,80}не\s+найден)"
+    r"|(?:назват\w*\s+(?:точн\w*\s+)?стать\w*[^.\n]{0,80}нельзя)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _atlas_answer_is_retrieval_refusal(answer: str) -> bool:
+    """Recognize an answer that reports search state instead of doing the job."""
+
+    return bool(_ATLAS_RETRIEVAL_REFUSAL_RE.search(str(answer or "")))
+
+
+def _retrieval_refusal_retry_payload(
+    prepared: _AtlasAnswerRequest,
+    previous_answer: str,
+) -> dict[str, Any]:
+    """Force one grounded reread when a provider overlooks retrieved evidence."""
+
+    payload = dict(prepared.payload)
+    try:
+        current_limit = int(payload.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        current_limit = 0
+    payload["max_tokens"] = max(current_limit, 1800)
+    messages = list(payload.get("messages") or [])
+    messages.extend(
+        (
+            {"role": "assistant", "content": str(previous_answer or "")[:20_000]},
+            {
+                "role": "user",
+                "content": (
+                    "Предыдущий вариант ошибочно описал состояние поиска вместо ответа. "
+                    "Перечитай все уже приложенные первичные источники и ответь заново по существу. "
+                    "Выбери регулирующий документ по смыслу вопроса, найди точную формулировку внутри "
+                    "его фрагментов, назови статью или пункт и условие применения. Если возможны две "
+                    "квалификации, дай обе и чётко разведи их условия. Не пиши, что информации, нормы, "
+                    "статьи, текста или источника нет; не обсуждай библиотеку, индекс и поиск. Ничего "
+                    "не выдумывай и ставь ссылку [N] рядом с каждым правовым выводом."
+                ),
+            },
+        )
     )
-    provider_error = _completion_error(body)
-    if provider_error is not None:
-        raise provider_error
-    answer = _answer_text(body).strip()
-    if answer:
-        return answer
+    payload["messages"] = messages
+    return payload
+
+
+def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
+    """Return retrieved primary evidence when both model attempts overlook it.
+
+    Structured candidates are bounded article/chapter extracts produced by the
+    deterministic legal parser.  Showing that canonical text is safer than
+    exposing a false retrieval refusal and cannot invent a missing provision.
+    """
+
+    for index, source in enumerate(prepared.sources, 1):
+        if not source.get("structured"):
+            continue
+        text = str(source.get("text") or "").strip()
+        if len(text) < 20:
+            continue
+        reference = str(source.get("reference") or "").strip()
+        label = next(
+            (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
+            reference.replace(":", " ", 1) or "точная норма",
+        )
+        return f"По найденной норме:\n\n{text}\n\n[{index}, {label}]"
+    return ""
+
+
+async def _repair_retrieval_refusal(
+    prepared: _AtlasAnswerRequest,
+    answer: str,
+    used_route: AtlasModelRoute,
+) -> tuple[str, AtlasModelRoute]:
+    """Do not expose a false 'nothing found' after evidence was retrieved."""
+
+    clean = str(answer or "").strip()
+    if (
+        prepared.intent not in {"exact_lookup", "legal_analysis", "procedural_advice"}
+        or not prepared.sources
+        or not _atlas_answer_is_retrieval_refusal(clean)
+    ):
+        return clean, used_route
+    retry_body, retry_route = await _completion_with_fallback(
+        prepared,
+        _retrieval_refusal_retry_payload(prepared, clean),
+        timeout=120,
+        initial_route=used_route,
+    )
+    repaired = _answer_text(retry_body).strip()
+    if not repaired or _atlas_answer_is_retrieval_refusal(repaired):
+        grounded = _grounded_refusal_fallback(prepared)
+        if grounded:
+            return grounded, _local_exact_route()
+    return (repaired or clean), retry_route
+
+
+def _completion_payload_for_route(
+    payload: dict[str, Any],
+    route: AtlasModelRoute,
+) -> dict[str, Any]:
+    """Make an OpenAI-compatible request portable between approved providers."""
+
+    selected = dict(payload)
+    selected["model"] = route.model
+    # Reasoning controls are an OpenRouter extension.  A Together hosted
+    # fine-tune may be based on a model that does not understand them, so the
+    # final-answer route stays portable rather than failing on an unknown key.
+    if route.provider != "openrouter":
+        selected.pop("reasoning", None)
+    return selected
+
+
+def _completion_routes(
+    prepared: _AtlasAnswerRequest,
+    *,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[AtlasModelRoute, ...]:
+    initial = initial_route or prepared.model_route
+    candidates = [initial]
+    if initial == prepared.model_route and prepared.fallback_model_route is not None:
+        candidates.append(prepared.fallback_model_route)
+    result: list[AtlasModelRoute] = []
+    seen: set[tuple[str, str, str]] = set()
+    for route in candidates:
+        signature = (route.provider, route.model, route.endpoint)
+        if route.configured and signature not in seen:
+            result.append(route)
+            seen.add(signature)
+    return tuple(result)
+
+
+async def _completion_with_fallback(
+    prepared: _AtlasAnswerRequest,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[dict[str, Any], AtlasModelRoute]:
+    """Request the selected release, falling back only on retryable failure."""
+
+    routes = _completion_routes(prepared, initial_route=initial_route)
+    if not routes:
+        raise AtlasAIError(
+            "atlas_model_not_configured",
+            "Для выбранной модели Atlas не настроен ключ доступа.",
+        )
+    last_error: AtlasAIError | None = None
+    for index, route in enumerate(routes):
+        try:
+            body = await _json_request(
+                "POST",
+                route.endpoint,
+                headers=route.headers(),
+                payload=_completion_payload_for_route(payload, route),
+                timeout=timeout,
+            )
+            provider_error = _completion_error(body)
+            if provider_error is not None:
+                raise provider_error
+            return body, route
+        except AtlasAIError as exc:
+            last_error = exc
+            if not exc.retryable or index >= len(routes) - 1:
+                raise
+    assert last_error is not None
+    raise last_error
+
+
+async def _retry_empty_completion(
+    prepared: _AtlasAnswerRequest,
+    *,
+    initial_route: AtlasModelRoute | None = None,
+) -> tuple[str, AtlasModelRoute]:
+    """Retry a blank completion and safely try the base release once if needed."""
+
+    last_error: AtlasAIError | None = None
+    for route in _completion_routes(prepared, initial_route=initial_route):
+        try:
+            body = await _json_request(
+                "POST",
+                route.endpoint,
+                headers=route.headers(),
+                payload=_completion_payload_for_route(_empty_output_retry_payload(prepared), route),
+                timeout=90,
+            )
+            provider_error = _completion_error(body)
+            if provider_error is not None:
+                raise provider_error
+            answer = _answer_text(body).strip()
+            if answer:
+                return answer, route
+        except AtlasAIError as exc:
+            last_error = exc
+            if not exc.retryable:
+                raise
+    if last_error is not None:
+        raise last_error
     raise AtlasAIError(
         "answer_invalid",
-        "ИИ-провайдер дважды завершил генерацию без видимого ответа. Запрос можно повторить.",
+        "ИИ-провайдер завершил генерацию без видимого ответа. Запрос можно повторить.",
         retryable=True,
     )
 
@@ -2789,6 +3964,68 @@ def _compact_overlay_answer(
     return prefix.rstrip(" ,;:-") + "…"
 
 
+def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
+    """Return an extracted article/chapter verbatim without a paid rewrite.
+
+    Structured retrieval has already located and bounded the requested legal
+    section. Sending that text through a generative model adds latency and can
+    silently omit a clause, so exact lookups should use the canonical source
+    directly. Supporting sources remain available in the citation panel.
+    """
+
+    if prepared.intent != "exact_lookup":
+        return ""
+    for index, source in enumerate(prepared.sources, 1):
+        if not source.get("structured"):
+            continue
+        reference = str(source.get("reference") or "").strip()
+        text = str(source.get("text") or "").strip()
+        if not reference or len(text) < 20:
+            continue
+        label = next(
+            (str(item) for item in source.get("pinpoints") or [] if str(item).strip()),
+            reference.replace(":", " ", 1),
+        )
+        return f"{text}\n\n[{index}, {label}]"
+    return ""
+
+
+def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Keep greetings instant and free from irrelevant server/interface prose."""
+
+    if prepared.intent != "social":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    content = str(messages[-1].get("content") or "").casefold() if messages else ""
+    if re.search(r"\b(?:спасибо|благодарю)\b", content):
+        return "Пожалуйста!"
+    if re.search(r"\b(?:до\s+свидания|пока)\b", content):
+        return "До встречи!"
+    if "как дела" in content:
+        return "Всё отлично. Что сегодня разберём?"
+    return "Привет! Чем помочь?"
+
+
+def _local_exact_route() -> AtlasModelRoute:
+    return AtlasModelRoute(
+        provider="tmod",
+        model="atlas-exact-retrieval",
+        endpoint="",
+        api_key="",
+        release=f"index-v{_ATLAS_INDEX_VERSION}",
+    )
+
+
+def _local_social_route() -> AtlasModelRoute:
+    return AtlasModelRoute(
+        provider="tmod",
+        model="atlas-dialog",
+        endpoint="",
+        api_key="",
+        release="dialog-v1",
+    )
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = str(answer or "").strip()
     if not clean_answer:
@@ -2812,7 +4049,12 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
     return {
         "answer": clean_answer[:30000],
         "citations": citations,
-        "model": prepared.agent.id,
+        "model": prepared.model_route.model,
+        "model_provider": prepared.model_route.provider,
+        "model_release": prepared.model_route.release,
+        "project_code": prepared.project_code,
+        "server_code": prepared.server_code,
+        "faction_code": prepared.faction_code,
         "agent": prepared.agent.public(),
         "response_mode": prepared.response_mode,
         "requested_response_mode": prepared.requested_response_mode,
@@ -2860,66 +4102,79 @@ async def atlas_answer(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
-    body = await _json_request(
-        "POST",
-        prepared.config.openrouter_url,
-        headers=_openrouter_headers(prepared.config),
-        payload=prepared.payload,
+    social_answer = _deterministic_social_reply(prepared)
+    if social_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
+            social_answer,
+        )
+    exact_answer = _deterministic_exact_lookup(prepared)
+    if exact_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            exact_answer,
+        )
+    body, used_route = await _completion_with_fallback(
+        prepared,
+        prepared.payload,
         timeout=90,
     )
-    provider_error = _completion_error(body)
-    if provider_error is not None:
-        raise provider_error
     answer = _answer_text(body).strip()
+    if answer and _completion_finish_reason(body) == "length":
+        retry_body, used_route = await _completion_with_fallback(
+            prepared,
+            _truncated_output_retry_payload(prepared),
+            timeout=90,
+            initial_route=used_route,
+        )
+        retry_answer = _answer_text(retry_body).strip()
+        if retry_answer:
+            answer = retry_answer
     if not answer:
-        answer = await _retry_empty_completion(prepared)
-    return _atlas_answer_result(prepared, answer)
+        answer, used_route = await _retry_empty_completion(
+            prepared,
+            initial_route=used_route,
+        )
+    answer, used_route = await _repair_retrieval_refusal(
+        prepared,
+        answer,
+        used_route,
+    )
+    return _atlas_answer_result(
+        replace(
+            prepared,
+            model_route=used_route,
+            fallback_model_route=None,
+        ),
+        answer,
+    )
 
 
-async def atlas_answer_stream(
-    organization_id: int,
-    question: str,
+async def _stream_completion_route(
+    prepared: _AtlasAnswerRequest,
+    route: AtlasModelRoute,
     *,
     on_delta: Callable[[str], Awaitable[None]],
-    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    server_code: str = "phoenix-15",
-    faction_code: str = "lspd",
-    history: list[dict[str, Any]] | None = None,
-    memory: list[dict[str, Any]] | None = None,
-    response_mode: str = "balanced",
-    model_id: str = "atlas-tvr-a",
-    user_profile: dict[str, Any] | None = None,
-    latency_mode: str = "standard",
-    screen_context: str | None = None,
-) -> dict[str, Any]:
-    """Stream provider deltas while preserving the regular Atlas result contract."""
+    answer_limit: int,
+    payload: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str], AtlasAIError | None, bool]:
+    """Read one SSE response without mixing output from different models."""
 
-    prepared = await _prepare_atlas_answer(
-        organization_id,
-        question,
-        server_code=server_code,
-        faction_code=faction_code,
-        history=history,
-        memory=memory,
-        response_mode=response_mode,
-        model_id=model_id,
-        user_profile=user_profile,
-        on_progress=on_progress,
-        latency_mode=latency_mode,
-        screen_context=screen_context,
-    )
     timeout = aiohttp.ClientTimeout(total=180, connect=5, sock_read=90)
     answer_parts: list[str] = []
     answer_length = 0
-    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
     fallback_lines: list[str] = []
     stream_failure: AtlasAIError | None = None
+    truncated = False
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                prepared.config.openrouter_url,
-                headers=_openrouter_headers(prepared.config),
-                json={**prepared.payload, "stream": True},
+                route.endpoint,
+                headers=route.headers(),
+                json={
+                    **_completion_payload_for_route(payload or prepared.payload, route),
+                    "stream": True,
+                },
             ) as response:
                 if response.status >= 400:
                     raw = await response.text()
@@ -2958,6 +4213,8 @@ async def atlas_answer_stream(
                         continue
                     if not isinstance(event, dict):
                         continue
+                    if _completion_finish_reason(event) == "length":
+                        truncated = True
                     provider_error = _completion_error(event)
                     if provider_error is not None:
                         stream_failure = provider_error
@@ -2965,7 +4222,7 @@ async def atlas_answer_stream(
                     delta = _answer_text(event, streamed=True)
                     if not delta:
                         continue
-                    remaining = stream_answer_limit - answer_length
+                    remaining = answer_limit - answer_length
                     if remaining <= 0:
                         continue
                     selected = delta[:remaining]
@@ -2980,29 +4237,148 @@ async def atlas_answer_stream(
             "ИИ-контур временно недоступен. Запрос можно безопасно повторить.",
             retryable=True,
         ) from exc
+    return answer_parts, fallback_lines, stream_failure, truncated
 
-    if stream_failure is not None and answer_parts:
-        raise stream_failure
-    if not answer_parts and fallback_lines:
+
+async def atlas_answer_stream(
+    organization_id: int,
+    question: str,
+    *,
+    on_delta: Callable[[str], Awaitable[None]],
+    on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    history: list[dict[str, Any]] | None = None,
+    memory: list[dict[str, Any]] | None = None,
+    response_mode: str = "balanced",
+    model_id: str = "atlas-tvr-a",
+    user_profile: dict[str, Any] | None = None,
+    latency_mode: str = "standard",
+    screen_context: str | None = None,
+) -> dict[str, Any]:
+    """Stream provider deltas while preserving the regular Atlas result contract."""
+
+    prepared = await _prepare_atlas_answer(
+        organization_id,
+        question,
+        server_code=server_code,
+        faction_code=faction_code,
+        history=history,
+        memory=memory,
+        response_mode=response_mode,
+        model_id=model_id,
+        user_profile=user_profile,
+        on_progress=on_progress,
+        latency_mode=latency_mode,
+        screen_context=screen_context,
+    )
+    social_answer = _deterministic_social_reply(prepared)
+    if social_answer:
+        await on_delta(social_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
+            social_answer,
+        )
+    exact_answer = _deterministic_exact_lookup(prepared)
+    if exact_answer:
+        await on_delta(exact_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            exact_answer,
+        )
+    # Legal text is buffered until the grounded-answer guard has inspected it.
+    # This deliberately trades first-token latency for correctness: a false
+    # "nothing found" must never be streamed to the user and then retracted.
+    defer_legal_output = (
+        prepared.latency_mode != "overlay"
+        and prepared.intent in {"legal_analysis", "procedural_advice"}
+    )
+
+    async def emit_stream_delta(delta: str) -> None:
+        if not defer_legal_output:
+            await on_delta(delta)
+
+    answer_parts: list[str] = []
+    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
+    used_route = prepared.model_route
+    stream_failure: AtlasAIError | None = None
+    routes = _completion_routes(prepared)
+    for index, route in enumerate(routes):
         try:
-            fallback = json.loads("\n".join(fallback_lines))
-        except (TypeError, ValueError):
-            fallback = {}
-        full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
-        if full_text:
-            answer_parts.append(full_text[:stream_answer_limit])
-            await on_delta(answer_parts[0])
-    if not answer_parts:
+            parts, fallback_lines, stream_failure, truncated = await _stream_completion_route(
+                prepared,
+                route,
+                on_delta=emit_stream_delta,
+                answer_limit=stream_answer_limit,
+            )
+        except AtlasAIError as exc:
+            if exc.retryable and index < len(routes) - 1:
+                continue
+            raise
+        if stream_failure is not None and parts:
+            # Once the user has received a delta, changing model would make a
+            # single answer internally inconsistent. Preserve the established
+            # stream contract and surface the retriable error instead.
+            raise stream_failure
+        if not parts and fallback_lines:
+            try:
+                fallback = json.loads("\n".join(fallback_lines))
+            except (TypeError, ValueError):
+                fallback = {}
+            full_text = _answer_text(fallback if isinstance(fallback, dict) else {})
+            if full_text:
+                parts.append(full_text[:stream_answer_limit])
+                await emit_stream_delta(parts[0])
+        if parts:
+            if truncated and prepared.latency_mode != "overlay":
+                partial = "".join(parts)
+                await emit_stream_delta("\n\n")
+                continuation, _unused_lines, continuation_failure, _still_truncated = (
+                    await _stream_completion_route(
+                        prepared,
+                        route,
+                        on_delta=emit_stream_delta,
+                        answer_limit=max(1, stream_answer_limit - len(partial) - 2),
+                        payload=_truncated_output_retry_payload(
+                            prepared,
+                            partial_answer=partial,
+                        ),
+                    )
+                )
+                if continuation_failure is not None:
+                    raise continuation_failure
+                if continuation:
+                    parts.append("\n\n")
+                    parts.extend(continuation)
+            answer_parts = parts
+            used_route = route
+            break
         if stream_failure is not None and not stream_failure.retryable:
             raise stream_failure
+        used_route = route
+    if not answer_parts:
         await _atlas_progress(
             on_progress,
             {"phase": "retry", "status": "running", "reason": "empty_provider_output"},
         )
-        fallback = await _retry_empty_completion(prepared)
+        fallback, used_route = await _retry_empty_completion(
+            prepared,
+            initial_route=used_route,
+        )
         answer_parts.append(fallback[:stream_answer_limit])
-        await on_delta(answer_parts[0])
-    result = _atlas_answer_result(prepared, "".join(answer_parts))
+        await emit_stream_delta(answer_parts[0])
+    final_answer = "".join(answer_parts)
+    if defer_legal_output:
+        final_answer, used_route = await _repair_retrieval_refusal(
+            prepared,
+            final_answer,
+            used_route,
+        )
+        await on_delta(final_answer)
+    result = _atlas_answer_result(
+        replace(prepared, model_route=used_route, fallback_model_route=None),
+        final_answer,
+    )
     if prepared.research_plan:
         await _atlas_progress(
             on_progress,
@@ -3029,6 +4405,11 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
             qdrant = "ok"
         except AtlasAIError:
             qdrant = "unavailable"
+    rollout_route, _rollout_fallback, rollout_reason = atlas_model_route(
+        config,
+        agent=atlas_resolve_agent("atlas-tvr-a"),
+        project_code="majestic-rp",
+    )
     result = {
         "configured": config.configured,
         "qdrant": qdrant,
@@ -3037,6 +4418,12 @@ async def atlas_ai_health(*, force: bool = False) -> dict[str, Any]:
         "models": atlas_agent_catalog(),
         "embedding_model": config.embedding_model,
         "collection": config.collection,
+        "fine_tuning": {
+            "enabled": bool(config.fine_tuned_enabled),
+            "default_route": rollout_route.public(),
+            "reason": rollout_reason,
+            "fallback_enabled": bool(config.fine_tuned_fallback),
+        },
     }
     _HEALTH_CACHE = (now + 20.0, result)
     return dict(result)
@@ -3050,6 +4437,7 @@ __all__ = [
     "atlas_answer_stream",
     "atlas_ensure_collection",
     "atlas_index_source",
+    "atlas_model_route",
     "atlas_normalize_response_mode",
     "atlas_probe_collection",
     "atlas_reset_collection",

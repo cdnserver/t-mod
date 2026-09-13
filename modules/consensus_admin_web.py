@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from uuid import UUID
 from dataclasses import asdict
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -85,11 +86,100 @@ ADMIN_SECTION_LABELS = {
 ADMIN_ONLY_WEB_SECTIONS = frozenset({"security"})
 
 
+def _global_ban_guilds(bot: discord.Client, primary_guild_id: int) -> list[Any]:
+    """All Discord guilds currently governed by this T-Mod instance."""
+
+    candidates = list(getattr(bot, "guilds", ()) or ())
+    primary = bot.get_guild(int(primary_guild_id))
+    if primary is not None:
+        candidates.insert(0, primary)
+    result: list[Any] = []
+    seen: set[int] = set()
+    for guild in candidates:
+        selected_id = int(
+            getattr(guild, "id", 0)
+            or (primary_guild_id if guild is primary else 0)
+        )
+        if selected_id <= 0 or selected_id in seen:
+            continue
+        seen.add(selected_id)
+        result.append(guild)
+    return result
+
+
+async def _apply_global_discord_ban(
+    bot: discord.Client,
+    primary_guild_id: int,
+    user_id: int,
+    *,
+    reason: str,
+) -> None:
+    guilds = _global_ban_guilds(bot, primary_guild_id)
+    if not guilds:
+        raise RuntimeError("discord_guild_unavailable")
+    failures: list[str] = []
+    for guild in guilds:
+        try:
+            await asyncio.wait_for(
+                guild.ban(
+                    discord.Object(id=int(user_id)),
+                    reason=str(reason)[:512],
+                    delete_message_seconds=0,
+                ),
+                timeout=12.0,
+            )
+        except Exception as exc:
+            failures.append(
+                f"{int(getattr(guild, 'id', 0) or 0)}:{type(exc).__name__}"
+            )
+    if failures:
+        raise RuntimeError("discord_guild_ban_failed:" + ",".join(failures))
+
+
+async def _apply_global_discord_unban(
+    bot: discord.Client,
+    primary_guild_id: int,
+    user_id: int,
+    *,
+    reason: str,
+) -> None:
+    guilds = _global_ban_guilds(bot, primary_guild_id)
+    if not guilds:
+        raise RuntimeError("discord_guild_unavailable")
+    failures: list[str] = []
+    for guild in guilds:
+        try:
+            entry = await asyncio.wait_for(
+                guild.fetch_ban(discord.Object(id=int(user_id))),
+                timeout=12.0,
+            )
+            # An independent moderation decision must survive a T-Mod unban.
+            ban_reason = str(getattr(entry, "reason", "") or "")
+            if not ban_reason.startswith(("T-Mod global ban ·", "T-Mod linked identity ban ·")):
+                continue
+            await asyncio.wait_for(
+                guild.unban(discord.Object(id=int(user_id)), reason=str(reason)[:512]),
+                timeout=12.0,
+            )
+        except discord.NotFound:
+            continue
+        except Exception as exc:
+            failures.append(
+                f"{int(getattr(guild, 'id', 0) or 0)}:{type(exc).__name__}"
+            )
+    if failures:
+        raise RuntimeError("discord_guild_unban_failed:" + ",".join(failures))
+
+
 def _json_ready(value: Any) -> Any:
     """Normalize PostgreSQL-native values before aiohttp JSON encoding."""
 
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -255,8 +345,8 @@ async def _reconcile_global_bans_once(
 ) -> int:
     """Converge durable web blocks with Discord after transient failures."""
 
-    guild = bot.get_guild(int(guild_id))
-    if guild is None:
+    guilds = _global_ban_guilds(bot, int(guild_id))
+    if not guilds:
         return 0
     records = await asyncio.to_thread(
         global_ban_storage.list_global_bans,
@@ -271,13 +361,11 @@ async def _reconcile_global_bans_once(
         if user_id <= 0:
             continue
         try:
-            await asyncio.wait_for(
-                guild.ban(
-                    discord.Object(id=user_id),
-                    reason="T-Mod global ban · automatic reconciliation",
-                    delete_message_seconds=0,
-                ),
-                timeout=12.0,
+            await _apply_global_discord_ban(
+                bot,
+                int(guild_id),
+                user_id,
+                reason="T-Mod global ban · automatic reconciliation",
             )
             # Re-assert every active decision even after a successful sync.
             # A manual Discord unban must not bypass the T-Mod decision.
@@ -502,6 +590,31 @@ def register_admin_web_routes(
                 text='{"error":"administrator_required"}',
                 content_type="application/json",
             )
+        if request.method == "GET" and "lookup" in request.query:
+            lookup = str(request.query.get("lookup") or "").strip()
+            if not lookup.isdigit() or not 15 <= len(lookup) <= 22:
+                return web.json_response({"error": "invalid_discord_id"}, status=400)
+            user_id = int(lookup)
+            guilds = _global_ban_guilds(bot, int(guild_id))
+            protected = {
+                int(principal.user_id),
+                int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                *(int(getattr(item, "owner_id", 0) or 0) for item in guilds),
+            }
+            linked = await asyncio.to_thread(
+                global_ban_storage.linked_desktop_accounts,
+                int(guild_id),
+                user_id,
+            )
+            return web.json_response(
+                {
+                    "subject": lookup,
+                    "linked_user_ids": [
+                        str(value) for value in linked if value not in protected
+                    ],
+                    "excluded_protected": sum(value in protected for value in linked),
+                }
+            )
         warning: str | None = None
         if request.method == "POST":
             if not csrf_matches(request, principal):
@@ -526,6 +639,10 @@ def register_admin_web_routes(
                 int(principal.user_id),
                 int(getattr(bot.user, "id", 0) or 0),
                 int(getattr(guild, "owner_id", 0) or 0),
+                *(
+                    int(getattr(item, "owner_id", 0) or 0)
+                    for item in _global_ban_guilds(bot, int(guild_id))
+                ),
             }
             if user_id <= 0 or user_id in protected_ids:
                 return web.json_response(
@@ -538,6 +655,7 @@ def register_admin_web_routes(
             discord_state = "pending"
             discord_error = None
             dm_sent = False
+            linked_user_ids: list[int] = []
             if action == "issue":
                 if body.get("confirmed") is not True or not 5 <= len(reason) <= 1000:
                     return web.json_response(
@@ -576,15 +694,11 @@ def register_admin_web_routes(
                     actor_display=str(principal.display_name),
                 )
                 try:
-                    if guild is None:
-                        raise RuntimeError("discord_guild_unavailable")
-                    await asyncio.wait_for(
-                        guild.ban(
-                            discord.Object(id=user_id),
-                            reason=f"T-Mod global ban · {principal.display_name}: {reason}"[:512],
-                            delete_message_seconds=0,
-                        ),
-                        timeout=12.0,
+                    await _apply_global_discord_ban(
+                        bot,
+                        int(guild_id),
+                        user_id,
+                        reason=f"T-Mod global ban · {principal.display_name}: {reason}",
                     )
                     discord_state = "banned"
                 except Exception as exc:
@@ -602,11 +716,84 @@ def register_admin_web_routes(
                     )
                 except Exception:
                     warning = "Веб-блокировка включена; статус Discord будет перепроверен."
+                try:
+                    linked_user_ids = [
+                        linked_id
+                        for linked_id in await asyncio.to_thread(
+                            global_ban_storage.linked_desktop_accounts,
+                            int(guild_id),
+                            user_id,
+                        )
+                        if linked_id not in protected_ids
+                    ]
+                except Exception:
+                    warning = "Бан включён; связанные аккаунты требуют ручной проверки."
+                newly_linked_ids: list[int] = []
+                linked_failures = 0
+                for linked_id in linked_user_ids:
+                    try:
+                        existing = await asyncio.to_thread(
+                            global_ban_storage.get_global_ban,
+                            int(guild_id),
+                            linked_id,
+                        )
+                        # Never replace a separately issued human decision.
+                        # Revoking this source must not lift an independent ban.
+                        if existing is not None:
+                            continue
+                        await asyncio.to_thread(
+                            global_ban_storage.issue_global_ban,
+                            int(guild_id),
+                            linked_id,
+                            reason=f"Связанная установка Desktop · {reason}"[:1000],
+                            actor_id=int(principal.user_id),
+                            actor_display=str(principal.display_name),
+                            source_user_id=user_id,
+                        )
+                        newly_linked_ids.append(linked_id)
+                        linked_state = "banned"
+                        linked_error = None
+                    except Exception:
+                        linked_failures += 1
+                        continue
+                    try:
+                        await _apply_global_discord_ban(
+                            bot,
+                            int(guild_id),
+                            linked_id,
+                            reason=(
+                                "T-Mod linked identity ban · "
+                                f"{principal.display_name}: {reason}"
+                            ),
+                        )
+                    except Exception as exc:
+                        linked_state = "failed"
+                        linked_error = f"{type(exc).__name__}: {exc}"[:1000]
+                        linked_failures += 1
+                    try:
+                        await asyncio.to_thread(
+                            global_ban_storage.set_global_ban_discord_state,
+                            int(guild_id),
+                            linked_id,
+                            state=linked_state,
+                            error=linked_error,
+                            actor_id=int(principal.user_id),
+                            actor_display=str(principal.display_name),
+                        )
+                    except Exception:
+                        linked_failures += 1
+                if linked_failures:
+                    warning = (
+                        "Связанные аккаунты закрыты в T-Mod; часть Discord-банов "
+                        "будет повторена автоматически."
+                    )
                 message = (
                     "Пользователь заблокирован во всей экосистеме и в Discord."
                     if discord_state == "banned"
                     else "Глобальная веб-блокировка включена. Discord будет синхронизирован автоматически."
                 )
+                if newly_linked_ids:
+                    message += f" Связанных аккаунтов заблокировано: {len(newly_linked_ids)}."
                 action_kind = "global_ban_issue"
             elif action == "revoke":
                 if body.get("confirmed") is not True or not 3 <= len(reason) <= 1000:
@@ -617,7 +804,7 @@ def register_admin_web_routes(
                         },
                         status=400,
                 )
-                if guild is None:
+                if not _global_ban_guilds(bot, int(guild_id)):
                     return web.json_response(
                         {
                             "error": "discord_unavailable",
@@ -629,15 +816,12 @@ def register_admin_web_routes(
                         status=503,
                     )
                 try:
-                    await asyncio.wait_for(
-                        guild.unban(
-                            discord.Object(id=user_id),
-                            reason=f"T-Mod global unban · {principal.display_name}: {reason}"[:512],
-                        ),
-                        timeout=12.0,
+                    await _apply_global_discord_unban(
+                        bot,
+                        int(guild_id),
+                        user_id,
+                        reason=f"T-Mod global unban · {principal.display_name}: {reason}",
                     )
-                except discord.NotFound:
-                    pass
                 except Exception as exc:
                     return web.json_response(
                         {
@@ -661,7 +845,41 @@ def register_admin_web_routes(
                         {"error": "global_ban_not_active", "message": "Активная блокировка не найдена."},
                         status=409,
                     )
+                try:
+                    linked_user_ids = await asyncio.to_thread(
+                        global_ban_storage.linked_global_ban_subjects,
+                        int(guild_id),
+                        user_id,
+                    )
+                except Exception:
+                    warning = "Основной бан снят; связанные решения требуют проверки."
+                for linked_id in linked_user_ids:
+                    try:
+                        await _apply_global_discord_unban(
+                            bot,
+                            int(guild_id),
+                            linked_id,
+                            reason=f"T-Mod linked identity unban · {principal.display_name}: {reason}",
+                        )
+                        await asyncio.to_thread(
+                            global_ban_storage.revoke_global_ban,
+                            int(guild_id),
+                            linked_id,
+                            reason=f"Снята вместе с решением по {user_id}: {reason}"[:1000],
+                            actor_id=int(principal.user_id),
+                            actor_display=str(principal.display_name),
+                        )
+                    except (ValueError, discord.NotFound):
+                        continue
+                    except Exception:
+                        warning = (
+                            "Основное решение снято; связанный аккаунт оставлен "
+                            "закрытым до подтверждения Discord."
+                        )
+                        continue
                 message = "Глобальная блокировка снята. Пользователь может войти снова."
+                if linked_user_ids:
+                    message += f" Связанных решений снято: {len(linked_user_ids)}."
                 action_kind = "global_ban_revoke"
             else:
                 return web.json_response({"error": "global_ban_action_invalid"}, status=400)
@@ -681,6 +899,7 @@ def register_admin_web_routes(
                         "discord_state": record.get("discord_state"),
                         "discord_error": record.get("discord_error"),
                         "dm_sent": dm_sent,
+                        "linked_user_ids": [str(value) for value in linked_user_ids],
                     },
                     reversible=False,
                 )
@@ -695,12 +914,19 @@ def register_admin_web_routes(
             include_revoked=True,
             limit=200,
         )
+        installation_summaries = await asyncio.to_thread(
+            global_ban_storage.desktop_installation_summaries,
+            int(guild_id),
+        )
         for item in records:
             user = bot.get_user(int(item.get("user_id") or 0))
             item["member_name"] = str(
                 getattr(user, "display_name", "")
                 or getattr(user, "name", "")
                 or f"Discord {item['user_id']}"
+            )
+            item.update(
+                installation_summaries.get(str(item.get("user_id") or ""), {})
             )
         return web.json_response(
             {
@@ -2442,7 +2668,7 @@ def register_admin_web_routes(
         )
         guild = bot.get_guild(int(guild_id))
         return web.json_response(
-            {
+            _json_ready({
                 **context(principal),
                 **system_data,
                 "reliability": reliability,
@@ -2458,7 +2684,7 @@ def register_admin_web_routes(
                     "members_cached": len(getattr(guild, "members", ()) or ()),
                     "channels_cached": len(getattr(guild, "channels", ()) or ()),
                 },
-            }
+            })
         )
 
     async def system_action(request: web.Request) -> web.Response:

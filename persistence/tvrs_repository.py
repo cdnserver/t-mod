@@ -1991,4 +1991,53 @@ def tvrs_latest_live_result_for_bill(
     return dict(row) if row else None
 
 
-__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_latest_finished_consensus_session', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results', 'tvrs_public_bill_catalog', 'tvrs_latest_live_result_for_bill']
+def _tvrs_directory_state_meta_key(guild_id: int) -> str:
+    return f"tvrs_directory_state:{int(guild_id)}"
+
+
+def _tvrs_directory_message_meta_key(guild_id: int) -> str:
+    return f"tvrs_directory_message_id:{int(guild_id)}"
+
+
+def tvrs_get_directory_state(guild_id: int) -> dict[str, Any]:
+    raw = get_meta(_tvrs_directory_state_meta_key(guild_id))
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def tvrs_set_directory_state(guild_id: int, state: dict[str, Any]) -> dict[str, Any]:
+    clean_state = dict(state or {})
+    clean_state["guild_id"] = int(guild_id)
+    clean_state["updated_at"] = str(clean_state.get("updated_at") or utc_now_iso())
+    set_meta_value(
+        _tvrs_directory_state_meta_key(guild_id),
+        json.dumps(clean_state, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+    return clean_state
+
+
+def tvrs_get_directory_message_id(guild_id: int) -> int | None:
+    raw = get_meta(_tvrs_directory_message_meta_key(guild_id))
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def tvrs_set_directory_message_id(guild_id: int, message_id: int | None) -> None:
+    key = _tvrs_directory_message_meta_key(guild_id)
+    if message_id is None:
+        set_meta_value(key, "")
+        return
+    set_meta_value(key, str(int(message_id)))
+
+
+__all__ = ['tvrs_next_bill_number', 'tvrs_set_next_bill_number', 'tvrs_set_last_accepted_bill_number', 'tvrs_create_bill', 'tvrs_create_bill_with_publication', 'tvrs_set_bill_message', 'tvrs_complete_bill_publication', 'tvrs_get_bill_by_id', 'tvrs_get_bill_by_message', 'tvrs_cast_vote', 'tvrs_votes_for_bill', 'tvrs_vote_counts', 'tvrs_recent_bills', 'tvrs_consensus_save_session', 'tvrs_consensus_commit_begin_bill', 'tvrs_consensus_commit_finalization', 'tvrs_consensus_commit_finish', 'tvrs_consensus_active_sessions', 'tvrs_latest_finished_consensus_session', 'tvrs_consensus_events', 'tvrs_consensus_quarantine_session', 'tvrs_bill_row_to_dict', 'tvrs_queue_bills', 'tvrs_get_bill_dict_by_id', 'tvrs_mark_bill_status', 'tvrs_create_retry_bill', 'tvrs_get_next_plenary_number', 'tvrs_increment_plenary_number', 'tvrs_save_live_result', 'tvrs_live_result_for_bill', 'tvrs_get_directory_state', 'tvrs_set_directory_state', 'tvrs_get_directory_message_id', 'tvrs_set_directory_message_id', '_tvrs_open_delivery_payloads', '_tvrs_assert_no_open_delivery', '_tvrs_bill_referenced_by_active_consensus', '_tvrs_assert_bill_admin_mutable', '_tvrs_assert_result_admin_mutable', 'tvrs_get_bill_by_number', 'tvrs_delete_bill_by_number', 'tvrs_delete_live_result', 'tvrs_delete_plenary_results', 'tvrs_update_bill_field', 'tvrs_recent_live_results', 'tvrs_public_bill_catalog', 'tvrs_latest_live_result_for_bill']

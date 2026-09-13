@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,6 +97,51 @@ class AtlasLocalBlobStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             return expected_end
+
+    def put_bytes(self, data: bytes, *, checksum_sha256: str | None = None) -> str:
+        """Atomically retain one content-addressed object and return its key."""
+
+        raw = bytes(data or b"")
+        if not raw:
+            raise AtlasMediaError("atlas_media_blob_empty", "Нельзя сохранить пустой файл.")
+        digest = hashlib.sha256(raw).hexdigest()
+        expected = str(checksum_sha256 or digest).strip().lower()
+        if expected != digest:
+            raise AtlasMediaError(
+                "atlas_media_checksum_mismatch",
+                "Контрольная сумма сохраняемого файла не совпала.",
+            )
+        final_key = self.final_key(digest)
+        final = self.path(final_key)
+        with self._lock:
+            if final.is_file():
+                if final.stat().st_size != len(raw):
+                    raise AtlasMediaError(
+                        "atlas_media_blob_size_conflict",
+                        "Хранилище обнаружило несовпадающий объект.",
+                        retryable=True,
+                    )
+                with final.open("rb") as stream:
+                    stored_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                if stored_digest != digest:
+                    raise AtlasMediaError(
+                        "atlas_media_blob_checksum_conflict",
+                        "Хранилище обнаружило повреждённый объект.",
+                        retryable=True,
+                    )
+                return final_key
+            final.parent.mkdir(parents=True, exist_ok=True)
+            temporary = final.with_name(f".{final.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, final)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        return final_key
 
     def checksum_and_size(self, storage_key: str) -> tuple[str, int]:
         target = self.path(storage_key)

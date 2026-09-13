@@ -11,11 +11,11 @@
       name="description"
       content="Казна и законодательное пространство участника Товарищества."
     >
-    <link rel="stylesheet" href="/assets/portal.css?v=5">
+    <link rel="stylesheet" href="/assets/portal.css?v=6">
     <link rel="stylesheet" href="/assets/portal-theme.css?v=3">
     <link rel="stylesheet" href="/assets/portal-focus.css?v=1">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js?v=5" defer></script>
+    <script src="/assets/portal.js?v=6" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -73,12 +73,13 @@
             <button type="button" data-portal-target="projects"><span>§</span><b>Законопроекты</b><small>Мои проекты и реестр</small></button>
             <button class="portal-nav-primary" type="button" data-portal-target="editor"><span>＋</span><b>Создать проект</b><small>Законодательная мастерская</small></button>
             <button type="button" data-portal-target="treasury"><span>◇</span><b>Казна</b><small>Состояние и движение</small></button>
-            <button type="button" data-portal-target="consensus"><span>◫</span><b>Консенсус</b><small>Очередь и трансляция</small></button>
+            <button type="button" data-portal-target="consensus"><span>◫</span><b>Консенсус</b><small>Эфир и подготовка</small></button>
             <button type="button" data-portal-target="games"><span>♞</span><b>T-Mod Games</b><small>Шахматы и нарды</small></button>
             <button type="button" data-portal-target="notifications"><span>•</span><b>Уведомления</b><small id="portal-side-unread">Нет новых</small></button>
           </nav>
           <footer>
             <a href="https://consensus.tvr.lat/tasks">Общие задачи <span>↗</span></a>
+            <a href="https://tvr.lat/legal">Правовой центр <span>↗</span></a>
             <button id="portal-sidebar-customize" type="button">Настроить разделы</button>
           </footer>
         </aside>
@@ -546,6 +547,31 @@
           </article>
 
           <article
+            id="preparation"
+            class="portal-widget preparation-widget"
+            data-portal-widget="preparation"
+            data-portal-view="consensus"
+          >
+            <header>
+              <span>ЛИЧНАЯ ПОДГОТОВКА</span><b id="preparation-progress">0 / 0</b>
+            </header>
+            <div class="preparation-heading">
+              <div>
+                <small>СЛЕДУЮЩИЙ КОНСЕНСУС</small>
+                <h2>Подготовьте свою позицию</h2>
+                <p>
+                  Заметки, вопросы и предварительная позиция доступны только
+                  вам. Они не являются голосом и не видны другим участникам.
+                </p>
+              </div>
+              <a href="https://consensus.tvr.lat/">Эфир консенсуса <span>→</span></a>
+            </div>
+            <div id="preparation-list" class="preparation-list" aria-live="polite">
+              <div class="portal-empty">Загружаем очередь законопроектов…</div>
+            </div>
+          </article>
+
+          <article
             class="portal-widget notifications-widget"
             data-portal-widget="notifications"
             data-portal-view="notifications"
@@ -660,6 +686,54 @@
       <div id="governance-dialog-body" class="governance-dialog-body"></div>
     </dialog>
 
+    <dialog id="reactor-preparation-dialog" class="portal-dialog preparation-dialog" aria-labelledby="reactor-preparation-title">
+      <form method="dialog">
+        <span><small id="reactor-preparation-number">ЛИЧНЫЙ ЛИСТ ПОДГОТОВКИ</small><strong id="reactor-preparation-title">Подготовка к рассмотрению</strong></span>
+        <button value="cancel" aria-label="Закрыть">×</button>
+      </form>
+      <div class="preparation-dialog-body">
+        <aside class="preparation-source">
+          <div class="preparation-source-meta"><span id="reactor-preparation-author">Автор: —</span><b id="reactor-preparation-source-state">АКТУАЛЬНАЯ РЕДАКЦИЯ</b></div>
+          <p id="reactor-preparation-summary">Загружаем текст законопроекта…</p>
+          <section id="reactor-preparation-materials" hidden><strong>Материалы</strong><p></p></section>
+          <p class="preparation-privacy"><b>Личный контур.</b> Предварительная позиция не является голосом, не попадает в бюллетень и никому не видна.</p>
+        </aside>
+        <section class="preparation-workspace">
+          <div class="preparation-field-group">
+            <div class="preparation-field-heading"><span>01</span><div><h3>Предварительная позиция</h3><p>Можно изменить до самого голосования.</p></div></div>
+            <div class="preparation-vote-grid" role="group" aria-label="Предварительная позиция">
+              <button type="button" data-reactor-preparation-vote="yes"><b>Поддержать</b><small>есть основания</small></button>
+              <button type="button" data-reactor-preparation-vote="no"><b>Не поддерживать</b><small>есть возражения</small></button>
+              <button type="button" data-reactor-preparation-vote="abstain"><b>Воздержаться</b><small>нужны ответы</small></button>
+            </div>
+            <label class="preparation-label"><span>Почему сейчас</span><textarea id="reactor-preparation-reason" maxlength="2400" rows="3" placeholder="Кратко зафиксируйте основание позиции…"></textarea></label>
+          </div>
+
+          <div class="preparation-field-group">
+            <div class="preparation-field-heading"><span>02</span><div><h3>Вопросы к автору / ведущему</h3><p>Соберите то, что нужно выяснить до решения.</p></div><button id="reactor-preparation-add-question" type="button">+ Вопрос</button></div>
+            <div id="reactor-preparation-questions" class="preparation-questions"></div>
+            <p id="reactor-preparation-questions-empty" class="preparation-empty-note">Пока без вопросов.</p>
+          </div>
+
+          <div class="preparation-field-group">
+            <div class="preparation-field-heading"><span>03</span><div><h3>Аргументы, риски и пометки</h3><p>Личные заметки останутся только в вашем контуре.</p></div><small id="reactor-preparation-notes-count">0 / 16000</small></div>
+            <textarea id="reactor-preparation-notes" maxlength="16000" rows="8" placeholder="Связи с другими решениями, риски, варианты правок, личные заметки…"></textarea>
+          </div>
+
+          <fieldset class="preparation-checklist">
+            <legend>Проверка перед заседанием</legend>
+            <label><input id="reactor-preparation-read-text" type="checkbox"><span>Текст прочитан</span></label>
+            <label><input id="reactor-preparation-verify-sources" type="checkbox"><span>Источники проверены</span></label>
+            <label><input id="reactor-preparation-need-discussion" type="checkbox"><span>Нужно отдельное обсуждение</span></label>
+          </fieldset>
+        </section>
+      </div>
+      <footer class="preparation-dialog-footer">
+        <span id="reactor-preparation-save-state" role="status" aria-live="polite">Изменения сохраняются автоматически</span>
+        <div><button id="reactor-preparation-download" type="button">Скачать PDF</button><button id="reactor-preparation-save" class="portal-primary" type="button">Сохранить лист</button></div>
+      </footer>
+    </dialog>
+
     <div id="portal-busy" class="portal-busy" hidden>
       <div>
         <span>✦</span><strong id="portal-busy-title"
@@ -668,5 +742,6 @@
       </div>
     </div>
     <div id="portal-toast" class="portal-toast" hidden></div>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

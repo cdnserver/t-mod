@@ -25,6 +25,7 @@ from modules.profile import (
     TModAccountView,
     TModBugReportModal,
     WebAccessModal,
+    _safe_component_emoji,
     _edit_profile_web_access,
     profile_embed,
     profile_settings_embed,
@@ -63,6 +64,20 @@ class ProfileStorageTests(unittest.TestCase):
 
         other_guild = storage.add_profile_character(11, 200, "Other Server", "00123")
         self.assertEqual(other_guild.static_id, "123")
+
+    def test_profile_component_emoji_normalizer_rejects_invalid_markup(self) -> None:
+        self.assertEqual(_safe_component_emoji("🌙"), "🌙")
+        self.assertEqual(
+            _safe_component_emoji("<:shield:123456789012345678>"),
+            "<:shield:123456789012345678>",
+        )
+        self.assertEqual(
+            _safe_component_emoji("<a:shield:123456789012345678>"),
+            "<a:shield:123456789012345678>",
+        )
+        self.assertIsNone(_safe_component_emoji("not-an-emoji"))
+        self.assertIsNone(_safe_component_emoji("<:broken>"))
+        self.assertIsNone(_safe_component_emoji("\u0000"))
 
     def test_update_delete_and_position_compaction(self) -> None:
         first = storage.add_profile_character(10, 100, "First Hero", "100")

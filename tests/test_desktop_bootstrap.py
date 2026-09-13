@@ -83,7 +83,15 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 "modules.consensus_web.resolve_principal",
                 AsyncMock(return_value=principal),
             ):
-                response = await client.get("/api/desktop/v1/bootstrap")
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={
+                        "X-TMod-Install-Token": "C" * 43,
+                        "X-TMod-Desktop-Platform": "win32",
+                        "X-TMod-Desktop-Version": "1.3.6",
+                        "X-TMod-Device-Fingerprint": "3" * 64,
+                    },
+                )
             payload = await response.json()
             services = {item["id"]: item for item in payload["services"]}
             self.assertEqual(response.status, 200)
@@ -93,6 +101,9 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(services["admin"]["enabled"])
             self.assertIn("unread", payload["notifications"])
             self.assertTrue(payload["atlas_overlay"]["allowed"])
+            self.assertTrue(payload["device"]["trusted"])
+            self.assertTrue(payload["device"]["hardware_bound"])
+            self.assertTrue(payload["device"]["installation_ref"].startswith("TD-"))
             self.assertEqual(
                 payload["atlas_overlay"]["selected_character"]["nickname"],
                 "Saul Goodman",
@@ -133,8 +144,40 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             services = {item["id"]: item for item in payload["services"]}
             self.assertEqual(payload["viewer"]["account_tier"], "zero")
             self.assertFalse(services["reactor"]["enabled"])
-            self.assertTrue(services["atlas"]["enabled"])
+            self.assertFalse(services["atlas"]["enabled"])
             self.assertTrue(services["sgl"]["enabled"])
+            self.assertFalse(services["admin"]["enabled"])
+        finally:
+            await client.close()
+
+    async def test_atlas_entitlement_does_not_unlock_nuclear_reactor(self) -> None:
+        identity = TModAccountIdentity(id=99, display_name="Внешний пользователь")
+        principal = ConsensusWebPrincipal(
+            user_id=99,
+            guild_id=77,
+            display_name=identity.display_name,
+            csrf_token="csrf-zero",
+            member=identity,
+        )
+        storage.web_set_section_grant(
+            77,
+            99,
+            "atlas_ai",
+            enabled=True,
+            granted_by_id=1,
+        )
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch(
+                "modules.consensus_web.resolve_principal",
+                AsyncMock(return_value=principal),
+            ):
+                response = await client.get("/api/desktop/v1/bootstrap")
+            services = {item["id"]: item for item in (await response.json())["services"]}
+            self.assertTrue(services["atlas"]["enabled"])
+            self.assertFalse(services["admin"]["enabled"])
         finally:
             await client.close()
 

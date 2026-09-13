@@ -28,6 +28,23 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("https://tvr.lat", launcher)
         self.assertNotIn("http://SERVER_LAN_IP:8787", launcher)
 
+    def test_standard_launcher_is_independent_of_current_directory_and_account(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn('cd /d "%~dp0"', launcher)
+        self.assertIn('if not defined TMOD_PERSISTENT_DIR', launcher)
+        self.assertIn('%USERPROFILE%\\Documents\\SGLDiscordBot', launcher)
+        self.assertNotIn('set PERSISTENT_DIR=C:\\Users\\Admin\\Documents\\SGLDiscordBot', launcher)
+        self.assertIn('${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}', compose)
+        self.assertIn('copy "%~dp0.env.persistent.example"', launcher)
+        self.assertIn('copy "%~dp0localization.example.json"', launcher)
+        self.assertIn('-ProjectDir "%CD%"', launcher)
+        self.assertNotIn('-ProjectDir "%~dp0"', launcher)
+        self.assertNotIn("timeout /t", launcher.lower())
+        self.assertIn(":sleep", launcher)
+        self.assertIn("ping 127.0.0.1", launcher)
+
     def test_standard_launcher_generates_minecraft_secrets_with_valid_powershell(
         self,
     ) -> None:
@@ -91,11 +108,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("root * /srv/tmod", caddyfile)
         self.assertIn("tmod-caddy", compose)
         self.assertIn("reverse_proxy tmod-web:8787", caddyfile)
-        self.assertIn("health_uri /gateway-health", caddyfile)
+        self.assertIn("health_uri /gateway-ready", caddyfile)
         self.assertIn("tmod-postgres:", compose)
         self.assertIn("tmod-db-migrate:", compose)
         self.assertIn("tmod-worker:", compose)
-        self.assertIn("response_header_timeout 15s", caddyfile)
+        self.assertIn("response_header_timeout 300s", caddyfile)
         self.assertIn("docker compose restart tmod-caddy", launcher)
         self.assertIn("Permissions-Policy", caddyfile)
         self.assertIn("condition: service_completed_successfully", compose)
@@ -162,6 +179,70 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         )
         self.assertIn("The split backend did not become healthy", launcher)
 
+    def test_launcher_verifies_minecraft_supervisor_and_caddy_before_use(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("call :ensure_minecraft_runtime", launcher)
+        self.assertIn("Minecraft and lifecycle supervisor are healthy", launcher)
+        self.assertIn("within 180 seconds", launcher)
+        self.assertIn("docker compose ps -q minecraft-supervisor", launcher)
+        self.assertNotIn(
+            'docker inspect --format "{{.State.Health.Status}}" minecraft-supervisor',
+            launcher,
+        )
+        self.assertIn("docker compose up -d tmod-caddy", launcher)
+        self.assertIn("Caddy did not become healthy", launcher)
+        self.assertIn('test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]', compose)
+        self.assertIn("http://127.0.0.1:8792/ready", compose)
+
+    def test_docker_readiness_is_inline_and_cannot_corrupt_batch_return_stack(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertNotIn("call :ensure_docker_engine", launcher)
+        self.assertNotIn(":ensure_docker_engine", launcher)
+        self.assertIn("set DOCKER_ENGINE_READY=0", launcher)
+        self.assertIn('if not errorlevel 1 set DOCKER_ENGINE_READY=1', launcher)
+        self.assertIn('if not "%DOCKER_ENGINE_READY%"=="1"', launcher)
+
+    def test_launcher_recovers_stale_postgres_health_without_accepting_running_as_ready(
+        self,
+    ) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("call :wait_for_postgres_health 30", launcher)
+        self.assertIn("call :postgres_accepts_connections", launcher)
+        self.assertIn(
+            'psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT 1" >nul 2>nul',
+            launcher,
+        )
+        self.assertNotIn('"SELECT 1" 2>nul | findstr', launcher)
+        self.assertIn(
+            "docker compose up -d --no-deps --force-recreate tmod-postgres",
+            launcher,
+        )
+        self.assertIn("call :postgres_diagnostics", launcher)
+        self.assertIn("-h 127.0.0.1 -p 5432", launcher)
+        self.assertIn("pg_isready -q -h 127.0.0.1 -p 5432", compose)
+        self.assertIn("timeout: 20s", compose)
+        self.assertIn("retries: 36", compose)
+        self.assertIn("stop_grace_period: 6m", compose)
+
+    def test_launcher_retries_public_docker_build_without_windows_credentials(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+
+        self.assertIn("call :docker_build_without_windows_credentials", launcher)
+        self.assertIn(":docker_build_without_windows_credentials", launcher)
+        self.assertIn('set "DOCKER_BUILDKIT=0"', launcher)
+        self.assertIn('set "COMPOSE_DOCKER_CLI_BUILD=0"', launcher)
+        self.assertIn("docker build --pull=false -t tmod-discord-bot:latest .", launcher)
+        self.assertIn(
+            "docker build --pull=false -t tmod-minecraft-supervisor:latest .\\minecraft-supervisor",
+            launcher,
+        )
+        self.assertIn("local-image builder", launcher)
+
     def test_web_health_server_starts_before_discord_ready(self) -> None:
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         setup_hook = source.index("async def setup_hook")
@@ -185,7 +266,9 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("call :check_minecraft_rcon", launcher)
         self.assertIn("docker exec minecraft rcon-cli list", launcher)
         self.assertIn("Minecraft RCON secret accepted", launcher)
-        self.assertIn("server.properties are not synchronized", launcher)
+        self.assertIn("set MC_RCON_HEALTH=", launcher)
+        self.assertNotIn('findstr /I /X /C:"healthy"', launcher)
+        self.assertIn("server.properties may be unsynchronized", launcher)
 
     def test_transactional_updater_tests_backs_up_and_rolls_back(self) -> None:
         desktop = (ROOT / "start_tmod_windows.bat").read_text(encoding="utf-8")
@@ -201,6 +284,10 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("FallbackTimeoutSeconds", guard)
         self.assertIn("taskkill.exe", guard)
         self.assertIn("Starting the installed release", guard)
+        self.assertIn("-eq 75", guard)
+        self.assertIn("Другой запуск уже выполняет обновление", guard)
+        self.assertIn("TMOD_PERSISTENT_DIR = $PersistentDir", guard)
+        self.assertIn("TMOD_PERSISTENT_DIR = $PersistentDir", updater)
         self.assertIn('Join-Path $ProjectDir "run_windows.bat"', guard)
         self.assertIn("$runtimeArguments", guard)
         self.assertNotIn("call run_windows.bat", guard)
@@ -221,6 +308,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("BackupTimeoutSeconds", updater)
         self.assertIn("WaitForExit", updater)
         self.assertIn("taskkill.exe", updater)
+        self.assertIn("exit 75", updater)
+        self.assertNotIn('[string]$PersistentDir = "C:\\Users\\Admin\\Documents\\SGLDiscordBot"', updater)
         self.assertIn("--timeout-seconds $BackupTimeoutSeconds", updater)
         self.assertIn("unrecognized arguments:.*timeout-seconds", updater)
         self.assertIn("-SkipBuild ([bool]$RollbackImage)", updater)
@@ -232,6 +321,39 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertNotIn("git reset --hard", updater)
         self.assertNotIn("stash push", desktop)
         self.assertNotIn("checkout -B", desktop)
+        self.assertIn("credential.interactive=never", desktop)
+        self.assertIn("WaitForExit(180000)", desktop)
+        self.assertIn("taskkill.exe /PID $p.Id /T /F", desktop)
+        self.assertIn("CLONE_TARGET_CREATED", desktop)
+        self.assertIn("rmdir /S /Q", desktop)
+        self.assertIn("yyyyMMdd_HHmmss_fffffff", desktop)
+
+    def test_safe_update_bounds_heavy_native_commands(self) -> None:
+        updater = (ROOT / "safe_update_windows.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("function Invoke-BoundedNative", updater)
+        self.assertIn("function Invoke-BoundedNativeOrThrow", updater)
+        self.assertNotIn("return $result", updater)
+        self.assertIn('$UpdateDockerConfigDir = Join-Path $UpdateRoot "docker-cli-public"', updater)
+        self.assertIn('"credsStore":""', updater)
+        self.assertIn("YW5vbnltb3VzOg==", updater)
+        self.assertIn("$env:DOCKER_CONFIG = $UpdateDockerConfigDir", updater)
+        self.assertIn("Remove-Item Env:DOCKER_CONFIG", updater)
+        self.assertIn("WaitForExit($TimeoutSeconds * 1000)", updater)
+        self.assertIn("taskkill.exe /PID $process.Id /T /F", updater)
+        self.assertIn("CommandTimeoutSeconds", updater)
+        self.assertIn("PostgreSQL pre-update pg_dump failed", updater)
+        self.assertIn("PostgreSQL pre-update dump validation failed", updater)
+        self.assertIn("PostgreSQL pre-update dump copy failed", updater)
+        self.assertIn("Candidate Docker Compose build failed", updater)
+        self.assertIn("Candidate test suite failed", updater)
+        self.assertIn("type=bind,source=$CandidateDir,target=/candidate,readonly", updater)
+        self.assertIn('"--workdir", "/candidate"', updater)
+        self.assertIn('"PYTHONPATH=/candidate"', updater)
+        self.assertIn('"PYTHONPYCACHEPREFIX=/tmp/tmod-pycache"', updater)
+        self.assertIn("Candidate Caddy configuration validation failed", updater)
+        self.assertNotIn("& docker exec tmod-postgres pg_dump", updater)
+        self.assertNotIn("& docker cp \"tmod-postgres:", updater)
 
     def test_git_watcher_only_runs_safe_update_for_a_new_clean_release(self) -> None:
         runtime = (ROOT / "run_windows.bat").read_text(encoding="utf-8")

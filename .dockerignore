@@ -11,3 +11,18 @@ data
 tests
 
 minecraft-supervisor
+
+# The backend image must not carry desktop releases, media renders or local
+# documentation.  They are not used at runtime and previously made a remote
+# Windows build upload hundreds of megabytes before Docker could reuse layers.
+desktop/
+control-center/
+artifacts/
+davinci_sync_demo/
+brand/
+docs/
+gitbook/
+developer/
+tmp/
+output/
+**/.DS_Store

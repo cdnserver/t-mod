@@ -9,9 +9,9 @@
     <title>T·Consensus — пульт ведущего</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/assets/host.css?v=3">
+    <link rel="stylesheet" href="/assets/host.css?v=4">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/host.js?v=3" defer></script>
+    <script src="/assets/host.js?v=4" defer></script>
   </head>
   <body>
     <div class="host-atmosphere" aria-hidden="true">
@@ -125,7 +125,10 @@
             <span id="host-live-kicker">СКАЗАТЬ СЕЙЧАС</span>
             <small id="host-live-context">Текст изменится вместе со стадией</small>
           </div>
-          <button id="host-copy-live" type="button">Копировать</button>
+          <div class="host-live-actions">
+            <button id="host-alternate-live" type="button" disabled>Другой вариант</button>
+            <button id="host-copy-live" type="button">Копировать</button>
+          </div>
         </header>
         <div id="host-live-text" class="host-live-text" tabindex="0">
           Пульт сверяет план заседания с T-Mod.
@@ -240,5 +243,6 @@
         </menu>
       </form>
     </dialog>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

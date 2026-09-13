@@ -283,7 +283,7 @@ def save_workspace(
             "Обновите страницу и повторите сохранение.",
             status=409,
         ) from exc
-    _owned_workspace(guild_id, author_id, workspace_id)
+    current = _owned_workspace(guild_id, author_id, workspace_id)
     fields = {key: _text(payload, key) for key in _LIMITS}
     try:
         blocks_json = legislation_storage.execution_blocks_json(
@@ -295,11 +295,21 @@ def save_workspace(
             "Проверьте цепочку исполнения: у каждого блока нужны тип и название.",
         ) from exc
     try:
+        # A workspace returned by moderation may coexist with the author's
+        # newer draft.  Keep it in ``changes_requested`` while the author is
+        # editing; promoting it to ``review`` here would collide with that
+        # draft's one-open-workspace constraint.  Resubmission is the explicit
+        # transition back to moderation.
+        target_status = (
+            "changes_requested"
+            if str(current.get("status") or "") == "changes_requested"
+            else ("review" if fields["title"] and fields["summary"] else "draft")
+        )
         updated = workspace_storage.update_bill_workspace(
             workspace_id,
             expected_revision=expected_revision,
             decision_category="ordinary",
-            status="review" if fields["title"] and fields["summary"] else "draft",
+            status=target_status,
             execution_blocks_json=blocks_json,
             **fields,
         )
@@ -342,7 +352,11 @@ def generate_workspace_draft(
         leadership_actions=draft.leadership_actions,
         ai_model=BILL_EDITOR_MODEL,
         increment_ai_revision=True,
-        status="review",
+        status=(
+            "changes_requested"
+            if str(saved.get("status") or "") == "changes_requested"
+            else "review"
+        ),
     )
     return project_workspace(updated) or {}, draft.clarification
 

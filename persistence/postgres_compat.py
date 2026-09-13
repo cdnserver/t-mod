@@ -12,6 +12,8 @@ import os
 import re
 import sqlite3
 import threading
+import time
+import hashlib
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,49 @@ from typing import Any
 
 _pool: Any = None
 _pool_lock = threading.Lock()
+_audit_hook: Any = None
+
+
+def set_postgres_audit_hook(hook: Any) -> None:
+    """Install a non-blocking metadata hook without coupling persistence to UI."""
+    global _audit_hook
+    _audit_hook = hook
+
+
+def _audit_sql(
+    sql: str,
+    *,
+    duration_ms: float,
+    rowcount: int | None = None,
+    error: BaseException | None = None,
+    batch_size: int | None = None,
+) -> None:
+    hook = _audit_hook
+    if hook is None:
+        return
+    try:
+        normalized = re.sub(r"'(?:''|[^'])*'", "?", str(sql))
+        normalized = re.sub(r"\b\d+(?:\.\d+)?\b", "?", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()[:4000]
+        operation_match = re.match(r"^(?:WITH\s+.+?\s+)?(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|PRAGMA|SET|SHOW)", normalized, re.IGNORECASE)
+        tables = []
+        for match in re.finditer(r"\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+\"?([A-Za-z_][A-Za-z0-9_]*)", normalized, re.IGNORECASE):
+            name = match.group(1).lower()
+            if name not in tables:
+                tables.append(name)
+        hook({
+            "operation": operation_match.group(1).upper() if operation_match else "SQL",
+            "statement": normalized,
+            "fingerprint": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            "tables": tables[:20],
+            "duration_ms": round(float(duration_ms), 3),
+            "rowcount": rowcount,
+            "batch_size": batch_size,
+            "outcome": "error" if error is not None else "success",
+            "error": f"{type(error).__name__}: {str(error)[:1000]}" if error is not None else None,
+        })
+    except Exception:
+        return
 
 
 def postgres_enabled() -> bool:
@@ -479,6 +524,7 @@ class PostgresCompatConnection:
                 translated = translated.rstrip().removesuffix(";").rstrip() + " RETURNING id"
 
         cursor = self._connection.cursor()
+        started_at = time.perf_counter()
         savepoint = f"tmod_{id(cursor):x}"
         # Expected uniqueness failures are caught by several repositories.
         # Isolate mutating statements so those catches can continue the same
@@ -500,7 +546,13 @@ class PostgresCompatConnection:
                     self._last_insert_id = lastrowid
             if use_savepoint:
                 self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-            return CompatCursor(cursor, lastrowid=lastrowid)
+            result = CompatCursor(cursor, lastrowid=lastrowid)
+            _audit_sql(
+                raw,
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                rowcount=result.rowcount,
+            )
+            return result
         except Exception as exc:
             if use_savepoint:
                 try:
@@ -508,6 +560,11 @@ class PostgresCompatConnection:
                     self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
                 except Exception:
                     pass
+            _audit_sql(
+                raw,
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                error=exc,
+            )
             psycopg, _ = _load_driver()
             if isinstance(exc, psycopg.IntegrityError):
                 raise sqlite3.IntegrityError(str(exc)) from exc
@@ -520,18 +577,32 @@ class PostgresCompatConnection:
     def executemany(self, sql: str, parameters: Sequence[Sequence[Any]]) -> Any:
         translated = translate_sql(str(sql).strip())
         cursor = self._connection.cursor()
+        started_at = time.perf_counter()
         savepoint = f"tmod_many_{id(cursor):x}"
         try:
             self._connection.execute(f"SAVEPOINT {savepoint}")
             cursor.executemany(translated, parameters)
             self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-            return CompatCursor(cursor)
+            result = CompatCursor(cursor)
+            _audit_sql(
+                str(sql),
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                rowcount=result.rowcount,
+                batch_size=len(parameters),
+            )
+            return result
         except Exception as exc:
             try:
                 self._connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                 self._connection.execute(f"RELEASE SAVEPOINT {savepoint}")
             except Exception:
                 pass
+            _audit_sql(
+                str(sql),
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                error=exc,
+                batch_size=len(parameters),
+            )
             psycopg, _ = _load_driver()
             if isinstance(exc, psycopg.IntegrityError):
                 raise sqlite3.IntegrityError(str(exc)) from exc
@@ -546,10 +617,22 @@ class PostgresCompatConnection:
             self.execute(statement)
 
     def commit(self) -> None:
-        self._connection.commit()
+        started_at = time.perf_counter()
+        try:
+            self._connection.commit()
+            _audit_sql("COMMIT", duration_ms=(time.perf_counter() - started_at) * 1000)
+        except Exception as exc:
+            _audit_sql("COMMIT", duration_ms=(time.perf_counter() - started_at) * 1000, error=exc)
+            raise
 
     def rollback(self) -> None:
-        self._connection.rollback()
+        started_at = time.perf_counter()
+        try:
+            self._connection.rollback()
+            _audit_sql("ROLLBACK", duration_ms=(time.perf_counter() - started_at) * 1000)
+        except Exception as exc:
+            _audit_sql("ROLLBACK", duration_ms=(time.perf_counter() - started_at) * 1000, error=exc)
+            raise
 
     def close(self) -> None:
         if self._closed:

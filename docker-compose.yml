@@ -3,6 +3,10 @@ services:
     image: postgres:17-alpine
     container_name: tmod-postgres
     restart: unless-stopped
+    # Let a slow Windows/Docker Desktop checkpoint finish if the launcher must
+    # recreate the container to refresh its healthcheck. The named volume is
+    # durable either way, but avoiding SIGKILL prevents a needless recovery.
+    stop_grace_period: 6m
     environment:
       POSTGRES_DB: "tmod"
       POSTGRES_USER: "tmod"
@@ -10,17 +14,21 @@ services:
       PGDATA: "/var/lib/postgresql/data/pgdata"
     volumes:
       - "tmod-postgres-data:/var/lib/postgresql/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/postgres-password.txt:/run/secrets/postgres_password:ro"
     networks:
       - tmod-data
     expose:
       - "5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tmod -d tmod"]
-      interval: 5s
-      timeout: 4s
-      retries: 20
-      start_period: 15s
+      # A large database on Docker Desktop can be busy flushing a checkpoint
+      # for longer than the old four-second probe budget.  Check the TCP
+      # listener used by the application network and leave enough time for
+      # slow Windows-backed storage to respond before marking it unhealthy.
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -p 5432 -U $$POSTGRES_USER -d $$POSTGRES_DB -t 15"]
+      interval: 10s
+      timeout: 20s
+      retries: 36
+      start_period: 60s
 
   tmod-db-migrate:
     build: .
@@ -43,7 +51,7 @@ services:
       DATABASE_FILE: "/app/persistent/data/tmod.db"
       DATA_DIR: "/app/persistent/data"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     networks:
       - tmod-data
     depends_on:
@@ -60,7 +68,7 @@ services:
     # SQLite and persistent output writable.
     user: "0:0"
     env_file:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/.env"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/.env"
     environment:
       <<: *tmod_database_environment
       TMOD_RELEASE: "${TMOD_RELEASE:-unknown}"
@@ -69,13 +77,14 @@ services:
       TMOD_DB_PROTECTION_OWNER: "worker"
       ATLAS_QDRANT_URL: "http://atlas-qdrant:6333"
       ATLAS_FORUM_SELENIUM_URL: "http://atlas-forum-browser:4444/wd/hub"
+      ATLAS_FORUM_ENGINE_SELENIUM_URL: "http://atlas-forum-eye-browser:4444/wd/hub"
     expose:
       - "8788"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/data:/app/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/data:/app/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - default
       - tmod-data
@@ -106,6 +115,8 @@ services:
       - "127.0.0.1:8787:8787"
     networks:
       - default
+    volumes:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     depends_on:
       tmod-discord-bot:
         condition: service_started
@@ -114,7 +125,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-health', timeout=2)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-ready', timeout=3)"
       interval: 10s
       timeout: 3s
       retries: 5
@@ -136,7 +147,7 @@ services:
       POSTGRES_APPLICATION_NAME: "tmod-worker"
       TMOD_DB_BACKUP_DIR: "/app/persistent/backups/database"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     networks:
       - tmod-data
     expose:
@@ -149,7 +160,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/health', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/ready', timeout=3)"
       interval: 30s
       timeout: 5s
       retries: 5
@@ -189,12 +200,33 @@ services:
       # noVNC is bound to host loopback only, so a second password is unnecessary.
       SE_VNC_NO_PASSWORD: "true"
     healthcheck:
-      test:
-        - CMD
-        - curl
-        - --fail
-        - --silent
-        - http://127.0.0.1:4444/status
+      # `ready:false` is normal while the single live slot is occupied. The
+      # application probes that session and rotates it on a bounded schedule.
+      test: ["CMD-SHELL", "body=$$(curl --fail --silent --max-time 5 http://127.0.0.1:4444/status) || exit 1; echo \"$$body\" | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true|\"sessionId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 35s
+
+  atlas-forum-eye-browser:
+    image: selenium/standalone-chromium:4.46.0-20260707
+    container_name: tmod-atlas-forum-eye-browser
+    restart: unless-stopped
+    shm_size: "2gb"
+    expose:
+      - "4444"
+    ports:
+      # Dedicated troubleshooting surface for the complaint archive. The
+      # normal law indexer remains available on 7900 and can never block it.
+      - "127.0.0.1:7901:7900"
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
+      SE_NODE_SESSION_TIMEOUT: "600"
+      SE_SESSION_REQUEST_TIMEOUT: "20"
+      SE_VNC_NO_PASSWORD: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "body=$$(curl --fail --silent --max-time 5 http://127.0.0.1:4444/status) || exit 1; echo \"$$body\" | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true|\"sessionId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'"]
       interval: 20s
       timeout: 5s
       retries: 8
@@ -214,8 +246,14 @@ services:
     volumes:
       - "./Caddyfile:/etc/caddy/Caddyfile:ro"
       - "./web/consensus:/srv/tmod:ro"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/data:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/caddy/config:/config"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/data:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/caddy/config:/config"
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   minecraft:
     image: itzg/minecraft-server:java25-jdk
@@ -240,8 +278,8 @@ services:
       # password) synchronized while preserving properties without env values.
       OVERRIDE_SERVER_PROPERTIES: "true"
     volumes:
-      - "C:/Users/Admin/Documents/SGLDiscordBot/minecraft:/data"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/minecraft:/data"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
     tty: true
     stdin_open: true
     healthcheck:
@@ -255,7 +293,6 @@ services:
     build:
       context: ./minecraft-supervisor
     image: tmod-minecraft-supervisor:latest
-    container_name: minecraft-supervisor
     restart: unless-stopped
     environment:
       MINECRAFT_CONTAINER_NAME: "minecraft"
@@ -265,7 +302,7 @@ services:
       - "8791"
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "C:/Users/Admin/Documents/SGLDiscordBot/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
     networks:
       - minecraft-control
     read_only: true

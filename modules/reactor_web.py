@@ -74,10 +74,12 @@ from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import atlas_repository as atlas_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
+from persistence import global_ban_repository as global_ban_storage
 from persistence import market_repository as market_storage
 from persistence import ovr_repository as ovr_storage
 from persistence import admission_repository as admission_storage
 from persistence import outbox_repository as outbox_storage
+from persistence import consensus_preparation_repository as preparation_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import tvrs_repository as tvrs_storage
@@ -924,6 +926,68 @@ def register_reactor_web_routes(
         response.headers["X-T-Mod-Cache"] = cache_state
         return response
 
+    async def preparation_get(request: web.Request) -> web.Response:
+        """Project only upcoming bills and this member's private readiness.
+
+        The full sheet remains behind the existing per-bill preparation API.
+        Keeping this small list out of the home snapshot makes the Reactor's
+        first paint fast while never exposing a person's notes or draft vote.
+        """
+
+        principal = await personal_request(request)
+        bills = await asyncio.to_thread(
+            tvrs_storage.tvrs_queue_bills,
+            int(guild_id),
+            24,
+        )
+        bill_ids = [int(bill.get("id") or 0) for bill in bills]
+        statuses = await asyncio.to_thread(
+            preparation_storage.preparation_statuses,
+            int(guild_id),
+            int(principal.user_id),
+            bill_ids,
+        )
+        items: list[dict[str, Any]] = []
+        for bill in bills:
+            bill_id = int(bill.get("id") or 0)
+            if bill_id <= 0:
+                continue
+            marker = statuses.get(bill_id) or {}
+            items.append(
+                {
+                    "id": bill_id,
+                    "number": int(bill.get("bill_number") or 0),
+                    "title": str(bill.get("title") or "Без названия"),
+                    "summary": str(bill.get("summary") or ""),
+                    "author": str(bill.get("author_display") or "Автор не указан"),
+                    "status": str(bill.get("status") or "queued"),
+                    "updated_at": str(bill.get("updated_at") or "") or None,
+                    "preparation": {
+                        "prepared": bool(marker.get("prepared")),
+                        "preliminary_vote": marker.get("preliminary_vote"),
+                        "updated_at": marker.get("updated_at"),
+                    },
+                }
+            )
+        prepared = sum(
+            1
+            for item in items
+            if bool((item.get("preparation") or {}).get("prepared"))
+        )
+        response = web.json_response(
+            {
+                "items": items,
+                "total": len(items),
+                "prepared": prepared,
+                "notice": (
+                    "Листы подготовки личные: заметки и предварительная позиция "
+                    "не являются голосом и никому не видны."
+                ),
+            }
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     async def legislation_command(request: web.Request) -> web.Response:
         principal = await personal_request(request)
         body = await json_body(request, principal)
@@ -1638,6 +1702,16 @@ def register_reactor_web_routes(
                 status=401,
             )
 
+        installation = await asyncio.to_thread(
+            global_ban_storage.bind_desktop_installation,
+            int(guild_id),
+            int(principal.user_id),
+            str(request.headers.get("X-TMod-Install-Token") or ""),
+            platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
+            app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
+            device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+        )
+
         guild_member = bool(principal.guild_member)
         administrator = bool(principal.administrator)
         grants: list[dict[str, Any]] = []
@@ -1681,7 +1755,9 @@ def register_reactor_web_routes(
                 if str(row.get("section") or "").strip()
             }
         )
-        admin_access = administrator or bool(granted_sections)
+        # Atlas AI is a product entitlement, not a grant to the Nuclear
+        # Reactor. Only actual administrative section grants expose it.
+        admin_access = administrator or bool(set(granted_sections) - {"atlas_ai"})
         ovr_access = administrator or "ovr" in granted_sections
         atlas_access = administrator or "atlas_ai" in granted_sections
 
@@ -1714,6 +1790,7 @@ def register_reactor_web_routes(
                 "administrator": administrator,
                 "sections": granted_sections,
             },
+            "device": installation or {"trusted": False},
             "services": [
                 service(
                     "reactor",
@@ -1723,7 +1800,13 @@ def register_reactor_web_routes(
                     reason=member_reason,
                 ),
                 service("consensus", "Consensus", "https://consensus.tvr.lat/"),
-                service("atlas", "Atlas", "https://atlas.tvr.lat/"),
+                service(
+                    "atlas",
+                    "Atlas",
+                    "https://atlas.tvr.lat/",
+                    enabled=atlas_access,
+                    reason="Доступ к Atlas AI выдаётся администраторами.",
+                ),
                 service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
                 service(
                     "ovr",
@@ -2324,6 +2407,7 @@ def register_reactor_web_routes(
     app.router.add_get("/api/reactor/home", member_home)
     app.router.add_post("/api/reactor/onboarding", onboarding_command)
     app.router.add_get("/api/reactor/legislation", legislation_get)
+    app.router.add_get("/api/reactor/preparation", preparation_get)
     app.router.add_post("/api/reactor/legislation", legislation_command)
     app.router.add_get("/api/reactor/ovr", ovr_get)
     app.router.add_post("/api/reactor/ovr", ovr_command)

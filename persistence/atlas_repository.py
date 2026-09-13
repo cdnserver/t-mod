@@ -14,7 +14,18 @@ from modules.atlas_catalog import (
     atlas_catalog as _base_atlas_catalog,
     atlas_normalize_knowledge_scope,
 )
-from modules.atlas_taxonomy import atlas_classify_knowledge, atlas_taxonomy_catalog
+from modules.atlas_federation import (
+    ATLAS_DEFAULT_PROJECT_CODE,
+    atlas_federation_scope_catalog,
+    atlas_legacy_visibility_scope,
+    atlas_normalize_federation_scope,
+)
+from modules.atlas_taxonomy import (
+    atlas_classify_knowledge,
+    atlas_normalize_corpus_kind,
+    atlas_normalize_knowledge_domain,
+    atlas_taxonomy_catalog,
+)
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 
 
@@ -63,6 +74,16 @@ def _decoded(value: Any, fallback: Any) -> Any:
 def _slug(value: str, user_id: int) -> str:
     selected = _SLUG_RE.sub("-", str(value or "").strip().lower()).strip("-")
     return (selected[:36] or f"space-{int(user_id)}")
+
+
+def _project_scoped_slug(project_code: str, slug: str) -> str:
+    """Keep legacy slugs stable while making future project workspaces unique."""
+
+    clean_project = str(project_code or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
+    clean_slug = str(slug or "").strip().lower()
+    if clean_project == ATLAS_DEFAULT_PROJECT_CODE:
+        return clean_slug
+    return f"{clean_project}-{clean_slug}"[:80].rstrip("-")
 
 
 def _timeline_time(value: str | None) -> str:
@@ -160,7 +181,8 @@ def _atlas_entity_exists(
 
 
 def _knowledge_checksum(
-    visibility_scope: str,
+    federation_scope: str,
+    project_code: str,
     server_code: str,
     faction_code: str,
     content: str,
@@ -169,7 +191,7 @@ def _knowledge_checksum(
 ) -> str:
     return hashlib.sha256(
         (
-            f"{visibility_scope}\0{server_code}\0{faction_code}\0"
+            f"{federation_scope}\0{project_code}\0{server_code}\0{faction_code}\0"
             f"{identity}\0{content}"
         ).encode("utf-8")
     ).hexdigest()
@@ -209,6 +231,9 @@ def atlas_catalog() -> dict[str, Any]:
     base = _base_atlas_catalog()
     try:
         with connect_readonly() as con:
+            projects = con.execute(
+                "SELECT * FROM atlas_projects ORDER BY status = 'active' DESC, label"
+            ).fetchall()
             servers = con.execute(
                 "SELECT * FROM atlas_servers ORDER BY enabled DESC, COALESCE(number, 9999), label"
             ).fetchall()
@@ -216,6 +241,7 @@ def atlas_catalog() -> dict[str, Any]:
                 "SELECT * FROM atlas_factions ORDER BY enabled DESC, label"
             ).fetchall()
     except Exception:  # startup compatibility before the catalog migration
+        projects = []
         servers = []
         factions = []
     def merged(
@@ -243,11 +269,29 @@ def atlas_catalog() -> dict[str, Any]:
         )
         return result
 
+    project_items = [_row(row) for row in projects]
+    if not any(str(item.get("code") or "") == ATLAS_DEFAULT_PROJECT_CODE for item in project_items):
+        project_items.insert(
+            0,
+            {
+                "code": ATLAS_DEFAULT_PROJECT_CODE,
+                "name": "Majestic RP",
+                "label": "Majestic RP",
+                "status": "active",
+                "description": "Базовый проект Atlas для серверов Majestic RP.",
+                "enabled": True,
+            },
+        )
+    server_items = merged(base["servers"], servers)
+    for item in server_items:
+        item["project_code"] = str(item.get("project_code") or ATLAS_DEFAULT_PROJECT_CODE)
     return {
         **base,
         **atlas_taxonomy_catalog(),
-        "servers": merged(base["servers"], servers),
+        "projects": project_items,
+        "servers": server_items,
         "factions": merged(base["factions"], factions),
+        "federation_scopes": atlas_federation_scope_catalog(),
     }
 
 
@@ -272,6 +316,188 @@ def atlas_normalize_scope(server_code: str, faction_code: str) -> tuple[str, str
     return selected_server, selected_faction
 
 
+def atlas_resolve_federation_scope(
+    server_code: str,
+    faction_code: str,
+    *,
+    federation_scope: str | None = None,
+    legacy_visibility_scope: str | None = None,
+) -> dict[str, str]:
+    """Resolve a user-selected scope into the only trusted tenant boundary.
+
+    Server codes remain globally canonical (for example ``phoenix-15`` or
+    ``another-project-phoenix-15``).  This avoids ambiguous identifiers in
+    Discord, URLs and queued jobs, while the project code is attached to every
+    downstream knowledge and vector operation.
+    """
+
+    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    catalog = atlas_catalog()
+    server = next(
+        (item for item in catalog["servers"] if str(item.get("code") or "") == clean_server),
+        None,
+    )
+    if server is None:
+        raise ValueError("atlas_server_invalid")
+    project_code = str(server.get("project_code") or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
+    project = next(
+        (item for item in catalog["projects"] if str(item.get("code") or "") == project_code),
+        None,
+    )
+    if project is None or str(project.get("status") or "active") != "active":
+        raise ValueError("atlas_project_unavailable")
+    clean_federation = atlas_normalize_federation_scope(
+        federation_scope,
+        legacy_visibility_scope=legacy_visibility_scope,
+    )
+    return {
+        "project_code": project_code,
+        "server_code": clean_server,
+        "faction_code": clean_faction,
+        "federation_scope": clean_federation,
+        "visibility_scope": atlas_legacy_visibility_scope(clean_federation),
+    }
+
+
+def _assert_organization_project(
+    con: Any,
+    organization_id: int,
+    project_code: str,
+) -> dict[str, Any]:
+    row = con.execute(
+        "SELECT id, guild_id, slug, project_code, status FROM atlas_organizations WHERE id = ?",
+        (int(organization_id),),
+    ).fetchone()
+    if row is None or str(row["status"] or "") != "active":
+        raise ValueError("atlas_organization_unavailable")
+    organization_project = str(row["project_code"] or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
+    if organization_project != str(project_code or "").strip().lower():
+        raise ValueError("atlas_organization_project_mismatch")
+    return _row(row)
+
+
+def atlas_access_context(
+    organization_id: int,
+    *,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+) -> dict[str, Any]:
+    """Return the single trusted tenant context for Atlas read operations."""
+
+    scope = atlas_resolve_federation_scope(server_code, faction_code)
+    with connect_readonly() as con:
+        organization = _assert_organization_project(
+            con,
+            int(organization_id),
+            scope["project_code"],
+        )
+    return {"organization_id": int(organization_id), "organization": organization, **scope}
+
+
+def _federated_knowledge_scope_sql(
+    organization_id: int,
+    *,
+    server_code: str,
+    faction_code: str,
+) -> tuple[str, tuple[Any, ...], dict[str, str]]:
+    """Return the canonical tenant predicate used by every Atlas retrieval.
+
+    ``visibility_scope`` is intentionally not trusted here.  It remains for
+    compatibility with old UI/API clients, whereas ``federation_scope`` plus
+    ``project_code`` is the actual access boundary.  Keeping the predicate in
+    one place prevents a newly added search endpoint from accidentally
+    treating all ``global`` legacy documents as belonging to every tenant.
+    """
+
+    context = atlas_access_context(
+        int(organization_id),
+        server_code=server_code,
+        faction_code=faction_code,
+    )
+    scope = {
+        key: str(context[key])
+        for key in ("project_code", "server_code", "faction_code")
+    }
+    project_code = scope["project_code"]
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
+    return (
+        """
+        (
+            federation_scope = 'platform'
+            OR (federation_scope = 'project' AND project_code = ?)
+            OR (federation_scope = 'server' AND project_code = ? AND server_code = ?)
+            OR (
+                federation_scope = 'faction'
+                AND project_code = ? AND server_code = ? AND faction_code = ?
+            )
+            OR (
+                federation_scope = 'workspace'
+                AND organization_id = ? AND project_code = ?
+                AND server_code = ? AND faction_code = ?
+            )
+        )
+        """,
+        (
+            project_code,
+            project_code,
+            clean_server,
+            project_code,
+            clean_server,
+            clean_faction,
+            int(organization_id),
+            project_code,
+            clean_server,
+            clean_faction,
+        ),
+        scope,
+    )
+
+
+def atlas_projects(*, include_inactive: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_inactive else "WHERE status = 'active'"
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"SELECT * FROM atlas_projects {where} ORDER BY label, code"
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def atlas_upsert_project(
+    actor_user_id: int,
+    *,
+    code: str,
+    name: str,
+    enabled: bool = True,
+    description: str | None = None,
+) -> dict[str, Any]:
+    clean_code = str(code or "").strip().lower()
+    clean_name = " ".join(str(name or "").split())[:120]
+    if not _CATALOG_CODE_RE.fullmatch(clean_code) or len(clean_name) < 2:
+        raise ValueError("atlas_project_invalid")
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute(
+            """
+            INSERT INTO atlas_projects(
+                code, name, label, status, description, created_by_id, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                name = excluded.name, label = excluded.label, status = excluded.status,
+                description = excluded.description, updated_at = excluded.updated_at
+            """,
+            (
+                clean_code, clean_name, clean_name,
+                "active" if bool(enabled) else "suspended",
+                str(description or "").strip()[:600] or None,
+                int(actor_user_id), now, now,
+            ),
+        )
+        row = con.execute("SELECT * FROM atlas_projects WHERE code = ?", (clean_code,)).fetchone()
+        con.commit()
+    return _row(row)
+
+
 def atlas_overlay_characters(guild_id: int, user_id: int) -> list[dict[str, Any]]:
     """Return only characters owned by the authenticated T-Mod account.
 
@@ -284,7 +510,7 @@ def atlas_overlay_characters(guild_id: int, user_id: int) -> list[dict[str, Any]
         rows = con.execute(
             """
             SELECT pc.id, pc.nickname, pc.static_id, pc.position, pc.is_public,
-                   b.server_code, b.faction_code, b.rank_name, b.is_selected,
+                   b.project_code, b.server_code, b.faction_code, b.rank_name, b.is_selected,
                    b.voice_reply_enabled, b.screen_context_enabled,
                    b.assignment_status, b.verified_at, b.updated_at AS binding_updated_at
             FROM profile_characters pc
@@ -301,6 +527,10 @@ def atlas_overlay_characters(guild_id: int, user_id: int) -> list[dict[str, Any]
     server_labels = {
         str(item.get("code") or ""): str(item.get("label") or item.get("name") or "")
         for item in catalog["servers"]
+    }
+    project_labels = {
+        str(item.get("code") or ""): str(item.get("label") or item.get("name") or "")
+        for item in catalog.get("projects", [])
     }
     faction_labels = {
         str(item.get("code") or ""): str(item.get("label") or item.get("name") or "")
@@ -320,6 +550,11 @@ def atlas_overlay_characters(guild_id: int, user_id: int) -> list[dict[str, Any]
                 "identity_verified": True,
                 "bound": bound,
                 "selected": bool(item.get("is_selected")),
+                "project_code": str(item.get("project_code") or ATLAS_DEFAULT_PROJECT_CODE),
+                "project_label": project_labels.get(
+                    str(item.get("project_code") or ATLAS_DEFAULT_PROJECT_CODE),
+                    "",
+                ),
                 "server_code": str(item.get("server_code") or ""),
                 "server_label": server_labels.get(str(item.get("server_code") or ""), ""),
                 "faction_code": str(item.get("faction_code") or ""),
@@ -350,7 +585,10 @@ def atlas_set_overlay_character(
 ) -> dict[str, Any]:
     """Bind and select an owned character for the low-latency field mode."""
 
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    scope = atlas_resolve_federation_scope(server_code, faction_code)
+    clean_project = scope["project_code"]
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
     clean_rank = None if rank is None else " ".join(str(rank or "").split())[:100]
     now = utc_now_iso()
     with _db_lock, connect() as con:
@@ -384,11 +622,12 @@ def atlas_set_overlay_character(
         con.execute(
             """
             INSERT INTO atlas_character_bindings(
-                guild_id, user_id, character_id, server_code, faction_code,
+                guild_id, user_id, character_id, project_code, server_code, faction_code,
                 rank_name, is_selected, voice_reply_enabled,
                 screen_context_enabled, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id, character_id) DO UPDATE SET
+                project_code = excluded.project_code,
                 server_code = excluded.server_code,
                 faction_code = excluded.faction_code,
                 rank_name = excluded.rank_name,
@@ -401,7 +640,7 @@ def atlas_set_overlay_character(
                 updated_at = excluded.updated_at
             """,
             (
-                int(guild_id), int(user_id), int(character_id), clean_server,
+                int(guild_id), int(user_id), int(character_id), clean_project, clean_server,
                 clean_faction, clean_rank, int(bool(voice_reply_enabled)),
                 int(bool(screen_context_enabled)), now, now,
             ),
@@ -440,26 +679,42 @@ def atlas_upsert_server(
     name: str,
     number: int | None = None,
     enabled: bool = True,
+    project_code: str = ATLAS_DEFAULT_PROJECT_CODE,
 ) -> dict[str, Any]:
     clean_code = str(code or "").strip().lower()
+    clean_project = str(project_code or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
     clean_name = " ".join(str(name or "").split())[:100]
-    if not _CATALOG_CODE_RE.fullmatch(clean_code) or len(clean_name) < 2:
+    if (
+        not _CATALOG_CODE_RE.fullmatch(clean_code)
+        or not _CATALOG_CODE_RE.fullmatch(clean_project)
+        or len(clean_name) < 2
+    ):
         raise ValueError("atlas_server_invalid")
     clean_number = int(number) if number not in {None, ""} else None
     label = f"{clean_name} ({clean_number})" if clean_number is not None else clean_name
     now = utc_now_iso()
     with _db_lock, connect() as con:
+        project = con.execute(
+            "SELECT status FROM atlas_projects WHERE code = ?", (clean_project,)
+        ).fetchone()
+        if project is None or str(project["status"] or "") != "active":
+            raise ValueError("atlas_project_unavailable")
+        existing = con.execute(
+            "SELECT project_code FROM atlas_servers WHERE code = ?", (clean_code,)
+        ).fetchone()
+        if existing is not None and str(existing["project_code"] or "").strip().lower() != clean_project:
+            raise ValueError("atlas_server_project_immutable")
         con.execute(
             """
             INSERT INTO atlas_servers(
-                code, name, number, label, enabled, created_by_id, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                code, project_code, name, number, label, enabled, created_by_id, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(code) DO UPDATE SET
                 name = excluded.name, number = excluded.number, label = excluded.label,
                 enabled = excluded.enabled, updated_at = excluded.updated_at
             """,
             (
-                clean_code, clean_name, clean_number, label, int(bool(enabled)),
+                clean_code, clean_project, clean_name, clean_number, label, int(bool(enabled)),
                 int(actor_user_id), now, now,
             ),
         )
@@ -525,22 +780,35 @@ def atlas_create_organization(
     clean_kind = str(kind or "government").strip().lower()
     if clean_kind not in {"government", "bureau", "project", "personal"}:
         raise ValueError("atlas_organization_kind_invalid")
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
-    clean_slug = _slug(slug or clean_name, int(owner_user_id))
+    scope = atlas_resolve_federation_scope(server_code, faction_code)
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
+    clean_project = scope["project_code"]
+    requested_slug = _slug(slug or clean_name, int(owner_user_id))
+    clean_slug = _project_scoped_slug(clean_project, requested_slug)
     branding = {
+        "project_code": clean_project,
         "server_code": clean_server,
         "faction_code": clean_faction,
+        "requested_slug": requested_slug,
         "managed": True,
     }
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
+        existing = con.execute(
+            "SELECT project_code FROM atlas_organizations WHERE guild_id = ? AND slug = ?",
+            (int(guild_id), clean_slug),
+        ).fetchone()
+        if existing is not None and str(existing["project_code"] or "").strip().lower() != clean_project:
+            con.rollback()
+            raise ValueError("atlas_organization_project_immutable")
         con.execute(
             """
             INSERT INTO atlas_organizations(
-                guild_id, slug, name, kind, owner_user_id, description,
+                guild_id, project_code, slug, name, kind, owner_user_id, description,
                 branding_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, slug) DO UPDATE SET
                 name = excluded.name, kind = excluded.kind,
                 owner_user_id = excluded.owner_user_id,
@@ -549,7 +817,7 @@ def atlas_create_organization(
                 status = 'active', updated_at = excluded.updated_at
             """,
             (
-                int(guild_id), clean_slug, clean_name, clean_kind,
+                int(guild_id), clean_project, clean_slug, clean_name, clean_kind,
                 int(owner_user_id), str(description or "").strip()[:500] or None,
                 _json(branding), now, now,
             ),
@@ -594,26 +862,45 @@ def atlas_ensure_personal_space(
     guild_id: int,
     user_id: int,
     display_name: str,
+    *,
+    project_code: str = ATLAS_DEFAULT_PROJECT_CODE,
 ) -> dict[str, Any]:
     """Create the safe personal sandbox used before joining an organization."""
 
     now = utc_now_iso()
     clean_name = str(display_name or f"Участник {int(user_id)}").strip()[:100]
-    slug = f"personal-{int(user_id)}"
+    clean_project = str(project_code or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
+    if not _CATALOG_CODE_RE.fullmatch(clean_project):
+        raise ValueError("atlas_project_invalid")
+    slug = _project_scoped_slug(clean_project, f"personal-{int(user_id)}")
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
+        project = con.execute(
+            "SELECT status FROM atlas_projects WHERE code = ?", (clean_project,)
+        ).fetchone()
+        if project is None or str(project["status"] or "") != "active":
+            con.rollback()
+            raise ValueError("atlas_project_unavailable")
+        existing = con.execute(
+            "SELECT project_code FROM atlas_organizations WHERE guild_id = ? AND slug = ?",
+            (int(guild_id), slug),
+        ).fetchone()
+        if existing is not None and str(existing["project_code"] or "").strip().lower() != clean_project:
+            con.rollback()
+            raise ValueError("atlas_organization_project_immutable")
         con.execute(
             """
             INSERT INTO atlas_organizations(
-                guild_id, slug, name, kind, owner_user_id, description,
+                guild_id, project_code, slug, name, kind, owner_user_id, description,
                 created_at, updated_at
-            ) VALUES(?, ?, ?, 'personal', ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, 'personal', ?, ?, ?, ?)
             ON CONFLICT(guild_id, slug) DO UPDATE SET
                 name = excluded.name,
                 updated_at = excluded.updated_at
             """,
             (
                 int(guild_id),
+                clean_project,
                 slug,
                 f"Пространство {clean_name}"[:120],
                 int(user_id),
@@ -659,23 +946,42 @@ def atlas_ensure_personal_space(
     return {"organization": _row(organization), "membership": _row(membership)}
 
 
-def atlas_ensure_system_space(guild_id: int) -> dict[str, Any]:
+def atlas_ensure_system_space(
+    guild_id: int,
+    *,
+    project_code: str = ATLAS_DEFAULT_PROJECT_CODE,
+) -> dict[str, Any]:
     """Return the non-user workspace that owns canonical shared imports."""
 
     now = utc_now_iso()
-    slug = "atlas-system-library"
+    clean_project = str(project_code or ATLAS_DEFAULT_PROJECT_CODE).strip().lower()
+    if not _CATALOG_CODE_RE.fullmatch(clean_project):
+        raise ValueError("atlas_project_invalid")
+    slug = (
+        "atlas-system-library"
+        if clean_project == ATLAS_DEFAULT_PROJECT_CODE
+        else f"atlas-system-library-{clean_project}"
+    )
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
+        project = con.execute(
+            "SELECT status FROM atlas_projects WHERE code = ?", (clean_project,)
+        ).fetchone()
+        if project is None or str(project["status"] or "") != "active":
+            con.rollback()
+            raise ValueError("atlas_project_unavailable")
         con.execute(
             """
             INSERT INTO atlas_organizations(
-                guild_id, slug, name, kind, owner_user_id, description,
+                guild_id, project_code, slug, name, kind, owner_user_id, description,
                 created_at, updated_at
-            ) VALUES(?, ?, 'Системная библиотека Atlas', 'project', 0, ?, ?, ?)
-            ON CONFLICT(guild_id, slug) DO UPDATE SET updated_at = excluded.updated_at
+            ) VALUES(?, ?, ?, 'Системная библиотека Atlas', 'project', 0, ?, ?, ?)
+            ON CONFLICT(guild_id, slug) DO UPDATE SET
+                project_code = excluded.project_code, updated_at = excluded.updated_at
             """,
             (
                 int(guild_id),
+                clean_project,
                 slug,
                 "Проверенные общие источники и автоматические синхронизации.",
                 now,
@@ -998,6 +1304,7 @@ def atlas_add_knowledge(
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
     visibility_scope: str = "workspace",
+    federation_scope: str | None = None,
     original_filename: str | None = None,
     knowledge_domain: str | None = None,
     corpus_kind: str | None = None,
@@ -1010,8 +1317,18 @@ def atlas_add_knowledge(
     clean_kind = str(source_kind or "memo").strip().lower()
     if clean_kind not in {"document", "forum", "memo", "regulation", "manual", "url"}:
         clean_kind = "memo"
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
     clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
+    scope = atlas_resolve_federation_scope(
+        server_code,
+        faction_code,
+        federation_scope=federation_scope,
+        legacy_visibility_scope=clean_visibility,
+    )
+    clean_project = scope["project_code"]
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
+    clean_federation = scope["federation_scope"]
+    clean_visibility = scope["visibility_scope"]
     clean_filename = str(original_filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1][:240] or None
     taxonomy = atlas_classify_knowledge(
         title=clean_title,
@@ -1023,7 +1340,8 @@ def atlas_add_knowledge(
     )
     clean_metadata = {**dict(metadata or {}), "taxonomy": taxonomy}
     checksum = _knowledge_checksum(
-        clean_visibility,
+        clean_federation,
+        clean_project,
         clean_server,
         clean_faction,
         clean_content,
@@ -1039,15 +1357,21 @@ def atlas_add_knowledge(
         ).fetchone()
         if membership is None or str(membership["role"]) not in {"owner", "administrator", "editor"}:
             raise ValueError("atlas_knowledge_forbidden")
+        _assert_organization_project(con, int(organization_id), clean_project)
         con.execute(
             """
             INSERT INTO atlas_knowledge_sources(
-                organization_id, server_code, faction_code, visibility_scope,
+                organization_id, project_code, server_code, faction_code, visibility_scope, federation_scope,
                 title, source_kind,
                 source_url, content_text, checksum, original_filename,
                 metadata_json, created_by_id, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(organization_id, checksum) DO UPDATE SET
+                project_code = excluded.project_code,
+                server_code = excluded.server_code,
+                faction_code = excluded.faction_code,
+                visibility_scope = excluded.visibility_scope,
+                federation_scope = excluded.federation_scope,
                 title = excluded.title,
                 source_url = excluded.source_url,
                 original_filename = excluded.original_filename,
@@ -1058,9 +1382,11 @@ def atlas_add_knowledge(
             """,
             (
                 int(organization_id),
+                clean_project,
                 clean_server,
                 clean_faction,
                 clean_visibility,
+                clean_federation,
                 clean_title,
                 clean_kind,
                 str(source_url or "").strip()[:1000] or None,
@@ -1125,29 +1451,13 @@ def atlas_knowledge_sources(
     clauses = ["status != 'archived'"]
     params: list[Any] = []
     if server_code is not None or faction_code is not None:
-        clean_server, clean_faction = atlas_normalize_scope(
-            server_code or "phoenix-15",
-            faction_code or "lspd",
+        scope_sql, scope_params, _scope = _federated_knowledge_scope_sql(
+            int(organization_id),
+            server_code=server_code or "phoenix-15",
+            faction_code=faction_code or "lspd",
         )
-        clauses.append(
-            """(
-                visibility_scope = 'global'
-                OR (visibility_scope = 'server' AND server_code = ?)
-                OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
-                OR (visibility_scope = 'workspace' AND organization_id = ?
-                    AND server_code = ? AND faction_code = ?)
-            )"""
-        )
-        params.extend(
-            [
-                clean_server,
-                clean_server,
-                clean_faction,
-                int(organization_id),
-                clean_server,
-                clean_faction,
-            ]
-        )
+        clauses.append(scope_sql)
+        params.extend(scope_params)
     else:
         clauses.append("organization_id = ?")
         params.append(int(organization_id))
@@ -1155,8 +1465,8 @@ def atlas_knowledge_sources(
     with connect_readonly() as con:
         rows = con.execute(
             f"""
-            SELECT id, organization_id, server_code, faction_code,
-                   visibility_scope, title,
+            SELECT id, organization_id, project_code, server_code, faction_code,
+                   visibility_scope, federation_scope, title,
                    source_kind, source_url, checksum, status, original_filename,
                    metadata_json, created_by_id, indexed_at, last_error,
                    created_at, updated_at
@@ -1185,41 +1495,172 @@ def atlas_searchable_knowledge_sources(
     *,
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
-    limit: int = 300,
+    query_terms: tuple[str, ...] | list[str] | None = None,
+    limit: int = 800,
 ) -> list[dict[str, Any]]:
-    """Return accessible canonical text for the local half of hybrid search."""
+    """Return a durable local retrieval corpus, not merely the newest rows.
 
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
+    Forum imports can contain hundreds of topics.  The former ``ORDER BY
+    updated_at LIMIT 300`` silently evicted older codices whenever a large
+    forum section was synchronized.  Qdrant then became a single point of
+    failure and Atlas incorrectly reported that its library was empty.
+
+    Keep the query bounded, but compose it from title matches, authoritative
+    reference documents and recent material.  This keeps old laws available
+    while avoiding a full read of every large forum post on each question.
+    """
+
+    scope_sql, scope_params, _scope = _federated_knowledge_scope_sql(
+        int(organization_id),
+        server_code=server_code,
+        faction_code=faction_code,
+    )
+    clean_limit = max(1, min(2_000, int(limit)))
+    clean_terms = tuple(
+        dict.fromkeys(
+            str(term or "").strip().casefold()[:80]
+            for term in query_terms or ()
+            if len(str(term or "").strip()) >= 3
+        )
+    )[:12]
+    scope_sql = f"""
+        status != 'archived'
+        AND length(trim(content_text)) >= 20
+        AND {scope_sql}
+    """
+    reference_markers = (
+        "кодекс",
+        "закон",
+        "правил",
+        "устав",
+        "регламент",
+        "порядок",
+        "положен",
+        "конституц",
+        "постановлен",
+        "судебн",
+    )
+    with connect_readonly() as con:
+        batches: list[list[Any]] = []
+        if clean_terms:
+            title_sql = " OR ".join("lower(title) LIKE ?" for _ in clean_terms)
+            batches.append(
+                con.execute(
+                    f"""
+                    SELECT * FROM atlas_knowledge_sources
+                    WHERE {scope_sql} AND ({title_sql})
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (*scope_params, *(f"%{term}%" for term in clean_terms), min(220, clean_limit)),
+                ).fetchall()
+            )
+        reference_sql = " OR ".join("lower(title) LIKE ?" for _ in reference_markers)
+        batches.append(
+            con.execute(
+                f"""
+                SELECT * FROM atlas_knowledge_sources
+                WHERE {scope_sql} AND ({reference_sql})
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (
+                    *scope_params,
+                    *(f"%{marker}%" for marker in reference_markers),
+                    min(520, clean_limit),
+                ),
+            ).fetchall()
+        )
+        batches.append(
+            con.execute(
+                f"""
+                SELECT * FROM atlas_knowledge_sources
+                WHERE {scope_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (*scope_params, min(360, clean_limit)),
+            ).fetchall()
+        )
+    result: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for batch in batches:
+        for row in batch:
+            source_id = int(row["id"])
+            if source_id in seen:
+                continue
+            result.append(_row(row))
+            seen.add(source_id)
+            if len(result) >= clean_limit:
+                return result
+    return result
+
+
+def atlas_visible_knowledge_sources_by_id(
+    organization_id: int,
+    source_ids: list[int] | tuple[int, ...] | set[int],
+    *,
+    server_code: str = "phoenix-15",
+    faction_code: str = "lspd",
+    allowed_domains: tuple[str, ...] | list[str] | set[str] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Re-authorize derived vector hits against the canonical source table.
+
+    Qdrant is an acceleration layer and can temporarily contain stale points
+    after a source is archived, edited, or moved to another project.  A search
+    result is therefore never trusted until its source id, current checksum and
+    current federation boundary have all been confirmed here.
+    """
+
+    clean_id_set: set[int] = set()
+    for item in source_ids:
+        try:
+            clean_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if clean_id > 0:
+            clean_id_set.add(clean_id)
+    clean_ids = tuple(sorted(clean_id_set))[:128]
+    if not clean_ids:
+        return {}
+    scope_sql, scope_params, _scope = _federated_knowledge_scope_sql(
+        int(organization_id),
+        server_code=server_code,
+        faction_code=faction_code,
+    )
+    placeholders = ", ".join("?" for _ in clean_ids)
     with connect_readonly() as con:
         rows = con.execute(
-            """
+            f"""
             SELECT * FROM atlas_knowledge_sources
-            WHERE status != 'archived'
+            WHERE id IN ({placeholders})
+              AND status != 'archived'
               AND length(trim(content_text)) >= 20
-              AND (
-                visibility_scope = 'global'
-                OR (visibility_scope = 'server' AND server_code = ?)
-                OR (visibility_scope = 'faction' AND server_code = ? AND faction_code = ?)
-                OR (visibility_scope = 'workspace' AND organization_id = ?
-                    AND server_code = ? AND faction_code = ?)
-              )
-            ORDER BY updated_at DESC, id DESC
-            LIMIT ?
+              AND {scope_sql}
             """,
-            (
-                clean_server,
-                clean_server,
-                clean_faction,
-                int(organization_id),
-                clean_server,
-                clean_faction,
-                max(1, min(1_000, int(limit))),
-            ),
+            (*clean_ids, *scope_params),
         ).fetchall()
-    return [_row(row) for row in rows]
+    permitted = {
+        str(value or "").strip().lower()
+        for value in (allowed_domains or ())
+        if str(value or "").strip()
+    }
+    result: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item = _row(row)
+        taxonomy = (
+            item.get("metadata", {}).get("taxonomy", {})
+            if isinstance(item.get("metadata"), dict)
+            else {}
+        )
+        domain = str(taxonomy.get("domain") or "mixed").strip().lower()
+        if permitted and domain not in permitted:
+            continue
+        result[int(item["id"])] = item
+    return result
 
 
-def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any]]:
+def atlas_indexable_knowledge_sources(*, limit: int = 5_000) -> list[dict[str, Any]]:
     """Return canonical source text for rebuilding the derived search index."""
 
     with connect_readonly() as con:
@@ -1231,7 +1672,7 @@ def atlas_indexable_knowledge_sources(*, limit: int = 500) -> list[dict[str, Any
             ORDER BY id ASC
             LIMIT ?
             """,
-            (max(1, min(2_000, int(limit))),),
+            (max(1, min(10_000, int(limit))),),
         ).fetchall()
     return [_row(row) for row in rows]
 
@@ -1328,46 +1769,95 @@ def atlas_ensure_forum_feed(
     server_code: str = "phoenix-15",
     faction_code: str = "lspd",
     visibility_scope: str = "server",
+    federation_scope: str | None = None,
+    knowledge_domain: str | None = None,
+    corpus_kind: str | None = None,
+    organization_id: int | None = None,
     interval_seconds: int = 43_200,
 ) -> dict[str, Any]:
-    organization = atlas_ensure_system_space(guild_id)
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
     clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
-    clean_key = str(feed_key or "").strip().lower()[:80]
+    scope = atlas_resolve_federation_scope(
+        server_code,
+        faction_code,
+        federation_scope=federation_scope,
+        legacy_visibility_scope=clean_visibility,
+    )
+    clean_domain = atlas_normalize_knowledge_domain(knowledge_domain)
+    clean_corpus = atlas_normalize_corpus_kind(corpus_kind)
+    if str(knowledge_domain or "").strip() and clean_domain is None:
+        raise ValueError("atlas_knowledge_domain_invalid")
+    if str(corpus_kind or "").strip() and clean_corpus is None:
+        raise ValueError("atlas_corpus_kind_invalid")
+    system_organization = (
+        atlas_ensure_system_space(guild_id, project_code=scope["project_code"])
+        if organization_id is None
+        else None
+    )
+    clean_project = scope["project_code"]
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
+    clean_visibility = scope["visibility_scope"]
+    clean_federation = scope["federation_scope"]
+    requested_key = str(feed_key or "").strip().lower()[:60]
+    prefix = f"{clean_project}:"
+    if requested_key.startswith(prefix):
+        clean_key = requested_key
+    elif ":" in requested_key:
+        # A caller must never be able to write a feed into another project's
+        # namespace merely by supplying a forged prefix.
+        raise ValueError("atlas_forum_feed_project_invalid")
+    else:
+        clean_key = f"{prefix}{requested_key}"
     clean_url = str(root_url or "").strip()[:2000]
-    if not clean_key or not clean_url.startswith(("https://", "http://")):
+    if not requested_key or not clean_url.startswith(("https://", "http://")):
         raise ValueError("atlas_forum_feed_invalid")
     interval = max(3600, min(604_800, int(interval_seconds)))
     now = utc_now_iso()
+    selected_organization_id = int(
+        organization_id if organization_id is not None else system_organization["id"]
+    )
     with _db_lock, connect() as con:
+        organization = con.execute(
+            "SELECT guild_id, project_code FROM atlas_organizations WHERE id = ?",
+            (selected_organization_id,),
+        ).fetchone()
+        if organization is None or int(organization["guild_id"]) != int(guild_id):
+            raise ValueError("atlas_forum_feed_organization_invalid")
+        if str(organization["project_code"] or "").strip().lower() != clean_project:
+            raise ValueError("atlas_organization_project_mismatch")
         con.execute(
             """
             INSERT INTO atlas_forum_feeds(
-                guild_id, organization_id, feed_key, root_url, server_code,
-                faction_code, visibility_scope, interval_seconds,
+                guild_id, organization_id, project_code, feed_key, root_url, server_code,
+                faction_code, visibility_scope, federation_scope, knowledge_domain,
+                corpus_kind, interval_seconds,
                 created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, feed_key) DO UPDATE SET
                 organization_id = excluded.organization_id,
+                project_code = excluded.project_code,
                 root_url = excluded.root_url,
                 server_code = excluded.server_code,
                 faction_code = excluded.faction_code,
                 visibility_scope = excluded.visibility_scope,
+                federation_scope = excluded.federation_scope,
+                knowledge_domain = excluded.knowledge_domain,
+                corpus_kind = excluded.corpus_kind,
                 interval_seconds = excluded.interval_seconds,
-                status = CASE
-                    WHEN atlas_forum_feeds.status = 'disabled' THEN 'pending'
-                    ELSE atlas_forum_feeds.status
-                END,
                 updated_at = excluded.updated_at
             """,
             (
                 int(guild_id),
-                int(organization["id"]),
+                selected_organization_id,
+                clean_project,
                 clean_key,
                 clean_url,
                 clean_server,
                 clean_faction,
                 clean_visibility,
+                clean_federation,
+                clean_domain,
+                clean_corpus,
                 interval,
                 now,
                 now,
@@ -1377,6 +1867,23 @@ def atlas_ensure_forum_feed(
             "SELECT * FROM atlas_forum_feeds WHERE guild_id = ? AND feed_key = ?",
             (int(guild_id), clean_key),
         ).fetchone()
+        # Versions before project namespaces stored the same feed under the
+        # raw key. Leaving that row active makes two schedulers alternately
+        # overwrite each source with contradictory scope/taxonomy. Preserve
+        # the row for audit history, but make the canonical namespaced feed
+        # the only writer for the same root URL.
+        if clean_key != requested_key:
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET status = 'disabled',
+                    last_error = 'superseded_by_namespaced_feed',
+                    updated_at = ?
+                WHERE guild_id = ? AND feed_key = ? AND root_url = ?
+                  AND id != ?
+                """,
+                (now, int(guild_id), requested_key, clean_url, int(row["id"])),
+            )
         con.commit()
     return _row(row)
 
@@ -1403,12 +1910,122 @@ def atlas_forum_sync_started(feed_id: int) -> dict[str, Any]:
     return _row(row)
 
 
+def atlas_forum_due_feeds(
+    guild_id: int,
+    *,
+    limit: int = 8,
+    now: str | None = None,
+    running_lease_seconds: int = 3_600,
+) -> list[dict[str, Any]]:
+    """Return feeds eligible for a bounded scheduler pass.
+
+    A previously crashed process can leave a feed in ``running`` state.  It is
+    retried only after the lease expires; a live browser is never duplicated.
+    """
+
+    current = str(now or utc_now_iso())
+    try:
+        parsed_now = datetime.fromisoformat(current.replace("Z", "+00:00"))
+    except ValueError:
+        parsed_now = datetime.now(timezone.utc)
+    if parsed_now.tzinfo is None:
+        parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+    stale_before = (
+        parsed_now.astimezone(timezone.utc)
+        - timedelta(seconds=max(60, min(86_400, int(running_lease_seconds))))
+    ).isoformat()
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM atlas_forum_feeds
+            WHERE guild_id = ? AND status != 'disabled'
+              AND (
+                (status != 'running' AND (next_sync_at IS NULL OR next_sync_at <= ?))
+                OR (status = 'running' AND (last_started_at IS NULL OR last_started_at <= ?))
+              )
+            ORDER BY CASE WHEN next_sync_at IS NULL THEN 0 ELSE 1 END,
+                     next_sync_at, id
+            LIMIT ?
+            """,
+            (int(guild_id), current, stale_before, max(1, min(64, int(limit)))),
+        ).fetchall()
+    return [_row(row) for row in rows]
+
+
+def atlas_forum_claim_feed(
+    guild_id: int,
+    feed_id: int,
+    *,
+    force: bool = False,
+    now: str | None = None,
+    running_lease_seconds: int = 3_600,
+) -> dict[str, Any] | None:
+    """Atomically claim one due feed so two workers cannot scrape it twice."""
+
+    current = str(now or utc_now_iso())
+    try:
+        parsed_now = datetime.fromisoformat(current.replace("Z", "+00:00"))
+    except ValueError:
+        parsed_now = datetime.now(timezone.utc)
+    if parsed_now.tzinfo is None:
+        parsed_now = parsed_now.replace(tzinfo=timezone.utc)
+    stale_before = (
+        parsed_now.astimezone(timezone.utc)
+        - timedelta(seconds=max(60, min(86_400, int(running_lease_seconds))))
+    ).isoformat()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ? AND guild_id = ?",
+            (int(feed_id), int(guild_id)),
+        ).fetchone()
+        if row is None or str(row["status"] or "") == "disabled":
+            con.rollback()
+            return None
+        # Keep the eligibility condition in the UPDATE itself.  PostgreSQL
+        # re-checks it after a competing transaction releases the row, which
+        # makes the lease safe even when two application processes overlap.
+        if force:
+            eligibility = (
+                "(status != 'running' OR last_started_at IS NULL OR last_started_at <= ?)"
+            )
+            eligibility_params: tuple[Any, ...] = (stale_before,)
+        else:
+            eligibility = """
+                (
+                    (status != 'running' AND (next_sync_at IS NULL OR next_sync_at <= ?))
+                    OR (status = 'running' AND (last_started_at IS NULL OR last_started_at <= ?))
+                )
+            """
+            eligibility_params = (current, stale_before)
+        cursor = con.execute(
+            f"""
+            UPDATE atlas_forum_feeds
+            SET status = 'running', last_started_at = ?, last_error = NULL,
+                updated_at = ?
+            WHERE id = ? AND guild_id = ? AND status != 'disabled'
+              AND {eligibility}
+            """,
+            (current, current, int(feed_id), int(guild_id), *eligibility_params),
+        )
+        if not cursor.rowcount:
+            con.rollback()
+            return None
+        claimed = con.execute(
+            "SELECT * FROM atlas_forum_feeds WHERE id = ?",
+            (int(feed_id),),
+        ).fetchone()
+        con.commit()
+    return _row(claimed) if claimed is not None else None
+
+
 def atlas_forum_sync_finished(
     feed_id: int,
     *,
     stats: dict[str, Any] | None = None,
     error: str | None = None,
     attention: bool = False,
+    retry_after_seconds: int | None = None,
 ) -> dict[str, Any]:
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -1419,9 +2036,10 @@ def atlas_forum_sync_finished(
         ).fetchone()
         if feed is None:
             raise ValueError("atlas_forum_feed_missing")
-        next_sync = (
-            now_dt + timedelta(seconds=max(3600, int(feed["interval_seconds"])))
-        ).isoformat()
+        delay_seconds = max(3600, int(feed["interval_seconds"]))
+        if retry_after_seconds is not None:
+            delay_seconds = max(60, min(delay_seconds, int(retry_after_seconds)))
+        next_sync = (now_dt + timedelta(seconds=delay_seconds)).isoformat()
         status = "attention" if attention else ("error" if error else "ok")
         success_assignment = (
             "last_success_at = last_success_at" if error else "last_success_at = ?"
@@ -1455,15 +2073,23 @@ def atlas_forum_sync_finished(
     return _row(row)
 
 
-def atlas_forum_sync_status(guild_id: int) -> dict[str, Any] | None:
+def atlas_forum_sync_status(
+    guild_id: int,
+    *,
+    project_code: str | None = None,
+) -> dict[str, Any] | None:
+    clean_project = str(project_code or "").strip().lower()
+    if clean_project and not _CATALOG_CODE_RE.fullmatch(clean_project):
+        raise ValueError("atlas_project_invalid")
+    where = "guild_id = ?"
+    params: tuple[Any, ...] = (int(guild_id),)
+    if clean_project:
+        where += " AND project_code = ?"
+        params = (*params, clean_project)
     with connect_readonly() as con:
         row = con.execute(
-            """
-            SELECT * FROM atlas_forum_feeds
-            WHERE guild_id = ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (int(guild_id),),
+            f"SELECT * FROM atlas_forum_feeds WHERE {where} ORDER BY id DESC LIMIT 1",
+            params,
         ).fetchone()
     return _row(row) if row is not None else None
 
@@ -1477,6 +2103,9 @@ def atlas_upsert_synced_knowledge(
     server_code: str,
     faction_code: str,
     visibility_scope: str,
+    federation_scope: str | None = None,
+    knowledge_domain: str | None = None,
+    corpus_kind: str | None = None,
     feed_key: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1485,10 +2114,21 @@ def atlas_upsert_synced_knowledge(
     clean_url = str(source_url or "").strip()[:2000]
     if not clean_title or len(clean_content) < 20 or not clean_url.startswith(("https://", "http://")):
         raise ValueError("atlas_synced_knowledge_invalid")
-    clean_server, clean_faction = atlas_normalize_scope(server_code, faction_code)
     clean_visibility = atlas_normalize_knowledge_scope(visibility_scope)
+    scope = atlas_resolve_federation_scope(
+        server_code,
+        faction_code,
+        federation_scope=federation_scope,
+        legacy_visibility_scope=clean_visibility,
+    )
+    clean_project = scope["project_code"]
+    clean_server = scope["server_code"]
+    clean_faction = scope["faction_code"]
+    clean_visibility = scope["visibility_scope"]
+    clean_federation = scope["federation_scope"]
     checksum = _knowledge_checksum(
-        clean_visibility,
+        clean_federation,
+        clean_project,
         clean_server,
         clean_faction,
         clean_content,
@@ -1497,6 +2137,7 @@ def atlas_upsert_synced_knowledge(
     now = utc_now_iso()
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
+        _assert_organization_project(con, int(organization_id), clean_project)
         existing = con.execute(
             """
             SELECT * FROM atlas_knowledge_sources
@@ -1512,13 +2153,18 @@ def atlas_upsert_synced_knowledge(
             content=clean_content,
             source_url=clean_url,
             source_kind="forum",
-            domain_hint=str(dict(metadata or {}).get("knowledge_domain") or "") or None,
-            corpus_hint=str(dict(metadata or {}).get("corpus_kind") or "") or None,
+            domain_hint=knowledge_domain,
+            corpus_hint=corpus_kind,
         )
         merged_metadata = {
             **current_metadata,
             **dict(metadata or {}),
             "taxonomy": taxonomy,
+            "classification": {
+                "mode": "feed_profile" if knowledge_domain or corpus_kind else "heuristic",
+                "knowledge_domain_hint": atlas_normalize_knowledge_domain(knowledge_domain),
+                "corpus_kind_hint": atlas_normalize_corpus_kind(corpus_kind),
+            },
             "sync_feed": str(feed_key)[:80],
             "last_seen_at": now,
             "missing_runs": 0,
@@ -1530,19 +2176,24 @@ def atlas_upsert_synced_knowledge(
             created
             or str(existing["checksum"]) != checksum
             or str(existing["title"]) != clean_title
+            or str(existing["project_code"] or "") != clean_project
+            or str(existing["server_code"] or "") != clean_server
+            or str(existing["faction_code"] or "") != clean_faction
+            or str(existing["visibility_scope"] or "") != clean_visibility
+            or str(existing["federation_scope"] or "") != clean_federation
         )
         if existing is None:
             cursor = con.execute(
                 """
                 INSERT INTO atlas_knowledge_sources(
-                    organization_id, server_code, faction_code, visibility_scope,
+                    organization_id, project_code, server_code, faction_code, visibility_scope, federation_scope,
                     title, source_kind, source_url, content_text, checksum,
                     status, metadata_json, created_by_id, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, 'forum', ?, ?, ?, 'pending', ?, 0, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'forum', ?, ?, ?, 'pending', ?, 0, ?, ?)
                 """,
                 (
-                    int(organization_id), clean_server, clean_faction,
-                    clean_visibility, clean_title, clean_url, clean_content,
+                    int(organization_id), clean_project, clean_server, clean_faction,
+                    clean_visibility, clean_federation, clean_title, clean_url, clean_content,
                     checksum, _json(merged_metadata), now, now,
                 ),
             )
@@ -1571,14 +2222,14 @@ def atlas_upsert_synced_knowledge(
                 con.execute(
                     """
                     UPDATE atlas_knowledge_sources
-                    SET server_code = ?, faction_code = ?, visibility_scope = ?,
+                    SET project_code = ?, server_code = ?, faction_code = ?, visibility_scope = ?, federation_scope = ?,
                         title = ?, content_text = ?, checksum = ?, status = 'pending',
                         qdrant_point_id = NULL, indexed_at = NULL, last_error = NULL,
                         metadata_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
-                        clean_server, clean_faction, clean_visibility, clean_title,
+                        clean_project, clean_server, clean_faction, clean_visibility, clean_federation, clean_title,
                         clean_content, checksum, _json(merged_metadata), now, source_id,
                     ),
                 )
@@ -1726,6 +2377,11 @@ def atlas_add_message(
     *,
     citations: list[dict[str, Any]] | None = None,
     model: str | None = None,
+    model_provider: str | None = None,
+    model_release: str | None = None,
+    project_code: str | None = None,
+    server_code: str | None = None,
+    faction_code: str | None = None,
     latency_ms: int | None = None,
 ) -> int:
     now = utc_now_iso()
@@ -1734,8 +2390,9 @@ def atlas_add_message(
             """
             INSERT INTO atlas_ai_messages(
                 thread_id, role, content_text, citations_json, model,
-                latency_ms, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                model_provider, model_release, project_code, server_code,
+                faction_code, latency_ms, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(thread_id),
@@ -1743,6 +2400,11 @@ def atlas_add_message(
                 str(content)[:100000],
                 _json(citations or []),
                 str(model or "")[:160] or None,
+                str(model_provider or "").strip().lower()[:80],
+                str(model_release or "").strip()[:120],
+                str(project_code or "").strip().lower()[:80],
+                str(server_code or "").strip().lower()[:80],
+                str(faction_code or "").strip().lower()[:80],
                 int(latency_ms) if latency_ms is not None else None,
                 now,
             ),
@@ -1802,6 +2464,88 @@ def atlas_set_message_feedback(
         ).fetchone()
         con.commit()
     return _row(row)
+
+
+def atlas_training_candidates(
+    *,
+    organization_id: int | None = None,
+    project_code: str | None = None,
+    agent_id: str | None = None,
+    limit: int = 5_000,
+) -> list[dict[str, Any]]:
+    """Return explicitly liked answer pairs for offline human review.
+
+    This is deliberately a candidate feed, not an automatic training export.
+    A positive reaction is useful evidence, but a reviewer still has to approve
+    the redacted pair before it may enter a fine-tuning dataset.
+    """
+
+    filters = [
+        "f.rating = 'good'",
+        "assistant.role = 'assistant'",
+        "organization.status = 'active'",
+        "thread.organization_id = f.organization_id",
+    ]
+    params: list[Any] = []
+    if organization_id is not None:
+        filters.append("f.organization_id = ?")
+        params.append(int(organization_id))
+    if project_code is not None:
+        filters.append("organization.project_code = ?")
+        params.append(str(project_code).strip().lower())
+    if agent_id is not None:
+        filters.append("thread.agent_id = ?")
+        params.append(str(agent_id).strip().lower())
+    params.append(max(1, min(50_000, int(limit))))
+    with connect_readonly() as con:
+        rows = con.execute(
+            f"""
+            SELECT
+                f.id AS feedback_id,
+                f.organization_id,
+                organization.project_code,
+                f.thread_id,
+                f.message_id AS assistant_message_id,
+                f.comment_text,
+                f.updated_at AS feedback_updated_at,
+                thread.agent_id,
+                thread.title AS thread_title,
+                assistant.content_text AS assistant_text,
+                assistant.citations_json,
+                assistant.model,
+                assistant.model_provider,
+                assistant.model_release,
+                assistant.project_code AS answer_project_code,
+                assistant.server_code AS answer_server_code,
+                assistant.faction_code AS answer_faction_code,
+                assistant.latency_ms,
+                (
+                    SELECT user_message.id
+                    FROM atlas_ai_messages user_message
+                    WHERE user_message.thread_id = assistant.thread_id
+                      AND user_message.role = 'user'
+                      AND user_message.id < assistant.id
+                    ORDER BY user_message.id DESC LIMIT 1
+                ) AS user_message_id,
+                (
+                    SELECT user_message.content_text
+                    FROM atlas_ai_messages user_message
+                    WHERE user_message.thread_id = assistant.thread_id
+                      AND user_message.role = 'user'
+                      AND user_message.id < assistant.id
+                    ORDER BY user_message.id DESC LIMIT 1
+                ) AS user_text
+            FROM atlas_ai_feedback f
+            JOIN atlas_organizations organization ON organization.id = f.organization_id
+            JOIN atlas_ai_messages assistant ON assistant.id = f.message_id
+            JOIN atlas_ai_threads thread ON thread.id = assistant.thread_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY f.updated_at DESC, f.id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_row(row) for row in rows if row["user_message_id"] is not None]
 
 
 def atlas_bind_discord_thread(
@@ -2425,9 +3169,16 @@ def atlas_dashboard(
     user_id: int,
     display_name: str,
     organization_id: int | None = None,
+    *,
+    project_code: str = ATLAS_DEFAULT_PROJECT_CODE,
 ) -> dict[str, Any]:
     atlas_seed_templates()
-    personal = atlas_ensure_personal_space(guild_id, user_id, display_name)
+    personal = atlas_ensure_personal_space(
+        guild_id,
+        user_id,
+        display_name,
+        project_code=project_code,
+    )
     spaces = atlas_user_spaces(guild_id, user_id)
     selected = next(
         (

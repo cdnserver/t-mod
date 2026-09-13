@@ -272,6 +272,20 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
 
+            -- Entry links are one-time credentials.  Their consumption must
+            -- survive a process restart, otherwise an already opened Discord
+            -- link could be replayed after a web-container restart.
+            CREATE TABLE IF NOT EXISTS web_entry_ticket_uses (
+                guild_id INTEGER NOT NULL,
+                nonce TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, nonce)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_entry_ticket_uses_expiry
+            ON web_entry_ticket_uses(expires_at);
+
             CREATE TABLE IF NOT EXISTS web_section_grants (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -289,6 +303,7 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
                 reason TEXT NOT NULL,
+                source_user_id INTEGER,
                 issued_by_id INTEGER NOT NULL,
                 issued_by_display TEXT NOT NULL,
                 issued_at TEXT NOT NULL,
@@ -306,6 +321,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_global_bans_active
             ON global_bans(guild_id, active, issued_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_global_bans_user_active
+            ON global_bans(user_id, active, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS global_ban_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
@@ -321,6 +339,52 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_global_ban_events_subject
             ON global_ban_events(guild_id, user_id, id DESC);
+
+            -- Desktop uses a random, OS-protected installation credential.
+            -- Only its SHA-256 digest is stored server-side: no MAC address,
+            -- disk serial, Windows SID or other raw hardware identifier ever
+            -- enters the T-Mod database.
+            CREATE TABLE IF NOT EXISTS desktop_installations (
+                guild_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL,
+                installation_ref TEXT NOT NULL,
+                device_hash TEXT,
+                platform TEXT,
+                app_version TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, token_hash)
+            );
+
+            CREATE TABLE IF NOT EXISTS desktop_installation_accounts (
+                guild_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, token_hash, user_id),
+                FOREIGN KEY (guild_id, token_hash)
+                    REFERENCES desktop_installations(guild_id, token_hash)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_installation_accounts_user
+            ON desktop_installation_accounts(guild_id, user_id, last_seen_at DESC);
+
+            CREATE TABLE IF NOT EXISTS desktop_device_accounts (
+                guild_id INTEGER NOT NULL,
+                device_hash TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, device_hash, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_device_accounts_user
+            ON desktop_device_accounts(guild_id, user_id, last_seen_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_desktop_installations_device
+            ON desktop_installations(guild_id, device_hash);
 
             CREATE TABLE IF NOT EXISTS reactor_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,8 +408,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
             ON reactor_notifications(guild_id, user_id, read_at, id DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_projects (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'suspended', 'archived')),
+                description TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS atlas_servers (
                 code TEXT PRIMARY KEY,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 name TEXT NOT NULL,
                 number INTEGER,
                 label TEXT NOT NULL,
@@ -353,7 +431,8 @@ def init_db() -> None:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_by_id INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_code) REFERENCES atlas_projects(code)
             );
 
             CREATE TABLE IF NOT EXISTS atlas_factions (
@@ -371,6 +450,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS atlas_organizations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 slug TEXT NOT NULL,
                 name TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'project'
@@ -382,7 +462,8 @@ def init_db() -> None:
                 branding_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE(guild_id, slug)
+                UNIQUE(guild_id, slug),
+                FOREIGN KEY(project_code) REFERENCES atlas_projects(code)
             );
 
             CREATE TABLE IF NOT EXISTS atlas_memberships (
@@ -413,6 +494,7 @@ def init_db() -> None:
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 character_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL,
                 rank_name TEXT NOT NULL DEFAULT '',
@@ -438,10 +520,12 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS atlas_knowledge_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL DEFAULT 'lspd',
                 visibility_scope TEXT NOT NULL DEFAULT 'workspace'
                     CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
+                federation_scope TEXT NOT NULL DEFAULT 'workspace',
                 title TEXT NOT NULL,
                 source_kind TEXT NOT NULL DEFAULT 'memo'
                     CHECK(source_kind IN ('document', 'forum', 'memo', 'regulation', 'manual', 'url')),
@@ -484,12 +568,16 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
                 organization_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
                 feed_key TEXT NOT NULL,
                 root_url TEXT NOT NULL,
                 server_code TEXT NOT NULL DEFAULT 'phoenix-15',
                 faction_code TEXT NOT NULL DEFAULT 'lspd',
                 visibility_scope TEXT NOT NULL DEFAULT 'server'
                     CHECK(visibility_scope IN ('global', 'server', 'faction', 'workspace')),
+                federation_scope TEXT NOT NULL DEFAULT 'server',
+                knowledge_domain TEXT,
+                corpus_kind TEXT,
                 interval_seconds INTEGER NOT NULL DEFAULT 43200,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
@@ -507,6 +595,236 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_atlas_forum_feeds_due
             ON atlas_forum_feeds(status, next_sync_at, id);
+
+            -- An attachment is a separate, reviewable evidence item.  OCR is
+            -- deliberately not merged into atlas_knowledge_sources: a scan is
+            -- only a machine transcription until an authorized reviewer
+            -- accepts it against its original forum URL.
+            CREATE TABLE IF NOT EXISTS atlas_forum_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                attachment_url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                media_kind TEXT NOT NULL DEFAULT 'file'
+                    CHECK(media_kind IN ('image', 'file')),
+                label TEXT,
+                source_checksum TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'discovered'
+                    CHECK(status IN (
+                        'discovered', 'queued', 'processing', 'review_pending',
+                        'approved', 'rejected', 'failed', 'unavailable', 'archived'
+                    )),
+                content_sha256 TEXT,
+                storage_key TEXT,
+                knowledge_source_id INTEGER,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                ocr_text TEXT,
+                ocr_engine TEXT,
+                ocr_error TEXT,
+                reviewed_by_id INTEGER,
+                reviewed_at TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_id, attachment_url),
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES atlas_knowledge_sources(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(knowledge_source_id) REFERENCES atlas_knowledge_sources(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_queue
+            ON atlas_forum_attachments(organization_id, status, updated_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_attachments_source
+            ON atlas_forum_attachments(source_id, id);
+
+            -- Atlas Forum Engine keeps complaint monitoring separate from the
+            -- normative RAG corpus. A complaint is operational evidence, not
+            -- a law, and therefore must never influence legal answers merely
+            -- because it appeared in a watched forum section.
+            CREATE TABLE IF NOT EXISTS atlas_forum_monitor_feeds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
+                server_code TEXT NOT NULL,
+                feed_key TEXT NOT NULL,
+                section_kind TEXT NOT NULL
+                    CHECK(section_kind IN ('open', 'accepted', 'rejected')),
+                root_url TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL DEFAULT 45,
+                hot_pages INTEGER NOT NULL DEFAULT 1,
+                full_pages INTEGER NOT NULL DEFAULT 300,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'ok', 'attention', 'error', 'disabled')),
+                baseline_completed_at TEXT,
+                last_full_scan_at TEXT,
+                backfill_cursor_url TEXT,
+                backfill_pages_scanned INTEGER NOT NULL DEFAULT 0,
+                backfill_topics_seen INTEGER NOT NULL DEFAULT 0,
+                backfill_completed_at TEXT,
+                last_backfill_at TEXT,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                last_started_at TEXT,
+                last_success_at TEXT,
+                next_scan_at TEXT,
+                last_error TEXT,
+                last_stats_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, feed_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_monitor_feeds_due
+            ON atlas_forum_monitor_feeds(status, next_scan_at, id);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                project_code TEXT NOT NULL DEFAULT 'majestic-rp',
+                server_code TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                thread_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                author TEXT,
+                section_kind TEXT NOT NULL
+                    CHECK(section_kind IN ('open', 'accepted', 'rejected')),
+                listing_fingerprint TEXT NOT NULL,
+                content_fingerprint TEXT,
+                hydration_attempts INTEGER NOT NULL DEFAULT 0,
+                hydration_next_attempt_at TEXT,
+                hydration_last_error TEXT,
+                first_post_excerpt TEXT,
+                latest_post_excerpt TEXT,
+                latest_post_author TEXT,
+                latest_post_role TEXT,
+                latest_post_at TEXT,
+                post_count INTEGER NOT NULL DEFAULT 0,
+                locked INTEGER NOT NULL DEFAULT 0,
+                notifications_armed INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                last_changed_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, project_code, server_code, thread_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaints_status
+            ON atlas_forum_complaints(guild_id, server_code, section_kind, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id INTEGER,
+                static_id TEXT NOT NULL,
+                nickname TEXT,
+                first_matched_at TEXT NOT NULL,
+                last_matched_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, user_id, static_id),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(character_id) REFERENCES profile_characters(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_subjects_user
+            ON atlas_forum_complaint_subjects(guild_id, user_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                event_kind TEXT NOT NULL
+                    CHECK(event_kind IN ('discovered', 'reply', 'staff_reply', 'updated', 'status_changed')),
+                event_fingerprint TEXT NOT NULL,
+                previous_section_kind TEXT,
+                section_kind TEXT NOT NULL,
+                actor TEXT,
+                actor_role TEXT,
+                excerpt TEXT,
+                occurred_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(complaint_id, event_kind, event_fingerprint),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_events_topic
+            ON atlas_forum_complaint_events(complaint_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                post_index INTEGER NOT NULL,
+                author TEXT,
+                author_role TEXT,
+                posted_at TEXT,
+                content TEXT NOT NULL,
+                is_staff INTEGER NOT NULL DEFAULT 0,
+                content_fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, post_index),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_posts_topic
+            ON atlas_forum_complaint_posts(complaint_id, post_index);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_participants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                complaint_id INTEGER NOT NULL,
+                participant_role TEXT NOT NULL
+                    CHECK(participant_role IN ('reporter', 'target')),
+                static_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(complaint_id, participant_role, static_id),
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_participants_static
+            ON atlas_forum_complaint_participants(static_id, participant_role, complaint_id);
+
+            CREATE TABLE IF NOT EXISTS atlas_forum_complaint_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                complaint_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                static_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'retry', 'sent', 'dead', 'suppressed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                dm_message_id INTEGER,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                delivered_at TEXT,
+                UNIQUE(event_id, user_id),
+                FOREIGN KEY(event_id) REFERENCES atlas_forum_complaint_events(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(complaint_id) REFERENCES atlas_forum_complaints(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_forum_complaint_deliveries_due
+            ON atlas_forum_complaint_deliveries(status, next_attempt_at, id);
 
             CREATE TABLE IF NOT EXISTS atlas_document_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -649,6 +967,11 @@ def init_db() -> None:
                 content_text TEXT NOT NULL,
                 citations_json TEXT NOT NULL DEFAULT '[]',
                 model TEXT,
+                model_provider TEXT NOT NULL DEFAULT '',
+                model_release TEXT NOT NULL DEFAULT '',
+                project_code TEXT NOT NULL DEFAULT '',
+                server_code TEXT NOT NULL DEFAULT '',
+                faction_code TEXT NOT NULL DEFAULT '',
                 latency_ms INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(thread_id) REFERENCES atlas_ai_threads(id)
@@ -1648,6 +1971,26 @@ def init_db() -> None:
                 UNIQUE(bill_id, voter_id)
             );
 
+            CREATE TABLE IF NOT EXISTS tvrs_bill_preparation_sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                bill_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_display TEXT,
+                questions_json TEXT NOT NULL DEFAULT '[]',
+                notes TEXT NOT NULL DEFAULT '',
+                preliminary_vote TEXT,
+                preliminary_vote_reason TEXT NOT NULL DEFAULT '',
+                review_flags_json TEXT NOT NULL DEFAULT '{}',
+                source_bill_updated_at TEXT,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, bill_id, user_id),
+                CHECK(preliminary_vote IS NULL OR preliminary_vote IN ('yes', 'no', 'abstain')),
+                FOREIGN KEY(bill_id) REFERENCES tvrs_bills(id) ON DELETE CASCADE
+            );
+
 
             CREATE TABLE IF NOT EXISTS tvrs_live_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1925,6 +2268,42 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_membership_application_events
             ON membership_application_events(application_id, id ASC);
+
+            -- Data-subject requests are deliberately separate from profiles
+            -- and support tickets.  A request must remain available for the
+            -- technical administrator even if the applicant later removes
+            -- their T-Mod account.  ``receipt_key`` makes browser retries
+            -- idempotent without exposing the sequential database id.
+            CREATE TABLE IF NOT EXISTS privacy_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_code TEXT NOT NULL UNIQUE,
+                receipt_key TEXT NOT NULL UNIQUE,
+                request_type TEXT NOT NULL,
+                requester_email TEXT NOT NULL,
+                account_login TEXT,
+                discord_id INTEGER,
+                account_user_id INTEGER,
+                scope TEXT NOT NULL,
+                details TEXT,
+                status TEXT NOT NULL DEFAULT 'received',
+                remote_hash TEXT,
+                user_agent TEXT,
+                notification_attempts INTEGER NOT NULL DEFAULT 0,
+                notification_sent_at TEXT,
+                notification_error TEXT,
+                response_attempts INTEGER NOT NULL DEFAULT 0,
+                response_sent_at TEXT,
+                response_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_privacy_requests_work_queue
+            ON privacy_requests(status, created_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_privacy_requests_identity
+            ON privacy_requests(discord_id, account_user_id, created_at);
 
             CREATE TABLE IF NOT EXISTS admin_broadcasts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2480,6 +2859,8 @@ def init_db() -> None:
             "reset_required",
             "INTEGER NOT NULL DEFAULT 0",
         )
+        _add_column_if_missing(con, "global_bans", "source_user_id", "INTEGER")
+        _add_column_if_missing(con, "desktop_installations", "device_hash", "TEXT")
         _add_column_if_missing(
             con,
             "tvrs_consensus_sessions",
@@ -2494,6 +2875,34 @@ def init_db() -> None:
         _add_column_if_missing(con, "market_items", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _add_column_if_missing(con, "market_item_history", "external_id", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(con, "market_item_history", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _add_column_if_missing(con, "privacy_requests", "response_attempts", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(con, "privacy_requests", "response_sent_at", "TEXT")
+        _add_column_if_missing(con, "privacy_requests", "response_error", "TEXT")
+        for column, definition in {
+            "backfill_cursor_url": "TEXT",
+            "backfill_pages_scanned": "INTEGER NOT NULL DEFAULT 0",
+            "backfill_topics_seen": "INTEGER NOT NULL DEFAULT 0",
+            "backfill_completed_at": "TEXT",
+            "last_backfill_at": "TEXT",
+            "failure_count": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            _add_column_if_missing(
+                con,
+                "atlas_forum_monitor_feeds",
+                column,
+                definition,
+            )
+        for column, definition in {
+            "hydration_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "hydration_next_attempt_at": "TEXT",
+            "hydration_last_error": "TEXT",
+        }.items():
+            _add_column_if_missing(
+                con,
+                "atlas_forum_complaints",
+                column,
+                definition,
+            )
         con.execute(
             "UPDATE market_items SET external_id = CAST(item_id AS TEXT) WHERE external_id IS NULL OR external_id = ''"
         )
@@ -2830,6 +3239,36 @@ def init_db() -> None:
         )
         _add_column_if_missing(
             con,
+            "atlas_servers",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_organizations",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_character_bindings",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_forum_feeds",
+            "project_code",
+            "TEXT NOT NULL DEFAULT 'majestic-rp'",
+        )
+        _add_column_if_missing(
+            con,
             "atlas_knowledge_sources",
             "faction_code",
             "TEXT NOT NULL DEFAULT 'lspd'",
@@ -2844,6 +3283,22 @@ def init_db() -> None:
             "visibility_scope",
             "TEXT NOT NULL DEFAULT 'workspace'",
         )
+        _add_column_if_missing(
+            con,
+            "atlas_knowledge_sources",
+            "federation_scope",
+            "TEXT NOT NULL DEFAULT 'workspace'",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_forum_feeds",
+            "federation_scope",
+            "TEXT NOT NULL DEFAULT 'server'",
+        )
+        _add_column_if_missing(con, "atlas_forum_feeds", "knowledge_domain", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_feeds", "corpus_kind", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_attachments", "storage_key", "TEXT")
+        _add_column_if_missing(con, "atlas_forum_attachments", "knowledge_source_id", "INTEGER")
         _add_column_if_missing(con, "atlas_knowledge_sources", "original_filename", "TEXT")
         _add_column_if_missing(
             con,
@@ -2851,6 +3306,14 @@ def init_db() -> None:
             "agent_id",
             "TEXT NOT NULL DEFAULT 'atlas-tvr-a'",
         )
+        for column, definition in {
+            "model_provider": "TEXT NOT NULL DEFAULT ''",
+            "model_release": "TEXT NOT NULL DEFAULT ''",
+            "project_code": "TEXT NOT NULL DEFAULT ''",
+            "server_code": "TEXT NOT NULL DEFAULT ''",
+            "faction_code": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            _add_column_if_missing(con, "atlas_ai_messages", column, definition)
         _add_column_if_missing(
             con,
             "atlas_timeline_events",
@@ -2869,6 +3332,132 @@ def init_db() -> None:
                     last_error = NULL
                 """
             )
+
+        atlas_federation_migration = "migration:atlas-federation:2026-08-31-v2"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_federation_migration,),
+        ).fetchone() is None:
+            migration_now = utc_now_iso()
+            con.execute(
+                """
+                INSERT OR IGNORE INTO atlas_projects(
+                    code, name, label, description, created_at, updated_at
+                ) VALUES('majestic-rp', 'Majestic RP', 'Majestic RP',
+                         'Базовый проект Atlas для серверов Majestic RP.', ?, ?)
+                """,
+                (migration_now, migration_now),
+            )
+            con.execute(
+                """
+                UPDATE atlas_servers
+                SET project_code = 'majestic-rp'
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_organizations
+                SET project_code = 'majestic-rp'
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_character_bindings
+                SET project_code = COALESCE(
+                    (SELECT project_code FROM atlas_servers s
+                      WHERE s.code = atlas_character_bindings.server_code),
+                    'majestic-rp'
+                )
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET project_code = COALESCE(
+                        (SELECT project_code FROM atlas_servers s
+                          WHERE s.code = atlas_knowledge_sources.server_code),
+                        'majestic-rp'
+                    ),
+                    federation_scope = CASE visibility_scope
+                        WHEN 'global' THEN 'project'
+                        WHEN 'server' THEN 'server'
+                        WHEN 'faction' THEN 'faction'
+                        ELSE 'workspace'
+                    END
+                """,
+            )
+            # An archived source must retain its original tenant boundary too:
+            # it can be restored later, and a legacy `global` source must not
+            # silently become a private default workspace on restoration.
+            # Only derived-index state is changed for live sources.
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET status = 'pending',
+                    qdrant_point_id = NULL,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE status != 'archived'
+                """,
+                (migration_now,),
+            )
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET project_code = COALESCE(
+                        (SELECT project_code FROM atlas_servers s
+                          WHERE s.code = atlas_forum_feeds.server_code),
+                        'majestic-rp'
+                    ),
+                    federation_scope = CASE visibility_scope
+                        WHEN 'global' THEN 'project'
+                        WHEN 'server' THEN 'server'
+                        WHEN 'faction' THEN 'faction'
+                        ELSE 'workspace'
+                    END
+                WHERE 1 = 1
+                """,
+            )
+            con.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
+                ON atlas_knowledge_sources(
+                    project_code, federation_scope, server_code,
+                    faction_code, status, id DESC
+                )
+                """
+            )
+            set_meta(con, atlas_federation_migration, migration_now)
+
+        atlas_message_provenance_migration = "migration:atlas-message-provenance:2026-08-31-v1"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_message_provenance_migration,),
+        ).fetchone() is None:
+            # Older messages were created before an answer could be tied to a
+            # release. We can safely restore their project from the owning
+            # organization, but we do not invent provider, release, server or
+            # faction data that was never recorded.
+            con.execute(
+                """
+                UPDATE atlas_ai_messages
+                SET project_code = COALESCE(
+                    (
+                        SELECT organization.project_code
+                        FROM atlas_ai_threads thread
+                        JOIN atlas_organizations organization
+                          ON organization.id = thread.organization_id
+                        WHERE thread.id = atlas_ai_messages.thread_id
+                    ),
+                    'majestic-rp'
+                )
+                WHERE project_code IS NULL OR trim(project_code) = ''
+                """
+            )
+            set_meta(con, atlas_message_provenance_migration, utc_now_iso())
 
         atlas_taxonomy_migration = "migration:atlas-taxonomy:2026-08-09-v1"
         if con.execute(
@@ -2947,6 +3536,17 @@ def init_db() -> None:
             ON atlas_knowledge_sources(
                 visibility_scope, server_code, faction_code, organization_id,
                 status, id DESC
+            );
+
+            -- This index intentionally lives after the additive column
+            -- migrations above.  Older PostgreSQL databases can have the
+            -- original knowledge table without the federation columns; an
+            -- early CREATE INDEX would abort startup before those columns
+            -- could be added.
+            CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope
+            ON atlas_knowledge_sources(
+                project_code, federation_scope, server_code,
+                faction_code, status, id DESC
             );
 
             CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_revisions_source
@@ -3054,6 +3654,9 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tvrs_votes_bill
             ON tvrs_votes(guild_id, bill_id);
+
+            CREATE INDEX IF NOT EXISTS idx_tvrs_bill_preparation_sheets_owner
+            ON tvrs_bill_preparation_sheets(guild_id, user_id, updated_at DESC);
 
 
             CREATE INDEX IF NOT EXISTS idx_tvrs_bills_queue
@@ -3253,11 +3856,22 @@ def init_db() -> None:
         set_meta(con, "client_profiles_last_case_migration_at", utc_now_iso())
 
         catalog_now = utc_now_iso()
+        # This seed intentionally precedes atlas_servers: fresh SQLite
+        # installations enforce the project foreign key from the first run.
+        con.execute(
+            """
+            INSERT OR IGNORE INTO atlas_projects(
+                code, name, label, description, created_at, updated_at
+            ) VALUES('majestic-rp', 'Majestic RP', 'Majestic RP',
+                     'Базовый проект Atlas для серверов Majestic RP.', ?, ?)
+            """,
+            (catalog_now, catalog_now),
+        )
         con.execute(
             """
             INSERT OR IGNORE INTO atlas_servers(
-                code, name, number, label, created_at, updated_at
-            ) VALUES('phoenix-15', 'Phoenix', 15, 'Phoenix (15)', ?, ?)
+                code, project_code, name, number, label, created_at, updated_at
+            ) VALUES('phoenix-15', 'majestic-rp', 'Phoenix', 15, 'Phoenix (15)', ?, ?)
             """,
             (catalog_now, catalog_now),
         )

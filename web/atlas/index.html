@@ -8,7 +8,7 @@
     <title>Atlas · T-Mod</title>
     <link rel="icon" href="/atlas/assets/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260824-overlay-settings-v1">
+    <link rel="stylesheet" href="/atlas/assets/style.css?v=20260912-forum-eye-v2">
   </head>
   <body>
     <div class="world" aria-hidden="true">
@@ -313,6 +313,15 @@
 
           <section id="screen-forum" class="screen">
             <div class="section-intro"><span>FORUM INTELLIGENCE</span><h2>Живая законодательная база</h2><p>Atlas регулярно сверяет открытый раздел форума Phoenix (15), сохраняет историю редакций и обновляет поиск только после полной проверки страниц.</p></div>
+            <article class="forum-engine-panel">
+              <header><div><span>ATLAS FORUM ENGINE</span><h3>Жалобы на ваших персонажей</h3><p>Atlas следит за Phoenix (15), узнаёт статики из T‑Mod Account и показывает путь жалобы от публикации до решения.</p></div><i id="forum-engine-pulse" class="waiting"></i></header>
+              <div class="forum-engine-metrics"><span><small>Жалоб сохранено</small><b id="forum-engine-total">0</b></span><span><small>Текст оцифрован</small><b id="forum-engine-hydrated">0</b></span><span><small>Страниц архива</small><b id="forum-engine-pages">0</b></span><span><small>На рассмотрении</small><b id="forum-engine-open">0</b></span><span><small>Связано со мной</small><b id="forum-engine-mine">0</b></span></div>
+              <div id="forum-engine-character-list" class="forum-engine-characters"><span>Добавьте персонажа и статик в T‑Mod Account.</span></div>
+              <form id="forum-engine-profile-form" class="forum-engine-profile-form"><label><span>Профиль игрока</span><input id="forum-engine-profile-static" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="Введите статик"></label><button type="submit">Найти</button></form>
+              <div id="forum-engine-profile" class="forum-engine-profile" hidden></div>
+              <div id="forum-engine-list" class="forum-engine-list"><div class="empty">Связанных жалоб пока нет.</div></div>
+              <footer><span id="forum-engine-state">Готовим первую карту разделов…</span><button id="forum-engine-now" type="button" hidden>Проверить сейчас <b>↻</b></button></footer>
+            </article>
             <div class="forum-sync-grid">
               <article class="forum-sync-console">
                 <header><span><i id="forum-sync-light"></i><b id="forum-sync-status">Ожидает первого запуска</b></span><small>АВТОМАТИЧЕСКАЯ СВЕРКА · КАЖДЫЕ 12 ЧАСОВ</small></header>
@@ -367,6 +376,7 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script src="/atlas/assets/app.js?v=20260824-overlay-settings-v1" defer></script>
+    <script src="/atlas/assets/app.js?v=20260912-forum-eye-v2" defer></script>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

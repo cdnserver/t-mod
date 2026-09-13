@@ -130,6 +130,20 @@ class WebAssetContractTests(unittest.TestCase):
         self.assertIn("Electron", source)
         self.assertIn("tmod-desktop-recommendation-v1", source)
 
+    def test_reactor_exposes_private_consensus_preparation_surface(self) -> None:
+        html = (WEB / "portal.html").read_text(encoding="utf-8")
+        source = (WEB / "portal.js").read_text(encoding="utf-8")
+        styles = (WEB / "portal.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="preparation"', html)
+        self.assertIn('id="reactor-preparation-dialog"', html)
+        self.assertIn('data-portal-widget="preparation"', html)
+        self.assertIn("/api/reactor/preparation", source)
+        self.assertIn("/api/bills/${billId}/preparation", source)
+        self.assertIn("preparationDraftHasContent", source)
+        self.assertIn(".preparation-widget", styles)
+        self.assertIn(".preparation-dialog", styles)
+
     def test_ovr_ui_is_cache_versioned_and_guards_event_targets(self) -> None:
         html = (WEB / "ovr.html").read_text(encoding="utf-8")
         source = (WEB / "ovr.js").read_text(encoding="utf-8")

@@ -7,6 +7,8 @@ import {
 } from "../../shared/atlas-overlay";
 import type {
   AtlasOverlayConfig,
+  AtlasOverlayCraftPlan,
+  AtlasOverlayCraftSnapshot,
   AtlasOverlayEvent,
   AtlasOverlayPttPhase,
 } from "../../shared/atlas-overlay";
@@ -62,6 +64,76 @@ function InitializationField() {
       <div className="atlas-init-sequence"><b/><b/><b/><b/></div>
     </div>
   );
+}
+
+const craftStageLabels: Record<string, string> = {
+  procurement: "Подготовка материалов",
+  crafting: "Производство",
+  awaiting_output: "Заберите результат",
+  listing: "Подготовка к продаже",
+  selling: "На продаже",
+};
+
+function craftCountdown(dueAt: string | undefined, now: number): string {
+  if (!dueAt) return "ОЖИДАЕТ ЗАПУСКА";
+  const seconds = Math.ceil((Date.parse(dueAt) - now) / 1_000);
+  if (!Number.isFinite(seconds)) return "ВРЕМЯ УТОЧНЯЕТСЯ";
+  if (seconds <= 0) return "ЦИКЛ ЗАВЕРШЁН";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function CraftPlanCard({ plan, now }: { plan: AtlasOverlayCraftPlan; now: number }) {
+  const batch = plan.active_batch || null;
+  const progress = plan.attempts_total > 0
+    ? Math.min(100, Math.round(plan.attempts_completed / plan.attempts_total * 100))
+    : 0;
+  return <article className={`atlas-craft-plan${plan.needs_next_batch ? " needs-action" : ""}`}>
+    <header>
+      <span><small>ПЛАН #{plan.id}</small><strong>{plan.product_name}</strong></span>
+      {plan.mine && <em>МОЙ</em>}
+    </header>
+    <div className="atlas-craft-clock">
+      <small>{plan.needs_next_batch ? "ПОРА СТАВИТЬ СЛЕДУЮЩИЙ" : craftStageLabels[plan.stage] || "Крафт"}</small>
+      <strong>{plan.needs_next_batch ? "ГОТОВ К НОВОМУ ЦИКЛУ" : craftCountdown(batch?.due_at, now)}</strong>
+    </div>
+    <div className="atlas-craft-progress"><i style={{ width: `${progress}%` }} /></div>
+    <footer>
+      <span>{plan.attempts_completed} / {plan.attempts_total} завершено</span>
+      <span>{batch ? `${batch.quantity} шт. в работе` : `${plan.remaining_to_queue} осталось поставить`}</span>
+    </footer>
+  </article>;
+}
+
+function playCraftAlarm(level: number): void {
+  if (typeof AudioContext === "undefined" || level <= 0) return;
+  const context = new AudioContext();
+  const master = context.createGain();
+  const now = context.currentTime;
+  master.gain.setValueAtTime(.0001, now);
+  master.gain.exponentialRampToValueAtTime(.075 * clamp(level, 0, 1), now + .04);
+  master.gain.exponentialRampToValueAtTime(.0001, now + 2.2);
+  master.connect(context.destination);
+  [261.63, 392, 523.25, 659.25].forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = now + index * .24;
+    oscillator.type = index % 2 ? "triangle" : "sine";
+    oscillator.frequency.setValueAtTime(frequency, start);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 1.012, start + .65);
+    gain.gain.setValueAtTime(.0001, start);
+    gain.gain.exponentialRampToValueAtTime(.8 / (index + 1), start + .03);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + .78);
+    oscillator.connect(gain).connect(master);
+    oscillator.start(start);
+    oscillator.stop(start + .82);
+  });
+  void context.resume().catch(() => undefined);
+  window.setTimeout(() => void context.close(), 2_500);
 }
 
 function captureError(error: unknown): string {
@@ -175,6 +247,12 @@ export function AtlasOverlay() {
           { type: "idle" },
         );
       }
+      if (preview === "crafts") {
+        return reduceAtlasOverlayState(
+          reduceAtlasOverlayState(initial, { type: "show" }),
+          { type: "idle" },
+        );
+      }
       if (preview === "initializing") {
         return reduceAtlasOverlayState(initial, { type: "initialized", name: "Иван" });
       }
@@ -205,6 +283,7 @@ export function AtlasOverlay() {
         theme: (["cosmos", "graphite", "emerald", "amber", "crimson"].includes(String(previewParams.get("theme")))
           ? previewParams.get("theme")
           : "cosmos") as AtlasOverlayConfig["theme"],
+        workspaceMode: preview === "crafts" ? "crafts" : "assistant",
       }
     : { ...DEFAULT_ATLAS_OVERLAY_CONFIG });
   const capture = useMemo(() => new OverlayVoiceCapture(), []);
@@ -225,6 +304,28 @@ export function AtlasOverlay() {
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [calibrationFeedback, setCalibrationFeedback] = useState("");
+  const [crafts, setCrafts] = useState<AtlasOverlayCraftSnapshot | null>(() => preview === "crafts" ? {
+    server_time: new Date().toISOString(),
+    revision: "preview-crafts",
+    attention_count: 1,
+    plans: [
+      {
+        id: 74, product_name: "Бронепластины", stage: "crafting", responsible: "Роберт",
+        mine: true, attempts_total: 120, attempts_queued: 40, attempts_completed: 40,
+        remaining_to_queue: 80, product_stock: 40, materials: [], active_batch: null,
+        needs_next_batch: true, alarm_key: "preview-next",
+      },
+      {
+        id: 71, product_name: "Промышленные металлы", stage: "crafting", responsible: "Команда",
+        mine: false, attempts_total: 90, attempts_queued: 60, attempts_completed: 45,
+        remaining_to_queue: 30, product_stock: 45, materials: [],
+        active_batch: { id: 9, quantity: 15, due_at: new Date(Date.now() + 12 * 60_000 + 34_000).toISOString() },
+        needs_next_batch: false,
+      },
+    ],
+  } : null);
+  const [craftAlarmKey, setCraftAlarmKey] = useState("");
+  const [clock, setClock] = useState(() => Date.now());
 
   const stopAiAudio = useCallback(() => {
     aiAudioGeneration.current += 1;
@@ -343,6 +444,11 @@ export function AtlasOverlay() {
       stopAiAudio();
     };
   }, [api, capture, speech, stopAiAudio]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     speech.configure({
@@ -532,6 +638,15 @@ export function AtlasOverlay() {
         setConfig(event.config);
         return;
       }
+      if (event.type === "crafts" || event.type === "craft-alert") {
+        setCrafts(event.snapshot);
+        if (event.type === "craft-alert") {
+          setCraftAlarmKey(event.alarmKey);
+          playCraftAlarm(configRef.current.craftAlertVolume);
+          window.setTimeout(() => setCraftAlarmKey((current) => current === event.alarmKey ? "" : current), 18_000);
+        }
+        return;
+      }
       if (event.type === "manual-query") {
         openManualQuery();
         return;
@@ -613,6 +728,13 @@ export function AtlasOverlay() {
   }, [api, capture, speech, stopAiAudio]);
 
   const stageBusy = ["transcribing", "searching", "thinking"].includes(state.stage);
+  const craftPlans = (crafts?.plans || []).filter((plan) => config.craftShowAll || plan.mine);
+  const visibleCraftPlans = (craftPlans.length ? craftPlans : crafts?.plans || []).slice(0, 3);
+  const craftMode = !manualQueryOpen && state.stage === "idle" && (
+    (config.craftAutoExpand && Boolean(craftAlarmKey)) ||
+    config.workspaceMode === "crafts" ||
+    (config.workspaceMode === "auto" && Boolean(craftAlarmKey || crafts?.attention_count))
+  );
   const style = {
     "--overlay-opacity": config.opacity,
     "--overlay-scale": config.scale,
@@ -639,6 +761,8 @@ export function AtlasOverlay() {
       data-idle-style={config.idleStyle}
       data-theme={config.theme}
       data-motion={config.motion}
+      data-workspace={craftMode ? "crafts" : "assistant"}
+      data-craft-alert={craftAlarmKey ? "true" : "false"}
       data-horizontal={horizontal}
       data-vertical={vertical}
       style={style}
@@ -657,13 +781,13 @@ export function AtlasOverlay() {
           <div className="atlas-overlay-brand">
             <span className="atlas-overlay-mark"><AtlasMark /></span>
             <span>
-              <strong>ATLAS</strong>
-              <small>LIVE INTELLIGENCE</small>
+              <strong>{craftMode ? "ATLAS CRAFT" : "ATLAS"}</strong>
+              <small>{craftMode ? "PRODUCTION CONTROL" : "LIVE INTELLIGENCE"}</small>
             </span>
           </div>
           <div className="atlas-overlay-status">
             <i />
-            <span>{state.statusLabel}</span>
+            <span>{craftMode ? (crafts?.attention_count ? "Требуется новый цикл" : "Крафты синхронизированы") : state.statusLabel}</span>
             {config.speakAnswers && (
               <em className={config.speechProvider === "ai" ? "is-ai" : ""}>
                 {config.speechProvider === "ai" ? "AI VOICE" : "LOCAL"}
@@ -792,7 +916,19 @@ export function AtlasOverlay() {
             </div>
           )}
 
-          {state.stage === "idle" && (
+          {state.stage === "idle" && craftMode && (
+            <div className="atlas-craft-deck">
+              <div className="atlas-craft-deck-head">
+                <span><small>LIVE QUEUE</small><strong>{crafts?.attention_count ? `${crafts.attention_count} требует действия` : "Производственный контур"}</strong></span>
+                <time>{new Date(clock).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</time>
+              </div>
+              {visibleCraftPlans.length
+                ? <div className="atlas-craft-plans">{visibleCraftPlans.map((plan) => <CraftPlanCard key={plan.id} plan={plan} now={clock} />)}</div>
+                : <div className="atlas-craft-empty"><i/><strong>Активных крафтов нет</strong><span>Atlas сообщит, когда появится новый цикл.</span></div>}
+            </div>
+          )}
+
+          {state.stage === "idle" && !craftMode && (
             <div className="atlas-overlay-idle">
               <i className="atlas-idle-signal"><b /><em /></i>
               <span><strong>ATLAS</strong><small>{config.characterName || "Готов к работе"}</small></span>
@@ -804,9 +940,9 @@ export function AtlasOverlay() {
         </div>
 
         <footer className="atlas-overlay-foot">
-          <span>{config.serverCode.toUpperCase()} · {config.factionCode.toUpperCase()}</span>
+          <span>{craftMode ? `КРАФТЫ · ${visibleCraftPlans.length} АКТИВНО` : `${config.serverCode.toUpperCase()} · ${config.factionCode.toUpperCase()}`}</span>
           {config.showLatency && state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
-          <span className="atlas-overlay-mode">T-MOD DESKTOP</span>
+          <span className="atlas-overlay-mode">{craftMode ? config.craftHotkey.replaceAll("+", " · ") : "T-MOD DESKTOP"}</span>
         </footer>
       </section>
     </main>

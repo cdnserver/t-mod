@@ -1,4 +1,4 @@
-# TModRemoteClient
+﻿# TModRemoteClient
 param(
     [string]$Action = "menu",
     [string]$Service = "",
@@ -8,11 +8,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$script:ClientVersion = "1.1.0"
+$script:ClientVersion = "1.1.3"
 $script:AppDir = Join-Path $env:LOCALAPPDATA "TModRemote"
 $script:ConfigPath = Join-Path $script:AppDir "config.json"
 $script:UpdateStatePath = Join-Path $script:AppDir "update-state.json"
 $script:ManifestUrl = "https://raw.githubusercontent.com/cdnserver/t-mod/main/tmod_remote_version.json"
+$script:LastUpdateCheckSucceeded = $false
 $uiModule = Join-Path $PSScriptRoot "tmod_console_ui.psm1"
 if (-not (Test-Path -LiteralPath $uiModule)) {
     $uiBootstrapUrl = "https://raw.githubusercontent.com/cdnserver/t-mod/main/tmod_console_ui.psm1"
@@ -178,15 +179,59 @@ function Get-SshBaseArguments {
 }
 
 function Invoke-RemotePowerShell {
-    param($Config, [string]$Command, [switch]$AllowPassword)
+    param(
+        $Config,
+        [string]$Command,
+        [switch]$AllowPassword,
+        [switch]$Follow,
+        [ValidateRange(30, 2400)][int]$TimeoutSeconds = 300
+    )
     $bytes = [Text.Encoding]::Unicode.GetBytes($Command)
     $encoded = [Convert]::ToBase64String($bytes)
     $arguments = Get-SshBaseArguments $Config -AllowPassword:$AllowPassword
     $arguments += ("{0}@{1}" -f $Config.user, $Config.host)
     $arguments += @("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded)
-    & ssh.exe @arguments | Out-Host
-    $code = $LASTEXITCODE
-    return $code
+    # A follow-mode log stream is intentionally unbounded and is stopped by
+    # Ctrl+C. Every other SSH command gets a hard wall-clock deadline, so a
+    # half-open WireGuard tunnel cannot freeze the control console forever.
+    if ($Follow) {
+        & ssh.exe @arguments | Out-Host
+        return $LASTEXITCODE
+    }
+    if ($AllowPassword) {
+        # The first key-pairing command must keep the interactive password
+        # prompt. Start-Process still gives it a bounded wait.
+        $argumentLine = ($arguments | ForEach-Object {
+            $item = [string]$_
+            if ($item -match '[\s"]') { '"' + $item.Replace('"', '\\"') + '"' } else { $item }
+        }) -join ' '
+        $process = Start-Process -FilePath "ssh.exe" -ArgumentList $argumentLine -NoNewWindow -PassThru
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "SSH-команда превысила лимит ${TimeoutSeconds}с"
+        }
+        return $process.ExitCode
+    }
+    $job = Start-Job -ScriptBlock {
+        param([string[]]$SshArguments)
+        $captured = (& ssh.exe @SshArguments 2>&1 | Out-String)
+        [pscustomobject]@{ ExitCode = [int]$LASTEXITCODE; Output = $captured }
+    } -ArgumentList (,[string[]]$arguments)
+    try {
+        if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+            Stop-Job -Job $job -Force -ErrorAction SilentlyContinue
+            throw "SSH-команда превысила лимит ${TimeoutSeconds}с"
+        }
+        $result = Receive-Job -Job $job | Select-Object -Last 1
+        if ($result -and $result.PSObject.Properties.Name -contains "Output") {
+            [string]$result.Output | Out-Host
+            return [int]$result.ExitCode
+        }
+        return 1
+    }
+    finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Install-RemotePublicKey {
@@ -217,6 +262,22 @@ Write-Output 'TMOD_KEY_INSTALLED'
     Wait-RemoteKey
 }
 
+function Get-RemoteActionTimeoutSeconds {
+    param([string]$RemoteAction)
+    switch ($RemoteAction) {
+        "update" { return 1800 }
+        "service-update" { return 1800 }
+        "start" { return 900 }
+        "restart" { return 900 }
+        "group-start" { return 900 }
+        "group-restart" { return 900 }
+        "backup" { return 900 }
+        "db-check" { return 900 }
+        "docker-clean" { return 600 }
+        default { return 300 }
+    }
+}
+
 function Get-ServerCommand {
     param($Config, [string]$RemoteAction, [string]$RemoteService = "", [string]$RemoteGroup = "", [switch]$AsJson)
     if ($script:RemoteActions -notcontains $RemoteAction) { throw "Недопустимое удалённое действие" }
@@ -227,22 +288,124 @@ function Get-ServerCommand {
     $actionLiteral = Escape-PowerShellLiteral $RemoteAction
     $serviceLiteral = Escape-PowerShellLiteral $RemoteService
     $groupLiteral = Escape-PowerShellLiteral $RemoteGroup
+    # Do not emit `-Service ''` / `-Group ''`: Windows PowerShell can parse
+    # those as a parameter with no argument when the command is reconstructed
+    # through SSH.  Optional values must be omitted entirely for actions such
+    # as status, diagnostics and a full safe update.
+    $serviceArgument = if ($RemoteService) { " -Service '$serviceLiteral'" } else { "" }
+    $groupArgument = if ($RemoteGroup) { " -Group '$groupLiteral'" } else { "" }
     $jsonSwitch = if ($AsJson) { " -Json" } else { "" }
-    return @"
+    $taskTimeoutSeconds = Get-RemoteActionTimeoutSeconds $RemoteAction
+    $taskWaitSeconds = $taskTimeoutSeconds + 90
+    $jsonRequest = if ($AsJson) { '$true' } else { '$false' }
+
+    # Live logs intentionally remain a direct SSH stream.  Docker logs do not
+    # call the credential helper, while an interactive task cannot be safely
+    # attached to or cancelled with Ctrl+C from this console.
+    if ($RemoteAction -eq "service-logs-follow") {
+        return @"
 `$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
 `$OutputEncoding = New-Object System.Text.UTF8Encoding
 [Console]::OutputEncoding = `$OutputEncoding
 `$control = Join-Path '$project' 'tmod_control_windows.ps1'
 if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral' -Service '$serviceLiteral' -Group '$groupLiteral' -NoAnimation$jsonSwitch
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$control -ProjectDir '$project' -PersistentDir '$persistent' -Action '$actionLiteral'$serviceArgument$groupArgument -NoAnimation$jsonSwitch
 exit `$LASTEXITCODE
+"@
+    }
+
+    return @"
+`$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
+`$OutputEncoding = New-Object System.Text.UTF8Encoding
+[Console]::OutputEncoding = `$OutputEncoding
+`$control = Join-Path '$project' 'tmod_control_windows.ps1'
+`$runner = Join-Path '$project' 'scripts\tmod_remote_interactive_runner.ps1'
+if (-not (Test-Path -LiteralPath `$control)) { throw 'T-Mod Control отсутствует на сервере. Сначала обновите репозиторий.' }
+if (-not (Test-Path -LiteralPath `$runner)) { throw 'Interactive T-Mod Remote runner отсутствует. Сначала обновите репозиторий.' }
+`$taskRoot = Join-Path '$persistent' 'control\remote-tasks'
+New-Item -ItemType Directory -Path `$taskRoot -Force | Out-Null
+`$requestId = [guid]::NewGuid().ToString('D')
+`$requestPath = Join-Path `$taskRoot ("`$requestId.request.json")
+`$resultPath = Join-Path `$taskRoot ("`$requestId.result.json")
+`$request = [ordered]@{
+    schema = 'tmod-remote-interactive-v1'
+    request_id = `$requestId
+    project_dir = '$project'
+    persistent_dir = '$persistent'
+    action = '$actionLiteral'
+    service = '$serviceLiteral'
+    group = '$groupLiteral'
+    timeout_seconds = $taskTimeoutSeconds
+    json = $jsonRequest
+}
+`$requestTemporary = "`$requestPath.`$PID.tmp"
+[IO.File]::WriteAllText(`$requestTemporary, (`$request | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding(`$false)))
+Move-Item -LiteralPath `$requestTemporary -Destination `$requestPath -Force
+`$taskUser = "{0}\{1}" -f `$env:COMPUTERNAME, `$env:USERNAME
+`$taskName = "T-Mod Remote `$requestId"
+`$powerShell = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+`$taskArguments = ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -RequestPath "{1}" -ResultPath "{2}"' -f `$runner, `$requestPath, `$resultPath)
+`$taskCreated = `$false
+`$exitCode = 1
+try {
+    # A no-trigger task can only be started explicitly below.  This avoids a
+    # second delayed run if the SSH connection disappears before cleanup.
+    # Interactive + Highest deliberately uses the logged-in desktop token:
+    # Docker Desktop's credential helper cannot work in the SSH token.
+    `$taskAction = New-ScheduledTaskAction -Execute `$powerShell -Argument `$taskArguments
+    `$taskPrincipal = New-ScheduledTaskPrincipal -UserId `$taskUser -LogonType Interactive -RunLevel Highest
+    `$taskDefinition = New-ScheduledTask -Action `$taskAction -Principal `$taskPrincipal
+    Register-ScheduledTask -TaskName `$taskName -InputObject `$taskDefinition -Force | Out-Null
+    `$taskCreated = `$true
+    Start-ScheduledTask -TaskName `$taskName
+    `$deadline = [DateTime]::UtcNow.AddSeconds($taskWaitSeconds)
+    `$result = `$null
+    while ([DateTime]::UtcNow -lt `$deadline) {
+        if (Test-Path -LiteralPath `$resultPath) {
+            try {
+                `$result = Get-Content -LiteralPath `$resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                break
+            }
+            catch {
+                # The runner publishes atomically; a retry only handles a
+                # short antivirus/file-indexing race on Windows.
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not `$result) {
+        Stop-ScheduledTask -TaskName `$taskName -ErrorAction SilentlyContinue
+        throw "Интерактивная задача T-Mod не вернула результат за $taskWaitSeconds секунд. Проверьте, что на сервере есть сеанс `$taskUser."
+    }
+    if ([string]`$result.schema -ne 'tmod-remote-interactive-v1' -or [string]`$result.request_id -ne `$requestId) {
+        throw "Интерактивная задача T-Mod вернула недействительный результат."
+    }
+    if (`$null -ne `$result.text -and [string]`$result.text) {
+        [Console]::Out.Write([string]`$result.text)
+        if (-not ([string]`$result.text).EndsWith("`n")) { [Console]::Out.WriteLine() }
+    }
+    `$exitCode = [int]`$result.exit_code
+}
+finally {
+    if (`$taskCreated) { Unregister-ScheduledTask -TaskName `$taskName -Confirm:`$false -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath `$requestTemporary, `$requestPath, `$resultPath -Force -ErrorAction SilentlyContinue
+}
+exit `$exitCode
 "@
 }
 
 function Invoke-ServerAction {
     param($Config, [string]$RemoteAction, [string]$RemoteService = "", [string]$RemoteGroup = "", [switch]$AsJson)
     $command = Get-ServerCommand $Config $RemoteAction $RemoteService $RemoteGroup -AsJson:$AsJson
-    return (Invoke-RemotePowerShell $Config $command)
+    if ($RemoteAction -eq "service-logs-follow") {
+        return (Invoke-RemotePowerShell $Config $command -Follow)
+    }
+    # The task itself owns the action budget.  SSH gets two short grace
+    # windows: one for task start/result publication and one for cleanup.
+    $sshTimeout = (Get-RemoteActionTimeoutSeconds $RemoteAction) + 180
+    return (Invoke-RemotePowerShell $Config $command -TimeoutSeconds $sshTimeout)
 }
 
 function Test-RemoteConnection {
@@ -251,8 +414,22 @@ function Test-RemoteConnection {
     $arguments = Get-SshBaseArguments $Config
     $arguments += ("{0}@{1}" -f $Config.user, $Config.host)
     $arguments += @("echo", "TMOD_REMOTE_OK")
-    $output = & ssh.exe @arguments 2>$null
-    return ($LASTEXITCODE -eq 0 -and ($output | Out-String) -match "TMOD_REMOTE_OK")
+    $job = Start-Job -ScriptBlock {
+        param([string[]]$SshArguments)
+        $output = (& ssh.exe @SshArguments 2>$null | Out-String)
+        [pscustomobject]@{ ExitCode = [int]$LASTEXITCODE; Output = $output }
+    } -ArgumentList (,[string[]]$arguments)
+    try {
+        if (-not (Wait-Job -Job $job -Timeout 20)) {
+            Stop-Job -Job $job -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        $result = Receive-Job -Job $job | Select-Object -Last 1
+        return [bool]($result -and $result.ExitCode -eq 0 -and [string]$result.Output -match "TMOD_REMOTE_OK")
+    }
+    finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-RemoteManifest {
@@ -262,12 +439,29 @@ function Get-RemoteManifest {
 
 function Update-RemoteClient {
     param([switch]$Quiet)
+    $script:LastUpdateCheckSucceeded = $false
+    $mutex = New-Object System.Threading.Mutex($false, "Local\TModRemoteClientUpdate")
+    $lockAcquired = $false
+    try {
+        try {
+            $lockAcquired = $mutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            # The previous updater died while holding the mutex. The OS has
+            # transferred ownership to this process, so recovery is safe.
+            $lockAcquired = $true
+        }
+        if (-not $lockAcquired) {
+            if (-not $Quiet) { Write-Host "  Обновление уже выполняется в другом окне." -ForegroundColor Yellow }
+            return $false
+        }
     $manifest = Get-RemoteManifest
     if (-not $manifest) {
         if (-not $Quiet) { Write-Host "  GitHub сейчас недоступен; текущая версия сохранена." -ForegroundColor Yellow }
         return $false
     }
     if ([version]$manifest.version -le [version]$script:ClientVersion) {
+        $script:LastUpdateCheckSucceeded = $true
         if (-not $Quiet) { Write-Host "  Установлена актуальная версия T-Mod Remote." -ForegroundColor Green }
         return $false
     }
@@ -279,7 +473,10 @@ function Update-RemoteClient {
     foreach ($fileName in @("tmod_remote_windows.bat")) {
         $url = [string]$manifest.files.$fileName
         if (-not $url.StartsWith("https://raw.githubusercontent.com/cdnserver/t-mod/")) { throw "Манифест содержит недопустимый адрес" }
-        $temporary = "$runningBundlePath.next.download"
+        $temporary = "$runningBundlePath.next.download.$PID.$([guid]::NewGuid().ToString('N'))"
+        $nextPath = "$runningBundlePath.next"
+        $readyPath = "$runningBundlePath.next.ready"
+        $readyTemporary = "$readyPath.$PID.tmp"
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $temporary -TimeoutSec 15
         if ((Get-Item -LiteralPath $temporary).Length -lt 100) { throw "Загруженный файл повреждён: $fileName" }
         if (-not ((Get-Content -Raw -LiteralPath $temporary) -match ":__TMOD_REMOTE_PAYLOAD__")) { throw "Проверка клиента не пройдена" }
@@ -289,11 +486,31 @@ function Update-RemoteClient {
             Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
             throw "Контрольная сумма обновления не совпала: $fileName"
         }
-        Move-Item -LiteralPath $temporary -Destination "$runningBundlePath.next" -Force
+        if (Test-Path -LiteralPath $nextPath) {
+            [IO.File]::Replace($temporary, $nextPath, $null, $true)
+        } else {
+            Move-Item -LiteralPath $temporary -Destination $nextPath -Force
+        }
+        [IO.File]::WriteAllText(
+            $readyTemporary,
+            ("{0}`n{1}" -f [string]$manifest.version, $expectedHash.ToLowerInvariant()),
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        if (Test-Path -LiteralPath $readyPath) {
+            [IO.File]::Replace($readyTemporary, $readyPath, $null, $true)
+        } else {
+            Move-Item -LiteralPath $readyTemporary -Destination $readyPath -Force
+        }
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:AppDir "tmod_remote_version.json") -Encoding UTF8
+    $script:LastUpdateCheckSucceeded = $true
     if (-not $Quiet) { Write-Host "  T-Mod Remote v$($manifest.version) подготовлен. При следующем запуске единый файл обновится сам." -ForegroundColor Green }
     return $true
+    }
+    finally {
+        if ($lockAcquired) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
 }
 
 function Invoke-AutomaticUpdateCheck {
@@ -309,6 +526,7 @@ function Invoke-AutomaticUpdateCheck {
     }
     if (-not $check) { return }
     try { Update-RemoteClient -Quiet | Out-Null } catch {}
+    if (-not $script:LastUpdateCheckSucceeded) { return }
     New-Item -ItemType Directory -Path $script:AppDir -Force | Out-Null
     @{ checked_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $script:UpdateStatePath -Encoding UTF8
 }

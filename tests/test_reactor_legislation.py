@@ -98,6 +98,60 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(updated["revision"], workspace["revision"])
         self.assertEqual(clarification, generated.clarification)
 
+    def test_ai_generation_keeps_returned_workspace_separate_from_new_draft(self) -> None:
+        returned, _ = create_workspace(77, 101, "Автор")
+        returned = save_workspace(77, 101, self.complete_payload(returned))
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE tvrs_bill_workspaces
+                SET status = 'moderation',
+                    moderation_status = 'pending',
+                    revision = revision + 1
+                WHERE id = ?
+                """,
+                (returned["id"],),
+            )
+            con.commit()
+        new_draft, created = create_workspace(77, 101, "Автор")
+        self.assertTrue(created)
+        self.assertNotEqual(new_draft["id"], returned["id"])
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE tvrs_bill_workspaces
+                SET status = 'changes_requested',
+                    moderation_status = 'changes_requested',
+                    revision = revision + 1
+                WHERE id = ?
+                """,
+                (returned["id"],),
+            )
+            con.commit()
+        returned = workspace_storage.get_bill_workspace(returned["id"])
+
+        payload = self.complete_payload(returned)
+        generated = BillEditorDraft(
+            title="Исправленный справочник участников",
+            summary="Создать исправленный справочник участников с учётом замечаний модерации.",
+            materials=None,
+            decision_category="ordinary",
+            implementation_plan="Подготовить исправленную форму и открыть справочник.",
+            leadership_actions="Проверить исправления и назначить ответственного.",
+        )
+        with patch(
+            "modules.reactor_legislation.generate_bill_editor_draft",
+            return_value=generated,
+        ):
+            updated, _ = generate_workspace_draft(77, 101, payload)
+
+        self.assertEqual(updated["status"], "changes_requested")
+        self.assertEqual(updated["title"], generated.title)
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(new_draft["id"])["status"],
+            "draft",
+        )
+
     def test_invalid_ids_lengths_and_stale_revisions_return_domain_errors(self) -> None:
         workspace, _ = create_workspace(77, 101, "Автор")
         payload = self.complete_payload(workspace)
@@ -180,6 +234,59 @@ class ReactorLegislationTests(unittest.IsolatedAsyncioTestCase):
         closed = workspace_storage.get_bill_workspace(saved["id"])
         self.assertEqual(closed["status"], "submitted")
         self.assertEqual(approved["moderation"]["status"], "approved")
+
+    async def test_approval_does_not_conflict_with_authors_new_draft(self) -> None:
+        """An author may start a new draft while an older one is in moderation.
+
+        The partial one-open-workspace index must not make the moderator's
+        transition of the old workspace to ``submitted`` fail in that case.
+        """
+
+        reviewed, _ = create_workspace(77, 101, "Автор")
+        reviewed = save_workspace(77, 101, self.complete_payload(reviewed))
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+
+        with (
+            patch.dict(active_sessions, {}, clear=True),
+            patch(
+                "modules.reactor_legislation.refresh_bill_workspace_panel",
+                AsyncMock(),
+            ),
+            patch("modules.reactor_legislation.wake_delivery_worker"),
+        ):
+            queued, _ = await publish_workspace(
+                bot,
+                77,
+                101,
+                "Автор",
+                {
+                    "workspace_id": reviewed["id"],
+                    "expected_revision": reviewed["revision"],
+                    "confirmed": True,
+                },
+            )
+            new_draft, created = create_workspace(77, 101, "Автор")
+            approved = await moderate_workspace(
+                bot,
+                77,
+                999,
+                "Модератор",
+                {
+                    "workspace_id": queued["id"],
+                    "expected_revision": queued["revision"],
+                    "decision": "approved",
+                    "note": "Проверено",
+                },
+            )
+
+        self.assertTrue(created)
+        self.assertEqual(approved["moderation"]["status"], "approved")
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(queued["id"])["status"], "submitted"
+        )
+        self.assertEqual(
+            workspace_storage.get_bill_workspace(new_draft["id"])["status"], "draft"
+        )
 
 
 if __name__ == "__main__":

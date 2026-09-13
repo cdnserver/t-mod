@@ -17,7 +17,9 @@ from modules.atlas_ai import (
     AtlasAIConfig,
     AtlasAIError,
     _answer_text,
+    _atlas_answer_is_retrieval_refusal,
     _atlas_corpus_abbreviations,
+    _atlas_merge_source_fragments,
     _atlas_pinpoint_labels,
     _atlas_query_variants,
     _atlas_task_profile,
@@ -25,13 +27,16 @@ from modules.atlas_ai import (
     _cross_chat_context,
     _chunks,
     _compact_overlay_answer,
+    _grounded_refusal_fallback,
     _recent_user_dialog_context,
+    _response_delivery_contract,
     atlas_ai_config,
     atlas_answer,
     atlas_answer_stream,
     atlas_embed,
     atlas_ensure_collection,
     atlas_index_source,
+    atlas_model_route,
     atlas_parse_text_mode,
     atlas_probe_collection,
     atlas_research_plan,
@@ -45,6 +50,7 @@ from modules.atlas_web import register_atlas_web_routes
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
 from persistence import atlas_repository
+from persistence import atlas_forum_attachment_repository
 from persistence.core import connect
 
 
@@ -155,6 +161,259 @@ class AtlasRepositoryTests(unittest.TestCase):
             atlas_repository.atlas_set_message_feedback(
                 organization_id, 99, message_id, "good"
             )
+
+    def test_answer_provenance_round_trips_with_feedback_candidate(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(
+            organization_id,
+            42,
+            "Проверка выпуска",
+            agent_id="atlas-claims",
+        )
+        atlas_repository.atlas_add_message(
+            thread_id,
+            "user",
+            "Подготовь основу иска.",
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="gov",
+        )
+        message_id = atlas_repository.atlas_add_message(
+            thread_id,
+            "assistant",
+            "Основа иска подготовлена по подтверждённой норме.",
+            citations=[{"source_id": 41, "title": "Судебный кодекс"}],
+            model="account/atlas-claims-v1",
+            model_provider="together",
+            model_release="atlas-claims-v1",
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="gov",
+            latency_ms=87,
+        )
+        atlas_repository.atlas_set_message_feedback(organization_id, 42, message_id, "good")
+
+        messages = atlas_repository.atlas_thread_messages(organization_id, 42, thread_id)["messages"]
+        candidates = atlas_repository.atlas_training_candidates(
+            organization_id=organization_id,
+            project_code="majestic-rp",
+            agent_id="atlas-claims",
+        )
+
+        assistant = messages[-1]
+        self.assertEqual(assistant["model_provider"], "together")
+        self.assertEqual(assistant["model_release"], "atlas-claims-v1")
+        self.assertEqual(assistant["project_code"], "majestic-rp")
+        self.assertEqual(assistant["server_code"], "phoenix-15")
+        self.assertEqual(assistant["faction_code"], "gov")
+        self.assertEqual(candidates[0]["model_provider"], "together")
+        self.assertEqual(candidates[0]["answer_server_code"], "phoenix-15")
+
+    def test_forum_attachment_ocr_is_review_gated_and_resets_on_source_revision(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        organization_id = int(dashboard["organization"]["id"])
+        first = atlas_repository.atlas_upsert_synced_knowledge(
+            organization_id,
+            title="Судебный акт по делу №17",
+            content="Проверяемая редакция материала форума с описанием приложенного судебного акта.",
+            source_url="https://forum.majestic-rp.ru/threads/court-act.17/",
+            server_code="phoenix-15",
+            faction_code="gov",
+            visibility_scope="server",
+            feed_key="court-acts",
+        )["source"]
+        discovered = atlas_forum_attachment_repository.atlas_sync_forum_attachments(
+            organization_id,
+            int(first["id"]),
+            (
+                {
+                    "url": "https://forum.majestic-rp.ru/attachments/court-act-17.100/",
+                    "filename": "court-act-17.png",
+                    "media_kind": "image",
+                    "label": "Акт суда, лист 1",
+                },
+            ),
+        )
+        self.assertEqual(discovered[0]["status"], "discovered")
+        attachment_id = int(discovered[0]["id"])
+        atlas_forum_attachment_repository.atlas_forum_attachment_complete_ocr(
+            attachment_id,
+            content_sha256="a" * 64,
+            mime_type="image/png",
+            size_bytes=1234,
+            storage_key="objects/aa/aa/" + "a" * 64,
+            text="Проверяемая машинная расшифровка приложенного судебного акта.",
+            engine="tesseract",
+        )
+        review = atlas_forum_attachment_repository.atlas_forum_attachment_review(
+            organization_id,
+            42,
+            attachment_id,
+            approve=True,
+        )
+        self.assertEqual(review["status"], "approved")
+        self.assertGreater(int(review["knowledge_source_id"]), 0)
+        derivative = atlas_repository.atlas_knowledge_source(
+            int(review["knowledge_source_id"])
+        )
+        self.assertEqual(derivative["status"], "pending")
+        self.assertIn("машинная расшифровка", derivative["content_text"])
+        # The parent source remains the forum post; OCR has no path into the
+        # parent text. The reviewed derivative is separately citable.
+        self.assertNotIn("машинная расшифровка", first["content_text"])
+
+        revised = atlas_repository.atlas_upsert_synced_knowledge(
+            organization_id,
+            title="Судебный акт по делу №17",
+            content="Новая проверяемая редакция материала форума с изменённым описанием судебного акта.",
+            source_url="https://forum.majestic-rp.ru/threads/court-act.17/",
+            server_code="phoenix-15",
+            faction_code="gov",
+            visibility_scope="server",
+            feed_key="court-acts",
+        )["source"]
+        reset = atlas_forum_attachment_repository.atlas_sync_forum_attachments(
+            organization_id,
+            int(revised["id"]),
+            (
+                {
+                    "url": "https://forum.majestic-rp.ru/attachments/court-act-17.100/",
+                    "filename": "court-act-17.png",
+                    "media_kind": "image",
+                },
+            ),
+        )[0]
+        self.assertEqual(reset["status"], "discovered")
+        self.assertIsNone(reset["ocr_text"])
+        self.assertIsNone(reset["reviewed_at"])
+        self.assertIsNone(reset["knowledge_source_id"])
+        self.assertEqual(
+            atlas_repository.atlas_knowledge_source(int(derivative["id"]))["status"],
+            "archived",
+        )
+
+    def test_federation_migration_preserves_archived_source_scope(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Редактор")
+        source = atlas_repository.atlas_add_knowledge(
+            int(dashboard["organization"]["id"]),
+            42,
+            title="Исторический общий регламент",
+            content="Этот регламент остаётся историческим материалом после миграции Atlas.",
+            visibility_scope="global",
+        )
+        migration_key = "migration:atlas-federation:2026-08-31-v2"
+        with connect() as con:
+            con.execute(
+                """
+                UPDATE atlas_knowledge_sources
+                SET project_code = '', federation_scope = 'workspace', status = 'archived'
+                WHERE id = ?
+                """,
+                (int(source["id"]),),
+            )
+            con.execute("DELETE FROM meta WHERE key = ?", (migration_key,))
+            con.commit()
+
+        storage.init_db()
+
+        with connect() as con:
+            restored = con.execute(
+                """
+                SELECT project_code, federation_scope, status
+                FROM atlas_knowledge_sources WHERE id = ?
+                """,
+                (int(source["id"]),),
+            ).fetchone()
+        self.assertEqual(tuple(restored), ("majestic-rp", "project", "archived"))
+
+    def test_finetuning_candidates_require_good_feedback_and_pair_last_user_message(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        thread_id = atlas_repository.atlas_create_thread(organization_id, 42, "Обучение")
+        atlas_repository.atlas_add_message(thread_id, "user", "Первый вопрос")
+        rejected_id = atlas_repository.atlas_add_message(
+            thread_id, "assistant", "Ответ без положительной оценки"
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, rejected_id, "bad"
+        )
+        user_id = atlas_repository.atlas_add_message(thread_id, "user", "Точный вопрос")
+        accepted_id = atlas_repository.atlas_add_message(
+            thread_id,
+            "assistant",
+            "Точный и полезный ответ со ссылками.",
+            citations=[{"title": "Уголовный кодекс"}],
+            model="atlas-test",
+        )
+        atlas_repository.atlas_set_message_feedback(
+            organization_id, 42, accepted_id, "good", comment="Проверено"
+        )
+
+        candidates = atlas_repository.atlas_training_candidates(
+            organization_id=organization_id
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["assistant_message_id"], accepted_id)
+        self.assertEqual(candidates[0]["user_message_id"], user_id)
+        self.assertEqual(candidates[0]["user_text"], "Точный вопрос")
+        self.assertEqual(candidates[0]["citations"][0]["title"], "Уголовный кодекс")
+
+    def test_finetuning_candidates_are_filtered_by_project_and_agent(self) -> None:
+        first = atlas_repository.atlas_dashboard(77, 42, "Majestic редактор")
+        first_id = int(first["organization"]["id"])
+        first_thread = atlas_repository.atlas_create_thread(
+            first_id, 42, "Общий", agent_id="atlas-tvr-a"
+        )
+        atlas_repository.atlas_add_message(first_thread, "user", "Вопрос первого проекта")
+        first_message = atlas_repository.atlas_add_message(
+            first_thread, "assistant", "Проверенный и полезный ответ первого проекта."
+        )
+        atlas_repository.atlas_set_message_feedback(first_id, 42, first_message, "good")
+
+        atlas_repository.atlas_upsert_project(42, code="project-b", name="Project B")
+        server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
+        second = atlas_repository.atlas_create_organization(
+            77,
+            42,
+            name="Project B LSPD",
+            owner_user_id=84,
+            server_code=server["code"],
+            faction_code="lspd",
+        )
+        second_id = int(second["id"])
+        second_thread = atlas_repository.atlas_create_thread(
+            second_id, 84, "Иск", agent_id="atlas-claims"
+        )
+        atlas_repository.atlas_add_message(second_thread, "user", "Вопрос второго проекта")
+        second_message = atlas_repository.atlas_add_message(
+            second_thread, "assistant", "Проверенный и полезный ответ второго проекта."
+        )
+        atlas_repository.atlas_set_message_feedback(second_id, 84, second_message, "good")
+
+        majestic = atlas_repository.atlas_training_candidates(
+            project_code="majestic-rp", agent_id="atlas-tvr-a"
+        )
+        second_project = atlas_repository.atlas_training_candidates(
+            project_code="project-b", agent_id="atlas-claims"
+        )
+        mismatched = atlas_repository.atlas_training_candidates(
+            organization_id=second_id,
+            project_code="majestic-rp",
+        )
+
+        self.assertEqual([item["assistant_message_id"] for item in majestic], [first_message])
+        self.assertEqual([item["project_code"] for item in majestic], ["majestic-rp"])
+        self.assertEqual([item["assistant_message_id"] for item in second_project], [second_message])
+        self.assertEqual([item["project_code"] for item in second_project], ["project-b"])
+        self.assertEqual(mismatched, [])
 
     def test_agent_threads_have_isolated_memory_lanes(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
@@ -426,6 +685,36 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(timeline[0]["source_type"], "knowledge_source")
         self.assertEqual(timeline[0]["source_id"], str(first["id"]))
 
+    def test_searchable_corpus_keeps_old_reference_documents_ahead_of_recent_noise(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        law = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Уголовный кодекс штата San Andreas",
+            content="Старая, но действующая нормативная база с полным текстом статей.",
+            visibility_scope="server",
+        )
+        for index in range(4):
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Новость форума {index}",
+                content=f"Свежий информационный материал номер {index}, не являющийся кодексом.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("уголов",),
+            limit=2,
+        )
+
+        self.assertEqual(sources[0]["id"], law["id"])
+        self.assertEqual(sources[0]["title"], "Уголовный кодекс штата San Andreas")
+
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])
@@ -520,6 +809,135 @@ class AtlasRepositoryTests(unittest.TestCase):
                 title="Ошибка",
                 content="Материал с неизвестной областью доступа не должен сохраниться.",
                 visibility_scope="unknown",
+            )
+
+    def test_projects_keep_legal_corpora_and_workspaces_isolated(self) -> None:
+        first = atlas_repository.atlas_dashboard(77, 42, "Majestic редактор")
+        first_id = int(first["organization"]["id"])
+        atlas_repository.atlas_upsert_project(
+            42,
+            code="project-b",
+            name="Project B",
+        )
+        second_server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
+        second = atlas_repository.atlas_create_organization(
+            77,
+            42,
+            name="Project B LSPD",
+            owner_user_id=84,
+            server_code=second_server["code"],
+            faction_code="lspd",
+        )
+        second_id = int(second["id"])
+        majestic = atlas_repository.atlas_add_knowledge(
+            first_id,
+            42,
+            title="Закон Majestic",
+            content="Проверенная норма Majestic RP, применимая только в первом проекте.",
+            visibility_scope="global",
+        )
+        project_b = atlas_repository.atlas_add_knowledge(
+            second_id,
+            84,
+            title="Закон Project B",
+            content="Проверенная норма второго проекта, не применимая в Majestic RP.",
+            server_code="project-b-15",
+            faction_code="lspd",
+            visibility_scope="global",
+        )
+        platform = atlas_repository.atlas_add_knowledge(
+            second_id,
+            84,
+            title="Платформенная политика Atlas",
+            content="Единая техническая политика Atlas, явно опубликованная для всех проектов.",
+            server_code="project-b-15",
+            faction_code="lspd",
+            visibility_scope="global",
+            federation_scope="platform",
+        )
+
+        first_visible = {
+            int(item["id"])
+            for item in atlas_repository.atlas_searchable_knowledge_sources(
+                first_id,
+                server_code="phoenix-15",
+                faction_code="lspd",
+            )
+        }
+        second_visible = {
+            int(item["id"])
+            for item in atlas_repository.atlas_searchable_knowledge_sources(
+                second_id,
+                server_code="project-b-15",
+                faction_code="lspd",
+            )
+        }
+
+        self.assertEqual(majestic["federation_scope"], "project")
+        self.assertEqual(project_b["federation_scope"], "project")
+        self.assertEqual(platform["federation_scope"], "platform")
+        self.assertIn(int(majestic["id"]), first_visible)
+        self.assertIn(int(platform["id"]), first_visible)
+        self.assertNotIn(int(project_b["id"]), first_visible)
+        self.assertIn(int(project_b["id"]), second_visible)
+        self.assertIn(int(platform["id"]), second_visible)
+        self.assertNotIn(int(majestic["id"]), second_visible)
+        with self.assertRaisesRegex(ValueError, "atlas_organization_project_mismatch"):
+            atlas_repository.atlas_searchable_knowledge_sources(
+                first_id,
+                server_code="project-b-15",
+                faction_code="lspd",
+            )
+
+    def test_project_namespaces_personal_spaces_feeds_and_server_identity(self) -> None:
+        atlas_repository.atlas_upsert_project(42, code="project-c", name="Project C")
+        server = atlas_repository.atlas_upsert_server(
+            42,
+            code="project-c-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-c",
+        )
+        majestic_personal = atlas_repository.atlas_ensure_personal_space(77, 42, "Роберт")
+        project_personal = atlas_repository.atlas_ensure_personal_space(
+            77,
+            42,
+            "Роберт",
+            project_code="project-c",
+        )
+        majestic_feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="laws",
+            root_url="https://forum.majestic-rp.ru/forums/laws/",
+        )
+        project_feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="laws",
+            root_url="https://forum.example.org/forums/laws/",
+            server_code=server["code"],
+            faction_code="lspd",
+        )
+
+        self.assertNotEqual(majestic_personal["organization"]["id"], project_personal["organization"]["id"])
+        self.assertEqual(project_personal["organization"]["project_code"], "project-c")
+        self.assertEqual(majestic_feed["feed_key"], "majestic-rp:laws")
+        self.assertEqual(project_feed["feed_key"], "project-c:laws")
+        self.assertEqual(
+            atlas_repository.atlas_forum_sync_status(77, project_code="project-c")["id"],
+            project_feed["id"],
+        )
+        with self.assertRaisesRegex(ValueError, "atlas_server_project_immutable"):
+            atlas_repository.atlas_upsert_server(
+                42,
+                code="project-c-15",
+                name="Moved",
+                project_code="majestic-rp",
             )
 
     def test_admin_catalog_and_private_space_are_dynamic_and_isolated(self) -> None:
@@ -672,6 +1090,49 @@ class AtlasRepositoryTests(unittest.TestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _project_rules_source() -> dict[str, object]:
+        return {
+            "id": 9_071,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "global",
+            "federation_scope": "project",
+            "title": "Основные правила проекта",
+            "source_kind": "forum",
+            "source_url": "https://forum.majestic-rp.ru/threads/osnovnyye-pravila-proyekta.8036/",
+            "content_text": (
+                "Общее положение\n"
+                "1.1 На проекте действует прецедентная система правил.\n"
+                "Положение об аккаунте\n"
+                "2.1 Максимальное количество разрешенных аккаунтов на одного человека — один.\n"
+                "2.2 Запрещено передавать аккаунт 3-м лицам. | PermBan.\n"
+                "2.2.1 Вложенное пояснение к передаче аккаунта.\n"
+                "2.20 Условный соседний пункт, который не относится к передаче.\n"
+                "2.3 Администрация не несет ответственности за аккаунт при взломе.\n"
+                "Игровые чаты\n"
+                "4.1 Текстовый и голосовой чат является исключительно IC чатом, где запрещено "
+                "OOC-общение; OOC информация передается через /b, /fb, /gb и /cb. | Mute 30–90 "
+                "минут / Demorgan 5 минут.\n"
+                "4.3 Запрещено прямое оскорбление родственников. | HardBan 30–60 дней.\n"
+                "Role Play процесс\n"
+                "5.1 DM — прямое убийство, нанесение урона или стрельба без IC причины и IC диалога. "
+                "| GunBan 8 часов / Demorgan 120 минут / WARN / Ban 3–30 дней.\n"
+                "Исключение: IC диалог не обязателен при угрозе жизни, грубых оскорблениях, угоне "
+                "транспортного средства и других прямо перечисленных ситуациях.\n"
+                "5.2 DB — умышленный наезд транспортом.\n"
+            ),
+            "metadata": {
+                "taxonomy": {
+                    "domain": "ooc",
+                    "corpus_kind": "server_rule",
+                    "authority_scope": "project",
+                }
+            },
+        }
+
     def test_answer_text_accepts_provider_content_variants(self) -> None:
         self.assertEqual(
             _answer_text(
@@ -700,8 +1161,31 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog[0]["id"], "atlas-tvr-a")
         self.assertIn("atlas-claims", {item["id"] for item in catalog})
         self.assertIn("исков", atlas_resolve_agent("atlas-claims").specialty.casefold())
+        self.assertEqual(atlas_resolve_agent("atlas-claims").knowledge_domains, ("ic", "mixed"))
+        self.assertEqual(atlas_resolve_agent("atlas-complaints").knowledge_domains, ("ooc", "mixed"))
+        self.assertEqual(atlas_resolve_agent("atlas-complaints").training_lane, "ooc-complaints")
+        self.assertIn(
+            "Не переноси требования к доказательствам",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
+        self.assertIn(
+            "Любые не названные пользователем",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
+        self.assertIn(
+            "Не требуй конкретное наказание",
+            atlas_resolve_agent("atlas-complaints").instruction,
+        )
         with self.assertRaisesRegex(ValueError, "atlas_agent_invalid"):
             atlas_resolve_agent("unknown")
+
+    def test_inflected_short_request_gets_the_strict_short_contract(self) -> None:
+        question = "Определи нарушение и составь краткую жалобу."
+        profile = _atlas_task_profile(question, mode="balanced")
+
+        self.assertEqual(profile.intent, "drafting")
+        self.assertEqual(profile.reasoning_effort, "medium")
+        self.assertIn("жёсткий предел — 160 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
@@ -730,6 +1214,84 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             {"ATLAS_DIRECT_MODEL": "x-ai/grok-4.1-fast"},
         ):
             self.assertEqual(atlas_ai_config().direct_model, "x-ai/grok-4.3")
+
+    def test_fine_tuned_route_is_scoped_and_keeps_base_fallback(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            fine_tuned_model="cdnserver/atlas-general-v1",
+            fine_tuned_enabled=True,
+            fine_tuned_agents="atlas-tvr-a",
+            fine_tuned_projects="majestic-rp",
+        )
+        primary, fallback, reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="majestic-rp",
+        )
+        self.assertEqual((primary.provider, primary.model, primary.release), (
+            "together", "cdnserver/atlas-general-v1", "fine-tuned",
+        ))
+        self.assertEqual(fallback.model if fallback else None, "openai/base")
+        self.assertEqual(reason, "fine_tuned_rollout")
+
+        special, no_fallback, special_reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="majestic-rp",
+            direct_mode=True,
+        )
+        self.assertEqual(special.provider, "openrouter")
+        self.assertEqual(no_fallback, None)
+        self.assertEqual(special_reason, "special_route")
+
+        isolated, isolated_fallback, isolated_reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-tvr-a"),
+            project_code="another-project",
+        )
+        self.assertEqual(isolated.model, "openai/base")
+        self.assertEqual(isolated_fallback, None)
+        self.assertEqual(isolated_reason, "project_not_enrolled")
+
+    def test_fine_tuned_rollout_registry_prefers_exact_project_and_agent(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            fine_tuned_enabled=True,
+            fine_tuned_rollouts=json.dumps([
+                {"project_code": "*", "agent_id": "*", "model": "account/shared", "enabled": True},
+                {
+                    "project_code": "majestic-rp", "agent_id": "atlas-claims",
+                    "model": "account/claims-v1", "release": "claims-v1", "enabled": True,
+                },
+            ]),
+        )
+        route, fallback, reason = atlas_model_route(
+            config,
+            agent=atlas_resolve_agent("atlas-claims"),
+            project_code="majestic-rp",
+        )
+        self.assertEqual(route.model, "account/claims-v1")
+        self.assertEqual(route.release, "claims-v1")
+        self.assertEqual(fallback.model if fallback else None, "openai/base")
+        self.assertEqual(reason, "fine_tuned_rollout")
 
     def test_atlas_2_is_text_only_and_strips_its_call_prefix(self) -> None:
         self.assertEqual(
@@ -769,6 +1331,47 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("без стилистической цензуры", payload["messages"][0]["content"])
         self.assertEqual(result["text_mode"], "atlas-2")
 
+    async def test_retryable_fine_tuned_failure_falls_back_to_base_model(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="base-key",
+            openrouter_url="https://openrouter.test/chat/completions",
+            chat_model="openai/base",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+            together_key="together-key",
+            together_url="https://together.test/v1/chat/completions",
+            fine_tuned_model="cdnserver/atlas-general-v1",
+            fine_tuned_enabled=True,
+            fine_tuned_projects="majestic-rp",
+        )
+        calls: list[tuple[str, str]] = []
+
+        async def complete(_method, url, *, payload, **_kwargs):
+            calls.append((url, str(payload.get("model"))))
+            if "together.test" in url:
+                raise AtlasAIError("upstream_unavailable", "temporary", retryable=True)
+            return {"choices": [{"message": {"content": "Базовый ответ"}}]}
+
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search",
+            AsyncMock(return_value=[]),
+        ), patch("modules.atlas_ai._json_request", side_effect=complete):
+            result = await atlas_answer(77, "Помоги составить короткую речь")
+
+        self.assertEqual(
+            calls,
+            [
+                ("https://together.test/v1/chat/completions", "cdnserver/atlas-general-v1"),
+                ("https://openrouter.test/chat/completions", "openai/base"),
+            ],
+        )
+        self.assertEqual(result["model"], "openai/base")
+        self.assertEqual(result["model_provider"], "openrouter")
+
     def test_taxonomy_distinguishes_ic_ooc_charters_and_case_law(self) -> None:
         ooc = atlas_classify_knowledge(
             title="Правила сервера",
@@ -788,6 +1391,40 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(practice["corpus_kind"], "case_law")
         self.assertEqual(practice["authority_scope"], "court")
 
+    def test_taxonomy_keeps_project_rules_ooc_when_they_describe_ic_mechanics(self) -> None:
+        # Real project rules contain terms such as IC, DM and RP.  They are
+        # still OOC regulations, rather than an IC/OOC mixed corpus.
+        rules = atlas_classify_knowledge(
+            title="Основные правила проекта",
+            content=(
+                "На проекте действует система наказаний. Текстовый и голосовой "
+                "чат является IC, запрещены DM, DB, NonRP и нарушения RP процесса."
+            ),
+            source_url="https://forum.majestic-rp.ru/threads/osnovnyye-pravila-proyekta.8036/",
+            source_kind="forum",
+        )
+
+        self.assertEqual((rules["domain"], rules["corpus_kind"]), ("ooc", "server_rule"))
+        self.assertEqual(rules["authority_scope"], "project")
+
+    def test_taxonomy_uses_document_title_before_incidental_body_terms(self) -> None:
+        criminal_code = atlas_classify_knowledge(
+            title="Уголовный Кодекс штата San Andreas",
+            content=(
+                "Суд рассматривает материалы дела. Прокурор может издать распоряжение, "
+                "а участник вправе подать исковое заявление."
+            ),
+            source_kind="forum",
+        )
+        constitution = atlas_classify_knowledge(
+            title="Конституция Штата San Andreas",
+            content="Судебная практика и исковые заявления применяются с учетом Конституции.",
+            source_kind="forum",
+        )
+
+        self.assertEqual((criminal_code["domain"], criminal_code["corpus_kind"]), ("ic", "law"))
+        self.assertEqual((constitution["domain"], constitution["corpus_kind"]), ("ic", "law"))
+
     def test_aristotle_plan_adapts_to_legal_case(self) -> None:
         plan = atlas_research_plan("Составь позицию по иску и судебной практике")
         self.assertEqual(plan[0]["agent"], "Навигатор")
@@ -805,6 +1442,58 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(any("уголовный кодекс" in item.casefold() for item in variants))
 
+    def test_query_variants_route_colloquial_crime_to_criminal_code(self) -> None:
+        variants = _atlas_query_variants("Назови статью за убийство")
+
+        self.assertTrue(
+            any("уголовный кодекс штата san andreas" in item.casefold() for item in variants)
+        )
+
+    def test_query_variants_route_software_check_to_its_ooc_rules(self) -> None:
+        variants = _atlas_query_variants("Можно ли использовать стороннее ПО и как проходит проверка?")
+
+        self.assertTrue(
+            any("правила проверки на стороннее по" in item.casefold() for item in variants)
+        )
+
+    def test_retrieval_refusal_detector_ignores_a_substantive_no_prohibition_answer(self) -> None:
+        self.assertTrue(
+            _atlas_answer_is_retrieval_refusal(
+                "В текущей библиотеке точная статья не найдена, поэтому назвать её не могу."
+            )
+        )
+        self.assertFalse(
+            _atlas_answer_is_retrieval_refusal(
+                "В статье 6.2 нет отдельного запрета на оказание первой помощи."
+            )
+        )
+
+    def test_retrieval_refusal_fallback_returns_exact_structured_evidence(self) -> None:
+        prepared = SimpleNamespace(
+            sources=[
+                {
+                    "structured": True,
+                    "text": "10.1 Кража — тайное хищение чужого имущества.",
+                    "reference": "article:10.1",
+                    "pinpoints": ["статья 10.1"],
+                }
+            ]
+        )
+
+        answer = _grounded_refusal_fallback(prepared)
+
+        self.assertIn("10.1 Кража", answer)
+        self.assertIn("[1, статья 10.1]", answer)
+        self.assertNotIn("информации нет", answer.casefold())
+
+    def test_ic_legal_query_does_not_receive_an_ooc_rescue_variant(self) -> None:
+        variants = _atlas_query_variants(
+            "Меня задержали сотрудники LSPD, какие у меня права?"
+        )
+
+        self.assertTrue(any("IC законодательство" in item for item in variants))
+        self.assertFalse(any("OOC правила" in item for item in variants))
+
     def test_corpus_abbreviations_follow_actual_atlas_documents(self) -> None:
         aliases = _atlas_corpus_abbreviations(
             [
@@ -818,6 +1507,19 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aliases["ак"], "Административный кодекс штата San Andreas")
         self.assertEqual(aliases["кэ"], "Кодекс этики и служебного поведения")
         self.assertNotIn("упк", aliases)
+
+    def test_corpus_abbreviations_include_latin_organization_names(self) -> None:
+        aliases = _atlas_corpus_abbreviations(
+            [
+                {"title": 'Закон "О статусе United States Secret Service"'},
+                {"title": 'Закон "О статусе Federal Investigation Bureau"'},
+                {"title": 'Закон "О Статусе San Andreas National Guard"'},
+            ]
+        )
+
+        self.assertEqual(aliases["usss"], "United States Secret Service")
+        self.assertEqual(aliases["fib"], "Federal Investigation Bureau")
+        self.assertEqual(aliases["sang"], "San Andreas National Guard")
         self.assertNotIn("коап", aliases)
 
     def test_bad_answer_is_not_reused_inside_current_dialog(self) -> None:
@@ -887,6 +1589,21 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "legal_analysis")
         self.assertEqual(profile.depth, "quick")
+
+    def test_concise_modifier_does_not_replace_legal_or_procedural_intent(self) -> None:
+        detention = _atlas_task_profile(
+            "Меня задержали сотрудники LSPD. Кратко: какие у меня права и что делать?",
+            mode="balanced",
+        )
+        prosecutor = _atlas_task_profile(
+            "Кратко объясни полномочия Генерального прокурора.",
+            mode="balanced",
+        )
+
+        self.assertEqual(detention.intent, "procedural_advice")
+        self.assertEqual(detention.depth, "quick")
+        self.assertEqual(prosecutor.intent, "legal_analysis")
+        self.assertEqual(prosecutor.depth, "quick")
 
     def test_plain_greeting_stays_social_instead_of_describing_the_interface(self) -> None:
         profile = _atlas_task_profile("Привет!", mode="balanced")
@@ -1048,6 +1765,141 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Статья 16.1", result[0]["text"])
         self.assertNotIn("Глава 17", result[0]["text"])
 
+    async def test_search_routes_short_murder_question_to_criminal_code(self) -> None:
+        criminal_code = {
+            "id": 9_310,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "Глава 6. Преступления против жизни.\n"
+                "6.2 (F/R) Убийство, то есть умышленное причинение смерти другому человеку. "
+                "Приоритет розыска — 4. Наказание: до 40 месяцев лишения свободы.\n"
+                "6.3 Тяжкое убийство двух или более лиц."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9310/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        adjacent_law = {
+            **criminal_code,
+            "id": 9_311,
+            "title": "Закон о деятельности государственных служащих",
+            "content_text": "Статья 3. Общие полномочия. Наказание определяется законом.",
+            "source_url": "https://forum.majestic-rp.ru/threads/law.9311/",
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[adjacent_law, criminal_code],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Назови статью за убийство", expanded=True)
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["source_id"], criminal_code["id"])
+        self.assertEqual(result[0]["reference"], "article:6.2")
+        self.assertIn("6.2", result[0]["text"])
+        self.assertIn("Убийство", result[0]["text"])
+
+    async def test_thematic_legal_search_matches_inflected_offence(self) -> None:
+        source = {
+            "id": 9_312,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "8.1 (F/R) Кража чужого имущества. Наказание: до 30 месяцев.\n"
+                "8.2 (F/R) Грабеж с применением насилия. Наказание: до 40 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9312/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Какая статья за кражу?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "article:8.1")
+        self.assertIn("Кража", result[0]["text"])
+
+    async def test_thematic_legal_search_distinguishes_giving_from_receiving_bribe(self) -> None:
+        source = {
+            "id": 9_313,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "15.4 (F/R) Получение взятки должностным лицом. Наказание: до 50 месяцев.\n"
+                "15.5 (F/R) Дача взятки должностному лицу. Наказание: до 40 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9313/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Какая статья за дачу взятки?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "article:15.5")
+
+    async def test_colloquial_killing_question_finds_dm_rule(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Можно ли убивать без причины по правилам сервера?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("DM", result[0]["text"])
+
+    async def test_complaint_wording_finds_dm_rule_before_generic_clauses(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Игрок убил меня без причины и диалога. Составь жалобу.",
+                expanded=True,
+                allowed_domains=("ooc", "mixed"),
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("DM", result[0]["text"])
+
     async def test_search_returns_exact_article_instead_of_nearby_reference(self) -> None:
         source = {
             "id": 94,
@@ -1080,6 +1932,185 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "article:16.1")
         self.assertIn("Первая точная норма", result[0]["text"])
         self.assertNotIn("Другая вложенная норма", result[0]["text"])
+
+    async def test_exact_article_uses_the_named_law_among_duplicate_numbers(self) -> None:
+        common = {
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        sources = [
+            {
+                **common,
+                "id": 9_401,
+                "title": "Закон О статусе United States Secret Service",
+                "content_text": "3.1 Полномочия секретной службы.",
+                "source_url": "https://forum.majestic-rp.ru/threads/usss.9401/",
+            },
+            {
+                **common,
+                "id": 9_402,
+                "title": "Закон О Правительстве штата San-Andreas",
+                "content_text": "3.1 Правительство формирует систему органов исполнительной власти.",
+                "source_url": "https://forum.majestic-rp.ru/threads/government.9402/",
+            },
+            {
+                **common,
+                "id": 9_403,
+                "title": "Закон О государственных документах штата San-Andreas",
+                "content_text": "3.1 Государственный документ имеет обязательные реквизиты.",
+                "source_url": "https://forum.majestic-rp.ru/threads/documents.9403/",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            # Keep the similarly named documents law first: the resolver must
+            # use the title itself rather than relying on database row order.
+            return_value=list(reversed(sources)),
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что написано в статье 3.1 закона о Правительстве?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 9_402)
+        self.assertIn("исполнительной власти", result[0]["text"])
+
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=list(reversed(sources)),
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            audit_wording = await atlas_search(
+                77,
+                "Покажи статью 3.1 документа Закон О Правительстве штата San-Andreas",
+                expanded=True,
+            )
+
+        self.assertEqual(audit_wording[0]["source_id"], 9_402)
+
+        similarly_named_sources = [
+            {
+                **common,
+                "id": 9_404,
+                "title": "Закон О государственных документах штата San-Andreas",
+                "content_text": "3.14 Документ прекращает действие после аннулирования.",
+            },
+            {
+                **common,
+                "id": 9_405,
+                "title": (
+                    "Закон Об обороте оружия и государственных специальных "
+                    "средств штата San-Andreas"
+                ),
+                "content_text": "3.14 Оружие хранится в установленном порядке.",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            # The shared ``государствен…`` stem must not make row order decide
+            # which law owns the article.
+            return_value=list(reversed(similarly_named_sources)),
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(
+                side_effect=AtlasAIError(
+                    "upstream_unavailable", "offline", retryable=True
+                )
+            ),
+        ):
+            documents_law = await atlas_search(
+                77,
+                "Покажи статью 3.14 документа «Закон О государственных документах штата San-Andreas»",
+                expanded=True,
+            )
+
+        self.assertEqual(documents_law[0]["source_id"], 9_404)
+        self.assertIn("аннулирования", documents_law[0]["text"])
+
+    async def test_exact_article_understands_corpus_organization_abbreviation(self) -> None:
+        common = {
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        sources = [
+            {
+                **common,
+                "id": 9_411,
+                "title": "Закон О Статусе San Andreas National Guard",
+                "content_text": "3.1 Применение вооружённых сил.",
+            },
+            {
+                **common,
+                "id": 9_412,
+                "title": "Закон О статусе United States Secret Service",
+                "content_text": "3.1 Секретная служба обеспечивает охрану первых лиц штата.",
+            },
+        ]
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что написано в статье 3.1 закона о статусе USSS?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 9_412)
+        self.assertIn("охрану первых лиц", result[0]["text"])
+
+    async def test_exact_article_is_not_displaced_by_a_planner_reference(self) -> None:
+        source = {
+            "id": 9_314,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "1.3 Совокупность преступлений. В тексте упоминается статья 17.3.\n"
+                "17.3 Оскорбление представителя власти. Наказание: до 30 месяцев."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.9314/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что означает статья 17.3 Уголовного кодекса?",
+                expanded=True,
+                query_variants=["Проверить статью 1.3 и её исключения"],
+            )
+
+        self.assertEqual(result[0]["reference"], "article:17.3")
+        self.assertIn("Оскорбление представителя власти", result[0]["text"])
 
     async def test_exact_article_survives_forum_markup_and_nonbreaking_spaces(self) -> None:
         source = {
@@ -1143,6 +2174,155 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Нужная глава", result[0]["text"])
         self.assertNotIn("Следующая глава", result[0]["text"])
 
+    async def test_exact_chapter_survives_markdown_heading_decoration(self) -> None:
+        source = {
+            "id": 961,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": (
+                "**ГЛАВА 16. ПРЕСТУПЛЕНИЯ ПРОТИВ ПРАВОСУДИЯ**\n"
+                "Статья 16.1. Точная норма.\n"
+                "**ГЛАВА 17. ИНЫЕ ПРЕСТУПЛЕНИЯ**\nСледующая глава."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.61/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(77, "Покажи главу 16 УК", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "chapter:16")
+        self.assertIn("Точная норма", result[0]["text"])
+        self.assertNotIn("Следующая глава", result[0]["text"])
+
+    async def test_lexical_fallback_matches_russian_word_forms(self) -> None:
+        source = {
+            "id": 962,
+            "organization_id": 1,
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "title": "Процессуальный кодекс",
+            "content_text": "Порядок задержания требует разъяснить гражданину основание процедуры.",
+            "source_url": "https://forum.majestic-rp.ru/threads/process.62/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Меня задержали, что делать?", expanded=True)
+
+        self.assertEqual(result[0]["source_id"], 962)
+        self.assertIn("задержания", result[0]["text"])
+
+    async def test_ic_detention_query_does_not_promote_unrelated_ooc_clauses(self) -> None:
+        procedural = {
+            "id": 963,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Процессуальный Кодекс штата San Andreas",
+            "content_text": (
+                "Глава 4. Задержание. Сотрудник обязан назвать основание задержания и "
+                "разъяснить задержанному право на защиту."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/process.63/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        event_rules = {
+            "id": 964,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "global",
+            "federation_scope": "project",
+            "title": "Правила нападения на военную базу",
+            "content_text": (
+                "1.1 Сотрудники могут участвовать в событии.\n"
+                "1.2 Действия участников должны соответствовать правилам мероприятия."
+            ),
+            "source_url": "https://forum.majestic-rp.ru/threads/event.64/",
+            "metadata": {"taxonomy": {"domain": "ooc", "corpus_kind": "server_rule"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[procedural, event_rules],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(
+                77,
+                "Меня задержали сотрудники LSPD, какие у меня права и что делать?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], 963)
+        self.assertFalse(any(item.get("structured") for item in result if item["source_id"] == 964))
+
+    async def test_exact_lookup_returns_canonical_text_without_model_rewrite(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 965,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "authority_scope": "state",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "url": "https://forum.majestic-rp.ru/threads/uk.65/",
+            "text": "Глава 16. Преступления против правосудия.\n16.1 Точная норма.",
+            "score": 10.0,
+            "structured": True,
+            "reference": "chapter:16",
+            "pinpoints": ["глава 16"],
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch("modules.atlas_ai._json_request", AsyncMock()) as provider:
+            result = await atlas_answer(77, "Напиши полностью главу 16 УК")
+
+        provider.assert_not_awaited()
+        self.assertIn("16.1 Точная норма", result["answer"])
+        self.assertIn("[1, глава 16]", result["answer"])
+        self.assertEqual(result["model_provider"], "tmod")
+        self.assertEqual(result["citation_health"]["status"], "ok")
+
     async def test_hybrid_search_uses_saved_source_when_semantic_search_is_down(self) -> None:
         source = {
             "id": 92,
@@ -1173,20 +2353,175 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         self.assertEqual(result[0]["source_id"], 92)
 
+    async def test_ooc_rules_search_returns_account_transfer_clause_before_semantic_chunks(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Можно ли передавать свой аккаунт другому игроку? Укажи пункт и наказание.",
+                expanded=True,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(result[0]["reference"], "clause:2.2")
+        self.assertIn("Запрещено передавать аккаунт", result[0]["text"])
+        self.assertIn("PermBan", result[0]["text"])
+        merged = _atlas_merge_source_fragments(result)
+        self.assertIn("пункт 2.2", merged[0]["pinpoints"])
+
+    async def test_ooc_rules_exact_clause_keeps_descendant_without_matching_lookalike(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Покажи пункт 2.2 правил", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "clause:2.2")
+        self.assertIn("2.2.1 Вложенное пояснение", result[0]["text"])
+        self.assertNotIn("2.20 Условный соседний", result[0]["text"])
+        self.assertNotIn("2.3 Администрация", result[0]["text"])
+
+    async def test_ooc_rules_search_returns_dm_definition_and_exceptions(self) -> None:
+        source = self._project_rules_source()
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что такое DM по правилам проекта и какие есть исключения из требования IC-диалога?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertIn("прямое убийство", result[0]["text"])
+        self.assertIn("GunBan 8 часов", result[0]["text"])
+        self.assertIn("Исключение: IC диалог", result[0]["text"])
+
+    async def test_ooc_rule_ranking_prefers_definition_over_event_exception(self) -> None:
+        main_rules = self._project_rules_source()
+        event_rules = {
+            **self._project_rules_source(),
+            "id": 9_072,
+            "title": "Правила нападения на Форт-Занкудо",
+            "source_url": "https://forum.majestic-rp.ru/threads/fort.9000/",
+            "content_text": "1.2 На мероприятии действуют общие правила. Исключение: PG, DM.",
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[event_rules, main_rules],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(
+                77,
+                "Что такое DM и какое наказание предусмотрено правилами проекта?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["source_id"], main_rules["id"])
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+
+    async def test_ooc_rule_parser_splits_spaced_xenforo_numbers(self) -> None:
+        source = {
+            **self._project_rules_source(),
+            "content_text": (
+                "5.1 DM — убийство без IC причины и IC диалога. | WARN.\n"
+                "5. 2 Запрещено стороннее ПО; этот пункт не относится к DM.\n"
+                "5. 3 Запрещено использовать ошибки игры."
+            ),
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            result = await atlas_search(77, "Что такое DM?", expanded=True)
+
+        self.assertEqual(result[0]["reference"], "clause:5.1")
+        self.assertNotIn("стороннее ПО", result[0]["text"])
+
+    async def test_ooc_rules_search_keeps_chat_and_relatives_answers_pinpointed(self) -> None:
+        source = self._project_rules_source()
+        checks = (
+            (
+                "Какое наказание предусмотрено за прямое оскорбление родственников? Укажи пункт правил.",
+                "clause:4.3",
+                "HardBan 30–60 дней",
+            ),
+            (
+                "В каком чате можно передавать OOC-информацию и что запрещено в обычном голосовом чате?",
+                "clause:4.1",
+                "/b, /fb, /gb и /cb",
+            ),
+        )
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(side_effect=AtlasAIError("upstream_unavailable", "offline", retryable=True)),
+        ):
+            for question, reference, expected in checks:
+                result = await atlas_search(77, question, expanded=True)
+                self.assertEqual(result[0]["reference"], reference)
+                self.assertIn(expected, result[0]["text"])
+
     async def test_search_uses_all_accessible_knowledge_scopes(self) -> None:
+        canonical = {
+            "id": 4,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "fresh-checksum",
+            "title": "Регламент",
+            "source_url": None,
+            "metadata": {"taxonomy": {"domain": "mixed", "corpus_kind": "procedure"}},
+        }
         response = {
             "result": {
                 "points": [
                     {
                         "score": 0.91,
-                        "payload": {"organization_id": 77, "source_id": 4, "title": "Регламент", "text": "Текст"},
+                        "payload": {
+                            "organization_id": 77,
+                            "source_id": 4,
+                            "project_code": "majestic-rp",
+                            "federation_scope": "server",
+                            "access_scope": "server:majestic-rp:phoenix-15",
+                            "checksum": "fresh-checksum",
+                            "title": "Регламент",
+                            "text": "Текст",
+                        },
                     }
                 ]
             }
         }
         with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
             "modules.atlas_ai._json_request", AsyncMock(return_value=response)
-        ) as request:
+        ) as request, patch(
+            "modules.atlas_ai.atlas_storage.atlas_visible_knowledge_sources_by_id",
+            return_value={4: canonical},
+        ):
             result = await atlas_search(77, "полномочия")
 
         payload = request.await_args.kwargs["payload"]
@@ -1196,15 +2531,96 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "key": "access_scope",
                 "match": {
                     "any": [
-                        "global",
-                        "server:phoenix-15",
-                        "faction:phoenix-15:lspd",
-                        "workspace:77:phoenix-15:lspd",
+                        "platform",
+                        "project:majestic-rp",
+                        "server:majestic-rp:phoenix-15",
+                        "faction:majestic-rp:phoenix-15:lspd",
+                        "workspace:majestic-rp:77:phoenix-15:lspd",
                     ]
                 },
             },
         )
         self.assertEqual(result[0]["source_id"], 4)
+
+    async def test_semantic_hit_is_rejected_when_canonical_revision_changed(self) -> None:
+        canonical = {
+            "id": 501,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "current-revision",
+            "title": "Новая редакция",
+            "source_url": "https://forum.example.org/501",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        response = {
+            "result": {
+                "points": [
+                    {
+                        "score": 0.99,
+                        "payload": {
+                            "source_id": 501,
+                            "project_code": "majestic-rp",
+                            "federation_scope": "server",
+                            "access_scope": "server:majestic-rp:phoenix-15",
+                            "checksum": "obsolete-revision",
+                            "text": "Текст устаревшей редакции.",
+                        },
+                    }
+                ]
+            }
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_visible_knowledge_sources_by_id",
+            return_value={501: canonical},
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value=response),
+        ):
+            result = await atlas_search(77, "Покажи норму")
+
+        self.assertEqual(result, [])
+
+    async def test_agent_domain_filter_does_not_mix_ic_material_into_ooc_complaint(self) -> None:
+        source = {
+            "id": 502,
+            "organization_id": 77,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный кодекс",
+            "content_text": "Уголовный кодекс содержит применимые составы правонарушений.",
+            "source_url": "https://forum.example.org/502",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch(
+            "modules.atlas_ai.atlas_embed",
+            AsyncMock(return_value=[[0.1, 0.2]]),
+        ), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_search(
+                77,
+                "Какая жалоба по правилам сервера?",
+                allowed_domains=("ooc", "mixed"),
+            )
+
+        self.assertEqual(result, [])
 
     async def test_search_applies_server_and_faction_filters(self) -> None:
         with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
@@ -1219,9 +2635,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         scopes = request.await_args.kwargs["payload"]["filter"]["must"][0]
         self.assertEqual(scopes["key"], "access_scope")
-        self.assertIn("server:phoenix-15", scopes["match"]["any"])
-        self.assertIn("faction:phoenix-15:lspd", scopes["match"]["any"])
-        self.assertIn("workspace:77:phoenix-15:lspd", scopes["match"]["any"])
+        self.assertIn("server:majestic-rp:phoenix-15", scopes["match"]["any"])
+        self.assertIn("faction:majestic-rp:phoenix-15:lspd", scopes["match"]["any"])
+        self.assertIn("workspace:majestic-rp:77:phoenix-15:lspd", scopes["match"]["any"])
 
     async def test_search_embeds_agent_queries_independently(self) -> None:
         embedded: list[str] = []
@@ -1310,9 +2726,12 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         source = {
             "id": 5,
             "organization_id": 77,
+            "project_code": "majestic-rp",
             "server_code": "phoenix-15",
             "faction_code": "gov",
             "visibility_scope": "server",
+            "federation_scope": "server",
+            "checksum": "source-checksum",
             "title": "Общий регламент",
             "content_text": "Проверенный общий материал Phoenix длиной больше двадцати символов.",
         }
@@ -1333,10 +2752,14 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         delete_call = next(call for call in request.await_args_list if call.args[0] == "POST")
         point = put_call.kwargs["payload"]["points"][0]
         self.assertIn("Название документа: Общий регламент", embed.await_args.args[0][0])
-        self.assertEqual(point["payload"]["access_scope"], "server:phoenix-15")
+        self.assertEqual(point["payload"]["access_scope"], "server:majestic-rp:phoenix-15")
         self.assertEqual(point["payload"]["visibility_scope"], "server")
+        self.assertEqual(point["payload"]["federation_scope"], "server")
+        self.assertEqual(point["payload"]["project_code"], "majestic-rp")
+        self.assertEqual(point["payload"]["checksum"], "source-checksum")
         self.assertEqual(point["payload"]["knowledge_domain"], "mixed")
         self.assertEqual(point["payload"]["corpus_kind"], "procedure")
+        self.assertEqual(point["payload"]["index_version"], 3)
         self.assertGreater(len(delete_call.kwargs["payload"]["points"]), 0)
         self.assertLess(
             request.await_args_list.index(put_call),
@@ -1420,6 +2843,24 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         with patch("modules.atlas_ai._json_request", corrupted):
             self.assertEqual((await atlas_probe_collection())["status"], "corrupted")
 
+        stale = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"title": "Старый индекс"}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", stale):
+            self.assertEqual((await atlas_probe_collection())["status"], "stale")
+
+        current = AsyncMock(
+            side_effect=[
+                {"result": {"points_count": 12}},
+                {"result": {"points": [{"payload": {"index_version": 3}}]}},
+            ]
+        )
+        with patch("modules.atlas_ai._json_request", current):
+            self.assertEqual((await atlas_probe_collection())["status"], "ok")
+
     async def test_openrouter_answer_is_delivered_as_real_sse_deltas(self) -> None:
         async def completion(request: web.Request) -> web.StreamResponse:
             self.assertTrue((await request.json())["stream"])
@@ -1462,7 +2903,68 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(chunks, ["Первый ", "фрагмент"])
         self.assertEqual(result["answer"], "Первый фрагмент")
-        self.assertEqual(result["model"], "atlas-tvr-a")
+        self.assertEqual(result["model"], "test/model")
+        self.assertEqual(result["model_provider"], "openrouter")
+
+    async def test_partial_stream_continues_after_provider_token_limit(self) -> None:
+        requests: list[dict] = []
+
+        async def completion(request: web.Request) -> web.StreamResponse:
+            body = await request.json()
+            requests.append(body)
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            if len(requests) == 1:
+                await response.write(
+                    'data: {"choices":[{"delta":{"content":"Начало ответа"}}]}\n\n'.encode()
+                )
+                await response.write(
+                    'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'.encode()
+                )
+            else:
+                await response.write(
+                    'data: {"choices":[{"delta":{"content":" и завершение."}}]}\n\n'.encode()
+                )
+                await response.write(
+                    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'.encode()
+                )
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        chunks: list[str] = []
+
+        async def receive(text: str) -> None:
+            chunks.append(text)
+
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+            ):
+                result = await atlas_answer_stream(77, "Дай полный ответ", on_delta=receive)
+        finally:
+            await server.close()
+
+        self.assertEqual(result["answer"], "Начало ответа\n\n и завершение.")
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1]["reasoning"]["effort"], "minimal")
+        self.assertEqual(requests[1]["messages"][-2]["content"], "Начало ответа")
+        self.assertIn("Продолжи ровно с места обрыва", requests[1]["messages"][-1]["content"])
 
     async def test_empty_stream_is_retried_once_as_visible_completion(self) -> None:
         requests: list[dict] = []
@@ -1853,7 +3355,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["response_mode"], "creative")
         self.assertEqual(request.await_args.kwargs["payload"]["temperature"], 0.68)
         self.assertIn(
-            "источников для этого запроса не найдено",
+            "не отвечай шаблонным отказом о библиотеке",
             request.await_args.kwargs["payload"]["messages"][1]["content"],
         )
 
@@ -1886,9 +3388,89 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         payload = request.await_args.kwargs["payload"]
         system = payload["messages"][0]["content"]
+        # The visible answer remains compact through the editorial contract;
+        # the larger provider budget leaves room for hidden reasoning so the
+        # last sentence is not cut off.
         self.assertLessEqual(payload["max_tokens"], 1100)
-        self.assertIn("120–220 слов", system)
+        self.assertIn("жёсткий предел — 220 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
+
+    async def test_complaint_prompt_forbids_invented_evidence_requirements(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        source = {
+            "source_id": 97,
+            "title": "Основные правила проекта",
+            "url": None,
+            "text": "5.1 DM — убийство без IC причины. | Ban.",
+            "score": 10.0,
+            "structured": True,
+            "reference": "clause:5.1",
+            "pinpoints": ["пункт 5.1"],
+        }
+        response = {"choices": [{"message": {"content": "DM — пункт 5.1. [1]"}}]}
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch(
+            "modules.atlas_ai._build_intelligence_brief", AsyncMock(return_value=None)
+        ), patch("modules.atlas_ai._json_request", AsyncMock(return_value=response)) as request:
+            await atlas_answer(
+                77,
+                "Игрок убил меня без причины. Составь жалобу.",
+                model_id="atlas-complaints",
+            )
+
+        complaint_gate = "\n".join(
+            str(item.get("content") or "") for item in request.await_args.kwargs["payload"]["messages"]
+        )
+        self.assertIn("Не утверждай отсутствие угрозы", complaint_gate)
+        self.assertIn("не добавляй срок хранения доказательств", complaint_gate)
+
+    async def test_non_stream_answer_retries_a_truncated_provider_response(self) -> None:
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url="https://openrouter.test/chat",
+            chat_model="openai/gpt-5-mini",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        request = AsyncMock(
+            side_effect=[
+                {
+                    "choices": [
+                        {"message": {"content": "Оборванный ответ в"}, "finish_reason": "length"}
+                    ]
+                },
+                {
+                    "choices": [
+                        {"message": {"content": "Короткий завершённый ответ."}, "finish_reason": "stop"}
+                    ]
+                },
+            ]
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[])
+        ), patch("modules.atlas_ai._json_request", request):
+            result = await atlas_answer(77, "Кратко ответь на вопрос")
+
+        self.assertEqual(result["answer"], "Короткий завершённый ответ.")
+        self.assertEqual(request.await_count, 2)
+        retry_payload = request.await_args_list[1].kwargs["payload"]
+        self.assertGreaterEqual(retry_payload["max_tokens"], 1800)
+        self.assertIn("без оборванных предложений", retry_payload["messages"][-2]["content"])
 
     async def test_overlay_answer_skips_planners_and_uses_compact_field_contract(self) -> None:
         config = AtlasAIConfig(
@@ -1967,8 +3549,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             )
 
         search.assert_not_awaited()
-        system = request.await_args.kwargs["payload"]["messages"][0]["content"]
-        self.assertIn("Обычное общение", system)
+        request.assert_not_awaited()
+        self.assertEqual(result["answer"], "Привет! Чем помочь?")
+        self.assertEqual(result["model_provider"], "tmod")
+        self.assertEqual(result["model"], "atlas-dialog")
         self.assertFalse(result["screen_context_used"])
         self.assertEqual(result["intent"], "social")
 
@@ -2010,6 +3594,62 @@ class AtlasKnowledgeFileTests(unittest.TestCase):
 
 
 class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_crafts_returns_live_private_projection_and_etag(self) -> None:
+        selected = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Администратор",
+            csrf_token="admin-csrf",
+            member=SimpleNamespace(
+                id=42,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),
+        )
+
+        async def authenticate(_request):
+            return selected, False
+
+        plan = {
+            "id": 74,
+            "stage": "crafting",
+            "product_name_snapshot": "Бронепластины",
+            "responsible_id": 42,
+            "responsible_display": "Администратор",
+            "attempts_total": 100,
+            "attempts_queued": 20,
+            "attempts_completed": 20,
+            "product_stock": 20,
+            "materials": [],
+            "active_batch": None,
+            "recipe": {"product_name": "Бронепластины"},
+            "purchase_cost_total": 999_999,
+        }
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        with patch("modules.atlas_web.craft_storage.craft_active_plans", return_value=[plan]):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/atlas/overlay/crafts")
+                payload = await response.json()
+                cached = await client.get(
+                    "/api/atlas/overlay/crafts",
+                    headers={"If-None-Match": response.headers["ETag"]},
+                )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(cached.status, 304)
+        self.assertEqual(payload["attention_count"], 1)
+        self.assertTrue(payload["plans"][0]["mine"])
+        self.assertTrue(payload["plans"][0]["needs_next_batch"])
+        self.assertNotIn("purchase_cost_total", payload["plans"][0])
+
     async def test_overlay_transcribe_accepts_raw_webm_and_returns_compatibility_fields(self) -> None:
         selected = ConsensusWebPrincipal(
             user_id=42,
@@ -2113,6 +3753,14 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         storage.DATA_DIR = Path(temp_dir.name)
         storage.DATABASE_FILE = storage.DATA_DIR / "atlas-overlay-web-test.db"
         storage.init_db()
+        atlas_repository.atlas_upsert_project(42, code="project-b", name="Project B")
+        atlas_repository.atlas_upsert_server(
+            42,
+            code="project-b-15",
+            name="Phoenix",
+            number=15,
+            project_code="project-b",
+        )
         character = storage.add_profile_character(77, 42, "Saul Goodman", "263345")
         selected = ConsensusWebPrincipal(
             user_id=42,
@@ -2132,11 +3780,17 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
 
         async def stream_answer(_organization_id, _question, *, on_delta, **kwargs):
             await on_delta("Полевой ответ [1].")
+            stream_answer.organization_id = _organization_id
             stream_answer.kwargs = kwargs
             return {
                 "answer": "Полевой ответ [1].",
                 "citations": [],
                 "model": "atlas-tvr-a",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "project-b",
+                "server_code": "project-b-15",
+                "faction_code": "fib",
                 "response_mode": "balanced",
                 "requested_response_mode": "balanced",
                 "latency_mode": "overlay",
@@ -2158,7 +3812,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         "/api/atlas/overlay/context",
                         json={
                             "character_id": character.id,
-                            "server_code": "phoenix-15",
+                            "server_code": "project-b-15",
                             "faction_code": "fib",
                         },
                     )
@@ -2170,7 +3824,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         "/api/atlas/overlay/context",
                         json={
                             "character_id": character.id,
-                            "server_code": "phoenix-15",
+                            "server_code": "project-b-15",
                             "faction_code": "fib",
                             "rank": "Special Agent",
                             "screen_context_enabled": True,
@@ -2202,6 +3856,17 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context_payload["selected_character"]["faction_code"], "fib")
             self.assertNotIn("csrf_token", context_payload)
             self.assertEqual(streamed.status, 200)
+            project_dashboard = atlas_repository.atlas_dashboard(
+                77,
+                42,
+                "Администратор",
+                project_code="project-b",
+            )
+            self.assertEqual(
+                stream_answer.organization_id,
+                int(project_dashboard["organization"]["id"]),
+            )
+            self.assertEqual(stream_answer.kwargs["server_code"], "project-b-15")
             self.assertEqual(stream_answer.kwargs["faction_code"], "fib")
             self.assertEqual(stream_answer.kwargs["latency_mode"], "overlay")
             self.assertEqual(stream_answer.kwargs["user_profile"]["nickname"], "Saul Goodman")
@@ -2446,7 +4111,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
         form = FormData()
         form.add_field("server_code", "phoenix-15")
         form.add_field("faction_code", "gov")
-        form.add_field("visibility_scope", "server")
+        form.add_field("visibility_scope", "global")
         form.add_field("source_kind", "regulation")
         form.add_field(
             "file",
@@ -2469,7 +4134,8 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     )
                     payload = await listed.json()
             self.assertEqual(payload["items"][0]["faction_code"], "gov")
-            self.assertEqual(payload["items"][0]["visibility_scope"], "server")
+            self.assertEqual(payload["items"][0]["visibility_scope"], "global")
+            self.assertEqual(payload["items"][0]["federation_scope"], "project")
             self.assertEqual(payload["items"][0]["original_filename"], "Регламент GOV.txt")
             self.assertEqual(payload["items"][0]["status"], "indexed")
         finally:
@@ -2525,7 +4191,7 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.fetch_thread",
                 AsyncMock(return_value=snapshot),
-            ), patch(
+            ) as fetch_thread, patch(
                 "modules.atlas_forum_sync.AtlasForumSyncRunner.trigger",
                 return_value=True,
             ) as trigger, patch(
@@ -2575,7 +4241,9 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                             ),
                             "server_code": "phoenix-15",
                             "faction_code": "gov",
-                            "visibility_scope": "server",
+                            "visibility_scope": "global",
+                            "knowledge_domain": "ooc",
+                            "corpus_kind": "server_rule",
                         },
                         headers={
                             "X-CSRF-Token": "admin-csrf",
@@ -2586,9 +4254,9 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0.1)
 
             self.assertEqual(response.status, 202, payload)
-            self.assertEqual(payload["taxonomy"]["domain"], "ic")
-            self.assertEqual(payload["taxonomy"]["corpus_kind"], "charter")
-            self.assertEqual(payload["source"]["faction_code"], "gov")
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["job"]["job_type"], "atlas.forum.thread.v1")
+            fetch_thread.assert_awaited_once_with(snapshot.url)
             self.assertEqual(bulk_response.status, 202, bulk_payload)
             self.assertTrue(bulk_payload["bulk"])
             trigger.assert_called_once_with()
@@ -2599,11 +4267,28 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "https://forum.majestic-rp.ru/forums/general-server-rules/"
             )
             sources = atlas_repository.atlas_searchable_knowledge_sources(
-                int(payload["source"]["organization_id"]),
+                int(payload["job"]["organization_id"]),
                 server_code="phoenix-15",
                 faction_code="gov",
             )
-            self.assertIn("Общие правила сервера", {item["title"] for item in sources})
+            by_title = {item["title"]: item for item in sources}
+            self.assertIn("Общие правила сервера", by_title)
+            self.assertIn("Устав GOV", by_title)
+            self.assertEqual(by_title["Устав GOV"]["faction_code"], "gov")
+            self.assertEqual(by_title["Устав GOV"]["metadata"]["taxonomy"]["domain"], "ic")
+            self.assertEqual(
+                by_title["Устав GOV"]["metadata"]["taxonomy"]["corpus_kind"],
+                "charter",
+            )
+            rules = by_title["Общие правила сервера"]
+            self.assertEqual(rules["federation_scope"], "project")
+            self.assertEqual(rules["metadata"]["taxonomy"]["domain"], "ooc")
+            self.assertEqual(rules["metadata"]["taxonomy"]["corpus_kind"], "server_rule")
+            feed = atlas_repository.atlas_forum_sync_status(77)
+            self.assertIsNotNone(feed)
+            self.assertTrue(str(feed["feed_key"]).startswith("majestic-rp:manual-"))
+            self.assertEqual(feed["knowledge_domain"], "ooc")
+            self.assertEqual(feed["corpus_kind"], "server_rule")
         finally:
             storage.DATA_DIR = old_data_dir
             storage.DATABASE_FILE = old_database_file
@@ -2646,6 +4331,11 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "answer": "Продолжение ответа",
                 "citations": [],
                 "model": "test/model",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
                 "response_mode": "creative",
                 "latency_ms": 12,
             }
@@ -2657,6 +4347,11 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                 "answer": "Потоковый ответ",
                 "citations": [],
                 "model": "atlas-tvr-a",
+                "model_provider": "openrouter",
+                "model_release": "base",
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
                 "response_mode": "balanced",
                 "requested_response_mode": "balanced",
                 "latency_ms": 8,

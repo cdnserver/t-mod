@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import py_compile
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_sqlite_to_postgres_migration_script_parses(self) -> None:
+        """Keep a malformed migration helper from reaching a live upgrade."""
+
+        py_compile.compile(
+            str(ROOT / "scripts/migrate_sqlite_to_postgres.py"),
+            doraise=True,
+        )
+
     def test_begin_immediate_relies_on_psycopg_implicit_transaction(self) -> None:
         class Connection:
             def __init__(self) -> None:
@@ -39,6 +48,9 @@ class PostgresCompatibilityTests(unittest.TestCase):
         craft = (ROOT / "persistence/craft_repository.py").read_text(encoding="utf-8")
         finance = (ROOT / "persistence/finance_repository.py").read_text(encoding="utf-8")
         atlas = (ROOT / "persistence/atlas_repository.py").read_text(encoding="utf-8")
+        forum_engine = (ROOT / "persistence/atlas_forum_engine_repository.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("count = activity_counters.count + 1", activity)
         self.assertIn(
@@ -49,6 +61,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("SELECT MAX(reason) AS reason", finance)
         self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE indexed_at END", atlas)
         self.assertNotIn("CASE WHEN ? IS NULL THEN ? ELSE last_success_at END", atlas)
+        self.assertNotIn("WHEN ? = 1 AND ? IS NULL THEN ?", forum_engine)
 
     def test_legacy_values_are_validated_before_postgres_copy(self) -> None:
         self.assertEqual(_coerce_value("1488", "bigint", False), 1488)
@@ -112,6 +125,21 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("LOWER(name)=LOWER(%s)", search)
         self.assertNotIn("NOCASE", search)
 
+    def test_legacy_atlas_columns_precede_federation_index(self) -> None:
+        """An old PostgreSQL schema must upgrade before its new index exists."""
+
+        schema = (ROOT / "persistence/schema.py").read_text(encoding="utf-8")
+        project_column = schema.index(
+            '_add_column_if_missing(\n'
+            '            con,\n'
+            '            "atlas_knowledge_sources",\n'
+            '            "project_code",'
+        )
+        federation_index = schema.index(
+            "CREATE INDEX IF NOT EXISTS idx_atlas_knowledge_federation_scope"
+        )
+        self.assertLess(project_column, federation_index)
+
     def test_sqlite_julianday_ordering_translates_to_postgres(self) -> None:
         translated = translate_sql(
             "SELECT due_at FROM delivery_outbox ORDER BY julianday(due_at), due_at"
@@ -131,8 +159,19 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('TMOD_DATABASE_BACKEND: "postgresql"', compose)
         self.assertIn('condition: service_completed_successfully', compose)
         self.assertIn('TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"', compose)
+        self.assertIn("http://127.0.0.1:8787/gateway-ready", compose)
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
+        self.assertIn("  atlas-forum-eye-browser:", compose)
+        self.assertIn(
+            'ATLAS_FORUM_ENGINE_SELENIUM_URL: "http://atlas-forum-eye-browser:4444/wd/hub"',
+            compose,
+        )
+        self.assertGreaterEqual(
+            compose.count(r'''\"ready\"[[:space:]]*:[[:space:]]*true'''),
+            2,
+        )
+        self.assertGreaterEqual(compose.count(r'''|\"sessionId\"'''), 2)
 
         bot_service = compose.split("  tmod-web:", 1)[0].split(
             "  tmod-discord-bot:", 1
@@ -146,7 +185,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
             compose,
         )
         self.assertIn(
-            '"C:/Users/Admin/Documents/SGLDiscordBot:/app/persistent"',
+            '"${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"',
             bot_service,
         )
 
@@ -175,9 +214,9 @@ class PostgresCompatibilityTests(unittest.TestCase):
         active_path = updater[postgres_gate:legacy_gate]
 
         self.assertIn("Could not verify the active PostgreSQL database", active_path)
-        self.assertIn("docker exec tmod-postgres pg_dump", active_path)
-        self.assertIn("docker exec tmod-postgres pg_restore --list", active_path)
-        self.assertIn('docker cp "tmod-postgres:$containerPath"', active_path)
+        self.assertIn('"exec", "tmod-postgres", "pg_dump"', active_path)
+        self.assertIn('"exec", "tmod-postgres", "pg_restore", "--list"', active_path)
+        self.assertIn('"cp", "tmod-postgres:$containerPath", $hostPath', active_path)
         self.assertIn('backend = "postgresql"', active_path)
         self.assertIn('return "/app/persistent/backups/database/$name"', active_path)
 

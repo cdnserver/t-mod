@@ -1243,6 +1243,89 @@ def craft_complete_due_batches(now_iso: str | None = None) -> list[int]:
     return sorted(set(changed))
 
 
+def craft_skip_active_batch_time(
+    *,
+    guild_id: int,
+    plan_id: int,
+    minutes: int,
+    actor_id: int,
+    actor_display: str | None,
+) -> dict[str, Any]:
+    """Move an active craft deadline forward and retain an immutable audit event."""
+
+    if minutes <= 0 or minutes > 10080:
+        raise ValueError("craft_bad_time_skip")
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        plan = con.execute(
+            "SELECT * FROM craft_plans WHERE id = ? AND guild_id = ?",
+            (int(plan_id), int(guild_id)),
+        ).fetchone()
+        if plan is None:
+            con.rollback()
+            raise ValueError("craft_plan_not_found")
+        batch = con.execute(
+            """
+            SELECT * FROM craft_batches
+            WHERE plan_id = ? AND status = 'active' AND undone_at IS NULL
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(plan_id),),
+        ).fetchone()
+        if batch is None:
+            con.rollback()
+            raise ValueError("craft_batch_not_active")
+        try:
+            old_due = datetime.fromisoformat(str(batch["due_at"]))
+        except (TypeError, ValueError) as exc:
+            con.rollback()
+            raise ValueError("craft_batch_time_invalid") from exc
+        if old_due.tzinfo is None:
+            old_due = old_due.replace(tzinfo=timezone.utc)
+        old_due = old_due.astimezone(timezone.utc)
+        if old_due <= now_dt:
+            con.rollback()
+            raise ValueError("craft_batch_already_due")
+        new_due = max(now_dt, old_due - timedelta(minutes=int(minutes)))
+        con.execute(
+            "UPDATE craft_batches SET due_at = ? WHERE id = ? AND status = 'active'",
+            (new_due.isoformat(), int(batch["id"])),
+        )
+        con.execute(
+            "UPDATE craft_plans SET updated_at = ? WHERE id = ?",
+            (now, int(plan_id)),
+        )
+        event_id = _craft_add_event(
+            con,
+            plan_id=int(plan_id),
+            guild_id=int(guild_id),
+            event_kind="batch_time_skipped",
+            actor_id=int(actor_id),
+            actor_display=actor_display,
+            details={
+                "batch_id": int(batch["id"]),
+                "quantity": int(batch["quantity"]),
+                "minutes": int(minutes),
+                "old_due_at": old_due.isoformat(),
+                "due_at": new_due.isoformat(),
+            },
+            now=now,
+        )
+        updated_batch = con.execute(
+            "SELECT * FROM craft_batches WHERE id = ?", (int(batch["id"]),)
+        ).fetchone()
+        updated_plan = _craft_plan_from_con(con, int(plan_id))
+        con.commit()
+    return {
+        "plan": updated_plan,
+        "batch": _finance_row(updated_batch),
+        "event_id": event_id,
+        "completes_now": new_due <= now_dt,
+    }
+
+
 def craft_reminder_candidates(guild_id: int) -> list[dict[str, Any]]:
     with _db_lock, connect() as con:
         rows = con.execute(
@@ -1268,15 +1351,17 @@ def craft_reminder_candidates(guild_id: int) -> list[dict[str, Any]]:
 def craft_claim_reminder(plan_id: int, reminder_key: str) -> bool:
     now = utc_now_iso()
     with _db_lock, connect() as con:
-        try:
-            con.execute(
-                "INSERT INTO craft_reminders(plan_id, reminder_key, message_id, created_at, deleted_at) VALUES(?, ?, NULL, ?, NULL)",
-                (plan_id, reminder_key, now),
-            )
-            con.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        cursor = con.execute(
+            """
+            INSERT INTO craft_reminders(
+                plan_id, reminder_key, message_id, created_at, deleted_at
+            ) VALUES(?, ?, NULL, ?, NULL)
+            ON CONFLICT(plan_id, reminder_key) DO NOTHING
+            """,
+            (plan_id, reminder_key, now),
+        )
+        con.commit()
+        return int(cursor.rowcount or 0) > 0
 
 
 def craft_set_reminder_message(plan_id: int, reminder_key: str, message_id: int) -> None:
@@ -1805,4 +1890,4 @@ def craft_stats(guild_id: int, days: int = 30) -> dict[str, Any]:
         "contributors": [dict(row) for row in contributor_rows],
     }
 
-__all__ = ['CRAFT_ACTIVE_STAGES', '_craft_add_event', '_craft_recipe_from_con', 'craft_create_recipe', 'craft_list_recipes', 'craft_get_recipe', 'craft_recipe_versions', '_normalize_craft_recipe_values', 'craft_update_recipe', 'craft_set_recipe_active', 'craft_clone_recipe', '_craft_plan_from_con', 'craft_create_plan', 'craft_bind_plan_message', 'craft_delete_unbound_plan', 'craft_get_plan', 'craft_active_plans', 'craft_recent_plans', 'craft_add_purchase', 'craft_inventory_check', 'craft_start_batch', 'craft_complete_due_batches', 'craft_reminder_candidates', 'craft_claim_reminder', 'craft_set_reminder_message', 'craft_release_reminder', 'craft_open_reminder_messages', 'craft_mark_reminders_deleted', 'craft_mark_reminder_deleted', 'craft_pending_events', 'craft_mark_event_sent', 'craft_set_final_output', 'craft_set_estimated_price', 'craft_add_market_listing', 'craft_add_sale', 'craft_completion_candidates', 'craft_set_completion_message', 'craft_stats']
+__all__ = ['CRAFT_ACTIVE_STAGES', '_craft_add_event', '_craft_recipe_from_con', 'craft_create_recipe', 'craft_list_recipes', 'craft_get_recipe', 'craft_recipe_versions', '_normalize_craft_recipe_values', 'craft_update_recipe', 'craft_set_recipe_active', 'craft_clone_recipe', '_craft_plan_from_con', 'craft_create_plan', 'craft_bind_plan_message', 'craft_delete_unbound_plan', 'craft_get_plan', 'craft_active_plans', 'craft_recent_plans', 'craft_add_purchase', 'craft_inventory_check', 'craft_start_batch', 'craft_complete_due_batches', 'craft_skip_active_batch_time', 'craft_reminder_candidates', 'craft_claim_reminder', 'craft_set_reminder_message', 'craft_release_reminder', 'craft_open_reminder_messages', 'craft_mark_reminders_deleted', 'craft_mark_reminder_deleted', 'craft_pending_events', 'craft_mark_event_sent', 'craft_set_final_output', 'craft_set_estimated_price', 'craft_add_market_listing', 'craft_add_sale', 'craft_completion_candidates', 'craft_set_completion_message', 'craft_stats']

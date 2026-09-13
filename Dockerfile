@@ -14,6 +14,8 @@ RUN apt-get update \
         ffmpeg \
         libffi-dev \
         poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-rus \
         postgresql-client \
         fontconfig \
         fonts-dejavu-core \

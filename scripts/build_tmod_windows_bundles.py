@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import re
 import textwrap
 from pathlib import Path
@@ -11,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = ROOT / "tmod_console_ui.psm1"
+REMOTE_MANIFEST = ROOT / "tmod_remote_version.json"
 
 
 def _split_param_block(source: str) -> tuple[str, str]:
@@ -61,13 +64,16 @@ def _remove_ui_loader(source: str) -> str:
 
 
 def _embedded_ui() -> str:
-    source = UI_SOURCE.read_text(encoding="utf-8")
+    # Source scripts are deliberately UTF-8 with BOM for Windows PowerShell
+    # 5.1.  ``utf-8-sig`` accepts both source files and strips that marker
+    # before they are embedded into a single portable payload.
+    source = UI_SOURCE.read_text(encoding="utf-8-sig")
     source = re.sub(r"(?m)^Export-ModuleMember\b.*$", "", source)
     return source.strip()
 
 
 def _payload(source_path: Path) -> str:
-    param_block, body = _split_param_block(source_path.read_text(encoding="utf-8"))
+    param_block, body = _split_param_block(source_path.read_text(encoding="utf-8-sig"))
     body = _remove_ui_loader(body)
     return (
         f"{param_block}\n\n"
@@ -90,13 +96,59 @@ def _launcher(title: str, marker: str, payload: str, *, remote: bool) -> str:
         "chcp 65001 >nul",
     ]
     if remote:
+        # A running batch file cannot safely replace itself.  The launched
+        # helper first validates the staged artifact and then retries an NTFS
+        # atomic File.Replace after this cmd process has exited.  Both the
+        # producer (tmod_remote_windows.ps1) and this generated consumer use
+        # the same .next + .next.ready transaction.
+        update_script = r'''
+$ErrorActionPreference = 'Stop'
+$current = $env:TMOD_REMOTE_UPDATE_CURRENT
+$next = $env:TMOD_REMOTE_UPDATE_NEXT
+$ready = $env:TMOD_REMOTE_UPDATE_READY
+if (-not (Test-Path -LiteralPath $next) -or -not (Test-Path -LiteralPath $ready)) { exit 0 }
+if (((Get-Date) - (Get-Item -LiteralPath $next).LastWriteTime).TotalHours -gt 24) {
+    Remove-Item -LiteralPath $next, $ready -Force -ErrorAction SilentlyContinue
+    exit 0
+}
+$parts = @(Get-Content -LiteralPath $ready -ErrorAction Stop)
+if ($parts.Count -lt 2 -or ([string]$parts[1]).Trim() -notmatch '^[a-fA-F0-9]{64}$') { exit 2 }
+$expected = ([string]$parts[1]).Trim().ToLowerInvariant()
+$actual = (Get-FileHash -LiteralPath $next -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { Remove-Item -LiteralPath $next, $ready -Force -ErrorAction SilentlyContinue; exit 3 }
+$mutex = New-Object System.Threading.Mutex($false, 'Local\TModRemoteBundleApply')
+$locked = $false
+try {
+    try { $locked = $mutex.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] { $locked = $true }
+    if (-not $locked) { exit 4 }
+    $backup = "$current.previous"
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+            [IO.File]::Replace($next, $current, $backup, $true)
+            Remove-Item -LiteralPath $ready, $backup -Force -ErrorAction SilentlyContinue
+            Start-Process -FilePath $current
+            exit 0
+        }
+        catch { Start-Sleep -Milliseconds 800 }
+    }
+    exit 5
+}
+finally {
+    if ($locked) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
+}
+'''.strip()
+        encoded_update_script = base64.b64encode(update_script.encode("utf-16le")).decode("ascii")
         lines.extend(
             [
                 'set "TMOD_REMOTE_BUNDLE_PATH=%~f0"',
-                'if exist "%~f0.next" (',
+                'if exist "%~f0.next" if exist "%~f0.next.ready" (',
                 '  set "TMOD_REMOTE_UPDATE_CURRENT=%~f0"',
                 '  set "TMOD_REMOTE_UPDATE_NEXT=%~f0.next"',
-                '  start "" /b powershell.exe -NoLogo -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Milliseconds 500; Copy-Item -LiteralPath $env:TMOD_REMOTE_UPDATE_NEXT -Destination $env:TMOD_REMOTE_UPDATE_CURRENT -Force; Remove-Item -LiteralPath $env:TMOD_REMOTE_UPDATE_NEXT -Force; Start-Process -FilePath $env:TMOD_REMOTE_UPDATE_CURRENT"',
+                '  set "TMOD_REMOTE_UPDATE_READY=%~f0.next.ready"',
+                f'  start "" /b powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {encoded_update_script}',
                 "  exit /b 0",
                 ")",
             ]
@@ -182,6 +234,19 @@ def main() -> None:
     control_payload.parent.mkdir(parents=True, exist_ok=True)
     control_payload.write_bytes(_payload(ROOT / "tmod_control_windows.ps1").encode("utf-8-sig"))
     print(f"built {control_payload.relative_to(ROOT)}")
+    # Keep the public remote manifest tied to the exact generated single
+    # file.  Otherwise a legitimate regeneration makes every auto-update
+    # fail its checksum until someone remembers a separate manual edit.
+    manifest = json.loads(REMOTE_MANIFEST.read_text(encoding="utf-8"))
+    remote_bundle = ROOT / "tmod_remote_windows.bat"
+    manifest.setdefault("sha256", {})[remote_bundle.name] = hashlib.sha256(
+        remote_bundle.read_bytes()
+    ).hexdigest()
+    REMOTE_MANIFEST.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"updated {REMOTE_MANIFEST.name}")
 
 
 if __name__ == "__main__":

@@ -3,14 +3,17 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import storage
 from modules.atlas_forum_sync import (
+    AtlasForumAttachment,
     AtlasForumBrowser,
     AtlasForumManualActionRequired,
+    AtlasForumListingEntry,
     AtlasForumScrapeBatch,
     AtlasForumSnapshot,
     AtlasForumSyncConfig,
@@ -18,7 +21,9 @@ from modules.atlas_forum_sync import (
     AtlasForumSyncRunner,
     forum_interstitial_kind,
     parse_forum_listing,
+    parse_forum_listing_entries,
     parse_forum_thread,
+    parse_forum_thread_next_page,
 )
 from persistence import atlas_repository
 
@@ -46,6 +51,46 @@ def sync_config() -> AtlasForumSyncConfig:
 
 
 class AtlasForumParserTests(unittest.TestCase):
+    def test_forum_proxy_accepts_only_private_credential_free_endpoint_shape(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"ATLAS_FORUM_PROXY_URL": "socks5://10.8.0.3:1080"},
+            clear=False,
+        ):
+            self.assertEqual(
+                AtlasForumSyncConfig.from_env().proxy_url,
+                "socks5://10.8.0.3:1080",
+            )
+
+        for unsafe in (
+            "http://user:secret@10.8.0.3:8080",
+            "file:///tmp/socket",
+            "https://proxy.example/path",
+            "http://proxy.example:99999",
+            "javascript:alert(1)",
+        ):
+            with self.subTest(unsafe=unsafe), patch.dict(
+                "os.environ", {"ATLAS_FORUM_PROXY_URL": unsafe}, clear=False
+            ):
+                self.assertIsNone(AtlasForumSyncConfig.from_env().proxy_url)
+
+    def test_legacy_global_law_defaults_are_repaired_to_server_scope(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "ATLAS_FORUM_ROOT_URL": ROOT_URL,
+                "ATLAS_FORUM_VISIBILITY_SCOPE": "global",
+                "ATLAS_FORUM_FEDERATION_SCOPE": "project",
+                "ATLAS_FORUM_KNOWLEDGE_DOMAIN": "ic",
+                "ATLAS_FORUM_CORPUS_KIND": "law",
+            },
+            clear=False,
+        ):
+            config = AtlasForumSyncConfig.from_env()
+
+        self.assertEqual(config.visibility_scope, "server")
+        self.assertEqual(config.federation_scope, "server")
+
     def test_hidden_login_overlay_does_not_mask_authenticated_listing(self) -> None:
         page = """
         <html><body>
@@ -108,6 +153,96 @@ class AtlasForumParserTests(unittest.TestCase):
             ["https://forum.majestic-rp.ru/threads/zakon.100/"],
         )
 
+    def test_listing_records_change_metadata_for_complaint_monitoring(self) -> None:
+        page = """
+        <div class="structItem structItem--thread is-locked">
+          <div class="structItem-title"><a href="/threads/report.908/">Жалоба на 228392</a></div>
+          <div class="structItem-parts"><a class="username">Applicant</a></div>
+          <div class="structItem-cell--meta"><dl><dt>Ответы</dt><dd>12</dd></dl></div>
+          <div class="structItem-cell--latest"><a class="username">Administrator</a><time datetime="2026-09-09T08:00:00+03:00"></time></div>
+        </div>
+        """
+
+        entries, _next = parse_forum_listing_entries(page, ROOT_URL)
+
+        self.assertEqual(len(entries), 1)
+        self.assertIsInstance(entries[0], AtlasForumListingEntry)
+        self.assertEqual(entries[0].reply_count, 12)
+        self.assertEqual(entries[0].last_post_author, "Administrator")
+        self.assertTrue(entries[0].locked)
+
+    def test_listing_prefers_human_title_over_numeric_permalink(self) -> None:
+        page = """
+        <div class="structItem structItem--thread">
+          <div class="structItem-title">
+            <a href="/threads/restart-v-naruchnikakh.3620061/">Restart в наручниках</a>
+            <a href="/threads/3620061/">-</a>
+          </div>
+        </div>
+        """
+
+        entries, _next = parse_forum_listing_entries(page, ROOT_URL)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].title, "Restart в наручниках")
+        self.assertEqual(
+            entries[0].url,
+            "https://forum.majestic-rp.ru/threads/restart-v-naruchnikakh.3620061/",
+        )
+
+    def test_thread_history_follows_pagination_and_keeps_original_statement(self) -> None:
+        first_page = """
+        <h1 class="p-title-value">Жалоба на 228392</h1>
+        <article class="message message--post"><div class="message-name"><span class="username">Reporter</span></div><div class="message-body"><div class="bbWrapper">Исходное описание нарушения со статиком 228392.</div></div></article>
+        <a rel="next" href="/threads/report.908/page-2">Далее</a>
+        """
+        second_page = """
+        <h1 class="p-title-value">Жалоба на 228392</h1>
+        <article class="message message--post"><div class="message-name"><span class="username">Moderator</span></div><div class="message-userTitle">Администратор</div><time datetime="2026-09-09T08:00:00+03:00"></time><div class="message-body"><div class="bbWrapper">Жалоба рассмотрена, меры приняты администрацией.</div></div></article>
+        """
+        browser = AtlasForumBrowser(sync_config())
+        pages = iter((first_page, second_page))
+        browser._load = lambda _url: next(pages)
+
+        with patch("modules.atlas_forum_sync.time.sleep"):
+            snapshot = browser.scrape_thread_history(
+                "https://forum.majestic-rp.ru/threads/report.908/"
+            )
+
+        self.assertEqual(snapshot.content, "Исходное описание нарушения со статиком 228392.")
+        self.assertEqual(len(snapshot.posts), 2)
+        self.assertTrue(snapshot.posts[-1].is_staff)
+        self.assertIsNone(parse_forum_thread_next_page(second_page, snapshot.url))
+
+    def test_complaint_template_includes_custom_fields_and_regular_body(self) -> None:
+        page = """
+        <h1 class="p-title-value">Жалоба на игрока 270160</h1>
+        <article class="message message--post">
+          <div class="message-name"><span class="username">Reporter</span></div>
+          <div class="message-userContent">
+            <div class="message-fields message-fields--before">
+              <dl class="pairs pairs--customField"><dt>Ваш статический ID #</dt><dd>316622</dd></dl>
+              <dl class="pairs pairs--customField"><dt>Статический #ID нарушителя</dt><dd>270160</dd></dl>
+              <dl class="pairs pairs--customField"><dt>Краткое описание ситуации</dt><dd>Подробное описание нарушения.</dd></dl>
+            </div>
+            <article class="message-body"><div class="bbWrapper">Жалоба</div></article>
+          </div>
+        </article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/report.908/",
+        )
+
+        self.assertIn("Ваш статический ID #", snapshot.content)
+        self.assertIn("316622", snapshot.content)
+        self.assertIn("Статический #ID нарушителя", snapshot.content)
+        self.assertIn("270160", snapshot.content)
+        self.assertIn("Подробное описание нарушения", snapshot.content)
+        self.assertIn("Жалоба", snapshot.content)
+        self.assertEqual(snapshot.posts[0].content, snapshot.content)
+
     def test_thread_extracts_only_first_post_without_quote(self) -> None:
         page = """
         <html><head><meta property="og:title" content="Уголовный кодекс" /></head><body>
@@ -169,6 +304,103 @@ class AtlasForumParserTests(unittest.TestCase):
 
         self.assertIn("Проверенный текст правил", snapshot.content)
 
+    def test_thread_records_only_owned_forum_attachments(self) -> None:
+        page = """
+        <h1 class="p-title-value">Акт суда</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+          <p>Акт приложен к материалу дела и хранится в оригинальной теме.</p>
+          <a href="/attachments/court-act-17-png.100/"><img
+              data-src="/attachments/court-act-17-png.100/"
+              alt="Акт суда, лист 1" /></a>
+          <a href="/attachments/court-act-17-png.100/">Скачать акт</a>
+          <img src="https://example.org/foreign.png" alt="Чужая картинка" />
+          <img src="/styles/default/xenforo/logo.png" alt="Оформление форума" />
+          <img src="/data/legal/court-map.png" alt="Схема суда" />
+        </div></div></article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/court-act.17/",
+        )
+
+        self.assertEqual(len(snapshot.attachments), 2)
+        attachment = snapshot.attachments[0]
+        self.assertEqual(
+            attachment.url,
+            "https://forum.majestic-rp.ru/attachments/court-act-17-png.100/",
+        )
+        self.assertEqual(attachment.media_kind, "image")
+        self.assertEqual(attachment.label, "Акт суда, лист 1")
+        self.assertEqual(snapshot.attachments[1].label, "Схема суда")
+        self.assertEqual(
+            snapshot.attachments[1].url,
+            "https://forum.majestic-rp.ru/data/legal/court-map.png",
+        )
+
+    def test_thread_collects_all_lazy_content_images_without_old_sixteen_limit(self) -> None:
+        images = "".join(
+            f'<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" '
+            f'data-url="/attachments/page-{index}-png.{1000 + index}/" alt="Лист {index}" />'
+            for index in range(1, 41)
+        )
+        page = f"""
+        <h1 class="p-title-value">Большой судебный материал</h1>
+        <article class="message message--post"><div class="message-body"><div class="bbWrapper">
+          <p>Комплект судебных актов содержит сорок отдельных листов.</p>{images}
+        </div></div></article>
+        """
+
+        snapshot = parse_forum_thread(
+            page,
+            "https://forum.majestic-rp.ru/threads/large-case.77/",
+        )
+
+        self.assertEqual(len(snapshot.attachments), 40)
+        self.assertEqual(snapshot.attachments[0].label, "Лист 1")
+        self.assertEqual(snapshot.attachments[-1].label, "Лист 40")
+
+    def test_attachment_download_is_bounded_and_keeps_the_forum_origin(self) -> None:
+        browser = AtlasForumBrowser(replace(sync_config(), attachment_max_bytes=64))
+        response = SimpleNamespace(
+            status_code=200,
+            headers={"Content-Type": "image/png", "Content-Length": "12"},
+            iter_content=lambda chunk_size: iter((b"\x89PNG", b"content")),
+            close=Mock(),
+        )
+        session = SimpleNamespace(get=Mock(return_value=response), close=Mock())
+        browser._attachment_session = lambda: session
+
+        data, mime = browser.fetch_attachment(
+            "https://forum.majestic-rp.ru/attachments/court-act-17.100/"
+        )
+
+        self.assertEqual(data, b"\x89PNGcontent")
+        self.assertEqual(mime, "image/png")
+        self.assertFalse(session.get.call_args.kwargs["allow_redirects"])
+        response.close.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_attachment_download_rejects_foreign_redirect_before_following_it(self) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        response = SimpleNamespace(
+            status_code=302,
+            headers={"Location": "https://example.org/attachments/evil.png"},
+            iter_content=lambda _chunk_size: iter(()),
+            close=Mock(),
+        )
+        session = SimpleNamespace(get=Mock(return_value=response), close=Mock())
+        browser._attachment_session = lambda: session
+
+        with self.assertRaisesRegex(AtlasForumSyncError, "redirect_rejected"):
+            browser.fetch_attachment(
+                "https://forum.majestic-rp.ru/attachments/court-act-17.100/"
+            )
+
+        self.assertEqual(session.get.call_count, 1)
+        response.close.assert_called_once()
+        session.close.assert_called_once()
+
     def test_interstitial_detection_distinguishes_js_and_manual_checks(self) -> None:
         self.assertEqual(
             forum_interstitial_kind("<p>Please turn JavaScript on</p><script src='vddosw3data.js'></script>"),
@@ -191,6 +423,23 @@ class AtlasForumParserTests(unittest.TestCase):
             "access",
         )
 
+    def test_page_load_timeout_keeps_an_already_rendered_forum_dom(self) -> None:
+        class TimeoutException(Exception):
+            pass
+
+        driver = SimpleNamespace(
+            get=Mock(side_effect=TimeoutException("decorative resource stalled")),
+            execute_script=Mock(),
+            page_source="<html><body><main>Готовая страница форума</main></body></html>",
+        )
+        browser = AtlasForumBrowser(sync_config())
+        browser._connect = lambda: driver
+
+        page = browser._load("https://forum.majestic-rp.ru/forums/reports.10/")
+
+        self.assertIn("Готовая страница форума", page)
+        driver.execute_script.assert_called_once_with("window.stop();")
+
     def test_browser_marks_capped_inventory_as_incomplete(self) -> None:
         config = replace(sync_config(), max_threads=1)
         browser = AtlasForumBrowser(config)
@@ -210,6 +459,31 @@ class AtlasForumParserTests(unittest.TestCase):
 
         self.assertEqual(len(batch.snapshots), 1)
         self.assertFalse(batch.inventory_complete)
+
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_inventory_returns_the_exact_durable_next_page(self, _sleep) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        page_one = """
+        <div class="structItem-title"><a href="/threads/one.1/">One</a></div>
+        <a class="pageNav-jump pageNav-jump--next" href="/forums/reports.10/page-2">Next</a>
+        """
+        page_two = """
+        <div class="structItem-title"><a href="/threads/two.2/">Two</a></div>
+        <a class="pageNav-jump pageNav-jump--next" href="/forums/reports.10/page-3">Next</a>
+        """
+        browser._load = lambda url: page_two if "page-2" in url else page_one
+
+        inventory = browser.scrape_inventory(
+            "https://forum.majestic-rp.ru/forums/reports.10/",
+            max_pages=2,
+        )
+
+        self.assertEqual(inventory.listing_pages, 2)
+        self.assertFalse(inventory.inventory_complete)
+        self.assertEqual(
+            inventory.next_url,
+            "https://forum.majestic-rp.ru/forums/reports.10/page-3",
+        )
 
     def test_browser_indexes_other_threads_when_one_thread_is_unreadable(self) -> None:
         browser = AtlasForumBrowser(sync_config())
@@ -396,6 +670,31 @@ class AtlasForumParserTests(unittest.TestCase):
             browser.scrape()
         self.assertEqual(loads, 3)
 
+    @patch("modules.atlas_forum_sync.time.sleep")
+    def test_transient_thread_parse_failure_is_retried(self, sleep) -> None:
+        browser = AtlasForumBrowser(sync_config())
+        listing = """
+        <html><body><div class="structItem-title">
+          <a href="/threads/law.101/">Закон</a>
+        </div></body></html>
+        """
+        thread = """
+        <html><body><h1 class="p-title-value">Закон</h1>
+          <article class="message message--post"><div class="message-body">
+            <div class="bbWrapper">Полный нормативный текст для проверки повторного чтения темы.</div>
+          </div></article>
+        </body></html>
+        """
+        responses = iter((listing, "<html><body></body></html>", thread))
+        browser._load = lambda _url: next(responses)
+
+        batch = browser.scrape()
+
+        self.assertEqual(len(batch.snapshots), 1)
+        self.assertEqual(batch.skipped_threads, ())
+        self.assertTrue(batch.inventory_complete)
+        sleep.assert_called_once_with(browser.config.page_delay_seconds)
+
 
 class AtlasForumRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -477,13 +776,155 @@ class AtlasForumRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(state["last_stats"], {"pages": 1, "changed": 1})
 
+    def test_feed_profile_controls_ooc_taxonomy_and_project_scope(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="common-ooc-rules",
+            root_url="https://forum.majestic-rp.ru/forums/general-server-rules/",
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+        )
+
+        result = atlas_repository.atlas_upsert_synced_knowledge(
+            int(feed["organization_id"]),
+            title="Правила проекта",
+            content="Полный проверенный текст общих правил проекта для всех серверов Majestic.",
+            source_url="https://forum.majestic-rp.ru/threads/general-rules.200/",
+            server_code="phoenix-15",
+            faction_code="lspd",
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+            feed_key=str(feed["feed_key"]),
+        )
+
+        source = result["source"]
+        self.assertEqual(feed["federation_scope"], "project")
+        self.assertEqual(source["federation_scope"], "project")
+        self.assertEqual(source["metadata"]["taxonomy"]["domain"], "ooc")
+        self.assertEqual(source["metadata"]["taxonomy"]["corpus_kind"], "server_rule")
+        self.assertEqual(source["metadata"]["classification"]["mode"], "feed_profile")
+
+    def test_disabled_feed_stays_disabled_when_default_is_reseeded(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="paused-laws",
+            root_url=ROOT_URL,
+        )
+        with storage.connect() as con:
+            con.execute(
+                "UPDATE atlas_forum_feeds SET status = 'disabled' WHERE id = ?",
+                (int(feed["id"]),),
+            )
+            con.commit()
+
+        reseeded = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="paused-laws",
+            root_url=ROOT_URL,
+        )
+
+        self.assertEqual(reseeded["status"], "disabled")
+        self.assertEqual(atlas_repository.atlas_forum_due_feeds(77), [])
+
+    def test_namespaced_feed_disables_legacy_duplicate_writer(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Администратор")
+        now = "2026-09-04T00:00:00+00:00"
+        with storage.connect() as con:
+            con.execute(
+                """
+                INSERT INTO atlas_forum_feeds(
+                    guild_id, organization_id, project_code, feed_key, root_url,
+                    server_code, faction_code, visibility_scope, federation_scope,
+                    interval_seconds, status, last_stats_json, created_at, updated_at
+                ) VALUES(77, ?, 'majestic-rp', 'majestic-phoenix-laws', ?,
+                         'phoenix-15', 'lspd', 'server', 'server', 43200,
+                         'ok', '{}', ?, ?)
+                """,
+                (int(dashboard["organization"]["id"]), ROOT_URL, now, now),
+            )
+            con.commit()
+
+        canonical = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="majestic-phoenix-laws",
+            root_url=ROOT_URL,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            visibility_scope="server",
+            federation_scope="server",
+            knowledge_domain="ic",
+            corpus_kind="law",
+        )
+        with storage.connect() as con:
+            legacy = con.execute(
+                "SELECT status, last_error FROM atlas_forum_feeds WHERE feed_key = ?",
+                ("majestic-phoenix-laws",),
+            ).fetchone()
+
+        self.assertEqual(canonical["feed_key"], "majestic-rp:majestic-phoenix-laws")
+        self.assertEqual(legacy["status"], "disabled")
+        self.assertEqual(legacy["last_error"], "superseded_by_namespaced_feed")
+
+    def test_runner_seeds_server_laws_and_shared_project_rules(self) -> None:
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=_FakeBrowser(None),
+            index_callback=AsyncMock(),
+        )
+
+        laws = asyncio.run(runner._ensure_default_feed())
+        rules = asyncio.run(runner._ensure_project_rules_feed())
+
+        self.assertEqual(laws["federation_scope"], "server")
+        self.assertEqual(laws["knowledge_domain"], "ic")
+        self.assertEqual(laws["corpus_kind"], "law")
+        self.assertIsNotNone(rules)
+        self.assertEqual(rules["federation_scope"], "project")
+        self.assertEqual(rules["knowledge_domain"], "ooc")
+        self.assertEqual(rules["corpus_kind"], "server_rule")
+
+    def test_due_feed_claim_recovers_missing_or_stale_lease_once(self) -> None:
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="lease-laws",
+            root_url=ROOT_URL,
+        )
+        with storage.connect() as con:
+            con.execute(
+                """
+                UPDATE atlas_forum_feeds
+                SET status = 'running', last_started_at = NULL, next_sync_at = NULL
+                WHERE id = ?
+                """,
+                (int(feed["id"]),),
+            )
+            con.commit()
+
+        now = "2026-09-01T12:00:00+00:00"
+        due = atlas_repository.atlas_forum_due_feeds(77, now=now)
+        claimed = atlas_repository.atlas_forum_claim_feed(77, int(feed["id"]), now=now)
+        duplicate = atlas_repository.atlas_forum_claim_feed(77, int(feed["id"]), now=now)
+
+        self.assertEqual([item["id"] for item in due], [feed["id"]])
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["status"], "running")
+        self.assertIsNone(duplicate)
+
 
 class _FakeBrowser:
     def __init__(self, result):
         self.result = result
         self.closed = False
+        self.scrapes = 0
 
     def scrape(self):
+        self.scrapes += 1
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -554,6 +995,100 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["last_stats"]["changed"], 0)
         index.assert_awaited_once()
         self.assertTrue(browser.closed)
+
+    async def test_runner_preserves_feed_profile_in_every_indexed_source(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/ooc-rules.101/",
+            title="Общие правила",
+            content="Полный текст правил проекта, который должен быть явно классифицирован как OOC.",
+            attachments=(
+                AtlasForumAttachment(
+                    url="https://forum.majestic-rp.ru/attachments/rules-image.101/",
+                    filename="rules-image.101",
+                    media_kind="image",
+                    label="Скриншот правил",
+                ),
+            ),
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=["point-ooc"]),
+        )
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="ooc",
+            root_url=ROOT_URL,
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+        )
+
+        state = await runner.sync_once(feed, force=True)
+        sources = atlas_repository.atlas_indexable_knowledge_sources()
+
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["last_stats"]["knowledge_domain"], "ooc")
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["federation_scope"], "project")
+        self.assertEqual(sources[0]["metadata"]["taxonomy"]["domain"], "ooc")
+        self.assertEqual(
+            sources[0]["metadata"]["forum_attachments"][0]["label"],
+            "Скриншот правил",
+        )
+
+    async def test_explicit_trigger_runs_default_feed_before_its_next_due_time(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/trigger.102/",
+            title="Проверка ручного запуска",
+            content="Проверенный материал показывает, что явный запуск не ждёт регулярного расписания.",
+        )
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), True))
+        index = AsyncMock(return_value=["point-trigger"])
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=replace(sync_config(), initial_delay_seconds=0, scheduler_poll_seconds=60),
+            browser=browser,
+            index_callback=index,
+        )
+
+        await runner.sync_once()
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.02)
+        self.assertTrue(runner.trigger())
+        for _ in range(80):
+            if index.await_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await runner.close()
+        await task
+
+        self.assertGreaterEqual(browser.scrapes, 2)
+
+    async def test_runner_refuses_unapproved_forum_origin(self) -> None:
+        browser = _FakeBrowser(AtlasForumScrapeBatch((), True))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(),
+        )
+        feed = atlas_repository.atlas_ensure_forum_feed(
+            77,
+            feed_key="unapproved-origin",
+            root_url="https://forum.example.org/forums/rules/",
+        )
+
+        state = await runner.sync_once(feed, force=True)
+
+        self.assertEqual(state["status"], "error")
+        self.assertIn("atlas_forum_feed_origin_not_allowed", state["last_error"])
 
     async def test_runner_reads_any_same_host_forum_listing(self) -> None:
         snapshot = AtlasForumSnapshot(
@@ -683,6 +1218,32 @@ class AtlasForumRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["last_stats"]["changed"], 0)
         self.assertEqual(second["last_stats"]["retried"], 1)
         self.assertEqual(index.await_count, 2)
+
+    async def test_partial_forum_inventory_retries_soon_and_reports_topic(self) -> None:
+        snapshot = AtlasForumSnapshot(
+            url="https://forum.majestic-rp.ru/threads/available.102/",
+            title="Доступный закон",
+            content="Проверенный текст доступного закона длиннее двадцати символов.",
+        )
+        missing = "https://forum.majestic-rp.ru/threads/transient.103/"
+        browser = _FakeBrowser(AtlasForumScrapeBatch((snapshot,), False, (missing,)))
+        runner = AtlasForumSyncRunner(
+            SimpleNamespace(get_guild=lambda _guild_id: None),
+            77,
+            config=sync_config(),
+            browser=browser,
+            index_callback=AsyncMock(return_value=["point-partial"]),
+        )
+
+        state = await runner.sync_once()
+
+        self.assertEqual(state["status"], "attention")
+        self.assertEqual(state["last_stats"]["skipped_threads"], [missing])
+        self.assertIn("Не удалось прочитать тем: 1", state["last_error"])
+        retry_delay = datetime.fromisoformat(state["next_sync_at"]) - datetime.fromisoformat(
+            state["updated_at"]
+        )
+        self.assertLessEqual(retry_delay.total_seconds(), 901)
 
 
 if __name__ == "__main__":

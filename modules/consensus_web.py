@@ -37,6 +37,8 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_session_token,
     csrf_matches,
+    request_public_host,
+    request_public_secure,
     resolve_principal,
     set_session_cookie,
     signed_session_identity,
@@ -53,7 +55,11 @@ from modules.atlas_web import register_atlas_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
+from modules.global_log_runtime import global_log_web_middleware, runtime_health as global_log_runtime_health
+from modules.global_log_web import register_global_log_web_routes
+from modules.legal_web import register_legal_web_routes
 from persistence import activity_repository as meta_storage
+from persistence import consensus_preparation_repository as preparation_storage
 from persistence import tvrs_repository as tvrs_storage
 from persistence import web_auth_repository as credential_storage
 from persistence import reactor_repository as reactor_storage
@@ -62,6 +68,7 @@ from persistence import global_ban_repository as global_ban_storage
 from persistence import legislation_repository as legislation_storage
 from modules.consensus_schedule import public_schedule_payload
 from modules.consensus_artifacts import generate_session_report
+from modules.consensus_preparation_web import register_consensus_preparation_routes
 
 
 CONSENSUS_WEB_ENABLED = os.getenv(
@@ -79,7 +86,14 @@ except (TypeError, ValueError):
 CONSENSUS_WEB_PUBLIC_NAME = (
     os.getenv("CONSENSUS_WEB_PUBLIC_NAME", "t.consensus").strip() or "t.consensus"
 )
-_GLOBAL_BAN_REQUEST_KEY = web.RequestKey("global_ban", object)
+# ``RequestKey`` arrived after the minimum aiohttp version supported by the
+# project.  A stable string remains a valid aiohttp request-mapping key on both
+# older local Windows installs and newer production images.
+_GLOBAL_BAN_REQUEST_KEY = (
+    web.RequestKey("global_ban", object)
+    if hasattr(web, "RequestKey")
+    else "tmod_global_ban"
+)
 
 
 def _configured_public_url() -> str:
@@ -156,6 +170,10 @@ OVR_WEB_PUBLIC_URL = _configured_surface_url(
 ADMISSION_WEB_PUBLIC_URL = _configured_surface_url(
     "ADMISSION_WEB_PUBLIC_URL",
     "https://phx.tvr.lat",
+)
+GLOBAL_LOG_WEB_PUBLIC_URL = _configured_surface_url(
+    "GLOBAL_LOG_WEB_PUBLIC_URL",
+    "https://log.global.tvr.lat",
 )
 
 
@@ -994,6 +1012,10 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = REACTOR_WEB_PUBLIC_URL
     elif belongs_to("/reactor") or belongs_to("/games"):
         target_url = PORTAL_WEB_PUBLIC_URL
+    elif path.rstrip("/") in {
+        "/legal", "/privacy", "/terms", "/cookies", "/data-request"
+    }:
+        target_url = PORTAL_WEB_PUBLIC_URL
     elif belongs_to("/atlas"):
         target_url = ATLAS_WEB_PUBLIC_URL
     elif belongs_to("/sgl"):
@@ -1008,6 +1030,11 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         target_url = ADMISSION_WEB_PUBLIC_URL
     elif belongs_to("/egg"):
         target_url = ZIGMUND_WEB_PUBLIC_URL
+    elif (
+        belongs_to("/global-log")
+        or (path.startswith("/api/global-log") and path != "/api/global-log/client")
+    ):
+        target_url = GLOBAL_LOG_WEB_PUBLIC_URL
     elif path in {"/login", "/auth/ticket"}:
         if next_path == "/admin":
             target_url = REACTOR_WEB_PUBLIC_URL
@@ -1027,7 +1054,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         return None
 
     target = urlsplit(target_url)
-    current_host = str(request.host or "").strip().lower().rstrip(".")
+    current_host = request_public_host(request).strip().lower().rstrip(".")
     if current_host.startswith("["):
         current_hostname = current_host[1:].split("]", 1)[0]
     else:
@@ -1043,6 +1070,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             SGL_WEB_PUBLIC_URL,
             OVR_WEB_PUBLIC_URL,
             ADMISSION_WEB_PUBLIC_URL,
+            GLOBAL_LOG_WEB_PUBLIC_URL,
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1134,29 +1162,65 @@ def create_consensus_web_app(
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
+        # Static assets and health never expose an account or protected data.
+        # Avoid two DB reads per font/image request from the Desktop shell.
+        if (
+            request.path in {"/api/health", "/favicon.ico"}
+            or request.path.startswith("/assets/")
+        ):
+            return await handler(request)
+        desktop_token = str(
+            request.headers.get("X-TMod-Install-Token") or ""
+        ).strip()
         identity = signed_session_identity(
             request,
             expected_guild_id=int(guild_id),
         )
-        ban = None
+        ban = await asyncio.to_thread(
+            global_ban_storage.get_desktop_installation_ban,
+            int(guild_id),
+            desktop_token,
+            str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+        ) if desktop_token else None
         if identity is not None:
-            ban = await asyncio.to_thread(
+            ban = ban or await asyncio.to_thread(
                 global_ban_storage.get_global_ban,
                 int(guild_id),
                 int(identity[1]),
             )
+        if ban is not None and (
+            identity is None or int(identity[1]) != int(ban.get("user_id") or 0)
+        ):
+            # Shared devices must not disclose another account's ban reason.
+            ban = {
+                **ban,
+                "reason": "Доступ с этой установки T-Mod Desktop ограничен.",
+            }
         request[_GLOBAL_BAN_REQUEST_KEY] = ban
         if ban is not None:
+            legal_access = request.path.rstrip("/") in {
+                "/legal",
+                "/privacy",
+                "/terms",
+                "/cookies",
+                "/data-request",
+                "/api/privacy/requests",
+            }
             allowed = (
                 request.path in {"/banned", "/api/banned", "/api/health", "/favicon.ico"}
                 or request.path.startswith("/assets/")
+                or request.path.startswith("/global-log")
+                or request.path.startswith("/api/global-log")
+                or legal_access
             )
             if not allowed:
-                if request.path.startswith("/api/"):
+                if request.path.startswith("/api/") or desktop_token:
                     return web.json_response(
                         {
                             "error": "globally_banned",
                             "message": "Доступ к экосистеме T-Mod заблокирован.",
+                            "reason": str(ban.get("reason") or "Причина не указана."),
+                            "reference": f"GB-{int(ban.get('revision') or 1):03d}",
                         },
                         status=423,
                     )
@@ -1164,7 +1228,7 @@ def create_consensus_web_app(
         return await handler(request)
 
     app = web.Application(
-        middlewares=[_security_middleware, global_ban_middleware],
+        middlewares=[global_log_web_middleware, _security_middleware, global_ban_middleware],
         client_max_size=client_max_size,
     )
     state_cache = AsyncSnapshotCache[
@@ -1329,6 +1393,9 @@ def create_consensus_web_app(
             "banned.css",
             "banned.js",
             "ban-seal.svg",
+            "global-log.css",
+            "global-log.js",
+            "global-log-client.js",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(_ASSET_DIR / name)
@@ -1365,7 +1432,7 @@ def create_consensus_web_app(
         require_ready = request.query.get("ready") == "1"
         status = "ok" if discord_ready or not require_ready else "starting"
         return web.json_response(
-            {"status": status, "discord_ready": discord_ready},
+            {"status": status, "discord_ready": discord_ready, "global_log": global_log_runtime_health()},
             status=200 if status == "ok" else 503,
         )
 
@@ -1447,10 +1514,14 @@ def create_consensus_web_app(
                 request.query.get("ticket", ""),
                 expected_guild_id=int(guild_id),
             )
-        except ConsensusWebAuthError:
+        except ConsensusWebAuthError as exc:
+            if str(exc) == "ticket_storage_unavailable":
+                raise web.HTTPServiceUnavailable(
+                    text="T-Mod временно не может безопасно подтвердить ссылку. Повторите через минуту."
+                ) from exc
             raise web.HTTPUnauthorized(
                 text="Ссылка недействительна или уже использована. Откройте новую из Discord."
-            )
+            ) from exc
         if await asyncio.to_thread(
             global_ban_storage.is_globally_banned,
             int(guild_id),
@@ -1487,8 +1558,8 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=request_public_host(request),
         )
         return response
 
@@ -1606,6 +1677,19 @@ def create_consensus_web_app(
             int(result.credential.user_id),
         ):
             raise web.HTTPForbidden(text="Доступ к экосистеме T-Mod заблокирован.")
+        desktop_token = str(
+            request.headers.get("X-TMod-Install-Token") or ""
+        ).strip()
+        if desktop_token:
+            await asyncio.to_thread(
+                global_ban_storage.bind_desktop_installation,
+                int(guild_id),
+                int(result.credential.user_id),
+                desktop_token,
+                platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
+                app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
+                device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+            )
         guild = bot.get_guild(int(guild_id))
         member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
         if member is None and guild is not None:
@@ -1646,14 +1730,22 @@ def create_consensus_web_app(
         set_session_cookie(
             response,
             token,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
-            request_host=request.host,
+            request_host=request_public_host(request),
         )
         return response
 
     async def logout(request: web.Request) -> web.Response:
-        host = str(request.host or "").split(":", 1)[0].lower()
+        public_host = request_public_host(request)
+        host = public_host.split(":", 1)[0].lower()
+        identity = signed_session_identity(request, expected_guild_id=int(guild_id))
+        if identity is not None:
+            await asyncio.to_thread(
+                credential_storage.invalidate_web_sessions,
+                int(identity[0]),
+                int(identity[1]),
+            )
         destination = (
             "/login?next=/admin"
             if host.startswith("reactor.")
@@ -1669,8 +1761,8 @@ def create_consensus_web_app(
         )
         clear_session_cookie(
             response,
-            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request.secure),
-            request_host=request.host,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            request_host=public_host,
         )
         return response
 
@@ -1756,10 +1848,26 @@ def create_consensus_web_app(
             int(guild_id),
             200,
         )
+        preparation_markers: dict[int, dict[str, Any]] = {}
+        if principal is not None:
+            preparation_markers = await asyncio.to_thread(
+                preparation_storage.preparation_statuses,
+                int(guild_id),
+                int(principal.user_id),
+                [int(row.get("id") or 0) for row in rows],
+            )
+        items = []
+        for row in rows:
+            item = _catalog_bill_payload(row, int(guild_id))
+            if int(row.get("id") or 0) in preparation_markers:
+                # The library needs only a private progress marker.  The vote
+                # direction and all notes remain behind the preparation API.
+                item["preparation"] = {"prepared": True}
+            items.append(item)
         return web.json_response(
             {
                 "mode": "live",
-                "items": [_catalog_bill_payload(row, int(guild_id)) for row in rows],
+                "items": items,
             },
         )
 
@@ -2015,9 +2123,19 @@ def create_consensus_web_app(
     app.router.add_post("/api/tasks", tasks_api)
     app.router.add_get("/api/state", state)
     app.router.add_get("/api/bills", bills)
+    register_consensus_preparation_routes(
+        app,
+        guild_id=int(guild_id),
+        authenticate=authenticated_request,
+    )
     app.router.add_get("/api/bills/{bill_id}", bill_detail)
     app.router.add_get("/api/reports/{session_key}/consensus.pdf", consensus_report)
     app.router.add_post("/api/command", command)
+    register_global_log_web_routes(
+        app,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+    )
     register_admin_web_routes(
         app,
         bot,
@@ -2054,6 +2172,12 @@ def create_consensus_web_app(
         authenticate=authenticated_request,
     )
     register_admission_web_routes(
+        app,
+        bot,
+        guild_id=int(guild_id),
+        asset_dir=_ASSET_DIR,
+    )
+    register_legal_web_routes(
         app,
         bot,
         guild_id=int(guild_id),

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import traceback
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -94,11 +96,51 @@ PROFILE_ERROR_MESSAGES = {
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
 MEMBER_ONBOARDING_REMINDER_SECONDS = 24 * 60 * 60
 MEMBER_ONBOARDING_WORKER_SECONDS = 60 * 60
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:[A-Za-z0-9_~]{1,32}:\d{15,25}>$")
 
 
 def _clean_display(value: Any, *, fallback: str = "Не указано") -> str:
     text = " ".join(str(value or "").strip().split())
     return discord.utils.escape_markdown(text) if text else fallback
+
+
+def _safe_component_emoji(value: Any, fallback: str | None = None) -> str | None:
+    """Return an emoji Discord can serialize, or omit it safely.
+
+    Profile menus contain a few values assembled dynamically (select options,
+    preference buttons and persisted profile data). Discord rejects malformed
+    custom-emoji markup with HTTP 400 ``Invalid emoji``. Keep valid Unicode and
+    Discord custom emoji, while dropping arbitrary/control text before a
+    component can reach the API.
+    """
+
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if not text:
+        return fallback
+    if text.startswith("<"):
+        return text if _CUSTOM_EMOJI_RE.fullmatch(text) else fallback
+    if len(text) > 8:
+        return fallback
+    for character in text:
+        category = unicodedata.category(character)
+        if category.startswith("C") and character not in ("\ufe0f", "\u200d"):
+            return fallback
+    # Plain words/punctuation are not Unicode emoji and produce Invalid emoji.
+    if all(unicodedata.category(character)[0] in {"L", "N", "P", "Z"} for character in text):
+        return fallback
+    return text
+
+
+def _normalize_profile_component(item: discord.ui.Item[Any]) -> None:
+    """Sanitize a profile button/select and all of its select options."""
+
+    if hasattr(item, "emoji"):
+        item.emoji = _safe_component_emoji(getattr(item, "emoji", None))
+    if isinstance(item, discord.ui.Select):
+        for option in item.options:
+            option.emoji = _safe_component_emoji(option.emoji)
 
 
 def _discord_time(value: datetime | str | None, style: str = "R") -> str:
@@ -840,6 +882,13 @@ class ProfileBaseView(discord.ui.View):
     def __init__(self, requester_id: int) -> None:
         super().__init__(timeout=PROFILE_TIMEOUT_SECONDS)
         self.requester_id = int(requester_id)
+        for item in self.children:
+            _normalize_profile_component(item)
+
+    def add_item(self, item: discord.ui.Item[Any]) -> "ProfileBaseView":
+        _normalize_profile_component(item)
+        super().add_item(item)
+        return self
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
@@ -1637,7 +1686,7 @@ class ProfileStatusSelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=description,
                 default=key == current_status,
             )
@@ -1690,7 +1739,7 @@ class ProfileVisibilitySelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=description,
                 default=key == current,
             )
@@ -1716,7 +1765,7 @@ class ProfileThemeSelect(discord.ui.Select):
             discord.SelectOption(
                 label=label,
                 value=key,
-                emoji=emoji,
+                emoji=_safe_component_emoji(emoji),
                 description=f"Цвет карточки: {label.lower()}",
                 default=key == current,
             )
@@ -1789,7 +1838,7 @@ class ProfilePreferenceToggle(discord.ui.Button):
     ) -> None:
         super().__init__(
             label=label,
-            emoji=emoji,
+            emoji=_safe_component_emoji(emoji),
             style=discord.ButtonStyle.success if current else discord.ButtonStyle.secondary,
             row=row,
         )
@@ -2164,7 +2213,7 @@ class CharacterDetailView(ProfileBaseView):
         self.character = character
         is_public = bool(getattr(character, "is_public", True))
         self.visibility.label = "Скрыть" if is_public else "Показывать"
-        self.visibility.emoji = "🔒" if is_public else "🌐"
+        self.visibility.emoji = _safe_component_emoji("🔒" if is_public else "🌐")
 
     @discord.ui.button(label="Изменить", emoji="✏️", style=discord.ButtonStyle.primary)
     async def edit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:

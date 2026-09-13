@@ -13,6 +13,7 @@ data/
 *.sqlite
 output/
 tmp/
+build/
 desktop/out/
 desktop/release/
 desktop/.vite/

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectDir = $PSScriptRoot,
     [ValidateRange(1, 60)][int]$IntervalMinutes = 2,
     [string]$TaskName = "T-Mod Auto Update"

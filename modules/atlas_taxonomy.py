@@ -69,22 +69,49 @@ def atlas_classify_knowledge(
 ) -> dict[str, Any]:
     """Classify without an LLM so ingestion remains fast, private and repeatable."""
 
-    sample = "\n".join((str(title or ""), str(source_url or ""), str(content or "")[:12_000]))
+    # The document identity is more authoritative than incidental words inside
+    # its body.  A criminal code may discuss court cases, orders and lawsuits,
+    # but that must never turn the whole code into case law or a department
+    # order.  Classify from title/URL first and only inspect the body when the
+    # identity itself is inconclusive.
+    identity_sample = "\n".join((str(title or ""), str(source_url or "")))
+    content_sample = str(content or "")[:12_000]
+    sample = "\n".join((identity_sample, content_sample))
     hinted_domain = atlas_normalize_knowledge_domain(domain_hint)
     hinted_corpus = atlas_normalize_corpus_kind(corpus_hint)
-    has_ooc = bool(_OOC_RE.search(sample))
-    has_ic = bool(_IC_RE.search(sample))
-    domain = hinted_domain or ("mixed" if has_ooc == has_ic else "ooc" if has_ooc else "ic")
-
     corpus = hinted_corpus
     if corpus is None:
-        corpus = next((code for code, pattern in _CORPUS_PATTERNS if pattern.search(sample)), None)
+        corpus = next(
+            (code for code, pattern in _CORPUS_PATTERNS if pattern.search(identity_sample)),
+            None,
+        )
+    if corpus is None:
+        corpus = next(
+            (code for code, pattern in _CORPUS_PATTERNS if pattern.search(content_sample)),
+            None,
+        )
     if corpus is None:
         corpus = {
             "regulation": "procedure",
             "manual": "manual",
             "forum": "forum",
         }.get(str(source_kind or "").lower(), "other")
+
+    has_ooc = bool(_OOC_RE.search(sample))
+    has_ic = bool(_IC_RE.search(sample))
+    # Project/server rules routinely explain IC mechanics (DM, RP, factions,
+    # etc.).  Those terms must not turn an OOC ruleset into a mixed source:
+    # ``server_rule`` is itself an explicit semantic classification for the
+    # project-level OOC corpus, including when a feed profile is absent.
+    domain = hinted_domain or (
+        "ooc"
+        if corpus == "server_rule"
+        else "mixed"
+        if has_ooc == has_ic
+        else "ooc"
+        if has_ooc
+        else "ic"
+    )
 
     authority_scope = (
         "project"

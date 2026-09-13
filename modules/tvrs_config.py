@@ -45,6 +45,7 @@ def env_int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
 TVRS_MATERIALS_CHANNEL_ID = env_int("TVRS_MATERIALS_CHANNEL_ID", 1492583702641774642)
 TVRS_BILLS_CHANNEL_ID = env_int("TVRS_BILLS_CHANNEL_ID", 1492471371085643937)
 TVRS_CONSENSUS_VOICE_CHANNEL_ID = env_int("TVRS_CONSENSUS_VOICE_CHANNEL_ID", 1519419533667078145)
+TVRS_DIRECTORY_CHANNEL_ID = env_int("TVRS_DIRECTORY_CHANNEL_ID", 1540003355735232582)
 TVRS_SENATOR_ROLE_ID = env_int("TVRS_SENATOR_ROLE_ID", 1500563715622174881)
 TVRS_PERMANENT_CHAIR_ID = env_int("TVRS_PERMANENT_CHAIR_ID", 811862068214890537)
 TVRS_COCHAIR_IDS = env_int_tuple(
@@ -73,6 +74,14 @@ TVRS_COMMAND_NAME = safe_command_name("tvrs.commands.tvrs_name", "tvrs")
 TVRS_COMMAND_DESCRIPTION = safe_command_description(
     "tvrs.commands.tvrs_description",
     "Открыть Универсалитет Товарищества",
+)
+TVRS_DIRECTORY_COMMAND_NAME = safe_command_name(
+    "tvrs.commands.directory_name",
+    "tvrs_directory",
+)
+TVRS_DIRECTORY_COMMAND_DESCRIPTION = safe_command_description(
+    "tvrs.commands.directory_description",
+    "Управление живым реестром ответственных и Сената",
 )
 TVRS_SETBILL_COMMAND_NAME = safe_command_name("tvrs.commands.setbill_name", "tvrs_setbill")
 TVRS_SETBILL_COMMAND_DESCRIPTION = safe_command_description(

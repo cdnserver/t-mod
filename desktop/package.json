@@ -1,6 +1,6 @@
 {
   "name": "tmod-desktop",
-  "version": "0.3.6-dev.1",
+  "version": "1.3.6-dev.1",
   "description": "Единый рабочий хаб экосистемы T-Mod",
   "main": "./out/main/index.js",
   "author": "TVR x SGL",
@@ -120,6 +120,7 @@
         "provider": "github",
         "owner": "cdnserver",
         "repo": "t-mod-releases",
+        "channel": "dev",
         "releaseType": "release"
       }
     ]

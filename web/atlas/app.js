@@ -732,6 +732,149 @@ function renderForumSync(value) {
   button.firstChild.textContent = state === "running" ? "Проверка уже выполняется " : "Проверить обновления сейчас ";
 }
 
+function renderForumEngine(value) {
+  const engine = value && typeof value === "object" ? value : {};
+  const feeds = Array.isArray(engine.feeds) ? engine.feeds : [];
+  const items = Array.isArray(engine.items) ? engine.items : [];
+  const characters = Array.isArray(engine.characters) ? engine.characters : [];
+  let state = engine.enabled === false ? "disabled" : (engine.status || "pending");
+  if (feeds.some((item) => item.status === "running")) state = "running";
+  else if (feeds.some((item) => item.status === "error")) state = "error";
+  else if (feeds.some((item) => item.status === "attention")) state = "attention";
+  else if (feeds.length && feeds.every((item) => item.status === "ok")) state = "ok";
+  const archivePages = feeds.reduce(
+    (total, item) => total + Number(item.backfill_pages_scanned || 0),
+    0,
+  );
+  const archiveComplete = Boolean(
+    feeds.length && feeds.every((item) => item.backfill_completed || item.backfill_completed_at),
+  );
+  const feedErrors = feeds
+    .map((item) => String(item.last_error || "").toLowerCase())
+    .filter(Boolean);
+  const routeUnavailable = feedErrors.some((error) => (
+    error.includes("err_connection_refused")
+    || error.includes("connecttimeout")
+    || error.includes("connection to") && error.includes("timed out")
+  ));
+  const authorizationRequired = feedErrors.some((error) => (
+    error.includes("login") || error.includes("authorization") || error.includes("manual")
+  ));
+  const retryTimes = feeds
+    .map((item) => new Date(item.next_scan_at || "").getTime())
+    .filter((value) => Number.isFinite(value));
+  const nextRetry = retryTimes.length ? new Date(Math.min(...retryTimes)) : null;
+  const labels = {
+    disabled: "Наблюдение временно отключено",
+    pending: "Запускаем наблюдение и продолжаем собирать архив",
+    running: "Проверяем новые жалобы · архив продолжается в фоне",
+    ok: archiveComplete
+      ? "Наблюдение активно · архив полностью сохранён"
+      : "Наблюдение активно · исторический архив пополняется в фоне",
+    attention: routeUnavailable
+      ? `Серверный маршрут к Majestic недоступен · следующий повтор ${readableTime(nextRetry, "автоматически")}`
+      : authorizationRequired
+        ? "Форум ожидает подтверждения входа в локальном браузере Atlas"
+        : "Форум временно недоступен · данные сохранены, повтор автоматический",
+    error: "Браузер форума перезапускается · повтор автоматический",
+  };
+  byId("forum-engine-pulse").className = state;
+  byId("forum-engine-state").textContent = labels[state] || labels.pending;
+  byId("forum-engine-total").textContent = String(engine.complaints || 0);
+  byId("forum-engine-hydrated").textContent = String(engine.hydrated || 0);
+  byId("forum-engine-pages").textContent = String(archivePages);
+  byId("forum-engine-open").textContent = String(engine.open || 0);
+  const grouped = new Map();
+  items.forEach((item) => {
+    const key = String(item.id || item.thread_url || "");
+    const existing = grouped.get(key);
+    const character = `${item.nickname || "Персонаж"} · ${item.static_id || "—"}`;
+    if (existing) {
+      if (!existing.characters.includes(character)) existing.characters.push(character);
+    } else grouped.set(key, { ...item, characters: [character] });
+  });
+  byId("forum-engine-mine").textContent = String(grouped.size);
+  const characterList = byId("forum-engine-character-list");
+  clear(characterList);
+  characters.forEach((item) => characterList.append(
+    element("span", "", `${item.nickname || "Персонаж"} · ${item.static_id || "—"}`),
+  ));
+  if (!characters.length) characterList.append(
+    element("span", "", "Добавьте персонажа и статик в T‑Mod Account."),
+  );
+  const list = byId("forum-engine-list");
+  clear(list);
+  const sectionLabels = {
+    open: "На рассмотрении",
+    accepted: "Принята",
+    rejected: "Отклонена",
+  };
+  [...grouped.values()].forEach((item) => {
+    const link = element("a", `forum-engine-item ${item.section_kind || "open"}`);
+    link.href = String(item.thread_url || "#");
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    const copy = element("span");
+    copy.append(
+      element("strong", "", item.title || "Жалоба на форуме"),
+      element(
+        "small",
+        "",
+        `${sectionLabels[item.section_kind] || "Статус уточняется"} · ${item.characters.join(", ")} · ${readableTime(item.last_changed_at, "без даты")}`,
+      ),
+    );
+    link.append(element("i"), copy, element("b", "", "↗"));
+    list.append(link);
+  });
+  if (!grouped.size) list.append(element(
+    "div",
+    "empty",
+    characters.length
+      ? "Жалоб на привязанных персонажей пока не найдено."
+      : "После добавления персонажа Atlas свяжет его с картой форума.",
+  ));
+  const button = byId("forum-engine-now");
+  button.hidden = !Boolean(appState.data?.viewer?.administrator);
+  button.disabled = state === "running" || state === "disabled";
+}
+
+function renderForumStaticProfile(profile) {
+  const root = byId("forum-engine-profile");
+  clear(root);
+  root.hidden = false;
+  const summary = element("header");
+  const title = element("span");
+  title.append(
+    element("small", "", `СТАТИК ${profile.static_id || "—"}`),
+    element("strong", "", "Форумный профиль"),
+  );
+  const counters = element("div");
+  counters.append(
+    element("span", "", `Подал · ${Number(profile.filed || 0)}`),
+    element("span", "", `Получил · ${Number(profile.received || 0)}`),
+  );
+  summary.append(title, counters);
+  root.append(summary);
+  const list = element("div", "forum-engine-profile-items");
+  const labels = { reporter: "Подал", target: "Получил" };
+  (profile.items || []).slice(0, 12).forEach((item) => {
+    const link = element("a");
+    link.href = String(item.thread_url || "#");
+    link.target = "_blank";
+    link.rel = "noreferrer noopener";
+    link.append(
+      element("i", item.participant_role || "target", labels[item.participant_role] || "Жалоба"),
+      element("span", "", item.title || "Жалоба на форуме"),
+      element("b", "", "↗"),
+    );
+    list.append(link);
+  });
+  if (!(profile.items || []).length) list.append(
+    element("div", "empty", "В уже оцифрованной части архива совпадений пока нет."),
+  );
+  root.append(list);
+}
+
 const timelineKindLabels = {
   incident: "Инцидент",
   activity: "Действие",
@@ -834,6 +977,7 @@ function render(data) {
   renderTimeline(data.timeline || [], data.timeline_summary || {});
   renderKnowledgeSources(data.knowledge_sources || []);
   renderForumSync(data.forum_sync);
+  renderForumEngine(data.forum_engine);
   renderThreads(data.threads || []);
   renderOnboarding(membership);
 
@@ -1550,6 +1694,18 @@ async function loadForumSync() {
   return appState.data.forum_sync;
 }
 
+async function loadForumEngine() {
+  const result = await api("/api/atlas/forum-engine");
+  appState.data.forum_engine = {
+    ...(result.status || {}),
+    enabled: Boolean(result.enabled),
+    items: result.items || [],
+    characters: result.characters || [],
+  };
+  renderForumEngine(appState.data.forum_engine);
+  return appState.data.forum_engine;
+}
+
 const searchKindLabels = { case: "ДЕЛО", document: "ДОКУМЕНТ", timeline_event: "СОБЫТИЕ", media_asset: "МЕДИА", knowledge_source: "ЗНАНИЯ" };
 
 function openGlobalSearch() {
@@ -2007,6 +2163,41 @@ function bind() {
       renderForumSync(appState.data?.forum_sync || {});
     }
   });
+  byId("forum-engine-now").addEventListener("click", async () => {
+    const button = byId("forum-engine-now");
+    button.disabled = true;
+    try {
+      await api("/api/atlas/forum-engine", { method: "POST", body: "{}" });
+      renderForumEngine({ ...(appState.data?.forum_engine || {}), status: "running" });
+      byId("forum-engine-pulse").className = "running";
+      byId("forum-engine-state").textContent = "Сверяем разделы форума прямо сейчас";
+      showToast("Atlas Forum Engine начал сверку.");
+      setTimeout(() => void loadForumEngine().catch(() => {}), 2200);
+    } catch (error) {
+      showToast(error.message || "Не удалось запустить сверку жалоб.", true);
+      renderForumEngine(appState.data?.forum_engine || {});
+    }
+  });
+  byId("forum-engine-profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const input = byId("forum-engine-profile-static");
+    const staticId = String(input.value || "").replace(/\D/g, "");
+    if (!staticId) {
+      input.focus();
+      return;
+    }
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      const profile = await api(`/api/atlas/forum-engine/profile?static_id=${encodeURIComponent(staticId)}`);
+      renderForumStaticProfile(profile);
+    } catch (error) {
+      showToast(error.message || "Не удалось открыть форумный профиль.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
   byId("global-search").addEventListener("click", openGlobalSearch);
   byId("atlas-search-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2046,7 +2237,10 @@ async function bootstrap() {
       setTimeout(() => openDialog(byId("onboarding-dialog")), 380);
     }
     setInterval(() => {
-      if (!document.hidden && appState.screen === "forum") void loadForumSync().catch(() => {});
+      if (!document.hidden && appState.screen === "forum") {
+        void loadForumSync().catch(() => {});
+        void loadForumEngine().catch(() => {});
+      }
     }, 30000);
   } catch (error) {
     if (!String(error.message).includes("Требуется вход")) {

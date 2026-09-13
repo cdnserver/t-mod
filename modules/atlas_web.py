@@ -7,9 +7,12 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from collections import defaultdict, deque
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
@@ -30,14 +33,20 @@ from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
 from modules.atlas_forum_sync import (
-    AtlasForumManualActionRequired,
+    AtlasForumSyncConfig,
     AtlasForumSyncError,
     AtlasForumSyncRunner,
 )
+from modules.atlas_forum_engine import AtlasForumEngineRunner
 from modules.atlas_knowledge import (
     ATLAS_KNOWLEDGE_MAX_FILE_BYTES,
     AtlasKnowledgeFileError,
     atlas_extract_knowledge_file,
+)
+from modules.atlas_ocr import (
+    AtlasOcrError,
+    AtlasOcrUnavailable,
+    atlas_ocr_attachment,
 )
 from modules.atlas_jobs import AtlasJobWorker
 from modules.atlas_media import (
@@ -49,15 +58,23 @@ from modules.atlas_media import (
     atlas_media_scan,
 )
 from modules.atlas_tts import AtlasTTSResult, AtlasTTSService
-from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
+from modules.consensus_web_auth import (
+    ConsensusWebPrincipal,
+    csrf_matches,
+    has_trusted_forwarded_host,
+    request_public_host,
+)
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_forum_engine_repository as forum_engine_storage
+from persistence import atlas_forum_attachment_repository as attachment_storage
 from persistence import atlas_job_repository as job_storage
 from persistence import atlas_case_repository as case_storage
 from persistence import atlas_document_repository as document_storage
 from persistence import atlas_media_repository as media_storage
 from persistence import atlas_search_repository as search_storage
+from persistence import craft_repository as craft_storage
 from persistence import web_auth_repository as web_auth_storage
 
 
@@ -82,6 +99,133 @@ _ATLAS_OVERLAY_AUDIO_TYPES = {
     "audio/x-wav",
     "application/octet-stream",
 }
+
+
+def _overlay_craft_snapshot(guild_id: int, user_id: int) -> dict[str, Any]:
+    """Return a small, non-administrative projection for the field overlay."""
+
+    now = datetime.now(timezone.utc)
+    plans = []
+    for plan in craft_storage.craft_active_plans(int(guild_id), limit=30):
+        recipe = plan.get("recipe") if isinstance(plan.get("recipe"), dict) else {}
+        batch = plan.get("active_batch") if isinstance(plan.get("active_batch"), dict) else None
+        materials = []
+        for item in plan.get("materials") or []:
+            if not isinstance(item, dict):
+                continue
+            required = max(0, int(item.get("required_total") or 0))
+            available = max(0, int(item.get("stock_quantity") or 0))
+            materials.append(
+                {
+                    "name": str(item.get("material_name") or "Материал")[:80],
+                    "required": required,
+                    "available": available,
+                    "ready": available >= required,
+                }
+            )
+        attempts_total = max(0, int(plan.get("attempts_total") or 0))
+        attempts_queued = max(0, int(plan.get("attempts_queued") or 0))
+        attempts_completed = max(0, int(plan.get("attempts_completed") or 0))
+        stage = str(plan.get("stage") or "procurement")
+        needs_next_batch = bool(
+            stage == "crafting"
+            and batch is None
+            and attempts_queued < attempts_total
+        )
+        plan_id = int(plan.get("id") or 0)
+        responsible_id = int(plan.get("responsible_id") or 0)
+        item = {
+            "id": plan_id,
+            "product_name": str(
+                plan.get("product_name_snapshot")
+                or recipe.get("product_name")
+                or "Крафт"
+            )[:100],
+            "stage": stage,
+            "responsible": str(plan.get("responsible_display") or "Не назначен")[:100],
+            "mine": responsible_id == int(user_id),
+            "attempts_total": attempts_total,
+            "attempts_queued": attempts_queued,
+            "attempts_completed": attempts_completed,
+            "remaining_to_queue": max(0, attempts_total - attempts_queued),
+            "product_stock": max(0, int(plan.get("product_stock") or 0)),
+            "materials": materials,
+            "active_batch": (
+                {
+                    "id": int(batch.get("id") or 0),
+                    "quantity": max(0, int(batch.get("quantity") or 0)),
+                    "started_at": batch.get("started_at"),
+                    "due_at": batch.get("due_at"),
+                }
+                if batch else None
+            ),
+            "needs_next_batch": needs_next_batch,
+            "alarm_key": (
+                f"craft:{plan_id}:next:{attempts_completed}:{attempts_queued}"
+                if needs_next_batch else None
+            ),
+            "updated_at": plan.get("updated_at"),
+        }
+        plans.append(item)
+    plans.sort(
+        key=lambda item: (
+            not bool(item["needs_next_batch"]),
+            not bool(item["mine"]),
+            str((item.get("active_batch") or {}).get("due_at") or "9999"),
+            -int(item["id"]),
+        )
+    )
+    raw_revision = json.dumps(plans, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "server_time": now.isoformat(),
+        "revision": hashlib.sha256(raw_revision.encode("utf-8")).hexdigest()[:20],
+        "plans": plans,
+        "attention_count": sum(1 for item in plans if item["needs_next_batch"]),
+    }
+
+
+def _forum_engine_status_view(value: dict[str, Any], *, administrator: bool) -> dict[str, Any]:
+    """Keep operational diagnostics private while exposing useful monitor state."""
+
+    if administrator:
+        return value
+    feeds = []
+    for item in value.get("feeds", []) if isinstance(value, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        feeds.append(
+            {
+                "section_kind": str(item.get("section_kind") or ""),
+                "status": str(item.get("status") or "pending"),
+                "baseline_completed": bool(item.get("baseline_completed_at")),
+                "last_success_at": item.get("last_success_at"),
+                "next_scan_at": item.get("next_scan_at"),
+                "backfill_pages_scanned": int(item.get("backfill_pages_scanned") or 0),
+                "backfill_topics_seen": int(item.get("backfill_topics_seen") or 0),
+                "backfill_completed": bool(item.get("backfill_completed_at")),
+            }
+        )
+    return {
+        "feeds": feeds,
+        "complaints": int(value.get("complaints") or 0),
+        "open": int(value.get("open") or 0),
+        "pending_hydration": int(value.get("pending_hydration") or 0),
+        "hydrated": int(value.get("hydrated") or 0),
+        "posts": int(value.get("posts") or 0),
+    }
+
+
+def _forum_engine_items_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed = (
+        "id", "thread_url", "title", "author", "section_kind", "post_count",
+        "last_changed_at", "latest_post_at", "latest_post_author", "locked",
+        "static_id", "nickname", "event_count", "participant_role",
+    )
+    return [
+        {key: item.get(key) for key in allowed}
+        for item in items
+        if isinstance(item, dict)
+    ]
 
 
 def _is_tmod_desktop_request(request: web.Request) -> bool:
@@ -193,7 +337,11 @@ def register_atlas_web_routes(
     index_lock = asyncio.Lock()
     rebuild_task: asyncio.Task[None] | None = None
     forum_sync_task: asyncio.Task[None] | None = None
+    forum_engine_task: asyncio.Task[None] | None = None
+    attachment_ocr_task: asyncio.Task[None] | None = None
     forum_sync_runner: AtlasForumSyncRunner | None = None
+    forum_engine_browser: AtlasForumSyncRunner | None = None
+    forum_engine_runner: AtlasForumEngineRunner | None = None
     job_worker = AtlasJobWorker(
         concurrency=2,
         lease_seconds=180,
@@ -238,10 +386,28 @@ def register_atlas_web_routes(
         return selected
 
     def require_desktop_client(request: web.Request) -> None:
-        host = str(request.host or "").partition(":")[0].lower()
+        host = request_public_host(request).partition(":")[0].lower()
         # Local/internal calls remain available for diagnostics and automated
         # tests.  The product restriction is enforced on the public contour.
-        if host != "atlas.tvr.lat" or _is_tmod_desktop_request(request):
+        # A request carrying the gateway marker is a public request even when
+        # the upstream Host is an internal Docker name.  Unknown forwarded
+        # hosts are denied as well, rather than accidentally bypassing the
+        # desktop-only policy.
+        public_request = has_trusted_forwarded_host(request)
+        if public_request and host != "atlas.tvr.lat":
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "atlas_canonical_host_required",
+                        "message": "Откройте Atlas на официальном домене.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        if _is_tmod_desktop_request(request):
+            return
+        if host != "atlas.tvr.lat":
             return
         raise web.HTTPForbidden(
             text=json.dumps(
@@ -332,18 +498,45 @@ def register_atlas_web_routes(
     async def user_dashboard(
         request: web.Request,
         selected: ConsensusWebPrincipal,
+        *,
+        project_code: str | None = None,
     ) -> dict[str, Any]:
         try:
             requested_space = int(request.headers.get("X-Atlas-Space-ID") or 0) or None
         except (TypeError, ValueError):
             requested_space = None
-        return await asyncio.to_thread(
+        clean_project = str(project_code or "").strip().lower() or None
+        dashboard = await asyncio.to_thread(
             storage.atlas_dashboard,
             int(guild_id),
             int(selected.user_id),
             str(selected.display_name),
             requested_space,
+            project_code=clean_project,
         )
+        if clean_project and str(dashboard["organization"].get("project_code") or "").strip().lower() != clean_project:
+            raise ValueError("atlas_space_project_mismatch")
+        return dashboard
+
+    def explicit_platform_scope(payload: dict[str, Any]) -> str | None:
+        """Require a deliberate administrator confirmation before cross-project sharing.
+
+        The old UI calls project-wide material `global`.  Treating that label as
+        platform-wide would expose legacy Majestic laws to every future project,
+        so it continues to map to the current project unless this dedicated
+        switch and confirmation are both supplied by an administrator-only
+        endpoint.
+        """
+
+        requested = str(payload.get("federation_scope") or "").strip().lower()
+        if not requested:
+            return None
+        if requested != "platform":
+            raise ValueError("atlas_federation_scope_selection_invalid")
+        confirmed = str(payload.get("confirm_platform_scope") or "").strip().lower()
+        if confirmed not in {"1", "true", "yes", "on", "confirm"}:
+            raise ValueError("atlas_platform_scope_confirmation_required")
+        return "platform"
 
     async def dashboard_for(
         request: web.Request,
@@ -367,11 +560,31 @@ def register_atlas_web_routes(
                 },
                 "catalog": await asyncio.to_thread(storage.atlas_catalog),
             }
-        dashboard, health, forum_sync = await asyncio.gather(
+        dashboard, health, forum_sync, forum_engine, forum_complaints, forum_characters = await asyncio.gather(
             user_dashboard(request, selected),
             atlas_ai_health(),
             asyncio.to_thread(storage.atlas_forum_sync_status, int(guild_id)),
+            asyncio.to_thread(forum_engine_storage.forum_monitor_status, int(guild_id)),
+            asyncio.to_thread(
+                forum_engine_storage.user_forum_complaints,
+                int(guild_id),
+                int(selected.user_id),
+                limit=50,
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.list_monitored_characters,
+                int(guild_id),
+            ),
         )
+        own_forum_characters = [
+            {
+                "id": int(item["character_id"]),
+                "nickname": str(item.get("nickname") or ""),
+                "static_id": str(item.get("static_id") or ""),
+            }
+            for item in forum_characters
+            if int(item["user_id"]) == int(selected.user_id)
+        ]
         return {
             **dashboard,
             "viewer": {
@@ -386,6 +599,15 @@ def register_atlas_web_routes(
             "forum_sync": forum_sync or {
                 "status": "waiting" if forum_sync_runner and forum_sync_runner.config.enabled else "disabled",
                 "last_stats": {},
+            },
+            "forum_engine": {
+                **_forum_engine_status_view(
+                    forum_engine,
+                    administrator=bool(selected.administrator),
+                ),
+                "items": _forum_engine_items_view(forum_complaints),
+                "characters": own_forum_characters,
+                "enabled": bool(forum_engine_runner and forum_engine_runner.config.enabled),
             },
             "capabilities": [
                 "chat",
@@ -432,6 +654,35 @@ def register_atlas_web_routes(
                 },
             }
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    async def overlay_crafts(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not selected.guild_member:
+            raise web.HTTPForbidden(
+                text=json.dumps(
+                    {
+                        "error": "craft_membership_required",
+                        "message": "Контур крафтов доступен участникам Товарищества.",
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        snapshot = await asyncio.to_thread(
+            _overlay_craft_snapshot,
+            int(guild_id),
+            int(selected.user_id),
+        )
+        etag = f'"{snapshot["revision"]}"'
+        if request.headers.get("If-None-Match") == etag:
+            response = web.Response(status=304)
+        else:
+            response = web.json_response(snapshot)
+        response.headers["ETag"] = etag
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
@@ -845,7 +1096,21 @@ def register_atlas_web_routes(
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc), "message": "Выберите доступный сервер и фракцию."}, status=400)
-        dashboard = await user_dashboard(request, selected)
+        try:
+            dashboard = await user_dashboard(
+                request,
+                selected,
+                project_code=(
+                    str(overlay_character.get("project_code") or "")
+                    if overlay_character is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Выбранное пространство Atlas относится к другому проекту."},
+                status=409,
+            )
         organization_id = int(dashboard["organization"]["id"])
         agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
@@ -946,7 +1211,15 @@ def register_atlas_web_routes(
                 question[:100],
                 agent_id=agent_id,
             )
-        await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
+        await asyncio.to_thread(
+            storage.atlas_add_message,
+            thread_id,
+            "user",
+            question,
+            project_code=answer["project_code"],
+            server_code=answer["server_code"],
+            faction_code=answer["faction_code"],
+        )
         assistant_message_id = await asyncio.to_thread(
             storage.atlas_add_message,
             thread_id,
@@ -954,6 +1227,11 @@ def register_atlas_web_routes(
             answer["answer"],
             citations=answer["citations"],
             model=answer["model"],
+            model_provider=answer["model_provider"],
+            model_release=answer["model_release"],
+            project_code=answer["project_code"],
+            server_code=answer["server_code"],
+            faction_code=answer["faction_code"],
             latency_ms=answer["latency_ms"],
         )
         await asyncio.to_thread(
@@ -967,6 +1245,11 @@ def register_atlas_web_routes(
             details={
                 "source": "web",
                 "model": answer["model"],
+                "model_provider": answer["model_provider"],
+                "model_release": answer["model_release"],
+                "project_code": answer["project_code"],
+                "server_code": answer["server_code"],
+                "faction_code": answer["faction_code"],
                 "latency_ms": answer["latency_ms"],
             },
         )
@@ -1073,7 +1356,21 @@ def register_atlas_web_routes(
                 {"error": str(exc), "message": "Выберите доступный сервер и фракцию."},
                 status=400,
             )
-        dashboard = await user_dashboard(request, selected)
+        try:
+            dashboard = await user_dashboard(
+                request,
+                selected,
+                project_code=(
+                    str(overlay_character.get("project_code") or "")
+                    if overlay_character is not None
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "message": "Выбранное пространство Atlas относится к другому проекту."},
+                status=409,
+            )
         organization_id = int(dashboard["organization"]["id"])
         agent_id = str(payload.get("model") or "atlas-tvr-a").strip().lower()
         thread_id: int | None = None
@@ -1164,7 +1461,15 @@ def register_atlas_web_routes(
                     question[:100],
                     agent_id=agent_id,
                 )
-            await asyncio.to_thread(storage.atlas_add_message, thread_id, "user", question)
+            await asyncio.to_thread(
+                storage.atlas_add_message,
+                thread_id,
+                "user",
+                question,
+                project_code=answer["project_code"],
+                server_code=answer["server_code"],
+                faction_code=answer["faction_code"],
+            )
             assistant_message_id = await asyncio.to_thread(
                 storage.atlas_add_message,
                 thread_id,
@@ -1172,6 +1477,11 @@ def register_atlas_web_routes(
                 answer["answer"],
                 citations=answer["citations"],
                 model=answer["model"],
+                model_provider=answer["model_provider"],
+                model_release=answer["model_release"],
+                project_code=answer["project_code"],
+                server_code=answer["server_code"],
+                faction_code=answer["faction_code"],
                 latency_ms=answer["latency_ms"],
             )
             await asyncio.to_thread(
@@ -1185,6 +1495,11 @@ def register_atlas_web_routes(
                 details={
                     "source": "desktop-overlay" if latency_mode == "overlay" else "web-stream",
                     "model": answer["model"],
+                    "model_provider": answer["model_provider"],
+                    "model_release": answer["model_release"],
+                    "project_code": answer["project_code"],
+                    "server_code": answer["server_code"],
+                    "faction_code": answer["faction_code"],
                     "latency_ms": answer["latency_ms"],
                 },
             )
@@ -1693,13 +2008,161 @@ def register_atlas_web_routes(
 
     job_worker.register("atlas.media.finalize.v1", run_media_finalize_job)
 
+    async def run_forum_attachment_ocr_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """OCR one forum-owned file without treating its text as a legal source."""
+
+        attachment_id = int(dict(job.get("payload") or {}).get("attachment_id") or 0)
+        attachment = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_begin_processing,
+            attachment_id,
+        )
+        if attachment is None:
+            return {"attachment_id": attachment_id, "skipped": True}
+        if str(attachment.get("status") or "") in {
+            "review_pending", "approved", "rejected", "unavailable", "archived"
+        }:
+            return {
+                "attachment_id": attachment_id,
+                "skipped": True,
+                "status": attachment.get("status"),
+            }
+        if forum_sync_runner is None or not forum_sync_runner.config.enabled:
+            error = "atlas_forum_sync_disabled"
+            await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_error,
+                attachment_id,
+                error=error,
+            )
+            raise AtlasForumSyncError(error)
+        await report({"percent": 12, "stage": "fetching_original", "attachment_id": attachment_id})
+        content_sha256: str | None = None
+        storage_key: str | None = None
+        detected_mime: str | None = None
+        size_bytes: int | None = None
+        try:
+            raw, declared_mime = await forum_sync_runner.fetch_attachment(
+                str(attachment["attachment_url"]),
+            )
+            size_bytes = len(raw)
+            content_sha256 = hashlib.sha256(raw).hexdigest()
+            detected_mime = atlas_media_detect_type(raw[:64 * 1024], declared_mime)
+            storage_key = await asyncio.to_thread(
+                media_blobs.put_bytes,
+                raw,
+                checksum_sha256=content_sha256,
+            )
+            await report({"percent": 45, "stage": "recognising", "attachment_id": attachment_id})
+            result = await asyncio.to_thread(
+                atlas_ocr_attachment,
+                raw,
+                mime_type=detected_mime,
+                filename=str(attachment.get("filename") or "forum-attachment"),
+            )
+        except AtlasOcrUnavailable as exc:
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                storage_key=storage_key,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except AtlasOcrError as exc:
+            if exc.retryable:
+                await asyncio.to_thread(
+                    attachment_storage.atlas_forum_attachment_mark_error,
+                    attachment_id,
+                    error=f"{exc.code}: {exc}",
+                )
+                raise
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                storage_key=storage_key,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except AtlasMediaError as exc:
+            stored = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_unavailable,
+                attachment_id,
+                error=f"{exc.code}: {exc}",
+                content_sha256=content_sha256,
+                storage_key=storage_key,
+                mime_type=detected_mime,
+                size_bytes=size_bytes,
+            )
+            return {
+                "attachment_id": attachment_id,
+                "status": stored.get("status") if stored else "unavailable",
+                "reason": exc.code,
+            }
+        except Exception as exc:
+            await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_mark_error,
+                attachment_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        await report({"percent": 80, "stage": "waiting_for_review", "attachment_id": attachment_id})
+        stored = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_complete_ocr,
+            attachment_id,
+            content_sha256=content_sha256,
+            storage_key=str(storage_key or ""),
+            mime_type=detected_mime,
+            size_bytes=size_bytes,
+            text=result.text,
+            engine=result.engine,
+        )
+        await asyncio.to_thread(
+            storage.atlas_record_event,
+            int(stored["organization_id"]),
+            0,
+            "forum_attachment_ocr_ready",
+            "Atlas подготовил распознавание вложения для проверки",
+            target_type="forum_attachment",
+            target_id=attachment_id,
+            details={
+                "source_id": int(stored["source_id"]),
+                "engine": result.engine,
+                "pages": result.pages,
+                "mime_type": detected_mime,
+                "size_bytes": size_bytes,
+            },
+        )
+        return {
+            "attachment_id": attachment_id,
+            "status": "review_pending",
+            "pages": result.pages,
+            "engine": result.engine,
+        }
+
+    job_worker.register("atlas.forum.attachment-ocr.v1", run_forum_attachment_ocr_job)
+
     async def reconcile_knowledge_index(*, force_reset: bool = False) -> None:
         sources = await asyncio.to_thread(storage.atlas_indexable_knowledge_sources)
         if not sources:
             return
         async with index_lock:
             probe = await atlas_probe_collection()
-            reset = force_reset or probe["status"] == "corrupted"
+            reset = force_reset or probe["status"] in {"corrupted", "stale"}
             if reset:
                 await atlas_reset_collection()
             indexed_count = sum(item.get("status") == "indexed" for item in sources)
@@ -1782,6 +2245,73 @@ def register_atlas_web_routes(
         job_worker.wake()
         return queued
 
+    async def queue_forum_attachment_ocr(attachment: dict[str, Any]) -> dict[str, Any] | None:
+        """Make discovery durable first, then let the leased worker OCR it."""
+
+        if str(attachment.get("status") or "") != "discovered":
+            return None
+        fingerprint = hashlib.sha256(
+            str(attachment.get("source_checksum") or "").encode("utf-8")
+        ).hexdigest()[:24]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(attachment["organization_id"]),
+            0,
+            job_type="atlas.forum.attachment-ocr.v1",
+            dedupe_key=f"attachment:{int(attachment['id'])}:{fingerprint}",
+            payload={"attachment_id": int(attachment["id"])},
+            subject_type="forum_attachment",
+            subject_id=int(attachment["id"]),
+            max_attempts=4,
+        )
+        await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_mark_queued,
+            int(attachment["id"]),
+        )
+        job_worker.wake()
+        return queued
+
+    async def reconcile_forum_attachment_ocr(*, limit: int = 40) -> int:
+        """Backfill old forum topics and queue only explicitly discovered files."""
+
+        if forum_sync_runner is None or not forum_sync_runner.config.enabled:
+            return 0
+        await asyncio.to_thread(
+            attachment_storage.atlas_reconcile_forum_attachment_inventory,
+            limit=max(1, min(2_000, int(limit) * 8)),
+        )
+        pending = await asyncio.to_thread(
+            attachment_storage.atlas_forum_attachment_pending,
+            limit=limit,
+        )
+        queued = 0
+        for attachment in pending:
+            if await queue_forum_attachment_ocr(attachment):
+                queued += 1
+        return queued
+
+    async def persist_forum_attachment_inventory(
+        source: dict[str, Any],
+        attachments: tuple[Any, ...] | list[Any],
+    ) -> tuple[int, int]:
+        """Save the parser inventory and immediately schedule new safe OCR work."""
+
+        rows = await asyncio.to_thread(
+            attachment_storage.atlas_sync_forum_attachments,
+            int(source["organization_id"]),
+            int(source["id"]),
+            tuple(
+                item.public()
+                for item in attachments
+                if callable(getattr(item, "public", None))
+            ),
+        )
+        queued = 0
+        for row in rows:
+            if await queue_forum_attachment_ocr(row):
+                queued += 1
+        return len(rows), queued
+
     async def run_forum_listing_job(
         job: dict[str, Any],
         report: Callable[[dict[str, Any]], Awaitable[None]],
@@ -1790,16 +2320,37 @@ def register_atlas_web_routes(
         source_url = str(payload.get("source_url") or "").strip()
         organization_id = int(job["organization_id"])
         actor_user_id = int(job.get("created_by_id") or 0)
-        feed_key = str(payload.get("feed_key") or "")
+        requested_feed_key = str(payload.get("feed_key") or "")
         if forum_sync_runner is None:
             raise AtlasForumSyncError("atlas_forum_sync_disabled")
         try:
+            # A manually imported section is not a one-off blob.  Persist its
+            # exact scope and taxonomy as a feed before reading it, so Atlas
+            # can refresh the same forum section later without an operator
+            # having to submit the URL again.
+            feed = await asyncio.to_thread(
+                storage.atlas_ensure_forum_feed,
+                int(guild_id),
+                feed_key=requested_feed_key,
+                root_url=source_url,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+                visibility_scope=str(payload.get("visibility_scope") or "server"),
+                federation_scope=str(payload.get("federation_scope") or "") or None,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                organization_id=organization_id,
+                interval_seconds=int(forum_sync_runner.config.interval_seconds),
+            )
+            feed_key = str(feed["feed_key"])
             await report({"percent": 5, "stage": "opening_forum"})
             batch = await forum_sync_runner.fetch_listing(source_url)
             total = max(1, len(batch.snapshots))
             created = 0
             changed = 0
             queued = 0
+            attachments = 0
+            attachment_jobs = 0
             for position, snapshot in enumerate(batch.snapshots, start=1):
                 result = await asyncio.to_thread(
                     storage.atlas_upsert_synced_knowledge,
@@ -1810,6 +2361,9 @@ def register_atlas_web_routes(
                     server_code=str(payload.get("server_code") or "phoenix-15"),
                     faction_code=str(payload.get("faction_code") or "lspd"),
                     visibility_scope=str(payload.get("visibility_scope") or "server"),
+                    federation_scope=str(payload.get("federation_scope") or "") or None,
+                    knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                    corpus_kind=str(payload.get("corpus_kind") or "") or None,
                     feed_key=feed_key,
                     metadata={
                         "author": snapshot.author,
@@ -1817,13 +2371,21 @@ def register_atlas_web_routes(
                         "import_mode": "authenticated_forum_listing",
                         "listing_url": source_url,
                         "requested_by_id": actor_user_id,
-                        "knowledge_domain": payload.get("knowledge_domain"),
-                        "corpus_kind": payload.get("corpus_kind"),
+                        "ingestion_origin": "manual_forum_feed",
+                        "forum_attachments": [
+                            attachment.public() for attachment in snapshot.attachments
+                        ],
                     },
                 )
                 created += int(bool(result["created"]))
                 changed += int(bool(result["changed"]))
                 source = result["source"]
+                saved_attachments, queued_attachments = await persist_forum_attachment_inventory(
+                    source,
+                    snapshot.attachments,
+                )
+                attachments += saved_attachments
+                attachment_jobs += queued_attachments
                 if result["changed"] or source.get("status") != "indexed":
                     await queue_knowledge_index(source)
                     queued += 1
@@ -1841,6 +2403,12 @@ def register_atlas_web_routes(
                 "queued": queued,
                 "skipped": len(batch.skipped_threads),
                 "inventory_complete": batch.inventory_complete,
+                "attachments": attachments,
+                "attachment_jobs": attachment_jobs,
+                "feed_key": feed_key,
+                "federation_scope": feed.get("federation_scope"),
+                "knowledge_domain": feed.get("knowledge_domain"),
+                "corpus_kind": feed.get("corpus_kind"),
             }
             await asyncio.to_thread(
                 storage.atlas_record_event,
@@ -1855,8 +2423,9 @@ def register_atlas_web_routes(
             await atlas_log(
                 "раздел форума прочитан",
                 (
-                    f"Тем: **{len(batch.snapshots)}** · новых: **{created}** · "
-                    f"обновлено: **{changed}** · пропущено: **{len(batch.skipped_threads)}**"
+                    f"Лента: `{feed_key}` · тем: **{len(batch.snapshots)}** · "
+                    f"новых: **{created}** · обновлено: **{changed}** · "
+                    f"пропущено: **{len(batch.skipped_threads)}**"
                 ),
                 level="info",
                 dedupe_key=f"atlas-forum-listing-ok:{feed_key}",
@@ -1872,11 +2441,93 @@ def register_atlas_web_routes(
                 ),
                 level="warning",
                 exception=exc,
-                dedupe_key=f"atlas-forum-listing-error:{feed_key}",
+                dedupe_key=f"atlas-forum-listing-error:{requested_feed_key}",
+            )
+            raise
+
+    async def run_forum_thread_job(
+        job: dict[str, Any],
+        report: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Read one forum topic without holding an HTTP request open."""
+
+        payload = dict(job.get("payload") or {})
+        source_url = str(payload.get("source_url") or "").strip()
+        organization_id = int(job["organization_id"])
+        actor_user_id = int(job.get("created_by_id") or 0)
+        if forum_sync_runner is None:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        try:
+            await report({"percent": 8, "stage": "opening_forum"})
+            snapshot = await forum_sync_runner.fetch_thread(source_url)
+            await report({"percent": 62, "stage": "saving_topic"})
+            source = await asyncio.to_thread(
+                storage.atlas_add_knowledge,
+                organization_id,
+                actor_user_id,
+                title=snapshot.title,
+                content=snapshot.content,
+                source_kind="forum",
+                source_url=snapshot.url,
+                server_code=str(payload.get("server_code") or "phoenix-15"),
+                faction_code=str(payload.get("faction_code") or "lspd"),
+                visibility_scope=str(payload.get("visibility_scope") or "server"),
+                federation_scope=str(payload.get("federation_scope") or "") or None,
+                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+                corpus_kind=str(payload.get("corpus_kind") or "") or None,
+                metadata={
+                    "author": snapshot.author,
+                    "source_updated_at": snapshot.source_updated_at,
+                    "import_mode": "authenticated_forum_thread",
+                    "forum_attachments": [
+                        attachment.public() for attachment in snapshot.attachments
+                    ],
+                },
+            )
+            attachment_count, attachment_jobs = await persist_forum_attachment_inventory(
+                source,
+                snapshot.attachments,
+            )
+            index_job = await queue_knowledge_index(source)
+            taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+            await report({"percent": 92, "stage": "index_queued"})
+            await asyncio.to_thread(
+                storage.atlas_record_event,
+                organization_id,
+                actor_user_id,
+                "forum_thread_imported",
+                f"Atlas прочитал тему форума: {snapshot.title}",
+                target_type="knowledge_source",
+                target_id=int(source["id"]),
+                details={"source_url": snapshot.url, "taxonomy": taxonomy},
+            )
+            return {
+                "source_id": int(source["id"]),
+                "title": str(source.get("title") or snapshot.title),
+                "taxonomy": taxonomy,
+                "index_job_id": int(index_job["id"]),
+                "attachments": attachment_count,
+                "attachment_jobs": attachment_jobs,
+            }
+        except Exception as exc:
+            await atlas_log(
+                "не удалось прочитать тему форума",
+                (
+                    f"Ссылка: `{source_url[:800]}`\n"
+                    f"Ошибка: `{type(exc).__name__}: {str(exc)[:1000]}`\n"
+                    "Живой Chromium: `http://127.0.0.1:7900/?autoconnect=1&resize=scale`"
+                ),
+                level="warning",
+                exception=exc,
+                dedupe_key=(
+                    "atlas-forum-thread-error:"
+                    + hashlib.sha256(source_url.casefold().encode("utf-8")).hexdigest()[:20]
+                ),
             )
             raise
 
     job_worker.register("atlas.forum.listing.v1", run_forum_listing_job)
+    job_worker.register("atlas.forum.thread.v1", run_forum_thread_job)
 
     async def queue_forum_listing_import(
         *,
@@ -1886,6 +2537,7 @@ def register_atlas_web_routes(
         server_code: str,
         faction_code: str,
         visibility_scope: str,
+        federation_scope: str | None,
         knowledge_domain: str | None,
         corpus_kind: str | None,
         request_key: str | None = None,
@@ -1909,6 +2561,7 @@ def register_atlas_web_routes(
                 "server_code": server_code,
                 "faction_code": faction_code,
                 "visibility_scope": visibility_scope,
+                "federation_scope": federation_scope,
                 "knowledge_domain": knowledge_domain,
                 "corpus_kind": corpus_kind,
             },
@@ -1919,20 +2572,100 @@ def register_atlas_web_routes(
         job_worker.wake()
         return queued
 
+    async def queue_forum_thread_import(
+        *,
+        source_url: str,
+        organization_id: int,
+        actor_user_id: int,
+        server_code: str,
+        faction_code: str,
+        visibility_scope: str,
+        federation_scope: str | None,
+        knowledge_domain: str | None,
+        corpus_kind: str | None,
+        request_key: str | None = None,
+    ) -> dict[str, Any]:
+        request_fingerprint = hashlib.sha256(
+            str(request_key or f"{actor_user_id}:{time.time_ns()}").encode("utf-8")
+        ).hexdigest()[:20]
+        source_fingerprint = hashlib.sha256(
+            source_url.strip().casefold().encode("utf-8")
+        ).hexdigest()[:20]
+        queued = await asyncio.to_thread(
+            job_storage.atlas_job_enqueue,
+            int(organization_id),
+            int(actor_user_id),
+            job_type="atlas.forum.thread.v1",
+            dedupe_key=f"{source_fingerprint}:{request_fingerprint}",
+            payload={
+                "source_url": source_url,
+                "server_code": server_code,
+                "faction_code": faction_code,
+                "visibility_scope": visibility_scope,
+                "federation_scope": federation_scope,
+                "knowledge_domain": knowledge_domain,
+                "corpus_kind": corpus_kind,
+            },
+            subject_type="forum_thread",
+            subject_id=source_url,
+            max_attempts=4,
+        )
+        job_worker.wake()
+        return queued
+
+    forum_config = AtlasForumSyncConfig.from_env()
     forum_sync_runner = AtlasForumSyncRunner(
         bot,
         int(guild_id),
+        config=forum_config,
         index_callback=index_synced_source,
+    )
+    forum_engine_browser = AtlasForumSyncRunner(
+        bot,
+        int(guild_id),
+        config=replace(
+            forum_config,
+            selenium_url=str(
+                os.getenv(
+                    "ATLAS_FORUM_ENGINE_SELENIUM_URL",
+                    forum_config.selenium_url,
+                )
+            ).strip(),
+        ),
+        index_callback=index_synced_source,
+    )
+    forum_engine_runner = AtlasForumEngineRunner(
+        bot,
+        int(guild_id),
+        forum_engine_browser,
     )
 
     async def start_index_reconciliation(_: web.Application) -> None:
         queue_index_reconciliation()
 
     async def start_atlas_jobs(_: web.Application) -> None:
+        nonlocal attachment_ocr_task
         # Let startup reconciliation acquire the index lock before old jobs resume.
         await asyncio.sleep(0)
         job_worker.start()
         job_worker.wake()
+
+        async def attachment_runner() -> None:
+            while True:
+                try:
+                    await reconcile_forum_attachment_ocr()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # The queue remains durable; a transient forum/DB outage
+                    # must not prevent the rest of Atlas from serving users.
+                    pass
+                await asyncio.sleep(45)
+
+        attachment_ocr_task = asyncio.create_task(
+            attachment_runner(),
+            name="atlas-forum-attachment-ocr",
+        )
 
     async def start_forum_sync(_: web.Application) -> None:
         nonlocal forum_sync_task
@@ -1941,6 +2674,15 @@ def register_atlas_web_routes(
         forum_sync_task = asyncio.create_task(
             forum_sync_runner.run(),
             name="atlas-forum-sync",
+        )
+
+    async def start_forum_engine(_: web.Application) -> None:
+        nonlocal forum_engine_task
+        if forum_engine_runner is None or not forum_engine_runner.config.enabled:
+            return
+        forum_engine_task = asyncio.create_task(
+            forum_engine_runner.run(),
+            name="atlas-forum-engine",
         )
 
     async def stop_index_reconciliation(_: web.Application) -> None:
@@ -1952,6 +2694,14 @@ def register_atlas_web_routes(
     async def stop_atlas_jobs(_: web.Application) -> None:
         await job_worker.close()
 
+    async def stop_forum_attachment_ocr(_: web.Application) -> None:
+        nonlocal attachment_ocr_task
+        if attachment_ocr_task is None:
+            return
+        attachment_ocr_task.cancel()
+        await asyncio.gather(attachment_ocr_task, return_exceptions=True)
+        attachment_ocr_task = None
+
     async def stop_overlay_tts(_: web.Application) -> None:
         await overlay_tts.close()
 
@@ -1962,11 +2712,23 @@ def register_atlas_web_routes(
             forum_sync_task.cancel()
             await asyncio.gather(forum_sync_task, return_exceptions=True)
 
+    async def stop_forum_engine(_: web.Application) -> None:
+        if forum_engine_runner is not None:
+            await forum_engine_runner.close()
+        if forum_engine_task is not None:
+            forum_engine_task.cancel()
+            await asyncio.gather(forum_engine_task, return_exceptions=True)
+        if forum_engine_browser is not None:
+            await forum_engine_browser.close()
+
     app.on_startup.append(start_index_reconciliation)
     app.on_startup.append(start_atlas_jobs)
     app.on_startup.append(start_forum_sync)
+    app.on_startup.append(start_forum_engine)
+    app.on_cleanup.append(stop_forum_engine)
     app.on_cleanup.append(stop_forum_sync)
     app.on_cleanup.append(stop_index_reconciliation)
+    app.on_cleanup.append(stop_forum_attachment_ocr)
     app.on_cleanup.append(stop_atlas_jobs)
     app.on_cleanup.append(stop_overlay_tts)
 
@@ -2007,6 +2769,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
+            federation_scope = explicit_platform_scope(payload)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
                 organization_id,
@@ -2018,6 +2781,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
             )
@@ -2066,6 +2830,88 @@ def register_atlas_web_routes(
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"items": items})
+
+    async def forum_attachments(request: web.Request) -> web.Response:
+        """Review the machine transcription before it can become legal evidence."""
+
+        selected = await principal(request)
+        await require_atlas(selected)
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text='{"error":"atlas_knowledge_admin_required"}',
+                content_type="application/json",
+            )
+        dashboard = await user_dashboard(request, selected)
+        organization_id = int(dashboard["organization"]["id"])
+        raw_attachment_id = str(request.match_info.get("attachment_id") or "").strip()
+        if request.method == "GET":
+            try:
+                limit = max(1, min(500, int(request.query.get("limit") or 100)))
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "atlas_forum_attachment_limit_invalid"}, status=400
+                )
+            items = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachments,
+                organization_id,
+                status=str(request.query.get("status") or "") or None,
+                limit=limit,
+            )
+            return web.json_response(
+                {
+                    "items": [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "storage_key"
+                        }
+                        for item in items
+                    ]
+                }
+            )
+        try:
+            attachment_id = int(raw_attachment_id)
+        except (TypeError, ValueError):
+            raise web.HTTPNotFound() from None
+        payload = await body(request, selected)
+        action = str(payload.get("action") or "").strip().lower()
+        if action not in {"approve", "reject"}:
+            return web.json_response(
+                {"error": "atlas_forum_attachment_action_invalid"}, status=400
+            )
+        try:
+            reviewed = await asyncio.to_thread(
+                attachment_storage.atlas_forum_attachment_review,
+                organization_id,
+                int(selected.user_id),
+                attachment_id,
+                approve=action == "approve",
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        queued = None
+        if reviewed.get("knowledge_source_id"):
+            source = await asyncio.to_thread(
+                storage.atlas_knowledge_source,
+                int(reviewed["knowledge_source_id"]),
+            )
+            if source is not None:
+                queued = await queue_knowledge_index(source)
+        return web.json_response(
+            {
+                "attachment": {
+                    key: value
+                    for key, value in reviewed.items()
+                    if key != "storage_key"
+                },
+                "job": queued,
+                "message": (
+                    "Расшифровка подтверждена и поставлена на индексацию."
+                    if action == "approve"
+                    else "Расшифровка отклонена."
+                ),
+            }
+        )
 
     async def global_search(request: web.Request) -> web.Response:
         selected = await principal(request)
@@ -2512,6 +3358,8 @@ def register_atlas_web_routes(
                     "server_code",
                     "faction_code",
                     "visibility_scope",
+                    "federation_scope",
+                    "confirm_platform_scope",
                     "knowledge_domain",
                     "corpus_kind",
                 }:
@@ -2525,6 +3373,7 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 values.get("visibility_scope", "server")
             )
+            federation_scope = explicit_platform_scope(values)
             dashboard = await user_dashboard(request, selected)
             source = await asyncio.to_thread(
                 storage.atlas_add_knowledge,
@@ -2537,6 +3386,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 original_filename=str(extracted["filename"]),
                 knowledge_domain=values.get("knowledge_domain") or None,
                 corpus_kind=values.get("corpus_kind") or None,
@@ -2604,6 +3454,7 @@ def register_atlas_web_routes(
                 visibility_scope = atlas_normalize_knowledge_scope(
                     str(payload.get("visibility_scope") or "server")
                 )
+                federation_scope = explicit_platform_scope(payload)
                 dashboard = await user_dashboard(request, selected)
             except (TypeError, ValueError) as exc:
                 return web.json_response(
@@ -2617,6 +3468,7 @@ def register_atlas_web_routes(
                 server_code=server_code,
                 faction_code=faction_code,
                 visibility_scope=visibility_scope,
+                federation_scope=federation_scope,
                 knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
                 corpus_kind=str(payload.get("corpus_kind") or "") or None,
                 request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
@@ -2643,62 +3495,36 @@ def register_atlas_web_routes(
             visibility_scope = atlas_normalize_knowledge_scope(
                 str(payload.get("visibility_scope") or "server")
             )
-            snapshot = await forum_sync_runner.fetch_thread(source_url)
+            federation_scope = explicit_platform_scope(payload)
             dashboard = await user_dashboard(request, selected)
-            source = await asyncio.to_thread(
-                storage.atlas_add_knowledge,
-                int(dashboard["organization"]["id"]),
-                int(selected.user_id),
-                title=snapshot.title,
-                content=snapshot.content,
-                source_kind="forum",
-                source_url=snapshot.url,
-                server_code=server_code,
-                faction_code=faction_code,
-                visibility_scope=visibility_scope,
-                knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
-                corpus_kind=str(payload.get("corpus_kind") or "") or None,
-                metadata={
-                    "author": snapshot.author,
-                    "source_updated_at": snapshot.source_updated_at,
-                    "import_mode": "authenticated_forum_thread",
-                },
-            )
-        except (AtlasForumSyncError, TypeError, ValueError) as exc:
-            code = str(exc)
-            if isinstance(exc, AtlasForumManualActionRequired):
-                message = (
-                    f"{code} Откройте живой Chromium на домашнем сервере, завершите вход "
-                    "и повторите импорт."
-                )
-            elif "thread_body_missing" in code or "content_too_short" in code:
-                message = (
-                    "Страница открылась, но Atlas не нашёл в ней текст первого сообщения. "
-                    "Проверьте, что это ссылка на тему и аккаунт видит её содержимое."
-                )
-            elif "browser_unavailable" in code or "page_failed" in code:
-                message = "Chromium Atlas не смог открыть страницу. Повторите через несколько секунд."
-            elif "url_invalid" in code:
-                message = "Нужна ссылка Majestic Forum на тему /threads/... или раздел /forums/... ."
-            else:
-                message = f"Не удалось прочитать тему: {code[:300]}"
+        except (TypeError, ValueError) as exc:
             return web.json_response(
                 {
-                    "error": code,
-                    "message": message,
-                    "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                    "error": str(exc),
+                    "message": "Проверьте сервер, организацию и доступ материала.",
                 },
                 status=400,
             )
-        queued_job = await queue_knowledge_index(source)
-        taxonomy = dict(source.get("metadata", {})).get("taxonomy", {})
+        queued_job = await queue_forum_thread_import(
+            source_url=source_url,
+            organization_id=int(dashboard["organization"]["id"]),
+            actor_user_id=int(selected.user_id),
+            server_code=server_code,
+            faction_code=faction_code,
+            visibility_scope=visibility_scope,
+            federation_scope=federation_scope,
+            knowledge_domain=str(payload.get("knowledge_domain") or "") or None,
+            corpus_kind=str(payload.get("corpus_kind") or "") or None,
+            request_key=str(request.headers.get("X-Idempotency-Key") or "") or None,
+        )
         return web.json_response(
             {
-                "source": source,
                 "job": queued_job,
-                "taxonomy": taxonomy,
                 "queued": True,
-                "message": "Тема прочитана, классифицирована и добавлена в библиотеку.",
+                "browser_url": "http://127.0.0.1:7900/?autoconnect=1&resize=scale",
+                "message": (
+                    "Тема принята. Atlas прочитает её в фоне, классифицирует и добавит в поиск."
+                ),
             },
             status=202,
         )
@@ -2745,13 +3571,23 @@ def register_atlas_web_routes(
         payload = await body(request, selected)
         resource = str(payload.get("resource") or "").strip().lower()
         try:
-            if resource == "server":
+            if resource == "project":
+                item = await asyncio.to_thread(
+                    storage.atlas_upsert_project,
+                    int(selected.user_id),
+                    code=str(payload.get("code") or ""),
+                    name=str(payload.get("name") or ""),
+                    description=str(payload.get("description") or "") or None,
+                    enabled=bool(payload.get("enabled", True)),
+                )
+            elif resource == "server":
                 item = await asyncio.to_thread(
                     storage.atlas_upsert_server,
                     int(selected.user_id),
                     code=str(payload.get("code") or ""),
                     name=str(payload.get("name") or ""),
                     number=payload.get("number"),
+                    project_code=str(payload.get("project_code") or "majestic-rp"),
                     enabled=bool(payload.get("enabled", True)),
                 )
             elif resource == "faction":
@@ -2835,12 +3671,93 @@ def register_atlas_web_routes(
             status=202 if request.method == "POST" else 200,
         )
 
+    async def forum_engine_control(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        if request.method == "POST":
+            await require_atlas_admin(selected)
+            await body(request, selected)
+            if forum_engine_runner is None or not forum_engine_runner.trigger():
+                return web.json_response(
+                    {
+                        "error": "atlas_forum_engine_disabled",
+                        "message": "Atlas Forum Engine сейчас отключён.",
+                    },
+                    status=409,
+                )
+        status, items, characters = await asyncio.gather(
+            asyncio.to_thread(
+                forum_engine_storage.forum_monitor_status,
+                int(guild_id),
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.user_forum_complaints,
+                int(guild_id),
+                int(selected.user_id),
+                limit=100,
+            ),
+            asyncio.to_thread(
+                forum_engine_storage.list_monitored_characters,
+                int(guild_id),
+            ),
+        )
+        own_characters = [
+            {
+                "id": int(item["character_id"]),
+                "nickname": str(item.get("nickname") or ""),
+                "static_id": str(item.get("static_id") or ""),
+            }
+            for item in characters
+            if int(item["user_id"]) == int(selected.user_id)
+        ]
+        return web.json_response(
+            {
+                "accepted": request.method == "POST",
+                "enabled": bool(forum_engine_runner and forum_engine_runner.config.enabled),
+                "status": _forum_engine_status_view(
+                    status,
+                    administrator=bool(selected.administrator),
+                ),
+                "characters": own_characters,
+                "items": _forum_engine_items_view(items),
+            },
+            status=202 if request.method == "POST" else 200,
+        )
+
+    async def forum_engine_profile(request: web.Request) -> web.Response:
+        require_desktop_client(request)
+        selected = await principal(request)
+        await require_atlas(selected)
+        try:
+            profile = await asyncio.to_thread(
+                forum_engine_storage.forum_static_profile,
+                int(guild_id),
+                str(request.query.get("static_id") or ""),
+                limit=40,
+            )
+        except ValueError:
+            return web.json_response(
+                {
+                    "error": "atlas_forum_static_invalid",
+                    "message": "Укажите корректный числовой статик.",
+                },
+                status=400,
+            )
+        return web.json_response(
+            {
+                **profile,
+                "items": _forum_engine_items_view(profile.get("items", [])),
+            }
+        )
+
     app.router.add_get("/atlas", atlas_index)
     app.router.add_get("/atlas/", atlas_index)
     app.router.add_get("/atlas/assets/{name}", atlas_asset)
     app.router.add_get("/api/atlas/bootstrap", bootstrap)
     app.router.add_get("/api/atlas/overlay/context", overlay_context_get)
     app.router.add_post("/api/atlas/overlay/context", overlay_context_set)
+    app.router.add_get("/api/atlas/overlay/crafts", overlay_crafts)
     app.router.add_post("/api/atlas/overlay/transcribe", overlay_transcribe)
     app.router.add_get("/api/atlas/overlay/tts/voices", overlay_tts_voices)
     app.router.add_post("/api/atlas/overlay/tts/preview", overlay_tts_preview)
@@ -2887,8 +3804,16 @@ def register_atlas_web_routes(
     app.router.add_post("/api/atlas/knowledge", knowledge)
     app.router.add_post("/api/atlas/knowledge/upload", knowledge_upload)
     app.router.add_post("/api/atlas/knowledge/import-forum", knowledge_import_forum)
+    app.router.add_get("/api/atlas/forum-attachments", forum_attachments)
+    app.router.add_post(
+        "/api/atlas/forum-attachments/{attachment_id}/review",
+        forum_attachments,
+    )
     app.router.add_get("/api/atlas/forum-sync", forum_sync_control)
     app.router.add_post("/api/atlas/forum-sync", forum_sync_control)
+    app.router.add_get("/api/atlas/forum-engine", forum_engine_control)
+    app.router.add_post("/api/atlas/forum-engine", forum_engine_control)
+    app.router.add_get("/api/atlas/forum-engine/profile", forum_engine_profile)
     app.router.add_get("/api/admin/atlas", admin_overview)
     app.router.add_post("/api/admin/atlas/catalog", admin_catalog_control)
     app.router.add_post("/api/admin/atlas/spaces", admin_space_control)

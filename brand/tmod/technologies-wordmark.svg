@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 420" role="img" aria-label="Технологии Товарищества">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#10182b"/>
+      <stop offset=".58" stop-color="#090d17"/>
+      <stop offset="1" stop-color="#05070b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="45%" r="60%">
+      <stop stop-color="#91a8ff" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#91a8ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="125" y1="46" x2="279" y2="340" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dce4ff" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#91a8ff" stop-opacity=".04"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="420" rx="72" fill="url(#background)"/>
+  <rect x="10" y="10" width="1580" height="400" rx="62" fill="none" stroke="#dce4ff" stroke-opacity=".065" stroke-width="2"/>
+  <ellipse cx="205" cy="211" rx="254" ry="232" fill="url(#glow)"/>
+  <path d="M28 210H384" stroke="#91a8ff" stroke-opacity=".18" stroke-width="2"/>
+  <rect x="126" y="47" width="158" height="326" rx="47" fill="url(#glass)" stroke="#cbd6ff" stroke-opacity=".42" stroke-width="3"/>
+  <path d="M166 51V369M205 51V369M244 51V369" stroke="#91a8ff" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M150 132H260V168H223V294H187V168H150Z" fill="#f5f7fb"/>
+  <path d="M150 132H260" stroke="#fff" stroke-opacity=".52" stroke-width="3"/>
+  <path d="M147 324H181M229 324H263" stroke="#91a8ff" stroke-opacity=".36" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="205" cy="324" r="4" fill="#72cfbd"/>
+  <g fill="#f5f7fb">
+    <text x="454" y="192" font-family="Unbounded, Arial, sans-serif" font-size="64" font-weight="560" letter-spacing="-3">ТЕХНОЛОГИИ</text>
+    <text x="454" y="278" font-family="Unbounded, Arial, sans-serif" font-size="64" font-weight="560" letter-spacing="-3">ТОВАРИЩЕСТВА</text>
+  </g>
+  <path d="M458 320H1086" stroke="#91a8ff" stroke-opacity=".26" stroke-width="2"/>
+  <circle cx="1111" cy="320" r="4" fill="#72cfbd"/>
+</svg>

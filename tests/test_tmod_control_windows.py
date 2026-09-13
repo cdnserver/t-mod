@@ -53,6 +53,31 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn('"Enter"', self.ui)
         self.assertIn('"Escape"', self.ui)
 
+    def test_all_powershell_sources_are_windows_powershell_safe_utf8(self) -> None:
+        """Windows PowerShell 5.1 reads UTF-8 without a BOM as ANSI.
+
+        The operator launchers contain Cyrillic text.  A missing BOM therefore
+        corrupts quoted strings before a launcher can even start.  Keep this
+        check repository-wide so a new maintenance script cannot reintroduce
+        that class of outage.
+        """
+        ignored_parts = {".git", ".venv", "node_modules", "release", "dist", "build"}
+        scripts = sorted(
+            [
+                path
+                for path in [*ROOT.rglob("*.ps1"), *ROOT.rglob("*.psm1")]
+                if not any(part in ignored_parts for part in path.relative_to(ROOT).parts)
+            ],
+            key=lambda path: path.as_posix(),
+        )
+        self.assertGreater(len(scripts), 0)
+        missing_bom = [
+            path.relative_to(ROOT).as_posix()
+            for path in scripts
+            if not path.read_bytes().startswith(b"\xef\xbb\xbf")
+        ]
+        self.assertEqual(missing_bom, [])
+
     def test_control_reuses_transactional_update_and_database_guard(self) -> None:
         self.assertIn("launch_tmod_guarded_windows.ps1", self.control)
         self.assertIn("safe update requested", self.control)
@@ -125,10 +150,56 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn("TModRemoteClient", bundled_remote)
         self.assertIn("function Select-TModMenu", bundled_remote)
 
+    def test_remote_docker_commands_use_one_shot_interactive_task(self) -> None:
+        """SSH Docker actions need the logged-in Desktop credential token.
+
+        Docker Desktop's helper cannot unlock in a regular SSH logon, even
+        with a disposable config.  Non-follow actions therefore use an
+        explicitly started, no-trigger interactive Scheduled Task and a
+        strict request/result runner.  Live log following stays direct so
+        Ctrl+C remains meaningful in the remote console.
+        """
+        runner = (ROOT / "scripts" / "tmod_remote_interactive_runner.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("New-ScheduledTaskAction", self.remote)
+        self.assertIn("New-ScheduledTaskPrincipal", self.remote)
+        self.assertIn("-LogonType Interactive", self.remote)
+        self.assertIn("-RunLevel Highest", self.remote)
+        self.assertIn("Register-ScheduledTask", self.remote)
+        self.assertIn("Start-ScheduledTask", self.remote)
+        self.assertIn("Unregister-ScheduledTask", self.remote)
+        self.assertIn("control\\remote-tasks", self.remote)
+        self.assertIn("tmod_remote_interactive_runner.ps1", self.remote)
+        self.assertIn("service-logs-follow", self.remote)
+        self.assertNotIn("tmod-docker-public-", self.remote)
+        self.assertNotIn("DOCKER_CONFIG", self.remote)
+        self.assertNotIn("schtasks.exe", self.remote)
+        self.assertIn('$serviceArgument = if ($RemoteService)', self.remote)
+        self.assertIn('$groupArgument = if ($RemoteGroup)', self.remote)
+        self.assertIn("-Action '$actionLiteral'$serviceArgument$groupArgument", self.remote)
+        self.assertIn("1800", self.remote)
+
+        self.assertIn("tmod-remote-interactive-v1", runner)
+        self.assertIn("ConvertFrom-Json", runner)
+        self.assertIn("$script:AllowedActions", runner)
+        self.assertIn("taskkill.exe", runner)
+        self.assertIn("ConvertTo-Json", runner)
+        self.assertNotIn("Invoke-Expression", runner)
+        self.assertNotIn("service-logs-follow", runner)
+
+        bundled_remote = read_bundle_payload(
+            ROOT / "tmod_remote_windows.bat", ":__TMOD_REMOTE_PAYLOAD__"
+        )
+        self.assertIn("New-ScheduledTaskPrincipal", bundled_remote)
+        self.assertIn("-LogonType Interactive", bundled_remote)
+        self.assertIn("tmod_remote_interactive_runner.ps1", bundled_remote)
+
     def test_remote_client_has_bounded_atomic_self_update(self) -> None:
         manifest = json.loads((ROOT / "tmod_remote_version.json").read_text())
+        remote_batch = (ROOT / "tmod_remote_windows.bat").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(manifest["version"], "1.1.3")
         self.assertEqual(manifest["channel"], "stable")
         self.assertEqual(set(manifest["files"]), {"tmod_remote_windows.bat"})
         self.assertIn("cdnserver/t-mod/main", manifest["files"]["tmod_remote_windows.bat"])
@@ -138,11 +209,21 @@ class TModControlWindowsTests(unittest.TestCase):
         self.assertIn("Get-FileHash", self.remote)
         self.assertRegex(manifest["sha256"]["tmod_remote_windows.bat"], r"^[a-f0-9]{64}$")
         for file_name, expected_hash in manifest["sha256"].items():
-            actual_hash = hashlib.sha256((ROOT / file_name).read_bytes()).hexdigest()
+            # Git may materialize batch files with CRLF on the Windows server,
+            # while raw.githubusercontent.com (the self-update source) serves
+            # the canonical LF blob recorded in the manifest.
+            canonical = (ROOT / file_name).read_bytes().replace(b"\r\n", b"\n")
+            actual_hash = hashlib.sha256(canonical).hexdigest()
             self.assertEqual(actual_hash, expected_hash)
         self.assertIn("Move-Item", self.remote)
         self.assertIn("TotalHours -ge 6", self.remote)
         self.assertIn("manifest.version", self.remote)
+        self.assertIn(".next.ready", remote_batch)
+        bootstrap = re.search(r"-EncodedCommand\s+([A-Za-z0-9+/=]+)", remote_batch)
+        self.assertIsNotNone(bootstrap)
+        bootstrap_script = base64.b64decode(bootstrap.group(1)).decode("utf-16le")
+        self.assertIn("[IO.File]::Replace", bootstrap_script)
+        self.assertIn("TModRemoteBundleApply", bootstrap_script)
 
     def test_no_number_driven_menu_is_reintroduced(self) -> None:
         combined = self.control + self.remote + self.ui

@@ -3535,7 +3535,7 @@ function renderGlobalBans() {
           const userId = item.user_id_text || String(item.user_id || "");
           const synchronized = item.discord_state === "banned" || item.discord_state === "unbanned";
           const stateLabel = item.active
-            ? synchronized ? "Discord и веб закрыты" : "Веб закрыт · Discord в очереди"
+            ? synchronized ? "Discord · Web · Desktop закрыты" : "Web · Desktop закрыты · Discord в очереди"
             : "Решение снято";
           const state = node("div", { className: "global-ban-state" }, [
             node("span", {
@@ -3559,7 +3559,7 @@ function renderGlobalBans() {
             node("span", { className: "global-ban-record-mark", text: item.active ? "⦸" : "◇" }),
             node("div", { className: "global-ban-record-copy" }, [
               node("strong", { text: item.member_name || `Discord ${userId}` }),
-              node("small", { text: `${userId} · ${item.active ? "выдан" : "снят"} ${formatDate(item.updated_at)}` }),
+              node("small", { text: `${userId} · ${item.active ? "выдан" : "снят"} ${formatDate(item.updated_at)} · установок Desktop: ${item.installation_count || 0}` }),
               node("p", { text: item.reason || "Причина не указана" }),
             ]),
             state,
@@ -4039,10 +4039,18 @@ function bindEvents() {
     event.preventDefault();
     const form = event.currentTarget;
     const values = formValues("global-ban-form");
+    let preview;
+    try {
+      preview = await fetchJSON(`/api/admin/security/bans?lookup=${encodeURIComponent(values.user_id)}`);
+    } catch (error) {
+      handleError(error);
+      return;
+    }
+    const linked = Array.isArray(preview.linked_user_ids) ? preview.linked_user_ids : [];
     const approved = window.TModReactor?.confirm
       ? await window.TModReactor.confirm({
           title: `Глобально заблокировать Discord ${values.user_id}?`,
-          message: "Будут закрыты Discord, действующие веб-сессии и повторный вход во все сервисы T-Mod.",
+          message: `Будут закрыты все доступные Discord-серверы, веб-сессии и Desktop. Подтверждённо связанные аккаунты (${linked.length}): ${linked.length ? linked.join(", ") : "не обнаружены"}. ${preview.excluded_protected ? `Защищённых личностей исключено: ${preview.excluded_protected}.` : ""}`,
           accept: "Заблокировать везде",
           tone: "danger",
         })

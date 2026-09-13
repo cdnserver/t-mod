@@ -13,11 +13,11 @@
       content="Локальная административная панель пленарного консенсуса Товарищества."
     >
     <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/assets/style.css?v=12">
+    <link rel="stylesheet" href="/assets/style.css?v=13">
     <link rel="stylesheet" href="/assets/chamber.css">
     <link rel="stylesheet" href="/assets/consensus-v4.css?v=12">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/app.js?v=13" defer></script>
+    <script src="/assets/app.js?v=15" defer></script>
   </head>
   <body>
     <div id="atmosphere" class="atmosphere" aria-hidden="true">
@@ -805,10 +805,129 @@
             Открыть оригинал в Discord ↗
           </a>
           <div class="bill-dialog-actions">
+            <button id="open-preparation-sheet" class="preparation-launch" type="button">
+              ◌ Лист подготовки
+            </button>
             <button id="copy-bill-link" class="subtle-button" type="button">
               ⛓ Скопировать ссылку
             </button>
             <button id="bill-dialog-done" class="subtle-button" type="button">Готово</button>
+          </div>
+        </footer>
+      </article>
+    </dialog>
+
+    <dialog id="preparation-dialog" class="preparation-dialog" aria-labelledby="preparation-title">
+      <article>
+        <header class="preparation-header">
+          <div>
+            <div id="preparation-number" class="eyebrow">ЛИЧНЫЙ ЛИСТ ПОДГОТОВКИ</div>
+            <h2 id="preparation-title">Подготовка к консенсусу</h2>
+            <p id="preparation-subtitle">Загрузка личного рабочего листа…</p>
+          </div>
+          <div class="preparation-header-actions">
+            <span id="preparation-status" class="preparation-status" role="status" aria-live="polite">готовим лист</span>
+            <button id="close-preparation-dialog" class="dialog-close" type="button" aria-label="Закрыть">×</button>
+          </div>
+        </header>
+
+        <div id="preparation-notice" class="preparation-notice">
+          <strong>Личный контур</strong>
+          <span>Предварительная позиция не является голосом: её не видят другие участники и она не попадёт в бюллетень без отдельного подтверждения.</span>
+        </div>
+
+        <div class="preparation-layout">
+          <section class="preparation-document" aria-label="Текст законопроекта">
+            <div class="preparation-document-toolbar">
+              <span>ПЕРВОИСТОЧНИК</span>
+              <span id="preparation-source-state">актуальная редакция</span>
+            </div>
+            <article class="preparation-paper">
+              <div class="preparation-paper-kicker">T-MOD / CONSENSUS / DOSSIER</div>
+              <div class="preparation-paper-meta">
+                <span id="preparation-paper-author">Автор · —</span>
+                <span id="preparation-paper-category">—</span>
+              </div>
+              <h3 id="preparation-paper-title">Законопроект</h3>
+              <div class="preparation-paper-rule"></div>
+              <h4>Текст предложения</h4>
+              <p id="preparation-summary">—</p>
+              <section id="preparation-materials-wrap" class="preparation-materials" hidden>
+                <h4>Материалы</h4>
+                <p id="preparation-materials">—</p>
+              </section>
+              <footer>
+                <span id="preparation-paper-date">—</span>
+                <span>личная копия для подготовки</span>
+              </footer>
+            </article>
+          </section>
+
+          <section class="preparation-workspace" aria-label="Личные заметки и предварительная позиция">
+            <div class="preparation-workspace-topline">
+              <div>
+                <span>РАБОЧАЯ ПАНЕЛЬ</span>
+                <small>сохраняется только вам</small>
+              </div>
+              <button id="preparation-reset" class="preparation-reset" type="button">Очистить лист</button>
+            </div>
+
+            <section class="preparation-decision">
+              <div class="preparation-section-heading">
+                <div>
+                  <span>01</span>
+                  <h3>Предварительная позиция</h3>
+                </div>
+                <small>не отправляется как голос</small>
+              </div>
+              <div class="preparation-votes" role="group" aria-label="Предварительная позиция">
+                <button type="button" data-preparation-vote="yes"><i>✓</i><span>Поддержать</span><small>есть основания</small></button>
+                <button type="button" data-preparation-vote="no"><i>×</i><span>Не поддерживать</span><small>есть возражения</small></button>
+                <button type="button" data-preparation-vote="abstain"><i>—</i><span>Воздержаться</span><small>нужны ответы</small></button>
+              </div>
+              <label class="preparation-field">
+                <span>Почему сейчас</span>
+                <textarea id="preparation-vote-reason" maxlength="2400" placeholder="Кратко зафиксируйте основание позиции…"></textarea>
+              </label>
+            </section>
+
+            <section class="preparation-questions-panel">
+              <div class="preparation-section-heading">
+                <div>
+                  <span>02</span>
+                  <h3>Вопросы к автору / ведущему</h3>
+                </div>
+                <button id="preparation-add-question" type="button">+ Вопрос</button>
+              </div>
+              <div id="preparation-questions" class="preparation-questions"></div>
+              <p id="preparation-questions-empty" class="preparation-questions-empty">Пока без вопросов. Добавьте то, что нужно выяснить до решения.</p>
+            </section>
+
+            <section class="preparation-notes-panel">
+              <div class="preparation-section-heading">
+                <div>
+                  <span>03</span>
+                  <h3>Аргументы, риски и пометки</h3>
+                </div>
+                <small id="preparation-notes-count">0 / 16000</small>
+              </div>
+              <textarea id="preparation-notes" maxlength="16000" placeholder="Связи с другими решениями, риски, варианты правок, личные заметки…"></textarea>
+            </section>
+
+            <fieldset class="preparation-checklist">
+              <legend>Проверка перед заседанием</legend>
+              <label><input id="preparation-read-text" type="checkbox"><span>Текст прочитан</span></label>
+              <label><input id="preparation-verify-sources" type="checkbox"><span>Источники проверены</span></label>
+              <label><input id="preparation-need-discussion" type="checkbox"><span>Нужно отдельное обсуждение</span></label>
+            </fieldset>
+          </section>
+        </div>
+
+        <footer class="preparation-footer">
+          <span id="preparation-last-saved">Изменения сохраняются автоматически</span>
+          <div>
+            <button id="preparation-download" class="subtle-button" type="button">Скачать редактируемый PDF</button>
+            <button id="preparation-save" class="preparation-save" type="button">Сохранить лист</button>
           </div>
         </footer>
       </article>
@@ -842,5 +961,6 @@
         <div id="bill-library-list" class="bill-library-list"></div>
       </article>
     </dialog>
+    <script src="/assets/global-log-client.js" defer></script>
   </body>
 </html>

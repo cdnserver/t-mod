@@ -50,6 +50,12 @@ export interface DesktopBootstrap {
     items: DesktopNotification[];
     unread: number;
   };
+  device?: {
+    trusted: boolean;
+    installation_ref?: string;
+    account_count?: number;
+    hardware_bound?: boolean;
+  };
   atlas_overlay?: AtlasOverlayBootstrapProjection;
 }
 
@@ -58,6 +64,10 @@ export interface BootstrapResult {
   online: boolean;
   data?: DesktopBootstrap;
   error?: string;
+  ban?: {
+    reason: string;
+    reference: string;
+  };
   lastSuccessfulAt?: string;
 }
 

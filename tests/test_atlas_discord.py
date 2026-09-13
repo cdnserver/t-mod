@@ -72,6 +72,11 @@ class AtlasDiscordTests(unittest.IsolatedAsyncioTestCase):
             "answer": "Готовый ответ",
             "citations": [],
             "model": "atlas-tvr-a",
+            "model_provider": "openrouter",
+            "model_release": "base",
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
             "latency_ms": 20,
         }
 

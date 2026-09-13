@@ -7,6 +7,10 @@
 
 (tmod_backend) {
 	encode zstd gzip
+	# Internal edge telemetry bypasses the public listener entirely.
+	handle /api/global-log/internal {
+		respond 404
+	}
 
 	@immutable_assets path /assets/*.woff2 /assets/*.mp3
 	header @immutable_assets Cache-Control "public, max-age=2592000, immutable"
@@ -25,7 +29,7 @@
 	}
 	handle {
 		reverse_proxy tmod-web:8787 {
-			health_uri /gateway-health
+			health_uri /gateway-ready
 			health_interval 30s
 			health_timeout 5s
 			fail_duration 30s
@@ -33,7 +37,10 @@
 			lb_try_duration 5s
 			transport http {
 				dial_timeout 3s
-				response_header_timeout 15s
+				# Atlas may spend up to 90 seconds on a provider response.  The
+				# gateway already streams long responses and bounds dead upstreams;
+				# do not let the public edge turn valid work into an early HTTP 504.
+				response_header_timeout 300s
 			}
 		}
 	}
@@ -103,6 +110,16 @@ ovr.tvr.lat {
 phx.tvr.lat {
 	handle / {
 		rewrite * /admission
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
+log.global.tvr.lat {
+	handle / {
+		rewrite * /global-log
 		import tmod_backend
 	}
 	handle {

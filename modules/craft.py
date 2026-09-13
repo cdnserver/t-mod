@@ -76,6 +76,10 @@ ERROR_MESSAGES = {
     "craft_not_crafting": "Сейчас план не находится на стадии производства.",
     "craft_bad_batch_quantity": "Количество единиц в цикле должно быть больше нуля.",
     "craft_batch_active": "Предыдущий цикл ещё не завершился.",
+    "craft_batch_not_active": "Активного цикла сейчас нет — пропускать время нечему.",
+    "craft_batch_already_due": "Время этого цикла уже истекло. Подождите обновления карточки.",
+    "craft_batch_time_invalid": "В карточке записано некорректное время цикла. Сообщите администратору.",
+    "craft_bad_time_skip": "Укажите от 1 до 10 080 минут для пропуска.",
     "craft_batch_too_large": "Столько единиц нельзя поставить: превышен размер цикла или остаток плана.",
     "craft_finance_balance_unknown": "Сначала нужен точный отчёт казны или межотчёт: текущий остаток неизвестен.",
     "craft_finance_insufficient": "В расчётной казне недостаточно денег для запуска этого цикла.",
@@ -488,6 +492,7 @@ def event_log_embed(event: dict[str, Any]) -> discord.Embed:
         "stage_crafting": "⚙️ Производство начато",
         "inventory_check": "📦 Проведена сверка склада",
         "batch_started": "▶️ Цикл крафта поставлен",
+        "batch_time_skipped": "⏭️ Время цикла скорректировано",
         "batch_completed": "✅ Цикл крафта завершён",
         "stage_awaiting_output": "📊 Все попытки завершены",
         "final_output": "📦 Зафиксирован итог производства",
@@ -537,6 +542,11 @@ def event_log_embed(event: dict[str, Any]) -> discord.Embed:
     elif kind == "batch_completed":
         embed.add_field(name="Завершено", value=f"{format_quantity(details.get('quantity'))} шт.", inline=True)
         embed.add_field(name="Плановое время", value=discord_time(details.get("due_at")), inline=True)
+    elif kind == "batch_time_skipped":
+        embed.add_field(name="Цикл", value=f"{format_quantity(details.get('quantity'))} шт.", inline=True)
+        embed.add_field(name="Пропущено", value=f"{format_quantity(details.get('minutes'))} мин.", inline=True)
+        embed.add_field(name="Было готово", value=discord_time(details.get("old_due_at")), inline=False)
+        embed.add_field(name="Новое время", value=discord_time(details.get("due_at")), inline=False)
     elif kind == "final_output":
         embed.add_field(name="Получено продукта", value=f"{format_quantity(details.get('product_quantity'))} шт.", inline=True)
         embed.add_field(name="Попыток завершено", value=format_quantity(details.get("attempts_completed")), inline=True)
@@ -1659,6 +1669,81 @@ class BatchQuantityModal(discord.ui.Modal):
         await start_batch(interaction, self.plan_id, quantity)
 
 
+async def skip_batch_time(
+    interaction: discord.Interaction,
+    plan_id: int,
+    minutes: int,
+) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        changed = await asyncio.to_thread(storage.craft_complete_due_batches)
+        for changed_id in changed:
+            await update_plan_message(interaction.client, changed_id)
+        plan = await asyncio.to_thread(storage.craft_get_plan, plan_id, interaction.guild.id)
+        if plan is None:
+            raise ValueError("craft_plan_not_found")
+        batch = plan.get("active_batch") or {}
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        allowed = (
+            int(interaction.user.id) == int(plan["responsible_id"])
+            or int(interaction.user.id) == int(batch.get("started_by_id") or 0)
+            or int(interaction.user.id) == FINANCE_ADMIN_USER_ID
+            or bool(permissions and permissions.administrator)
+        )
+        if not allowed:
+            await interaction.followup.send(
+                "Скип времени подтверждает поставивший цикл, ответственный или администратор.",
+                ephemeral=True,
+            )
+            return
+        result = await asyncio.to_thread(
+            storage.craft_skip_active_batch_time,
+            guild_id=interaction.guild.id,
+            plan_id=plan_id,
+            minutes=minutes,
+            actor_id=interaction.user.id,
+            actor_display=display_name(interaction.user),
+        )
+        completed = await asyncio.to_thread(storage.craft_complete_due_batches)
+        for changed_id in completed:
+            await update_plan_message(interaction.client, changed_id)
+        if plan_id not in completed:
+            await update_plan_message(interaction.client, plan_id)
+        wake_craft_worker()
+        await interaction.followup.send(
+            f"Скип **{minutes} мин.** применён. Новое завершение: "
+            f"{discord_time(result['batch']['due_at'])} "
+            f"({discord_time(result['batch']['due_at'], 'R')}).",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        await send_interaction_error(interaction, exc)
+
+
+class BatchTimeSkipModal(discord.ui.Modal):
+    def __init__(self, plan_id: int, maximum: int) -> None:
+        super().__init__(title="Скип времени цикла", timeout=300)
+        self.plan_id = int(plan_id)
+        self.maximum = max(1, min(int(maximum), 10080))
+        self.minutes = discord.ui.TextInput(
+            label=f"Пропустить минут, максимум {self.maximum}",
+            placeholder="Например: 10",
+            min_length=1,
+            max_length=5,
+        )
+        self.add_item(self.minutes)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        minutes = parse_positive_int(self.minutes.value)
+        if minutes > self.maximum:
+            await interaction.response.send_message(
+                f"До завершения осталось не больше **{self.maximum} мин.**",
+                ephemeral=True,
+            )
+            return
+        await skip_batch_time(interaction, self.plan_id, minutes)
+
+
 class FinalOutputModal(discord.ui.Modal):
     def __init__(self, plan_id: int, maximum: int) -> None:
         super().__init__(title="Итог производства", timeout=300)
@@ -1884,7 +1969,8 @@ class CraftPlanView(discord.ui.View):
                 self.add_item(button)
                 row += 1
 
-            active = plan.get("active_batch") is not None
+            active_batch = plan.get("active_batch")
+            active = active_batch is not None
             remaining = remaining_unqueued_attempts(plan)
             available = available_attempts_from_stock(plan)
             max_batch = min(int(plan["recipe"]["max_batch_size"]), remaining, available)
@@ -1938,6 +2024,47 @@ class CraftPlanView(discord.ui.View):
 
                     custom.callback = custom_callback
                     self.add_item(custom)
+            if active_batch is not None:
+                try:
+                    due = datetime.fromisoformat(str(active_batch["due_at"]))
+                    if due.tzinfo is None:
+                        due = due.replace(tzinfo=timezone.utc)
+                    minutes_left = max(
+                        1,
+                        min(
+                            10080,
+                            int(
+                                max(
+                                    0,
+                                    (due.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds(),
+                                )
+                                // 60
+                            )
+                            + 1,
+                        ),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    minutes_left = 10080
+                skip = discord.ui.Button(
+                    label="Скип времени",
+                    emoji="⏭️",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"craft:batchskip:{self.plan_id}",
+                    row=4,
+                )
+
+                async def skip_callback(
+                    interaction: discord.Interaction,
+                    maximum_minutes: int = minutes_left,
+                ) -> None:
+                    if not await craft_channel_only(interaction):
+                        return
+                    await interaction.response.send_modal(
+                        BatchTimeSkipModal(self.plan_id, maximum_minutes)
+                    )
+
+                skip.callback = skip_callback
+                self.add_item(skip)
         elif stage == "awaiting_output":
             output = discord.ui.Button(
                 label="Указать результат",

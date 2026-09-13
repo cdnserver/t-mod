@@ -16,7 +16,7 @@ from modules.sgbureau import SGBUREAU_CATEGORY_ID, SGBUREAU_COMMAND_CHANNEL_ID, 
 from modules.sgl_archive import setup_sgl_archive
 from modules.sglaudio import setup_sglaudio
 from modules.zigmund import setup_zigmund
-from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure_sticky_all
+from modules.tvrs import register_tvrs_persistent_views, setup_tvrs, tvrs_ensure_sticky_all, tvrs_ensure_directory_all
 from modules.links import setup_links
 from modules.finance import setup_finance
 from modules.craft import setup_craft
@@ -34,6 +34,8 @@ from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
 from modules.games_discord import setup_games_discord
 from modules.admission import setup_admission
+from modules.global_log_discord import setup_global_log_discord
+from modules.global_log_runtime import activity_event, emit_global_event, start_global_log_runtime
 from persistence.database_guard import ensure_startup_recovery_point
 
 
@@ -105,6 +107,7 @@ TVRS_EVENT_TYPES = {
     "command_tvrs_setbill",
     "command_tvrs_sticky",
     "command_tvrs",
+    "command_tvrs_directory",
     "command_finance",
     "command_finance_undo",
     "command_craft",
@@ -251,6 +254,7 @@ def queue_activity_write(payload: dict[str, Any]) -> None:
     3-second acknowledgement window and every command/modal appears to hang.
     """
     global _activity_dropped
+    emit_global_event(activity_event(payload))
     queue = _activity_queue
     if queue is None:
         try:
@@ -459,6 +463,17 @@ class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
         setup_error_inbox_runtime(self.loop)
+        try:
+            health = await start_global_log_runtime(self.loop)
+            print(f"Global log runtime: {health}", flush=True)
+        except Exception as exc:
+            # Observability must never become a single point of failure for the
+            # bot. The error remains visible in the console and /api/health.
+            print(
+                f"Global log runtime failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         # Expose the health endpoint before Discord READY and command sync.
         # Discord-dependent API routes already report a controlled temporary
         # unavailability while the guild cache is still warming up.
@@ -1014,6 +1029,7 @@ async def on_ready() -> None:
         register_tvrs_persistent_views(bot)
         _TVRS_VIEWS_REGISTERED = True
     await tvrs_ensure_sticky_all(bot)
+    await tvrs_ensure_directory_all(bot)
 
     await apply_bot_status()
 
@@ -1065,6 +1081,8 @@ boot_module("Member Profiles")
 setup_profile(bot, remember_command_activity)
 boot_module("Phoenix Admission")
 setup_admission(bot)
+boot_module("Global Log")
+setup_global_log_discord(bot)
 boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")

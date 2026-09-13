@@ -13,10 +13,12 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
+import sqlite3
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -25,6 +27,8 @@ from urllib.parse import urlencode
 
 import discord
 from aiohttp import web
+
+from persistence import web_auth_repository as web_auth_storage
 
 from persistence import activity_repository as meta_storage
 from persistence import web_auth_repository as credential_storage
@@ -36,11 +40,76 @@ _SECRET_META_KEY = "consensus_web:session_secret:v1"
 _TICKET_LIFETIME_SECONDS = 10 * 60
 _SESSION_LIFETIME_SECONDS = 12 * 60 * 60
 PERSISTENT_SESSION_LIFETIME_SECONDS = 30 * 24 * 60 * 60
-_used_tickets: dict[str, int] = {}
 _runtime_secret: bytes | None = None
 _COOKIE_DOMAIN_RE = re.compile(
     r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
+_FORWARDED_HOST_HEADER = "X-TMod-Forwarded-Host"
+_FORWARDED_PROTO_HEADER = "X-TMod-Forwarded-Proto"
+_FORWARDED_HOST_RE = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+
+
+def _trusted_gateway_request(request: web.Request) -> bool:
+    """Only accept the gateway marker from a private/loopback hop.
+
+    The public reverse proxy is the only component which should be able to
+    tell the app which hostname the browser used.  Keeping this check here
+    prevents a direct client-supplied marker from changing cookie scope or
+    canonical routing when the app is exposed accidentally.
+    """
+
+    remote = str(getattr(request, "remote", "") or "").strip()
+    try:
+        address = ipaddress.ip_address(remote)
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
+def _valid_forwarded_host(value: object) -> str | None:
+    raw = str(value or "").strip().lower().rstrip(".")
+    if not raw or len(raw) > 255 or any(char in raw for char in "/?#@\\, \t\r\n"):
+        return None
+    host, separator, port = raw.partition(":")
+    if separator and (not port.isdigit() or int(port) > 65535):
+        return None
+    if not _FORWARDED_HOST_RE.fullmatch(host):
+        return None
+    return f"{host}:{port}" if separator else host
+
+
+def request_public_host(request: web.Request) -> str:
+    """Return the browser-facing host preserved by :mod:`web_gateway`.
+
+    ``request.host`` is the internal upstream address after the gateway
+    proxies a request.  The gateway-owned marker is accepted only from a
+    private hop and only after strict hostname validation.
+    """
+
+    headers = getattr(request, "headers", {}) or {}
+    if _trusted_gateway_request(request):
+        forwarded = _valid_forwarded_host(headers.get(_FORWARDED_HOST_HEADER))
+        if forwarded:
+            return forwarded
+    return str(getattr(request, "host", "") or "")
+
+
+def request_public_secure(request: web.Request) -> bool:
+    headers = getattr(request, "headers", {}) or {}
+    if _trusted_gateway_request(request):
+        proto = str(headers.get(_FORWARDED_PROTO_HEADER) or "").strip().lower()
+        if proto in {"http", "https"}:
+            return proto == "https"
+    return bool(getattr(request, "secure", False))
+
+
+def has_trusted_forwarded_host(request: web.Request) -> bool:
+    headers = getattr(request, "headers", {}) or {}
+    return _trusted_gateway_request(request) and _valid_forwarded_host(
+        headers.get(_FORWARDED_HOST_HEADER)
+    ) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,18 +277,24 @@ def consume_entry_ticket(
     expected_guild_id: int,
 ) -> tuple[int, int]:
     now = int(time.time())
-    for nonce, expiry in list(_used_tickets.items()):
-        if expiry < now:
-            _used_tickets.pop(nonce, None)
     payload = _verify(token, purpose="entry")
     guild_id = int(payload.get("gid") or 0)
     user_id = int(payload.get("uid") or 0)
     nonce = str(payload.get("nonce") or "")
     if guild_id != int(expected_guild_id) or user_id <= 0 or not nonce:
         raise ConsensusWebAuthError("wrong_audience")
-    if nonce in _used_tickets:
+    try:
+        consumed = web_auth_storage.consume_web_entry_ticket_nonce(
+            guild_id,
+            nonce,
+            expires_at=int(payload["exp"]),
+            now_epoch=now,
+        )
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        # Do not turn a database outage into a reusable entry credential.
+        raise ConsensusWebAuthError("ticket_storage_unavailable") from exc
+    if not consumed:
         raise ConsensusWebAuthError("ticket_used")
-    _used_tickets[nonce] = int(payload["exp"])
     return guild_id, user_id
 
 
@@ -300,21 +375,18 @@ def clear_session_cookie(
     request_host: str | None = None,
 ) -> None:
     domain = account_cookie_domain(request_host)
+    # aiohttp's public ``del_cookie`` API accepts only name/domain/path across
+    # the supported 3.x line.  Secure/HttpOnly/SameSite describe a replacement
+    # cookie and are not required to expire the matching domain/path cookie.
     response.del_cookie(
         SESSION_COOKIE,
         path="/",
         domain=domain,
-        secure=bool(secure),
-        httponly=True,
-        samesite="Lax",
     )
     # Remove the previous host-only consensus cookie during the SSO migration.
     response.del_cookie(
         LEGACY_SESSION_COOKIE,
         path="/",
-        secure=bool(secure),
-        httponly=True,
-        samesite="Lax",
     )
 
 
@@ -423,6 +495,9 @@ __all__ = [
     "create_entry_ticket",
     "create_session_token",
     "csrf_matches",
+    "has_trusted_forwarded_host",
+    "request_public_host",
+    "request_public_secure",
     "resolve_principal",
     "set_session_cookie",
     "signed_session_identity",

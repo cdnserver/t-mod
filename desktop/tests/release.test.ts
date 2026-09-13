@@ -25,7 +25,7 @@ describe("desktop release contract", () => {
 
   it("publishes installers and updater metadata from the public release channel", () => {
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-dev\.\d+)?$/);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+(?:-(?:dev\.\d+|p\d+))?$/);
     expect(manifest.build.publish).toEqual([
       expect.objectContaining({
         provider: "github",
@@ -55,6 +55,12 @@ describe("desktop release contract", () => {
     expect(main).toContain('ipcMain.handle("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:preferences"');
     expect(preload).toContain('ipcRenderer.invoke("desktop:copy-current-link"');
+    expect(main).toContain("loadOrCreateDesktopInstallToken");
+    expect(main).toContain('"X-TMod-Install-Token"');
+    expect(main).toContain('"X-TMod-Device-Fingerprint"');
+    expect(main).toContain("stableSystemIdentifier");
+    expect(main).toContain("safeStorage.encryptString");
+    expect(main).not.toContain("wmic");
   });
 
   it("keeps login authoritative across transient network and bootstrap races", () => {
@@ -64,7 +70,13 @@ describe("desktop release contract", () => {
     expect(main).toContain("bootstrapRevision += 1");
     expect(main).toContain("return { ok: true, bootstrap: result }");
     expect(main).toContain("AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length]");
+    expect(main).toContain('networkSession.cookies.on("changed"');
+    expect(main).toContain("scheduleAuthProjectionRefresh");
+    expect(main).toContain("isTModAuthenticationUrl(url)");
+    expect(main).toContain("reconcileActiveServiceAccess");
     expect(renderer).toContain("result.ok && result.bootstrap");
+    expect(renderer).toContain("bootstrapRefreshPending.current = true");
+    expect(renderer).toContain("while (bootstrapRefreshPending.current)");
     expect(renderer).toContain("Устанавливаем защищённую сессию");
     expect(renderer).toContain("Восстанавливаем соединение с T-Mod");
     expect(renderer).not.toContain("Нет соединения с сервером");
@@ -138,6 +150,8 @@ describe("desktop release contract", () => {
     expect(main).toContain("atlasOverlay = undefined;");
     expect(controller).toContain('this.csrfToken = "";');
     expect(controller).toContain("this.activeThreadId = undefined;");
+    expect(controller).toContain("invalidateAccountSession(): void");
+    expect(main).toContain("atlasOverlay?.invalidateAccountSession()");
     expect(controller).toContain("this.clearHideTimer();");
   });
 
@@ -248,10 +262,12 @@ describe("desktop release contract", () => {
     expect([...readFileSync(iconPath).subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   });
 
-  it("publishes installers without consuming Actions artifact storage", () => {
+  it("keeps Actions manual and publishes installers without artifact storage", () => {
     const workflow = readFileSync(resolve(workspaceRoot, ".github/workflows/desktop-release.yml"), "utf8");
     expect(workflow).toContain("Prepare public release");
     expect(workflow).toContain("gh release upload");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("\n  push:");
     expect(workflow).not.toContain("actions/upload-artifact");
     expect(workflow).not.toContain("actions/download-artifact");
   });

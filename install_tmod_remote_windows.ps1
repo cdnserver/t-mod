@@ -1,4 +1,4 @@
-param([string]$SourceDir = $PSScriptRoot)
+﻿param([string]$SourceDir = $PSScriptRoot)
 
 $ErrorActionPreference = "Stop"
 $SourceDir = (Resolve-Path -LiteralPath $SourceDir).Path

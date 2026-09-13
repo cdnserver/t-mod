@@ -9,11 +9,12 @@ continues serving users.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -25,6 +26,7 @@ from lxml import html
 from modules.atlas_ai import atlas_index_source
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_forum_attachment_repository as attachment_storage
 
 
 _SPACE_RE = re.compile(r"[ \t\r\f\v]+")
@@ -55,6 +57,16 @@ _LOGIN_TEXT_MARKERS = (
     "вам необходимо войти",
     "необходимо авторизоваться",
 )
+
+# A forum topic may legitimately contain a long illustrated code or a set of
+# scanned court acts.  The former cap of 16 silently discarded the rest.  The
+# limit remains bounded against malformed pages, but is high enough to retain
+# every content image in realistic XenForo topics.
+_MAX_TOPIC_ATTACHMENTS = 512
+_CONTENT_IMAGE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+)
+_NON_CONTENT_IMAGE_PATHS = ("/styles/", "/avatars/", "/smilies/", "/reactions/")
 _ACCESS_DENIED_MARKERS = (
     "you do not have permission to view this page",
     "you do not have permission to perform this action",
@@ -88,10 +100,98 @@ class AtlasForumSyncConfig:
     challenge_wait_seconds: int
     max_listing_pages: int
     max_threads: int
+    # IC laws differ between Majestic servers.  The default legislative feed
+    # is therefore server-scoped; project scope is reserved for common OOC
+    # rules. Other feeds can still override this explicitly in the database.
+    federation_scope: str = "server"
+    knowledge_domain: str | None = "ic"
+    corpus_kind: str | None = "law"
+    scheduler_poll_seconds: int = 60
+    # Extra origins are opt-in. A database row must never be able to turn the
+    # forum browser into a general-purpose authenticated web client.
+    allowed_origins: tuple[str, ...] = ()
+    # Separate from the page/listing limits: original attachments are
+    # untrusted and may be intentionally oversized.
+    attachment_max_bytes: int = 16 * 1024 * 1024
+    attachment_timeout_seconds: int = 60
+    # A Selenium session is intentionally recycled before Grid accumulates a
+    # multi-day command executor.  The old never-ending session eventually
+    # left Grid reporting HTTP 200 while rejecting every new browser request.
+    browser_session_max_seconds: int = 900
+    browser_session_max_loads: int = 180
+    # Optional trusted egress for installations whose public address is
+    # rejected by the forum. Credentials are deliberately forbidden here:
+    # Chromium exposes command-line flags to the local Grid diagnostics.
+    proxy_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "AtlasForumSyncConfig":
+        def bounded_env(name: str, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(str(os.getenv(name, str(default))).strip())
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(maximum, value))
+
         enabled = str(os.getenv("ATLAS_FORUM_SYNC_ENABLED", "true")).strip().lower()
+        root_url = str(
+            os.getenv(
+                "ATLAS_FORUM_ROOT_URL",
+                "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/",
+            )
+        ).strip()
+        configured_origins: list[str] = []
+        for raw_origin in str(os.getenv("ATLAS_FORUM_ALLOWED_ORIGINS", "")).split(","):
+            parsed = urlsplit(raw_origin.strip())
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                origin = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+                if origin not in configured_origins:
+                    configured_origins.append(origin)
+        visibility_scope = str(
+            os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "server")
+        ).strip()
+        federation_scope = str(
+            os.getenv("ATLAS_FORUM_FEDERATION_SCOPE", "server")
+        ).strip()
+        knowledge_domain = str(
+            os.getenv("ATLAS_FORUM_KNOWLEDGE_DOMAIN", "ic")
+        ).strip() or None
+        corpus_kind = str(
+            os.getenv("ATLAS_FORUM_CORPUS_KIND", "law")
+        ).strip() or None
+        proxy_url: str | None = None
+        raw_proxy_url = str(os.getenv("ATLAS_FORUM_PROXY_URL", "")).strip()
+        if raw_proxy_url:
+            parsed_proxy = urlsplit(raw_proxy_url)
+            try:
+                proxy_port = parsed_proxy.port
+            except ValueError:
+                proxy_port = None
+            if (
+                parsed_proxy.scheme.casefold() in {"http", "https", "socks5"}
+                and parsed_proxy.hostname
+                and proxy_port
+                and not parsed_proxy.username
+                and not parsed_proxy.password
+                and not parsed_proxy.path.rstrip("/")
+                and not parsed_proxy.query
+                and not parsed_proxy.fragment
+            ):
+                proxy_url = raw_proxy_url.rstrip("/")
+        # Existing installations copied the retired global/project defaults
+        # into their persistent .env. Transparently repair that exact legacy
+        # combination for the Phoenix legislative root; deliberate custom
+        # feeds remain untouched.
+        if (
+            root_url.rstrip("/")
+            == "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213"
+            and knowledge_domain == "ic"
+            and corpus_kind == "law"
+            and visibility_scope == "global"
+            and federation_scope == "project"
+        ):
+            visibility_scope = "server"
+            federation_scope = "server"
         return cls(
             enabled=enabled in {"1", "true", "yes", "on"},
             selenium_url=str(
@@ -100,12 +200,7 @@ class AtlasForumSyncConfig:
                     "http://atlas-forum-browser:4444/wd/hub",
                 )
             ).strip(),
-            root_url=str(
-                os.getenv(
-                    "ATLAS_FORUM_ROOT_URL",
-                    "https://forum.majestic-rp.ru/forums/zakonodatel-naya-baza.1213/",
-                )
-            ).strip(),
+            root_url=root_url,
             cookie_file=str(
                 os.getenv(
                     "ATLAS_FORUM_COOKIE_FILE",
@@ -115,7 +210,7 @@ class AtlasForumSyncConfig:
             feed_key=str(os.getenv("ATLAS_FORUM_FEED_KEY", "majestic-phoenix-laws")).strip(),
             server_code=str(os.getenv("ATLAS_FORUM_SERVER_CODE", "phoenix-15")).strip(),
             faction_code=str(os.getenv("ATLAS_FORUM_FACTION_CODE", "lspd")).strip(),
-            visibility_scope=str(os.getenv("ATLAS_FORUM_VISIBILITY_SCOPE", "server")).strip(),
+            visibility_scope=visibility_scope,
             interval_seconds=max(
                 3600,
                 int(os.getenv("ATLAS_FORUM_SYNC_INTERVAL_SECONDS", "43200")),
@@ -140,7 +235,51 @@ class AtlasForumSyncConfig:
                 1,
                 min(500, int(os.getenv("ATLAS_FORUM_MAX_THREADS", "200"))),
             ),
+            federation_scope=federation_scope,
+            knowledge_domain=knowledge_domain,
+            corpus_kind=corpus_kind,
+            scheduler_poll_seconds=max(
+                15,
+                min(900, int(os.getenv("ATLAS_FORUM_SCHEDULER_POLL_SECONDS", "60"))),
+            ),
+            allowed_origins=tuple(configured_origins),
+            attachment_max_bytes=bounded_env(
+                "ATLAS_FORUM_ATTACHMENT_MAX_MIB", 16, 1, 64
+            ) * 1024 * 1024,
+            attachment_timeout_seconds=bounded_env(
+                "ATLAS_FORUM_ATTACHMENT_TIMEOUT_SECONDS", 60, 10, 180
+            ),
+            browser_session_max_seconds=bounded_env(
+                "ATLAS_FORUM_BROWSER_SESSION_MAX_SECONDS", 900, 120, 3600
+            ),
+            browser_session_max_loads=bounded_env(
+                "ATLAS_FORUM_BROWSER_SESSION_MAX_LOADS", 180, 20, 1000
+            ),
+            proxy_url=proxy_url,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumAttachment:
+    """A forum-owned attachment discovered in the authoritative first post.
+
+    Discovery deliberately does not download or OCR a file.  The link remains
+    tied to the source topic until a bounded background worker can preserve the
+    original and present a human-reviewable OCR result.
+    """
+
+    url: str
+    filename: str
+    media_kind: str
+    label: str | None = None
+
+    def public(self) -> dict[str, str | None]:
+        return {
+            "url": self.url,
+            "filename": self.filename,
+            "media_kind": self.media_kind,
+            "label": self.label,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +289,53 @@ class AtlasForumSnapshot:
     content: str
     author: str | None = None
     source_updated_at: str | None = None
+    attachments: tuple[AtlasForumAttachment, ...] = ()
+    posts: tuple["AtlasForumPost", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumPost:
+    index: int
+    author: str | None
+    author_role: str | None
+    posted_at: str | None
+    content: str
+    is_staff: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumListingEntry:
+    url: str
+    title: str
+    author: str | None = None
+    last_post_author: str | None = None
+    last_post_at: str | None = None
+    reply_count: int | None = None
+    locked: bool = False
+    sticky: bool = False
+
+    @property
+    def fingerprint(self) -> str:
+        value = "\0".join(
+            (
+                self.url,
+                self.title,
+                self.author or "",
+                self.last_post_author or "",
+                self.last_post_at or "",
+                str(self.reply_count if self.reply_count is not None else ""),
+                "1" if self.locked else "0",
+            )
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasForumInventory:
+    entries: tuple[AtlasForumListingEntry, ...]
+    inventory_complete: bool
+    listing_pages: int
+    next_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,32 +361,186 @@ def _canonical_url(base_url: str, href: str) -> str | None:
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
         return None
     path = parsed.path
-    thread_match = re.match(r"^(/threads/[^/]+\.\d+)(?:/.*)?$", path, re.IGNORECASE)
+    thread_match = re.match(
+        r"^(/threads/(?:[^/]*\.)?\d+)(?:/.*)?$", path, re.IGNORECASE
+    )
     if thread_match:
         path = f"{thread_match.group(1)}/"
     return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
 
 
+def _canonical_attachment_url(base_url: str, href: str) -> str | None:
+    """Keep only attachment URLs owned by the forum that supplied the topic."""
+
+    absolute = urljoin(base_url, str(href or "").strip())
+    base = urlsplit(base_url)
+    parsed = urlsplit(absolute)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
+        return None
+    path = parsed.path or ""
+    lowered = path.casefold()
+    is_attachment = "/attachments/" in lowered or "/data/attachments/" in lowered
+    is_content_image = (
+        Path(path).suffix.casefold() in _CONTENT_IMAGE_SUFFIXES
+        and not any(marker in lowered for marker in _NON_CONTENT_IMAGE_PATHS)
+    )
+    if not is_attachment and not is_content_image:
+        return None
+    return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
+
+
+def _forum_attachments(body: Any, page_url: str) -> tuple[AtlasForumAttachment, ...]:
+    """Extract every bounded, forum-owned file from the authoritative post."""
+
+    discovered: list[AtlasForumAttachment] = []
+    seen: set[str] = set()
+    candidates: list[tuple[str, str, str | None]] = []
+    for image in body.xpath(
+        ".//img[@src or @data-src or @data-url or @data-lazy-src]"
+    ):
+        label = _clean_text(
+            str(image.get("alt") or image.get("title") or "")
+        )[:180] or None
+        # XenForo themes use different lazy-loading attributes.  Record each
+        # candidate and let canonical URL validation/deduplication decide.
+        for attribute in ("data-url", "data-src", "data-lazy-src", "src"):
+            value = str(image.get(attribute) or "").strip()
+            if value:
+                candidates.append((value, "image", label))
+        for source in image.xpath("ancestor::picture[1]/source[@srcset or @data-srcset]"):
+            srcset = str(source.get("data-srcset") or source.get("srcset") or "")
+            for entry in srcset.split(","):
+                value = entry.strip().split(" ", 1)[0]
+                if value:
+                    candidates.append((value, "image", label))
+    for link in body.xpath(".//a[@href]"):
+        candidates.append(
+            (
+                str(link.get("href") or ""),
+                "file",
+                _clean_text(link.text_content())[:180] or None,
+            )
+        )
+    for href, inferred_kind, label in candidates:
+        url = _canonical_attachment_url(page_url, href)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        filename = Path(urlsplit(url).path).name or "forum-attachment"
+        suffix = Path(filename).suffix.casefold()
+        media_kind = "image" if inferred_kind == "image" or suffix in {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"
+        } else "file"
+        discovered.append(
+            AtlasForumAttachment(
+                url=url,
+                filename=filename[:240],
+                media_kind=media_kind,
+                label=label,
+            )
+        )
+        if len(discovered) >= _MAX_TOPIC_ATTACHMENTS:
+            break
+    return tuple(discovered)
+
+
 def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str | None]:
+    entries, next_url = parse_forum_listing_entries(page_html, page_url)
+    return [entry.url for entry in entries], next_url
+
+
+def _optional_int(value: object) -> int | None:
+    text = re.sub(r"[^0-9]", "", str(value or ""))
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def parse_forum_listing_entries(
+    page_html: str,
+    page_url: str,
+) -> tuple[list[AtlasForumListingEntry], str | None]:
     try:
         tree = html.fromstring(str(page_html or ""))
     except (TypeError, ValueError) as exc:
         raise AtlasForumSyncError("atlas_forum_listing_invalid") from exc
-    links: list[str] = []
+    entries: list[AtlasForumListingEntry] = []
     seen: set[str] = set()
-    selectors = (
-        "//div[contains(@class,'structItem-title')]//a[contains(@href,'/threads/')]/@href",
-        "//a[contains(@class,'PreviewTooltip') and contains(@href,'/threads/')]/@href",
-        "//a[contains(@href,'/threads/')]/@href",
+    rows = tree.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem--thread ')]"
     )
-    for selector in selectors:
-        for href in tree.xpath(selector):
-            url = _canonical_url(page_url, str(href))
-            if url and "/threads/" in url and url not in seen:
-                seen.add(url)
-                links.append(url)
-        if links:
-            break
+    for row in rows:
+        title_links = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-title ')]"
+            "//a[contains(@href,'/threads/')][not(contains(@class,'labelLink'))]"
+        )
+        if not title_links:
+            continue
+        # Some XenForo layouts append a short numeric permalink (rendered as
+        # "-") after the human title. Select the most descriptive anchor so
+        # the monitor keeps the canonical slug and meaningful title.
+        title_link = max(
+            title_links,
+            key=lambda item: len(_clean_text(item.text_content())),
+        )
+        url = _canonical_url(page_url, str(title_link.get("href") or ""))
+        if not url or "/threads/" not in url or url in seen:
+            continue
+        seen.add(url)
+        authors = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-parts ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        )
+        latest = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-cell--latest ')]"
+        )
+        latest_authors = latest[0].xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        ) if latest else []
+        latest_times = latest[0].xpath(".//time/@datetime") if latest else []
+        reply_values = row.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' structItem-cell--meta ')]"
+            "//dl[.//*[contains(translate(normalize-space(.), 'REPLIESОТВЕТЫ', 'repliesответы'), 'ответ') "
+            "or contains(translate(normalize-space(.), 'REPLIES', 'replies'), 'repl')]]/dd/text()"
+        )
+        classes = str(row.get("class") or "").casefold()
+        entries.append(
+            AtlasForumListingEntry(
+                url=url,
+                title=_clean_text(title_link.text_content())[:240] or "Тема форума",
+                author=_clean_text(authors[0].text_content())[:120] if authors else None,
+                last_post_author=(
+                    _clean_text(latest_authors[-1].text_content())[:120]
+                    if latest_authors else None
+                ),
+                last_post_at=str(latest_times[-1])[:100] if latest_times else None,
+                reply_count=_optional_int(reply_values[0]) if reply_values else None,
+                locked="is-locked" in classes or "locked" in classes,
+                sticky="is-sticky" in classes or "sticky" in classes,
+            )
+        )
+    if not entries:
+        selectors = (
+            "//div[contains(@class,'structItem-title')]//a[contains(@href,'/threads/')]",
+            "//a[contains(@class,'PreviewTooltip') and contains(@href,'/threads/')]",
+            "//a[contains(@href,'/threads/')]",
+        )
+        for selector in selectors:
+            for node in tree.xpath(selector):
+                url = _canonical_url(page_url, str(node.get("href") or ""))
+                if url and "/threads/" in url and url not in seen:
+                    seen.add(url)
+                    entries.append(
+                        AtlasForumListingEntry(
+                            url=url,
+                            title=_clean_text(node.text_content())[:240] or "Тема форума",
+                        )
+                    )
+            if entries:
+                break
     next_url = None
     next_candidates = tree.xpath(
         "//a[contains(@class,'pageNav-jump--next') or @rel='next']/@href"
@@ -209,7 +549,74 @@ def parse_forum_listing(page_html: str, page_url: str) -> tuple[list[str], str |
         candidate = _canonical_url(page_url, str(next_candidates[0]))
         if candidate and "/forums/" in candidate:
             next_url = candidate
-    return links, next_url
+    return entries, next_url
+
+
+def parse_forum_thread_next_page(page_html: str, page_url: str) -> str | None:
+    """Return the next page of the same XenForo topic without widening SSRF scope."""
+
+    try:
+        tree = html.fromstring(str(page_html or ""))
+    except (TypeError, ValueError):
+        return None
+    candidates = tree.xpath(
+        "//a[@rel='next' and contains(@href,'/threads/')]/@href"
+        " | //a[contains(@class,'pageNav-jump--next') and contains(@href,'/threads/')]/@href"
+    )
+    if not candidates:
+        return None
+    current = urlsplit(str(page_url or ""))
+    root_match = re.match(r"^(/threads/[^/]+\.\d+)(?:/.*)?$", current.path, re.IGNORECASE)
+    if current.scheme not in {"http", "https"} or not current.netloc or not root_match:
+        return None
+    absolute = urlsplit(urljoin(page_url, str(candidates[0])))
+    expected_root = root_match.group(1).rstrip("/")
+    if (
+        absolute.scheme not in {"http", "https"}
+        or absolute.netloc.casefold() != current.netloc.casefold()
+        or not absolute.path.rstrip("/").casefold().startswith(f"{expected_root}/page-".casefold())
+    ):
+        return None
+    return urlunsplit(("https", absolute.netloc.lower(), absolute.path, "", ""))
+
+
+def _post_body(article: Any) -> Any | None:
+    # XenForo question/complaint templates keep the useful answers (nickname,
+    # static ID, description and evidence) in ``message-fields`` immediately
+    # before the regular message body. Returning only ``bbWrapper`` reduced
+    # such complaints to the word "Жалоба" and made the monitor treat a
+    # complete topic as empty. Use the complete user-content envelope when
+    # custom fields are present; ordinary posts retain the narrower node.
+    candidates = article.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-userContent ')]"
+        "[.//*[contains(concat(' ', normalize-space(@class), ' '), ' message-fields ')]]"
+    )
+    if candidates:
+        return candidates[0]
+    candidates = article.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
+    )
+    if not candidates:
+        candidates = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
+        )
+    if not candidates:
+        candidates = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')]"
+        )
+    return candidates[0] if candidates else None
+
+
+def _post_text(body: Any) -> str:
+    for unwanted in body.xpath(
+        ".//script | .//style | .//*[contains(@class,'bbCodeBlock--quote')] "
+        "| .//*[contains(@class,'message-signature')]"
+    ):
+        parent = unwanted.getparent()
+        if parent is not None:
+            parent.remove(unwanted)
+    return _clean_text("\n".join(body.itertext()))
 
 
 def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
@@ -224,11 +631,11 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     if title_nodes:
         node = title_nodes[0]
         title = _clean_text(node if isinstance(node, str) else node.text_content())
-    body_nodes = tree.xpath(
-        "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
-        "//*[contains(concat(' ', normalize-space(@class), ' '), ' message-body ')]"
-        "//*[contains(concat(' ', normalize-space(@class), ' '), ' bbWrapper ')])[1]"
+    articles = tree.xpath(
+        "//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
     )
+    first_post_body = _post_body(articles[0]) if articles else None
+    body_nodes = [first_post_body] if first_post_body is not None else []
     if not body_nodes:
         body_nodes = tree.xpath(
             "(//article[contains(concat(' ', normalize-space(@class), ' '), ' message--post ')]"
@@ -258,19 +665,13 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     if not body_nodes:
         raise AtlasForumSyncError("atlas_forum_thread_body_missing")
     body = body_nodes[0]
-    for unwanted in body.xpath(
-        ".//script | .//style | .//*[contains(@class,'bbCodeBlock--quote')] "
-        "| .//*[contains(@class,'message-signature')]"
-    ):
-        parent = unwanted.getparent()
-        if parent is not None:
-            parent.remove(unwanted)
+    attachments = _forum_attachments(body, str(page_url))
     # XenForo documents frequently keep articles, tables and numbered clauses
     # in nested div/span nodes rather than p/li elements. Selecting only a few
     # block tags silently reduced whole codes to a handful of list items. Every
     # text node inside the first post is authoritative after quotes/scripts
     # have been removed, so preserve all of them in document order.
-    content = _clean_text("\n".join(body.itertext()))
+    content = _post_text(body)
     if not title:
         title = content.splitlines()[0][:180] if content else "Материал форума"
     if len(content) < 20:
@@ -282,12 +683,58 @@ def parse_forum_thread(page_html: str, page_url: str) -> AtlasForumSnapshot:
     time_values = tree.xpath(
         "(//article[contains(@class,'message')]//time[contains(@class,'u-dt')]/@datetime)[1]"
     )
+    posts: list[AtlasForumPost] = []
+    for index, article in enumerate(articles, start=1):
+        post_body = _post_body(article)
+        if post_body is None:
+            continue
+        post_content = content if index == 1 else _post_text(post_body)
+        if not post_content:
+            continue
+        author_values = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-name ')]"
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' username ')]"
+        )
+        role_values = article.xpath(
+            ".//*[contains(concat(' ', normalize-space(@class), ' '), ' message-userTitle ')]"
+            " | .//*[contains(concat(' ', normalize-space(@class), ' '), ' userBanner ')]"
+        )
+        role = _clean_text(" · ".join(item.text_content() for item in role_values))[:180] or None
+        role_folded = str(role or "").casefold()
+        article_classes = str(article.get("class") or "").casefold()
+        is_staff = any(
+            marker in role_folded or marker in article_classes
+            for marker in ("администратор", "administrator", "куратор", "модератор", "staff")
+        )
+        post_times = article.xpath(".//time[contains(@class,'u-dt')]/@datetime | .//time/@datetime")
+        posts.append(
+            AtlasForumPost(
+                index=index,
+                author=_clean_text(author_values[0].text_content())[:120] if author_values else None,
+                author_role=role,
+                posted_at=str(post_times[0])[:100] if post_times else None,
+                content=post_content[:80_000],
+                is_staff=is_staff,
+            )
+        )
+    if not posts:
+        posts.append(
+            AtlasForumPost(
+                index=1,
+                author=_clean_text(author_nodes[0].text_content())[:120] if author_nodes else None,
+                author_role=None,
+                posted_at=str(time_values[0])[:100] if time_values else None,
+                content=content[:80_000],
+            )
+        )
     return AtlasForumSnapshot(
         url=str(page_url),
         title=title[:180],
         content=content[:250000],
         author=_clean_text(author_nodes[0].text_content())[:120] if author_nodes else None,
         source_updated_at=str(time_values[0])[:100] if time_values else None,
+        attachments=attachments,
+        posts=tuple(posts),
     )
 
 
@@ -332,6 +779,8 @@ class AtlasForumBrowser:
     def __init__(self, config: AtlasForumSyncConfig) -> None:
         self.config = config
         self._driver: Any | None = None
+        self._driver_started_at = 0.0
+        self._driver_loads = 0
 
     def _grid_root(self) -> str:
         parsed = urlsplit(self.config.selenium_url)
@@ -373,7 +822,7 @@ class AtlasForumBrowser:
             command_executor=self.config.selenium_url,
             options=options,
         )
-        driver.set_page_load_timeout(60)
+        driver.set_page_load_timeout(35)
         return driver
 
     def _save_cookies(self, driver: Any) -> int:
@@ -407,7 +856,13 @@ class AtlasForumBrowser:
             pass
         path = Path(cookie_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
+        # The knowledge synchronizer and complaint monitor may checkpoint the
+        # same authenticated forum session concurrently.  A unique temporary
+        # name keeps their atomic writes from deleting each other's staging
+        # file on Windows bind mounts.
+        temporary = path.with_name(
+            f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
         serialized = json.dumps(
             {
                 "version": 1,
@@ -438,7 +893,10 @@ class AtlasForumBrowser:
         except OSError:
             # chmod is not supported by every Docker Desktop bind mount.
             pass
-        temporary.replace(path)
+        try:
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return len(cookies)
 
     def _restore_cookies(self, driver: Any) -> int:
@@ -514,6 +972,124 @@ class AtlasForumBrowser:
                 pass
         return restored
 
+    def _attachment_session(self) -> requests.Session:
+        """Create a request session from the manually approved browser cookies.
+
+        The attachment worker never receives a browser profile or credentials.
+        It can only reuse the cookie snapshot for the same forum origin, and
+        only to fetch links that the HTML parser already classified as forum
+        attachments.
+        """
+
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Accept": "image/avif,image/webp,image/png,image/jpeg,application/pdf,*/*;q=0.4",
+                "User-Agent": "T-Mod Atlas attachment verifier/1.0",
+            }
+        )
+        cookie_file = str(self.config.cookie_file or "").strip()
+        if not cookie_file:
+            return session
+        try:
+            payload = json.loads(Path(cookie_file).read_text(encoding="utf-8"))
+            raw_cookies = payload.get("cookies") if isinstance(payload, dict) else payload
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return session
+        if not isinstance(raw_cookies, list):
+            return session
+        root_host = urlsplit(self.config.root_url).hostname or ""
+        for raw in raw_cookies:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name or "value" not in raw:
+                continue
+            domain = str(raw.get("domain") or root_host).strip().lower().lstrip(".")
+            if not domain or not (root_host == domain or root_host.endswith(f".{domain}")):
+                continue
+            path = str(raw.get("path") or "/").strip() or "/"
+            try:
+                session.cookies.set(
+                    name,
+                    str(raw.get("value") or ""),
+                    domain=domain,
+                    path=path if path.startswith("/") else "/",
+                )
+            except (TypeError, ValueError):
+                continue
+        return session
+
+    def fetch_attachment(self, url: str) -> tuple[bytes, str]:
+        """Download one same-origin attachment with strict redirect/size bounds."""
+
+        current = _canonical_attachment_url(self.config.root_url, str(url or ""))
+        if current is None:
+            raise AtlasForumSyncError("atlas_forum_attachment_url_invalid")
+        session = self._attachment_session()
+        try:
+            for _redirect in range(4):
+                try:
+                    response = session.get(
+                        current,
+                        stream=True,
+                        allow_redirects=False,
+                        timeout=(10, int(self.config.attachment_timeout_seconds)),
+                    )
+                except requests.RequestException as exc:
+                    raise AtlasForumSyncError(
+                        f"atlas_forum_attachment_request_failed:{type(exc).__name__}"
+                    ) from exc
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get("Location") or "").strip()
+                        candidate = _canonical_attachment_url(
+                            self.config.root_url,
+                            urljoin(current, location),
+                        )
+                        if candidate is None:
+                            raise AtlasForumSyncError("atlas_forum_attachment_redirect_rejected")
+                        current = candidate
+                        continue
+                    if response.status_code in {401, 403}:
+                        raise AtlasForumManualActionRequired(
+                            "Форум требует повторной авторизации для чтения вложения."
+                        )
+                    if response.status_code < 200 or response.status_code >= 300:
+                        raise AtlasForumSyncError(
+                            f"atlas_forum_attachment_http_{int(response.status_code)}"
+                        )
+                    try:
+                        declared_size = int(str(response.headers.get("Content-Length") or "0"))
+                    except (TypeError, ValueError):
+                        declared_size = 0
+                    maximum = int(self.config.attachment_max_bytes)
+                    if declared_size > maximum:
+                        raise AtlasForumSyncError("atlas_forum_attachment_too_large")
+                    data = bytearray()
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        data.extend(chunk)
+                        if len(data) > maximum:
+                            raise AtlasForumSyncError("atlas_forum_attachment_too_large")
+                    if not data:
+                        raise AtlasForumSyncError("atlas_forum_attachment_empty")
+                    mime_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    if mime_type in {"text/html", "application/xhtml+xml"}:
+                        kind = forum_interstitial_kind(bytes(data[:256_000]).decode("utf-8", errors="replace"))
+                        if kind in {"login", "manual", "javascript", "access"}:
+                            raise AtlasForumManualActionRequired(
+                                "Форум требует ручного подтверждения перед чтением вложения."
+                            )
+                        raise AtlasForumSyncError("atlas_forum_attachment_not_file")
+                    return bytes(data), mime_type
+                finally:
+                    response.close()
+            raise AtlasForumSyncError("atlas_forum_attachment_redirect_limit")
+        finally:
+            session.close()
+
     @property
     def active(self) -> bool:
         return self._driver is not None
@@ -529,6 +1105,15 @@ class AtlasForumBrowser:
         return _SPACE_RE.sub(" ", str(exc or "")).strip()[:350]
 
     def _connect(self) -> Any:
+        if self._driver is not None:
+            expired = bool(
+                self._driver_started_at
+                and time.monotonic() - self._driver_started_at
+                >= int(self.config.browser_session_max_seconds)
+            )
+            exhausted = self._driver_loads >= int(self.config.browser_session_max_loads)
+            if expired or exhausted:
+                self.close()
         if self._driver is not None:
             try:
                 _ = self._driver.current_url
@@ -546,11 +1131,18 @@ class AtlasForumBrowser:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        options.set_capability("pageLoadStrategy", "normal")
+        if self.config.proxy_url:
+            options.add_argument(f"--proxy-server={self.config.proxy_url}")
+        # Forum pages keep loading decorative/network resources long after the
+        # XenForo DOM is ready. Waiting for the full `load` event made one
+        # listing consume 60 seconds and starved the alert lane.
+        options.set_capability("pageLoadStrategy", "eager")
         options.set_capability("se:name", "T-Mod Atlas forum sync")
         self._release_orphaned_sessions()
         try:
             self._driver = self._open_driver(options)
+            self._driver_started_at = time.monotonic()
+            self._driver_loads = 0
             self._restore_cookies(self._driver)
             return self._driver
         except Exception:
@@ -559,6 +1151,8 @@ class AtlasForumBrowser:
         try:
             self._release_orphaned_sessions()
             self._driver = self._open_driver(options)
+            self._driver_started_at = time.monotonic()
+            self._driver_loads = 0
             self._restore_cookies(self._driver)
             return self._driver
         except Exception as exc:
@@ -572,7 +1166,18 @@ class AtlasForumBrowser:
     def _load(self, url: str) -> str:
         driver = self._connect()
         try:
-            driver.get(url)
+            try:
+                driver.get(url)
+            except Exception as exc:
+                if type(exc).__name__ != "TimeoutException":
+                    raise
+                # DOMContentLoaded may already have produced the complete
+                # listing even if a third-party resource never finished.
+                try:
+                    driver.execute_script("window.stop();")
+                except Exception:
+                    pass
+            self._driver_loads += 1
             deadline = time.monotonic() + self.config.challenge_wait_seconds
             while True:
                 source = str(driver.page_source or "")
@@ -624,7 +1229,11 @@ class AtlasForumBrowser:
             raise
         except Exception as exc:
             self.close()
-            raise AtlasForumSyncError(f"atlas_forum_page_failed:{type(exc).__name__}") from exc
+            detail = self._exception_detail(exc)
+            raise AtlasForumSyncError(
+                f"atlas_forum_page_failed:{type(exc).__name__}"
+                f"{f':{detail}' if detail else ''}"
+            ) from exc
 
     def _scrape_listing(self, root_url: str) -> AtlasForumScrapeBatch:
         listing_queue = [root_url]
@@ -670,13 +1279,26 @@ class AtlasForumBrowser:
         snapshots: list[AtlasForumSnapshot] = []
         skipped_threads: list[str] = []
         for index, thread_url in enumerate(thread_urls):
-            try:
-                page = self._load(thread_url)
-                snapshots.append(parse_forum_thread(page, thread_url))
-            except AtlasForumManualActionRequired:
-                raise
-            except AtlasForumSyncError:
+            snapshot: AtlasForumSnapshot | None = None
+            for attempt in range(3):
+                try:
+                    page = self._load(thread_url)
+                    snapshot = parse_forum_thread(page, thread_url)
+                    break
+                except AtlasForumManualActionRequired:
+                    raise
+                except AtlasForumSyncError:
+                    # XenForo occasionally returns an incomplete post body
+                    # while its client-side fragments are still settling.
+                    # Retry the exact topic before declaring the inventory
+                    # partial; one transient page must not hide a new law for
+                    # the next twelve hours.
+                    if attempt < 2:
+                        time.sleep(self.config.page_delay_seconds)
+            if snapshot is None:
                 skipped_threads.append(thread_url)
+            else:
+                snapshots.append(snapshot)
             if index + 1 < len(thread_urls):
                 time.sleep(self.config.page_delay_seconds)
         if not snapshots:
@@ -690,6 +1312,47 @@ class AtlasForumBrowser:
                 not hit_thread_limit and not listing_queue and not skipped_threads
             ),
             skipped_threads=tuple(skipped_threads),
+        )
+
+    def scrape_inventory(
+        self,
+        url: str,
+        *,
+        max_pages: int,
+    ) -> AtlasForumInventory:
+        """Read listing metadata across pagination without opening every topic."""
+
+        listing_url = _canonical_url(self.config.root_url, str(url or ""))
+        if listing_url is None or "/forums/" not in listing_url:
+            raise AtlasForumSyncError("atlas_forum_listing_url_invalid")
+        page_limit = max(1, min(int(max_pages), 500))
+        current: str | None = listing_url
+        visited: set[str] = set()
+        entries: list[AtlasForumListingEntry] = []
+        seen_threads: set[str] = set()
+        next_after_limit: str | None = None
+        while current and current not in visited and len(visited) < page_limit:
+            page = self._load(current)
+            page_entries, next_url = parse_forum_listing_entries(page, current)
+            if not page_entries:
+                raise AtlasForumManualActionRequired(
+                    "Форум не показал список тем. Проверьте авторизацию в Chromium Atlas."
+                )
+            visited.add(current)
+            for entry in page_entries:
+                if entry.url in seen_threads:
+                    continue
+                seen_threads.add(entry.url)
+                entries.append(entry)
+            next_after_limit = next_url
+            current = next_url
+            if current and len(visited) < page_limit:
+                time.sleep(self.config.page_delay_seconds)
+        return AtlasForumInventory(
+            entries=tuple(entries),
+            inventory_complete=not bool(next_after_limit),
+            listing_pages=len(visited),
+            next_url=next_after_limit,
         )
 
     def scrape(self) -> AtlasForumScrapeBatch:
@@ -711,8 +1374,61 @@ class AtlasForumBrowser:
             raise AtlasForumSyncError("atlas_forum_thread_url_invalid")
         return parse_forum_thread(self._load(thread_url), thread_url)
 
+    def scrape_thread_history(
+        self,
+        url: str,
+        *,
+        max_pages: int = 50,
+    ) -> AtlasForumSnapshot:
+        """Read all reply pages for operational monitoring, preserving page one as truth."""
+
+        thread_url = _canonical_url(self.config.root_url, str(url or ""))
+        if thread_url is None or "/threads/" not in thread_url:
+            raise AtlasForumSyncError("atlas_forum_thread_url_invalid")
+        current: str | None = thread_url
+        visited: set[str] = set()
+        first: AtlasForumSnapshot | None = None
+        posts: list[AtlasForumPost] = []
+        limit = max(1, min(int(max_pages), 100))
+        while current and current not in visited and len(visited) < limit:
+            page = self._load(current)
+            snapshot = parse_forum_thread(page, current)
+            visited.add(current)
+            if first is None:
+                first = snapshot
+            for post in snapshot.posts:
+                posts.append(
+                    AtlasForumPost(
+                        index=len(posts) + 1,
+                        author=post.author,
+                        author_role=post.author_role,
+                        posted_at=post.posted_at,
+                        content=post.content,
+                        is_staff=post.is_staff,
+                    )
+                )
+            current = parse_forum_thread_next_page(page, current)
+            if current and current not in visited:
+                time.sleep(self.config.page_delay_seconds)
+        if first is None:
+            raise AtlasForumSyncError("atlas_forum_thread_body_missing")
+        if current and current not in visited:
+            raise AtlasForumSyncError("atlas_forum_thread_page_limit")
+        latest_at = posts[-1].posted_at if posts else first.source_updated_at
+        return AtlasForumSnapshot(
+            url=thread_url,
+            title=first.title,
+            content=first.content,
+            author=first.author,
+            source_updated_at=latest_at,
+            attachments=first.attachments,
+            posts=tuple(posts) or first.posts,
+        )
+
     def close(self) -> None:
         driver, self._driver = self._driver, None
+        self._driver_started_at = 0.0
+        self._driver_loads = 0
         if driver is not None:
             try:
                 self._save_cookies(driver)
@@ -745,28 +1461,73 @@ class AtlasForumSyncRunner:
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._closed = False
-        self._auth_checkpoint_task: asyncio.Task[None] | None = None
+        default_origin = self._origin(self.config.root_url)
+        self._allowed_origins = {
+            default_origin,
+            *(self._origin(item) for item in self.config.allowed_origins),
+        }
+        self._browsers: dict[str, AtlasForumBrowser] = {default_origin: self.browser}
+        self._auth_checkpoint_tasks: dict[asyncio.Task[None], AtlasForumBrowser] = {}
+        self._force_default_once = False
 
-    def _start_auth_checkpoint(self) -> None:
-        checkpoint = getattr(self.browser, "checkpoint_authentication", None)
+    @staticmethod
+    def _origin(url: str) -> str:
+        parsed = urlsplit(str(url or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise AtlasForumSyncError("atlas_forum_feed_url_invalid")
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+    def _cookie_file_for_origin(self, origin: str) -> str:
+        """Keep authenticated sessions separate when Atlas has several forums."""
+
+        configured_origin = self._origin(self.config.root_url)
+        if origin == configured_origin or not self.config.cookie_file:
+            return self.config.cookie_file
+        original = Path(self.config.cookie_file)
+        suffix = original.suffix or ".json"
+        token = hashlib.sha256(origin.encode("utf-8")).hexdigest()[:12]
+        return str(original.with_name(f"{original.stem}-{token}{suffix}"))
+
+    def _browser_for_feed(self, feed: dict[str, Any]) -> AtlasForumBrowser:
+        root_url = str(feed.get("root_url") or "").strip()
+        origin = self._origin(root_url)
+        if origin not in self._allowed_origins:
+            raise AtlasForumSyncError("atlas_forum_feed_origin_not_allowed")
+        existing = self._browsers.get(origin)
+        if existing is not None:
+            return existing
+        browser_config = replace(
+            self.config,
+            root_url=root_url,
+            cookie_file=self._cookie_file_for_origin(origin),
+        )
+        created = AtlasForumBrowser(browser_config)
+        self._browsers[origin] = created
+        return created
+
+    def _start_auth_checkpoint(self, browser: AtlasForumBrowser | None = None) -> None:
+        target = browser or self.browser
+        checkpoint = getattr(target, "checkpoint_authentication", None)
         if not callable(checkpoint):
             return
-        if self._auth_checkpoint_task is not None and not self._auth_checkpoint_task.done():
+        if any(browser is target and not task.done() for task, browser in self._auth_checkpoint_tasks.items()):
             return
-        self._auth_checkpoint_task = asyncio.create_task(
-            self._checkpoint_authentication_loop(),
+        task = asyncio.create_task(
+            self._checkpoint_authentication_loop(target),
             name="atlas-forum-auth-checkpoint",
         )
+        self._auth_checkpoint_tasks[task] = target
+        task.add_done_callback(lambda done: self._auth_checkpoint_tasks.pop(done, None))
 
-    async def _checkpoint_authentication_loop(self) -> None:
+    async def _checkpoint_authentication_loop(self, browser: AtlasForumBrowser) -> None:
         """Keep a manual browser session alive and capture login as soon as it changes."""
 
-        while not self._closed and bool(getattr(self.browser, "active", False)):
+        while not self._closed and bool(getattr(browser, "active", False)):
             async with self._lock:
-                if not bool(getattr(self.browser, "active", False)):
+                if not bool(getattr(browser, "active", False)):
                     return
                 try:
-                    await asyncio.to_thread(self.browser.checkpoint_authentication)
+                    await asyncio.to_thread(browser.checkpoint_authentication)
                 except Exception:
                     return
             await asyncio.sleep(3)
@@ -774,6 +1535,9 @@ class AtlasForumSyncRunner:
     def trigger(self) -> bool:
         if not self.config.enabled or self._closed:
             return False
+        # The admin button is an explicit request, not merely a request to
+        # check whether the regular schedule happens to be due.
+        self._force_default_once = True
         self._wake.set()
         return True
 
@@ -801,7 +1565,7 @@ class AtlasForumSyncRunner:
                 batch = await asyncio.to_thread(self.browser.scrape_listing, url)
             except (AtlasForumManualActionRequired, AtlasForumSyncError):
                 if bool(getattr(self.browser, "active", False)):
-                    self._start_auth_checkpoint()
+                    self._start_auth_checkpoint(self.browser)
                 raise
             else:
                 await asyncio.to_thread(self.browser.close)
@@ -817,11 +1581,87 @@ class AtlasForumSyncRunner:
                 snapshot = await asyncio.to_thread(self.browser.scrape_thread, url)
             except (AtlasForumManualActionRequired, AtlasForumSyncError):
                 if bool(getattr(self.browser, "active", False)):
-                    self._start_auth_checkpoint()
+                    self._start_auth_checkpoint(self.browser)
                 raise
             else:
                 await asyncio.to_thread(self.browser.close)
                 return snapshot
+
+    async def fetch_inventory(
+        self,
+        url: str,
+        *,
+        max_pages: int,
+    ) -> AtlasForumInventory:
+        """Reuse the authenticated browser for a lightweight paginated scan."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        async with self._lock:
+            try:
+                inventory = await asyncio.to_thread(
+                    self.browser.scrape_inventory,
+                    url,
+                    max_pages=max_pages,
+                )
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint(self.browser)
+                raise
+            else:
+                # Complaint monitoring immediately follows the listing with
+                # topic reads and repeats every minute. Keep this one signed-in
+                # Chromium session instead of starting six Chrome processes per
+                # cycle; _connect() already replaces it if Grid reports it dead.
+                return inventory
+
+    async def fetch_threads(
+        self,
+        urls: list[str] | tuple[str, ...],
+    ) -> tuple[tuple[AtlasForumSnapshot, ...], tuple[str, ...]]:
+        """Read changed topics in one browser session and isolate bad topics."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        selected = list(dict.fromkeys(str(item or "").strip() for item in urls if item))[:500]
+        snapshots: list[AtlasForumSnapshot] = []
+        skipped: list[str] = []
+        async with self._lock:
+            try:
+                for index, url in enumerate(selected):
+                    try:
+                        snapshots.append(
+                            await asyncio.to_thread(self.browser.scrape_thread_history, url)
+                        )
+                    except AtlasForumManualActionRequired:
+                        raise
+                    except AtlasForumSyncError:
+                        skipped.append(url)
+                    if index + 1 < len(selected):
+                        await asyncio.sleep(self.config.page_delay_seconds)
+            except (AtlasForumManualActionRequired, AtlasForumSyncError):
+                if bool(getattr(self.browser, "active", False)):
+                    self._start_auth_checkpoint(self.browser)
+                raise
+            # Keep the monitor session warm between open/accepted/rejected
+            # feeds. Scheduled full-corpus sync and runner shutdown still close
+            # it explicitly, so this never creates an unbounded session pool.
+        return tuple(snapshots), tuple(skipped)
+
+    async def fetch_attachment(self, url: str) -> tuple[bytes, str]:
+        """Read a verified same-origin attachment without broadening browser access."""
+
+        if not self.config.enabled or self._closed:
+            raise AtlasForumSyncError("atlas_forum_sync_disabled")
+        origin = self._origin(url)
+        if origin not in self._allowed_origins:
+            raise AtlasForumSyncError("atlas_forum_attachment_origin_not_allowed")
+        # Constructing a browser for this origin only selects its independent
+        # cookie file. Attachment downloads themselves use a bounded requests
+        # session, never Selenium automation.
+        browser = self._browser_for_feed({"root_url": url})
+        async with self._lock:
+            return await asyncio.to_thread(browser.fetch_attachment, url)
 
     async def _technical_log(
         self,
@@ -847,22 +1687,80 @@ class AtlasForumSyncRunner:
             component="atlas-forum-sync",
         )
 
-    async def sync_once(self) -> dict[str, Any]:
+    async def _ensure_default_feed(self) -> dict[str, Any]:
+        """Seed the configured Majestic feed without resetting its schedule."""
+
+        return await asyncio.to_thread(
+            storage.atlas_ensure_forum_feed,
+            self.guild_id,
+            feed_key=self.config.feed_key,
+            root_url=self.config.root_url,
+            server_code=self.config.server_code,
+            faction_code=self.config.faction_code,
+            visibility_scope=self.config.visibility_scope,
+            federation_scope=self.config.federation_scope,
+            knowledge_domain=self.config.knowledge_domain,
+            corpus_kind=self.config.corpus_kind,
+            interval_seconds=self.config.interval_seconds,
+        )
+
+    async def _ensure_project_rules_feed(self) -> dict[str, Any] | None:
+        """Keep Majestic's shared OOC rules on their own renewable feed."""
+
+        if "forum.majestic-rp.ru" not in self._origin(self.config.root_url):
+            return None
+        return await asyncio.to_thread(
+            storage.atlas_ensure_forum_feed,
+            self.guild_id,
+            feed_key="majestic-general-rules",
+            root_url="https://forum.majestic-rp.ru/forums/general-server-rules/",
+            server_code=self.config.server_code,
+            faction_code=self.config.faction_code,
+            visibility_scope="global",
+            federation_scope="project",
+            knowledge_domain="ooc",
+            corpus_kind="server_rule",
+            interval_seconds=self.config.interval_seconds,
+        )
+
+    async def sync_once(
+        self,
+        feed: dict[str, Any] | None = None,
+        *,
+        force: bool = True,
+    ) -> dict[str, Any]:
+        """Synchronise one claimed feed and preserve its exact corpus profile.
+
+        ``force=True`` is intentionally retained for an explicit administrator
+        action and compatibility with the old one-feed runner.  The background
+        scheduler always passes ``force=False`` and claims only due feeds.
+        """
+
         async with self._lock:
-            feed = await asyncio.to_thread(
-                storage.atlas_ensure_forum_feed,
+            configured = feed or await self._ensure_default_feed()
+            claimed = await asyncio.to_thread(
+                storage.atlas_forum_claim_feed,
                 self.guild_id,
-                feed_key=self.config.feed_key,
-                root_url=self.config.root_url,
-                server_code=self.config.server_code,
-                faction_code=self.config.faction_code,
-                visibility_scope=self.config.visibility_scope,
-                interval_seconds=self.config.interval_seconds,
+                int(configured["id"]),
+                force=force,
             )
-            await asyncio.to_thread(storage.atlas_forum_sync_started, int(feed["id"]))
-            phase = "forum_read"
+            if claimed is None:
+                return {
+                    "id": int(configured["id"]),
+                    "feed_key": str(configured.get("feed_key") or ""),
+                    "status": "skipped",
+                    "last_stats": {"phase": "not_due"},
+                }
+            active_feed = claimed
+            browser: AtlasForumBrowser | None = None
+            phase = "feed_policy"
             try:
-                batch = await asyncio.to_thread(self.browser.scrape)
+                browser = self._browser_for_feed(active_feed)
+                phase = "forum_read"
+                batch = await asyncio.to_thread(
+                    browser.scrape_listing,
+                    str(active_feed["root_url"]),
+                )
                 snapshots = list(batch.snapshots)
                 phase = "knowledge_index"
                 changed = 0
@@ -870,27 +1768,50 @@ class AtlasForumSyncRunner:
                 indexed = 0
                 index_errors = 0
                 retried = 0
+                attachment_discovered = 0
+                attachment_errors = 0
                 seen_urls: list[str] = []
                 for snapshot in snapshots:
                     seen_urls.append(snapshot.url)
                     result = await asyncio.to_thread(
                         storage.atlas_upsert_synced_knowledge,
-                        int(feed["organization_id"]),
+                        int(active_feed["organization_id"]),
                         title=snapshot.title,
                         content=snapshot.content,
                         source_url=snapshot.url,
-                        server_code=self.config.server_code,
-                        faction_code=self.config.faction_code,
-                        visibility_scope=self.config.visibility_scope,
-                        feed_key=self.config.feed_key,
+                        server_code=str(active_feed["server_code"]),
+                        faction_code=str(active_feed["faction_code"]),
+                        visibility_scope=str(active_feed["visibility_scope"]),
+                        federation_scope=str(active_feed.get("federation_scope") or "") or None,
+                        knowledge_domain=str(active_feed.get("knowledge_domain") or "") or None,
+                        corpus_kind=str(active_feed.get("corpus_kind") or "") or None,
+                        feed_key=str(active_feed["feed_key"]),
                         metadata={
                             "author": snapshot.author,
                             "source_updated_at": snapshot.source_updated_at,
+                            "ingestion_origin": "scheduled_forum_feed",
+                            "forum_attachments": [
+                                attachment.public() for attachment in snapshot.attachments
+                            ],
                         },
                     )
                     if result["created"]:
                         created += 1
                     source = result["source"]
+                    try:
+                        attachment_rows = await asyncio.to_thread(
+                            attachment_storage.atlas_sync_forum_attachments,
+                            int(active_feed["organization_id"]),
+                            int(source["id"]),
+                            tuple(attachment.public() for attachment in snapshot.attachments),
+                        )
+                        attachment_discovered += len(attachment_rows)
+                    except (TypeError, ValueError):
+                        # A malformed attachment must never discard the text
+                        # revision that already passed the forum parser. It is
+                        # omitted from the OCR queue and remains visible only
+                        # through the original forum topic.
+                        attachment_errors += 1
                     needs_index = result["changed"] or source.get("status") != "indexed"
                     if not needs_index:
                         continue
@@ -918,131 +1839,184 @@ class AtlasForumSyncRunner:
                 if batch.inventory_complete:
                     missing_changes = await asyncio.to_thread(
                         storage.atlas_mark_forum_sources_seen,
-                        int(feed["organization_id"]),
-                        feed_key=self.config.feed_key,
+                        int(active_feed["organization_id"]),
+                        feed_key=str(active_feed["feed_key"]),
                         seen_urls=seen_urls,
                     )
                 stats = {
                     "phase": "knowledge_index" if index_errors else "complete",
+                    "feed_key": str(active_feed["feed_key"]),
+                    "project_code": str(active_feed["project_code"]),
+                    "federation_scope": str(active_feed.get("federation_scope") or ""),
+                    "knowledge_domain": str(active_feed.get("knowledge_domain") or ""),
+                    "corpus_kind": str(active_feed.get("corpus_kind") or ""),
                     "pages": len(snapshots),
                     "skipped": len(batch.skipped_threads),
+                    "skipped_threads": list(batch.skipped_threads[:12]),
                     "created": created,
                     "changed": changed,
                     "indexed": indexed,
                     "index_errors": index_errors,
                     "retried": retried,
+                    "attachment_discovered": attachment_discovered,
+                    "attachment_errors": attachment_errors,
                     "missing_changes": missing_changes,
                     "inventory_complete": batch.inventory_complete,
                 }
-                partial_error = (
-                    f"Не удалось переиндексировать источников: {index_errors}"
-                    if index_errors
-                    else None
-                )
+                partial_messages: list[str] = []
+                if batch.skipped_threads:
+                    partial_messages.append(
+                        f"Не удалось прочитать тем: {len(batch.skipped_threads)}"
+                    )
+                if index_errors:
+                    partial_messages.append(
+                        f"Не удалось переиндексировать источников: {index_errors}"
+                    )
+                partial_error = "; ".join(partial_messages) or None
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
+                    int(active_feed["id"]),
                     stats=stats,
                     error=partial_error,
-                    attention=bool(index_errors),
+                    attention=bool(batch.skipped_threads or index_errors),
+                    retry_after_seconds=(
+                        900 if batch.skipped_threads or index_errors else None
+                    ),
                 )
                 if changed:
                     await self._technical_log(
-                        title="Atlas обновил законодательную базу",
+                        title="Atlas обновил проверяемую базу",
                         details=(
-                            f"Phoenix (15): проверено {len(snapshots)}, "
-                            f"изменено {changed}, новых {created}."
+                            f"Контур: `{active_feed['project_code']}` · "
+                            f"лента: `{active_feed['feed_key']}`\n"
+                            f"Проверено: {len(snapshots)}, изменено: {changed}, новых: {created}."
                         ),
                         level="info",
-                        dedupe_key=f"atlas-forum-updated:{state.get('last_success_at')}",
+                        dedupe_key=(
+                            f"atlas-forum-updated:{active_feed['id']}:"
+                            f"{state.get('last_success_at')}"
+                        ),
                     )
-                await asyncio.to_thread(self.browser.close)
+                await asyncio.to_thread(browser.close)
                 return state
             except AtlasForumManualActionRequired as exc:
-                self._start_auth_checkpoint()
+                if browser is not None:
+                    self._start_auth_checkpoint(browser)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
-                    stats={},
+                    int(active_feed["id"]),
+                    stats={"phase": phase, "feed_key": str(active_feed["feed_key"])},
                     error=str(exc),
                     attention=True,
                 )
                 await self._technical_log(
                     title="Atlas ждёт подтверждение форума",
                     details=(
-                        f"{exc}\nОткройте на домашнем сервере "
-                        "http://127.0.0.1:7900/?autoconnect=1&resize=scale и завершите проверку. "
+                        f"Лента: `{active_feed['feed_key']}`\n{exc}\n"
+                        "Откройте локальный Chromium Atlas и завершите проверку. "
                         "Последняя рабочая редакция продолжает использоваться."
                     ),
                     level="warning",
-                    dedupe_key="atlas-forum-manual-action",
+                    dedupe_key=f"atlas-forum-manual-action:{active_feed['id']}",
                     exception=exc,
                 )
                 return state
             except Exception as exc:
-                keep_browser_open = phase == "forum_read" and bool(
-                    getattr(self.browser, "active", False)
+                keep_browser_open = browser is not None and phase == "forum_read" and bool(
+                    getattr(browser, "active", False)
                 )
                 if keep_browser_open:
-                    self._start_auth_checkpoint()
-                else:
-                    await asyncio.to_thread(self.browser.close)
+                    self._start_auth_checkpoint(browser)
+                elif browser is not None:
+                    await asyncio.to_thread(browser.close)
                 state = await asyncio.to_thread(
                     storage.atlas_forum_sync_finished,
-                    int(feed["id"]),
-                    stats={"phase": phase},
+                    int(active_feed["id"]),
+                    stats={"phase": phase, "feed_key": str(active_feed["feed_key"])},
                     error=f"{phase}:{type(exc).__name__}: {exc}",
                     attention=keep_browser_open,
                 )
                 await self._technical_log(
                     title="Ошибка синхронизации Atlas с форумом",
                     details=(
-                        f"Этап: `{phase}`. Ошибка: `{type(exc).__name__}`. "
-                        "Сохранённая законодательная база "
-                        "не изменена; следующая попытка состоится автоматически."
+                        f"Лента: `{active_feed['feed_key']}` · этап: `{phase}`. "
+                        f"Ошибка: `{type(exc).__name__}`. "
+                        "Сохранённая законодательная база не изменена; следующая попытка состоится автоматически."
                     ),
                     level="warning",
-                    dedupe_key=f"atlas-forum-sync:{type(exc).__name__}",
+                    dedupe_key=f"atlas-forum-sync:{active_feed['id']}:{type(exc).__name__}",
                     exception=exc,
                 )
                 return state
 
     async def run(self) -> None:
+        """Run every due feed, not only the legacy environment-defined one."""
+
         if not self.config.enabled:
             return
         try:
-            initial_wait = self.config.initial_delay_seconds
-            current = await asyncio.to_thread(
-                storage.atlas_forum_sync_status,
-                self.guild_id,
-            )
-            if current and current.get("next_sync_at"):
-                try:
-                    due = datetime.fromisoformat(str(current["next_sync_at"]))
-                    if due.tzinfo is None:
-                        due = due.replace(tzinfo=timezone.utc)
-                    remaining = (due - datetime.now(timezone.utc)).total_seconds()
-                    if remaining > 0:
-                        initial_wait = max(
-                            initial_wait,
-                            min(self.config.interval_seconds, int(remaining)),
-                        )
-                except (TypeError, ValueError):
-                    pass
+            # Seed once before sleeping so a new installation has a durable
+            # feed record immediately, but do not overwrite its next_sync_at.
+            try:
+                await self._ensure_default_feed()
+                await self._ensure_project_rules_feed()
+            except Exception as exc:
+                await self._technical_log(
+                    title="Не удалось подготовить ленту Atlas",
+                    details=f"Ошибка конфигурации: `{type(exc).__name__}`. Повтор будет выполнен автоматически.",
+                    level="warning",
+                    dedupe_key=f"atlas-forum-seed:{type(exc).__name__}",
+                    exception=exc,
+                )
             try:
                 await asyncio.wait_for(
                     self._wake.wait(),
-                    timeout=initial_wait,
+                    timeout=self.config.initial_delay_seconds,
                 )
             except TimeoutError:
                 pass
             self._wake.clear()
             while not self._closed:
-                await self.sync_once()
+                try:
+                    default_feed = await self._ensure_default_feed()
+                    await self._ensure_project_rules_feed()
+                    due = await asyncio.to_thread(
+                        storage.atlas_forum_due_feeds,
+                        self.guild_id,
+                        limit=8,
+                    )
+                except Exception as exc:
+                    await self._technical_log(
+                        title="Планировщик Atlas временно недоступен",
+                        details=f"Ошибка: `{type(exc).__name__}`. Повтор будет выполнен автоматически.",
+                        level="warning",
+                        dedupe_key=f"atlas-forum-scheduler:{type(exc).__name__}",
+                        exception=exc,
+                    )
+                    due = []
+                    default_feed = None
+                force_default = self._force_default_once
+                self._force_default_once = False
+                if force_default and default_feed is not None and not any(
+                    int(feed["id"]) == int(default_feed["id"]) for feed in due
+                ):
+                    due.insert(0, default_feed)
+                for feed in due:
+                    if self._closed:
+                        break
+                    await self.sync_once(
+                        feed,
+                        force=bool(force_default and default_feed and int(feed["id"]) == int(default_feed["id"])),
+                    )
+                # Continue a long backlog promptly, but yield to the event
+                # loop so overlay/chat traffic is never starved by indexing.
+                if len(due) >= 8 and not self._closed:
+                    await asyncio.sleep(0)
+                    continue
                 try:
                     await asyncio.wait_for(
                         self._wake.wait(),
-                        timeout=self.config.interval_seconds,
+                        timeout=self.config.scheduler_poll_seconds,
                     )
                 except TimeoutError:
                     pass
@@ -1050,26 +2024,37 @@ class AtlasForumSyncRunner:
         except asyncio.CancelledError:
             raise
         finally:
-            await asyncio.to_thread(self.browser.close)
+            await self.close()
 
     async def close(self) -> None:
         self._closed = True
         self._wake.set()
-        if self._auth_checkpoint_task is not None:
-            self._auth_checkpoint_task.cancel()
-            await asyncio.gather(self._auth_checkpoint_task, return_exceptions=True)
-        await asyncio.to_thread(self.browser.close)
+        tasks = list(self._auth_checkpoint_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._auth_checkpoint_tasks.clear()
+        browsers = list({id(browser): browser for browser in self._browsers.values()}.values())
+        for browser in browsers:
+            await asyncio.to_thread(browser.close)
 
 
 __all__ = [
     "AtlasForumBrowser",
+    "AtlasForumAttachment",
     "AtlasForumManualActionRequired",
+    "AtlasForumInventory",
+    "AtlasForumListingEntry",
+    "AtlasForumPost",
     "AtlasForumScrapeBatch",
     "AtlasForumSnapshot",
     "AtlasForumSyncConfig",
     "AtlasForumSyncError",
     "AtlasForumSyncRunner",
     "forum_interstitial_kind",
+    "parse_forum_listing_entries",
     "parse_forum_listing",
     "parse_forum_thread",
+    "parse_forum_thread_next_page",
 ]

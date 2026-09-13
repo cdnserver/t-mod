@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectDir = $PSScriptRoot,
     [string]$PersistentDir = "$env:USERPROFILE\Documents\SGLDiscordBot",
     [string]$Action = "menu",

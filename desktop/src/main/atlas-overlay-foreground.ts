@@ -15,6 +15,7 @@ export interface AtlasOverlayForegroundProbe {
   title: string;
   processName: string;
   processId?: number;
+  windowHandle?: string;
   visible: boolean;
   minimized: boolean;
   workArea?: AtlasOverlayRect;
@@ -24,6 +25,10 @@ export interface AtlasOverlayActiveGameWindow {
   title: string;
   processName: string;
   processId: number;
+  /** Exact DesktopCapturer/Win32 window source used to keep Atlas above GTA. */
+  mediaSourceId?: string;
+  /** True when Win32 confirmed that GTA is the actual foreground window. */
+  foregroundVerified: boolean;
   workArea: AtlasOverlayRect;
 }
 
@@ -31,8 +36,9 @@ const GAME_WINDOW_TITLE_PATTERN = /(?:grand theft auto(?:\s*v)?|gta\s*5|gta5|rag
 // RAGE MP, GTA V Enhanced and BattlEye use different executable names across
 // launcher generations. Keep the boundary explicit while accepting the real
 // variants seen on current Majestic installations.
-const GAME_PROCESS_PATTERN = /^(?:gta5(?:_enhanced)?(?:_be)?|playgtav|ragemp(?:_v|_launcher|_game_ui)?|majestic(?:rp|launcher)?)$/i;
+const GAME_PROCESS_PATTERN = /^(?:gta5(?:[_-][a-z0-9-]+)*|playgtav(?:[_-][a-z0-9-]+)*|ragemp(?:[_-][a-z0-9-]+)*|majestic(?:rp|launcher)?(?:[_-][a-z0-9-]+)*)$/i;
 const MAX_DESKTOP_COORDINATE = 100_000;
+const MAX_WINDOW_HANDLE_LENGTH = 24;
 
 function boundedString(value: unknown, maximum = 260): string {
   return typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -49,6 +55,12 @@ function finiteProcessId(value: unknown): number | undefined {
   return Number.isInteger(processId) && processId > 0 && processId <= 0x7fffffff
     ? processId
     : undefined;
+}
+
+function windowHandle(value: unknown): string | undefined {
+  const clean = String(value ?? "").trim();
+  if (!/^\d+$/.test(clean) || clean.length > MAX_WINDOW_HANDLE_LENGTH || clean === "0") return undefined;
+  return clean;
 }
 
 function parseRect(value: unknown): AtlasOverlayRect | undefined {
@@ -89,6 +101,7 @@ export function parseAtlasOverlayForegroundProbe(line: string): AtlasOverlayFore
       title: boundedString(source.title),
       processName: boundedString(source.processName ?? source.process, 120),
       processId: finiteProcessId(source.processId ?? source.pid),
+      windowHandle: windowHandle(source.windowHandle ?? source.hwnd),
       visible: source.visible !== false,
       minimized: source.minimized === true,
       workArea: parseRect(source.workArea),
@@ -114,7 +127,32 @@ export function resolveAtlasOverlayForegroundGame(
     title: probe.title,
     processName,
     processId: probe.processId,
+    ...(probe.windowHandle ? { mediaSourceId: `window:${probe.windowHandle}:0` } : {}),
+    foregroundVerified: true,
     workArea: probe.workArea,
+  };
+}
+
+/** Keeps the fixed renderer viewport entirely inside the selected display. */
+export function resolveAtlasOverlayWindowBounds(
+  area: AtlasOverlayRect,
+  positionX: number,
+  positionY: number,
+  preferredWidth = 760,
+  preferredHeight = 620,
+): AtlasOverlayRect {
+  const margin = Math.min(18, Math.max(8, Math.floor(Math.min(area.width, area.height) * .025)));
+  const width = Math.max(1, Math.min(Math.round(preferredWidth), area.width - margin * 2));
+  const height = Math.max(1, Math.min(Math.round(preferredHeight), area.height - margin * 2));
+  const availableWidth = Math.max(0, area.width - width - margin * 2);
+  const availableHeight = Math.max(0, area.height - height - margin * 2);
+  const normalizedX = Math.max(0, Math.min(1, Number.isFinite(positionX) ? positionX : 1));
+  const normalizedY = Math.max(0, Math.min(1, Number.isFinite(positionY) ? positionY : .5));
+  return {
+    x: area.x + margin + Math.round(availableWidth * normalizedX),
+    y: area.y + margin + Math.round(availableHeight * normalizedY),
+    width,
+    height,
   };
 }
 
