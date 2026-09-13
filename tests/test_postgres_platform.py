@@ -159,7 +159,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('TMOD_DATABASE_BACKEND: "postgresql"', compose)
         self.assertIn('condition: service_completed_successfully', compose)
         self.assertIn('TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"', compose)
-        self.assertIn("http://127.0.0.1:8787/gateway-ready", compose)
+        self.assertIn("http://127.0.0.1:8787/gateway-health", compose)
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
         self.assertIn("  atlas-forum-eye-browser:", compose)

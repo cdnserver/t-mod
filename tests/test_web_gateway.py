@@ -80,6 +80,12 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unavailable.status, 503)
         self.assertEqual((await unavailable.json())["status"], "degraded")
 
+        # Edge health must continue to describe the gateway process itself.
+        # Otherwise Caddy removes its only upstream during a bot outage.
+        liveness = await self.gateway.get("/gateway-health")
+        self.assertEqual(liveness.status, 200)
+        self.assertEqual((await liveness.json())["service"], "tmod-web")
+
     async def test_gateway_preserves_public_host_in_owned_marker(self) -> None:
         response = await self.gateway.get(
             "/api/forwarded-headers",

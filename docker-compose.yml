@@ -125,7 +125,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-ready', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/gateway-health', timeout=3)"
       interval: 10s
       timeout: 3s
       retries: 5

@@ -29,11 +29,11 @@
 	}
 	handle {
 		reverse_proxy tmod-web:8787 {
-			health_uri /gateway-ready
-			health_interval 30s
-			health_timeout 5s
-			fail_duration 30s
-			max_fails 3
+			# Keep the sole gateway routable while the bot is recovering. The
+			# gateway itself returns a bounded 503 for unavailable bot routes.
+			health_uri /gateway-health
+			health_interval 10s
+			health_timeout 2s
 			lb_try_duration 5s
 			transport http {
 				dial_timeout 3s
