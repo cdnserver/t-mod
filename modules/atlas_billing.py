@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from typing import Any, Mapping
+from urllib.parse import quote
 
 
 ATLAS_TOKEN_COST_USD = Decimal("0.00001")
@@ -108,6 +110,17 @@ def atlas_tokens_for_cost(cost_usd: object) -> int:
 
 def robokassa_config() -> dict[str, Any]:
     test_mode = os.getenv("ROBOKASSA_TEST_MODE", "1").strip() != "0"
+    hash_algorithm = os.getenv("ROBOKASSA_HASH_ALGORITHM", "md5").strip().lower()
+    if hash_algorithm not in {"md5", "sha256", "sha512"}:
+        raise RuntimeError("robokassa_hash_algorithm_invalid")
+    receipt_tax = os.getenv("ROBOKASSA_RECEIPT_TAX", "none").strip().lower()
+    if receipt_tax not in {"none", "vat0", "vat5", "vat7", "vat10", "vat20", "vat105", "vat107", "vat110", "vat120"}:
+        raise RuntimeError("robokassa_receipt_tax_invalid")
+    receipt_sno = os.getenv("ROBOKASSA_RECEIPT_SNO", "").strip().lower()
+    if receipt_sno and receipt_sno not in {
+        "osn", "usn_income", "usn_income_outcome", "esn", "patent",
+    }:
+        raise RuntimeError("robokassa_receipt_sno_invalid")
     return {
         "merchant_login": os.getenv("ROBOKASSA_MERCHANT_LOGIN", "tvr.lat").strip(),
         "password1": os.getenv("ROBOKASSA_PASSWORD1", "").strip(),
@@ -115,6 +128,9 @@ def robokassa_config() -> dict[str, Any]:
         "test_mode": test_mode,
         "enabled": os.getenv("ATLAS_BILLING_PAYMENTS_ENABLED", "0").strip() == "1",
         "payment_url": "https://auth.robokassa.ru/Merchant/Payment/Index",
+        "hash_algorithm": hash_algorithm,
+        "receipt_tax": receipt_tax,
+        "receipt_sno": receipt_sno,
     }
 
 
@@ -124,9 +140,33 @@ def atlas_billing_enforcement_enabled() -> bool:
     }
 
 
-def _signature(parts: list[object]) -> str:
+def _signature(parts: list[object], *, algorithm: str | None = None) -> str:
     value = ":".join(str(item) for item in parts)
-    return hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
+    selected = str(algorithm or robokassa_config()["hash_algorithm"])
+    return hashlib.new(selected, value.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
+
+
+def _robokassa_receipt(*, amount: str, description: str) -> str:
+    config = robokassa_config()
+    receipt: dict[str, Any] = {
+        "items": [
+            {
+                "name": str(description).strip()[:128] or "Цифровая услуга Atlas",
+                "quantity": 1,
+                "sum": float(amount),
+                "payment_method": "full_payment",
+                "payment_object": "service",
+                "tax": str(config["receipt_tax"]),
+            }
+        ]
+    }
+    if config["receipt_sno"]:
+        receipt["sno"] = str(config["receipt_sno"])
+    compact = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+    # Robokassa requires the URL-encoded Receipt value both in the request and
+    # in the signature base.  The surrounding POST form encodes '%' once more
+    # on the wire and Robokassa receives the intended encoded JSON value.
+    return quote(compact, safe="")
 
 
 def robokassa_payment_fields(
@@ -143,18 +183,21 @@ def robokassa_payment_fields(
     if amount == "0.00":
         raise ValueError("atlas_billing_amount_invalid")
     custom = {"Shp_user": str(int(user_id))}
+    receipt = _robokassa_receipt(amount=amount, description=description)
     signature = _signature([
-        config["merchant_login"], amount, int(invoice_id), config["password1"],
+        config["merchant_login"], amount, int(invoice_id), receipt, config["password1"],
         f"Shp_user={custom['Shp_user']}",
-    ])
+    ], algorithm=str(config["hash_algorithm"]))
     return {
         "MerchantLogin": str(config["merchant_login"]),
         "OutSum": amount,
         "InvId": str(int(invoice_id)),
         "Description": str(description)[:100],
         "SignatureValue": signature,
+        "Receipt": receipt,
         "IsTest": "1" if config["test_mode"] else "0",
         "Culture": "ru",
+        "Encoding": "utf-8",
         **custom,
     }
 
@@ -167,7 +210,10 @@ def robokassa_result_is_valid(values: Mapping[str, object]) -> bool:
     user_id = str(values.get("Shp_user") or "").strip()
     if not supplied or not amount or not invoice or not user_id or not config["password2"]:
         return False
-    expected = _signature([amount, invoice, config["password2"], f"Shp_user={user_id}"])
+    expected = _signature(
+        [amount, invoice, config["password2"], f"Shp_user={user_id}"],
+        algorithm=str(config["hash_algorithm"]),
+    )
     return hmac.compare_digest(supplied, expected)
 
 

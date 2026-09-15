@@ -1017,7 +1017,12 @@ def _canonical_surface_location(request: web.Request) -> str | None:
     elif path.rstrip("/") in {
         "/legal", "/privacy", "/terms", "/cookies", "/data-request"
     }:
-        target_url = PORTAL_WEB_PUBLIC_URL
+        # dash.tvr.lat owns a complete, public legal centre for the Atlas
+        # store.  Keeping these documents on the checkout hostname is both
+        # clearer for buyers and required by the payment-provider review.
+        current = request_public_host(request).strip().lower().split(":", 1)[0]
+        if current != "dash.tvr.lat" or path.rstrip("/") == "/terms":
+            target_url = PORTAL_WEB_PUBLIC_URL
     elif belongs_to("/atlas"):
         target_url = ATLAS_WEB_PUBLIC_URL
     elif belongs_to("/sgl"):

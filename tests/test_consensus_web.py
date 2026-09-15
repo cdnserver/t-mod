@@ -881,6 +881,16 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "https://tvr.lat/privacy",
         )
 
+        billing_privacy = SimpleNamespace(
+            path="/privacy",
+            query={},
+            host="dash.tvr.lat",
+            rel_url="/privacy",
+        )
+        self.assertIsNone(
+            _canonical_surface_location(billing_privacy),  # type: ignore[arg-type]
+        )
+
         # A marker from a public/untrusted hop must not override the internal
         # host, preventing clients from spoofing cookie scope or routing.
         untrusted = SimpleNamespace(
@@ -930,6 +940,12 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 headers={"Host": "tvr.lat"},
                 allow_redirects=False,
             )
+            billing_privacy_page = await client.get(
+                "/privacy",
+                headers={"Host": "dash.tvr.lat"},
+                allow_redirects=False,
+            )
+            billing_privacy_text = await billing_privacy_page.text()
         finally:
             await client.close()
 
@@ -948,6 +964,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             admission.headers["Location"],
             "https://phx.tvr.lat/admission",
+        )
+        self.assertEqual(billing_privacy_page.status, 200)
+        self.assertIn(
+            "Политика обработки персональных данных",
+            billing_privacy_text,
         )
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:

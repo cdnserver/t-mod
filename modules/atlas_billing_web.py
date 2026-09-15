@@ -47,19 +47,60 @@ def register_atlas_billing_web_routes(
     asset_dir: Path,
     authenticate: AuthenticatedRequest,
 ) -> None:
+    public_pages = {
+        "/atlas-billing": "index.html",
+        "/atlas-billing/": "index.html",
+        "/legal": "legal.html",
+        "/legal/": "legal.html",
+        "/offer": "offer.html",
+        "/offer/": "offer.html",
+        "/refunds": "refunds.html",
+        "/refunds/": "refunds.html",
+        "/privacy": "privacy.html",
+        "/privacy/": "privacy.html",
+        "/data-request": "data-request.html",
+        "/data-request/": "data-request.html",
+        "/contacts": "contacts.html",
+        "/contacts/": "contacts.html",
+        "/atlas-billing/success": "payment-result.html",
+        "/atlas-billing/fail": "payment-result.html",
+    }
+
     async def page(request: web.Request) -> web.FileResponse:
         require_atlas_billing_host(request)
-        response = web.FileResponse(asset_dir / "index.html")
+        filename = public_pages.get(request.path)
+        if filename is None:
+            raise web.HTTPNotFound()
+        response = web.FileResponse(asset_dir / filename)
         response.headers["Cache-Control"] = "no-cache"
+        response.headers["X-Robots-Tag"] = (
+            "noindex, nofollow" if filename == "payment-result.html" else "index, follow"
+        )
         return response
 
     async def asset(request: web.Request) -> web.FileResponse:
         require_atlas_billing_host(request)
         name = str(request.match_info.get("name") or "")
-        if name not in {"app.js", "style.css", "account.css", "favicon.svg"}:
+        if name not in {
+            "app.js", "style.css", "account.css", "store.css", "legal.css", "legal.js", "payment.js",
+            "favicon.svg",
+        }:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
+        return response
+
+    async def document(request: web.Request) -> web.FileResponse:
+        require_atlas_billing_host(request)
+        name = str(request.match_info.get("name") or "")
+        if name not in {"atlas-public-offer.pdf", "atlas-privacy-policy.pdf"}:
+            raise web.HTTPNotFound()
+        path = asset_dir / "documents" / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        response = web.FileResponse(path)
+        response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+        response.headers["Content-Disposition"] = f'inline; filename="{name}"'
         return response
 
     async def principal(request: web.Request) -> ConsensusWebPrincipal:
@@ -74,12 +115,15 @@ def register_atlas_billing_web_routes(
     async def catalog(request: web.Request) -> web.Response:
         require_atlas_billing_host(request)
         config = robokassa_config()
+        configured = bool(config["enabled"] and config["password1"] and config["password2"])
         return web.json_response(
             {
                 **atlas_billing_catalog(),
                 "payments": {
-                    "enabled": bool(config["enabled"] and config["password1"] and config["password2"]),
+                    "enabled": configured,
+                    "configured": configured,
                     "test_mode": bool(config["test_mode"]),
+                    "mode": "test" if config["test_mode"] else "live",
                 },
             }
         )
@@ -119,6 +163,30 @@ def register_atlas_billing_web_routes(
             days=days,
         )
         return web.json_response(result)
+
+    async def order_status(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        selected = await principal(request)
+        try:
+            order_id = int(request.match_info.get("order_id") or 0)
+        except ValueError:
+            raise web.HTTPNotFound() from None
+        order = await asyncio.to_thread(billing_storage.atlas_payment_order, order_id)
+        if order is None or int(order.get("user_id") or 0) != int(selected.user_id):
+            raise web.HTTPNotFound()
+        return web.json_response(
+            {
+                "id": int(order["id"]),
+                "status": str(order["status"]),
+                "product_kind": str(order["product_kind"]),
+                "product_code": str(order["product_code"]),
+                "amount_kopecks": int(order["amount_kopecks"]),
+                "atlas_tokens": int(order["atlas_tokens"]),
+                "created_at": order.get("created_at"),
+                "paid_at": order.get("paid_at"),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def checkout(request: web.Request) -> web.Response:
         require_atlas_billing_host(request)
@@ -224,16 +292,16 @@ def register_atlas_billing_web_routes(
             return web.Response(text="order mismatch", status=400)
         return web.Response(text=f"OK{order_id}", content_type="text/plain")
 
-    for route in ("/atlas-billing", "/atlas-billing/", "/offer", "/refunds", "/contacts"):
+    for route in public_pages:
         app.router.add_get(route, page)
     app.router.add_get("/atlas-billing/assets/{name}", asset)
+    app.router.add_get("/documents/{name}", document)
     app.router.add_get("/api/atlas/billing/catalog", catalog)
     app.router.add_get("/api/atlas/billing/summary", summary)
+    app.router.add_get("/api/atlas/billing/orders/{order_id}", order_status)
     app.router.add_get("/api/atlas/billing/admin/metrics", admin_metrics)
     app.router.add_post("/api/atlas/billing/checkout", checkout)
     app.router.add_route("*", "/api/atlas/billing/robokassa/result", payment_result)
-    app.router.add_get("/atlas-billing/success", page)
-    app.router.add_get("/atlas-billing/fail", page)
 
 
 __all__ = ["register_atlas_billing_web_routes", "require_atlas_billing_host"]

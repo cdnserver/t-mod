@@ -379,7 +379,7 @@ def atlas_create_payment_order(
     now = utc_now_iso()
     clean_checkout_key = str(checkout_key or "").strip()[:100] or None
     with _db_lock, connect() as con:
-        account = _ensure_account_in_connection(con, int(user_id))
+        _ensure_account_in_connection(con, int(user_id))
         if clean_checkout_key:
             existing = con.execute(
                 "SELECT * FROM atlas_payment_orders WHERE checkout_key = ?",
@@ -394,8 +394,22 @@ def atlas_create_payment_order(
                     raise ValueError("atlas_billing_checkout_key_conflict")
                 con.commit()
                 return dict(existing)
-        if product_kind == "subscription" and str(account["plan_code"]) != "free":
-            raise ValueError("atlas_billing_subscription_already_active")
+        # Reuse a recent unpaid invoice for the same product. This bounds
+        # accidental double-click growth without preventing a user from
+        # renewing or changing an active subscription.
+        pending_since = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        pending = con.execute(
+            """
+            SELECT * FROM atlas_payment_orders
+            WHERE user_id = ? AND product_kind = ? AND product_code = ?
+              AND status = 'pending' AND created_at >= ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(user_id), product_kind, str(product_code)[:80], pending_since),
+        ).fetchone()
+        if pending is not None:
+            con.commit()
+            return dict(pending)
         cursor = con.execute(
             """
             INSERT INTO atlas_payment_orders(
@@ -451,18 +465,39 @@ def atlas_settle_payment_order(
             )
             if str(row["product_kind"]) == "subscription":
                 plan = atlas_plan(str(row["plan_code"] or row["product_code"]))
-                expires = (now + timedelta(days=30)).isoformat()
-                period_key = f"subscription:{int(order_id)}"
-                period_start = now_iso
-                period_end = expires
+                current_account = con.execute(
+                    "SELECT plan_code, subscription_expires_at FROM atlas_billing_accounts WHERE user_id = ?",
+                    (int(row["user_id"]),),
+                ).fetchone()
+                current_plan = str(current_account["plan_code"] or "free") if current_account else "free"
+                current_expiry_text = str(current_account["subscription_expires_at"] or "") if current_account else ""
+                expiry_base = now
+                if current_plan == plan.code and current_expiry_text:
+                    try:
+                        current_expiry = datetime.fromisoformat(current_expiry_text)
+                        if current_expiry.tzinfo is None:
+                            current_expiry = current_expiry.replace(tzinfo=timezone.utc)
+                        if current_expiry > now:
+                            expiry_base = current_expiry
+                    except ValueError:
+                        pass
+                # The free monthly allowance is replaced by the first paid
+                # subscription. Previously purchased subscription grants use
+                # entry_kind='payment' and deliberately keep their own expiry
+                # when a user renews or upgrades.
                 con.execute(
                     """
                     UPDATE atlas_token_ledger SET expires_at = ?
                     WHERE user_id = ? AND balance_bucket = 'monthly'
+                      AND entry_kind = 'monthly_allowance'
                       AND (expires_at IS NULL OR expires_at > ?)
                     """,
                     (now_iso, int(row["user_id"]), now_iso),
                 )
+                expires = (expiry_base + timedelta(days=30)).isoformat()
+                period_key = f"subscription:{int(order_id)}"
+                period_start = now_iso
+                period_end = expires
                 con.execute(
                     """
                     UPDATE atlas_billing_accounts

@@ -9,15 +9,16 @@
   <meta name="description" content="Подписки Atlas, Atlas Token, история расхода и прозрачная стоимость ИИ-вычислений.">
   <link rel="icon" href="/atlas-billing/assets/favicon.svg">
   <link rel="stylesheet" href="/assets/fonts.css">
-  <link rel="stylesheet" href="/atlas-billing/assets/style.css?v=1">
-  <link rel="stylesheet" href="/atlas-billing/assets/account.css?v=1">
-  <script src="/atlas-billing/assets/app.js?v=1" defer></script>
+  <link rel="stylesheet" href="/atlas-billing/assets/style.css?v=2">
+  <link rel="stylesheet" href="/atlas-billing/assets/account.css?v=2">
+  <link rel="stylesheet" href="/atlas-billing/assets/store.css?v=2">
+  <script src="/atlas-billing/assets/app.js?v=2" defer></script>
 </head>
 <body>
   <div class="sky" aria-hidden="true"><i></i><i></i><i></i></div>
   <header class="topbar">
     <a class="brand" href="/"><span>AT</span><b>ATLAS</b><small>COMPUTE</small></a>
-    <nav><a href="#plans">Тарифы</a><a href="#tokens">Atlas Token</a><a href="#account">Мой баланс</a><a href="/offer">Оферта</a></nav>
+    <nav><a href="#plans">Тарифы</a><a href="#tokens">Atlas Token</a><a href="#account">Мой баланс</a><a href="/legal">Документы</a></nav>
     <a class="account-link" href="https://tvr.lat/login?next=https%3A%2F%2Fdash.tvr.lat%2F">Войти в T-Mod</a>
   </header>
 
@@ -51,13 +52,20 @@
 
     <section id="tokens" class="token-section"><div><p class="eyebrow">PAY AS YOU GO</p><h2>Нужен только запас?<br>Пополните AT отдельно.</h2><p>Купленные Atlas Token не заменяют подписку и не сгорают в конце месяца. Расход виден по каждому запросу и модели.</p><div id="packs" class="packs"></div></div><aside><small>КУРС ВНУТРИ ATLAS</small><strong>1 AT</strong><p>соответствует вычислениям стоимостью <b>$0.00001</b>. Если модель дешевле — списание меньше. Если ответ обслужен локально — списание равно нулю.</p><span>Источник расхода: отчёт ИИ-провайдера</span></aside></section>
 
-    <section class="terms" data-legal="offer"><p class="eyebrow">ПУБЛИЧНАЯ ОФЕРТА · РЕДАКЦИЯ ОТ 15.09.2026</p><h2>Цифровая услуга Atlas</h2><div><article><h3>1. Продавец и принятие условий</h3><p>Исполнитель — ИП Саниев Муртазали Бухариевич, ИНН 370266611106, ОГРНИП 322370000004857. Оплачивая заказ после установки отметки о согласии, пользователь принимает эту оферту. Заказ доступен владельцу T-Mod Account.</p></article><article><h3>2. Что приобретается</h3><p>Пользователь приобретает вычислительный резерв Atlas Token либо месячный пакет выбранного тарифа. Состав, цена и объём AT указаны в карточке непосредственно перед оплатой. Все ручные функции Atlas предоставляются бесплатно.</p></article><article><h3>3. Срок подписки</h3><p>Пакет подписки действует 30 календарных дней с момента подтверждения оплаты и затем сгорает. Автоматического продления и автоматических списаний нет. Купленные отдельно AT не сгорают, пока существует аккаунт и договор не прекращён.</p></article><article><h3>4. Получение услуги</h3><p>AT зачисляются автоматически после защищённого уведомления Robokassa, обычно сразу и не позднее 15 минут. Физическая доставка отсутствует. Если зачисление задержалось, напишите в поддержку и укажите номер заказа.</p></article><article><h3>5. Как считается расход</h3><p>1 AT соответствует $0.00001 фактической стоимости ИИ-вычисления. Система списывает AT по отчёту провайдера за запросы, поиск, анализ и формирование ответа. Локальная операция с нулевой стоимостью провайдера не расходует AT.</p></article><article><h3>6. Отказ и возврат</h3><p>Запрос направляется на <a href="mailto:tvr@ultra---industries.com">tvr@ultra---industries.com</a> с номером заказа и логином. Неиспользованный оплаченный остаток возвращается тем же способом оплаты, если иное не требует закон. Уже выполненные и показанные в истории ИИ-вычисления не возвращаются, кроме ненадлежащего оказания услуги.</p></article><article><h3>7. Доступность и ответственность</h3><p>При подтверждённом сбое срок или баланс восстанавливается соразмерно недоступности. Ответы Atlas могут содержать ошибки и не являются официальным решением суда, администрации игрового проекта или профессиональной юридической консультацией.</p></article><article><h3>8. Связь и споры</h3><p>Поддержка: <a href="mailto:tvr@ultra---industries.com">tvr@ultra---industries.com</a>. Укажите логин T-Mod и номер заказа, но не сообщайте PIN и платёжные реквизиты. Обращение рассматривается до обращения к предусмотренным законом способам защиты.</p></article></div></section>
-
-    <section class="legal-block" data-legal="contacts"><p class="eyebrow">ПРОДАВЕЦ И КОНТАКТЫ</p><h2>ИП Саниев Муртазали Бухариевич</h2><dl><div><dt>ИНН</dt><dd>370266611106</dd></div><div><dt>ОГРНИП</dt><dd>322370000004857</dd></div><div><dt>Поддержка</dt><dd><a href="mailto:tvr@ultra---industries.com">tvr@ultra---industries.com</a></dd></div></dl></section>
+    <section class="store-trust" aria-labelledby="store-trust-title">
+      <header><p class="eyebrow">ПРОЗРАЧНЫЕ УСЛОВИЯ</p><h2 id="store-trust-title">Всё важное — до оплаты</h2><p>Стоимость, срок доступа, порядок зачисления, возврата и обработки данных опубликованы открыто на этом же сайте.</p></header>
+      <div class="store-trust-grid">
+        <a href="/offer"><small>ДОГОВОР</small><strong>Публичная оферта</strong><span>Предмет, цена, права и порядок оказания услуги →</span></a>
+        <a href="/refunds"><small>ПОЛУЧЕНИЕ УСЛУГИ</small><strong>Оплата и возврат</strong><span>Срок зачисления и понятная процедура возврата →</span></a>
+        <a href="/privacy"><small>ПЕРСОНАЛЬНЫЕ ДАННЫЕ</small><strong>Конфиденциальность</strong><span>Какие данные нужны Atlas и как ими управлять →</span></a>
+        <a href="/contacts"><small>ИСПОЛНИТЕЛЬ</small><strong>Реквизиты и связь</strong><span>ИП, ИНН, ОГРНИП и адрес поддержки →</span></a>
+      </div>
+      <div class="payment-trust"><span class="payment-mark">R</span><p><b>Оплата через Robokassa</b><small>Платёжные реквизиты вводятся на защищённой стороне Robokassa. T-Mod не получает и не хранит данные банковской карты.</small></p><a href="/legal">Все документы</a></div>
+    </section>
   </main>
 
   <dialog id="checkout"><button class="close" aria-label="Закрыть">×</button><small>ATLAS · ЗАКАЗ</small><h2 id="checkout-title">Подтверждение</h2><p id="checkout-copy"></p><label><input id="offer-check" type="checkbox"> Я принимаю <a href="/offer" target="_blank">условия оферты</a> и ознакомился с <a href="/privacy" target="_blank">политикой обработки данных</a>.</label><button id="checkout-submit" disabled>Перейти к безопасной оплате</button><output id="checkout-status"></output></dialog>
 
-  <footer><div><b>ATLAS</b><span>by TVR × SGL</span></div><nav><a href="/offer">Оферта</a><a href="/refunds">Получение и возврат</a><a href="/privacy">Персональные данные</a><a href="/data-request">Отзыв согласия</a><a href="/contacts">Контакты</a></nav><p>© 2026 ИП Саниев Муртазали Бухариевич · Не является официальным сервисом Majestic RP.</p></footer>
+  <footer><div><b>ATLAS</b><span>by TVR × SGL</span></div><nav><a href="/legal">Правовой центр</a><a href="/offer">Оферта</a><a href="/refunds">Оплата и возврат</a><a href="/privacy">Конфиденциальность</a><a href="/data-request">Мои данные</a><a href="/contacts">Контакты</a></nav><p>© 2026 ИП Саниев Муртазали Бухариевич · ИНН 370266611106 · ОГРНИП 322370000004857 · <a href="mailto:tvr@ultra---industries.com">tvr@ultra---industries.com</a></p></footer>
 </body>
 </html>

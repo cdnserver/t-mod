@@ -1,0 +1,76 @@
+.store-trust {
+  margin: 40px 0 110px;
+  padding: clamp(28px, 5vw, 58px);
+  border: 1px solid #b7e2ff1c;
+  border-radius: 28px;
+  background: linear-gradient(145deg, #0b1724e8, #070e18e8);
+  box-shadow: 0 30px 90px #0005;
+}
+
+.store-trust > header { max-width: 760px; }
+.store-trust h2 { margin: 8px 0 14px; font-size: clamp(30px, 4vw, 52px); }
+.store-trust > header > p:last-child { color: #91a6ba; line-height: 1.65; }
+
+.store-trust-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 35px;
+}
+
+.store-trust-grid a {
+  display: flex;
+  min-height: 130px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 23px;
+  border: 1px solid #c5e7ff15;
+  border-radius: 18px;
+  background: #07111dc4;
+  color: inherit;
+  text-decoration: none;
+  transition: transform .2s ease, border-color .2s ease, background .2s ease;
+}
+
+.store-trust-grid a:hover {
+  transform: translateY(-3px);
+  border-color: #8dceff4a;
+  background: #0a1928;
+}
+
+.store-trust-grid small { color: #65baff; font-size: 9px; letter-spacing: .16em; }
+.store-trust-grid strong { font: 15px Unbounded, sans-serif; }
+.store-trust-grid span { margin-top: auto; color: #7891a7; font-size: 12px; line-height: 1.45; }
+
+.payment-trust {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 18px;
+  margin-top: 24px;
+  padding: 20px;
+  border-top: 1px solid #bce3ff14;
+}
+
+.payment-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid #7cc6ff4f;
+  border-radius: 13px;
+  background: #0f2539;
+  color: #9dd8ff;
+  font: 16px Unbounded, sans-serif;
+}
+
+.payment-trust p { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.payment-trust b { font-size: 13px; }
+.payment-trust small { color: #7890a5; line-height: 1.45; }
+.payment-trust > a { padding: 11px 15px; border: 1px solid #8dcfff2e; border-radius: 11px; color: #9bd4ff; font-size: 11px; text-decoration: none; }
+
+@media (max-width: 760px) {
+  .store-trust-grid { grid-template-columns: 1fr; }
+  .payment-trust { grid-template-columns: auto 1fr; }
+  .payment-trust > a { grid-column: 1 / -1; text-align: center; }
+}

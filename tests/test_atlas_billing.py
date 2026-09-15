@@ -1,10 +1,12 @@
 import hashlib
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import quote
 
 import storage
 from aiohttp import web
@@ -144,6 +146,50 @@ class AtlasBillingRepositoryTests(unittest.TestCase):
                 2,
             )
 
+    def test_active_subscription_can_be_renewed_or_upgraded_without_losing_balance(self) -> None:
+        first = atlas_billing_repository.atlas_create_payment_order(
+            42,
+            product_kind="subscription",
+            product_code="start",
+            amount_kopecks=99_000,
+            atlas_tokens=1_000_000,
+            plan_code="start",
+            checkout_key="renewal-first-00000001",
+        )
+        atlas_billing_repository.atlas_settle_payment_order(first["id"])
+        first_summary = atlas_billing_repository.atlas_billing_summary(42)
+
+        renewal = atlas_billing_repository.atlas_create_payment_order(
+            42,
+            product_kind="subscription",
+            product_code="start",
+            amount_kopecks=99_000,
+            atlas_tokens=1_000_000,
+            plan_code="start",
+            checkout_key="renewal-second-0000002",
+        )
+        atlas_billing_repository.atlas_settle_payment_order(renewal["id"])
+        renewed = atlas_billing_repository.atlas_billing_summary(42)
+        self.assertEqual(renewed["monthly_balance_tokens"], 2_000_000)
+        self.assertGreater(
+            renewed["account"]["subscription_expires_at"],
+            first_summary["account"]["subscription_expires_at"],
+        )
+
+        upgrade = atlas_billing_repository.atlas_create_payment_order(
+            42,
+            product_kind="subscription",
+            product_code="pro",
+            amount_kopecks=499_000,
+            atlas_tokens=5_000_000,
+            plan_code="pro",
+            checkout_key="upgrade-pro-00000000001",
+        )
+        atlas_billing_repository.atlas_settle_payment_order(upgrade["id"])
+        upgraded = atlas_billing_repository.atlas_billing_summary(42)
+        self.assertEqual(upgraded["plan"]["code"], "pro")
+        self.assertEqual(upgraded["monthly_balance_tokens"], 7_000_000)
+
     def test_existing_accounts_receive_transition_reserve_exactly_once(self) -> None:
         web_auth_repository.configure_web_credential(77, 73, "legacy-user", "12345678")
         with connect() as con:
@@ -225,6 +271,8 @@ class RobokassaSignatureTests(unittest.TestCase):
             "ROBOKASSA_PASSWORD1": "password-one",
             "ROBOKASSA_PASSWORD2": "password-two",
             "ROBOKASSA_TEST_MODE": "1",
+            "ROBOKASSA_HASH_ALGORITHM": "md5",
+            "ROBOKASSA_RECEIPT_TAX": "none",
         },
         clear=False,
     )
@@ -235,10 +283,29 @@ class RobokassaSignatureTests(unittest.TestCase):
             description="Atlas Start",
             user_id=42,
         )
+        receipt = quote(
+            json.dumps(
+                {
+                    "items": [{
+                        "name": "Atlas Start",
+                        "quantity": 1,
+                        "sum": 990.0,
+                        "payment_method": "full_payment",
+                        "payment_object": "service",
+                        "tax": "none",
+                    }]
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            safe="",
+        )
         expected = hashlib.md5(
-            b"tvr.lat:990.00:17:password-one:Shp_user=42"
+            f"tvr.lat:990.00:17:{receipt}:password-one:Shp_user=42".encode()
         ).hexdigest().upper()
         self.assertEqual(fields["SignatureValue"], expected)
+        self.assertEqual(fields["Receipt"], receipt)
+        self.assertEqual(fields["Encoding"], "utf-8")
         self.assertEqual(fields["IsTest"], "1")
 
         result = {
@@ -284,6 +351,13 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"ATLAS_BILLING_PAYMENTS_ENABLED": "0"}, clear=False):
             async with TestClient(TestServer(app)) as client:
                 page = await client.get("/atlas-billing")
+                legal = await client.get("/legal")
+                offer = await client.get("/offer")
+                privacy = await client.get("/privacy")
+                refunds = await client.get("/refunds")
+                contacts = await client.get("/contacts")
+                data_request = await client.get("/data-request")
+                offer_pdf = await client.get("/documents/atlas-public-offer.pdf")
                 catalog = await client.get("/api/atlas/billing/catalog")
                 summary = await client.get("/api/atlas/billing/summary")
                 metrics = await client.get("/api/atlas/billing/admin/metrics")
@@ -295,6 +369,14 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(page.status, 200)
                 self.assertIn("Atlas Token", await page.text())
+                self.assertIn("Понятные условия", await legal.text())
+                self.assertIn("Публичная оферта", await offer.text())
+                self.assertIn("Политика обработки", await privacy.text())
+                self.assertIn("Оплата и возврат", await refunds.text())
+                self.assertIn("ИП Саниев", await contacts.text())
+                self.assertIn("privacy-request-form", await data_request.text())
+                self.assertEqual(offer_pdf.status, 200)
+                self.assertEqual(offer_pdf.content_type, "application/pdf")
                 self.assertEqual(catalog.status, 200)
                 self.assertFalse((await catalog.json())["payments"]["enabled"])
                 self.assertEqual(summary.status, 200)
@@ -323,6 +405,8 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             "ROBOKASSA_PASSWORD1": "password-one",
             "ROBOKASSA_PASSWORD2": "password-two",
             "ROBOKASSA_TEST_MODE": "1",
+            "ROBOKASSA_HASH_ALGORITHM": "md5",
+            "ROBOKASSA_RECEIPT_TAX": "none",
         },
         clear=False,
     )
@@ -382,10 +466,12 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
                 data=result_params,
             )
             summary = await client.get("/api/atlas/billing/summary")
+            order_status = await client.get(f"/api/atlas/billing/orders/{order_id}")
 
             self.assertEqual(await result.text(), f"OK{order_id}")
             self.assertEqual(await duplicate.text(), f"OK{order_id}")
             self.assertEqual((await summary.json())["payg_balance_tokens"], 100_000)
+            self.assertEqual((await order_status.json())["status"], "paid")
             with connect() as con:
                 self.assertEqual(
                     con.execute("SELECT COUNT(*) FROM atlas_payment_orders").fetchone()[0],
@@ -429,3 +515,6 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertIn("rewrite * /atlas-billing", caddy)
         self.assertIn("ROBOKASSA_PASSWORD1=\n", persistent)
         self.assertIn("ROBOKASSA_PASSWORD2=\n", persistent)
+        self.assertIn("ROBOKASSA_RECEIPT_TAX=none", persistent)
+        self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-public-offer.pdf").is_file())
+        self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-privacy-policy.pdf").is_file())
