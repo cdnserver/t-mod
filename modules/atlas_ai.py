@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -20,6 +21,9 @@ from persistence import atlas_repository as atlas_storage
 
 
 _HEALTH_CACHE: tuple[float, dict[str, Any]] | None = None
+_ATLAS_USAGE_EVENTS: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar("atlas_usage_events", default=None)
+)
 _RESPONSE_MODES = frozenset({"balanced", "strict", "creative", "aristotle"})
 _CREATIVE_REQUEST_RE = re.compile(
     r"\b(?:"
@@ -574,13 +578,13 @@ def _adaptive_output_token_limit(
         # cut the final sentence in half even though the editorial contract
         # requested a concise answer. The contract controls length; this is a
         # completion safety margin, not a target.
-        return min(configured, 1100)
+        return min(configured, 760)
     if task.intent == "drafting":
         # A ready-to-send complaint or document still needs structure, but the
         # old 1000-token allowance routinely produced several screens of
         # duplicated advice after the actual draft.
         return min(configured, 1400)
-    return min(configured, 1000)
+    return min(configured, 820)
 
 
 _QDRANT_CORRUPTION_MARKERS = (
@@ -643,7 +647,9 @@ async def _json_request(
                         f"Внешний ИИ-контур вернул {response.status}: {message[:400]}",
                         retryable=response.status in {408, 425, 429, 500, 502, 503, 504},
                     )
-                return body if isinstance(body, dict) else {}
+                selected = body if isinstance(body, dict) else {}
+                _capture_provider_usage(url, payload, selected)
+                return selected
     except AtlasAIError:
         raise
     except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
@@ -652,6 +658,76 @@ async def _json_request(
             "ИИ-контур временно недоступен. Запрос можно безопасно повторить.",
             retryable=True,
         ) from exc
+
+
+def _capture_provider_usage(
+    endpoint: str,
+    payload: dict[str, Any] | None,
+    body: dict[str, Any],
+) -> None:
+    """Collect provider-reported usage for the current user answer.
+
+    OpenRouter returns the authoritative cost with both regular completions
+    and the final SSE chunk. Keeping that value avoids maintaining a brittle
+    local copy of hundreds of model prices.
+    """
+
+    collector = _ATLAS_USAGE_EVENTS.get()
+    if collector is None:
+        return
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return
+    try:
+        prompt_tokens = max(0, int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0))
+        completion_tokens = max(
+            0,
+            int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+        )
+        total_tokens = max(
+            prompt_tokens + completion_tokens,
+            int(usage.get("total_tokens") or 0),
+        )
+        cost_usd = max(0.0, float(usage.get("cost") or 0.0))
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not total_tokens and not cost_usd:
+        return
+    lowered_endpoint = str(endpoint or "").casefold()
+    provider = (
+        "openrouter"
+        if "openrouter" in lowered_endpoint
+        else "together"
+        if "together" in lowered_endpoint
+        else "external"
+    )
+    collector.append(
+        {
+            "provider": provider,
+            "model": str(body.get("model") or (payload or {}).get("model") or "")[:160],
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cost_usd": round(cost_usd, 9),
+        }
+    )
+
+
+def _current_usage_summary() -> dict[str, Any]:
+    events = list(_ATLAS_USAGE_EVENTS.get() or [])
+    cost_usd = round(sum(float(item.get("cost_usd") or 0) for item in events), 9)
+    cost_microusd = round(cost_usd * 1_000_000)
+    if cost_usd > 0 and cost_microusd == 0:
+        cost_microusd = 1
+    return {
+        "prompt_tokens": sum(int(item.get("prompt_tokens") or 0) for item in events),
+        "completion_tokens": sum(int(item.get("completion_tokens") or 0) for item in events),
+        "total_tokens": sum(int(item.get("total_tokens") or 0) for item in events),
+        "provider_cost_usd": cost_usd,
+        "provider_cost_microusd": max(0, cost_microusd),
+        "model_calls": len(events),
+        "calls": events,
+    }
 
 
 async def atlas_embed(texts: list[str]) -> list[list[float]]:
@@ -2499,11 +2575,11 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         clean,
         re.IGNORECASE,
     ):
-        length = "Цель — 80–130 слов, жёсткий предел — 160 слов; обязательно закончи последнюю фразу."
+        length = "Цель — 45–90 слов, жёсткий предел — 120 слов; обязательно закончи последнюю фразу."
     elif task.depth == "quick":
-        length = "Цель — 120–180 слов, жёсткий предел — 220 слов; обязательно закончи последнюю фразу."
+        length = "Цель — 60–110 слов, жёсткий предел — 150 слов; обязательно закончи последнюю фразу."
     elif task.depth == "deep":
-        length = "Ориентир — 600–1000 слов, только если каждая часть добавляет новую пользу."
+        length = "Ориентир — 350–650 слов, только если каждая часть добавляет новую пользу."
     elif task.intent == "drafting":
         length = (
             "Готовый текст важнее комментариев; без явного требования уложись примерно в "
@@ -2512,7 +2588,7 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
             "полями [укажите ...], а неизвестное поведение не утверждай вовсе."
         )
     else:
-        length = "Ориентир — 220–450 слов; не расширяй ответ ради солидности."
+        length = "Ориентир — 110–220 слов; жёсткий предел — 280 слов, если пользователь явно не просил подробный разбор."
 
     layouts = {
         "exact_lookup": (
@@ -4072,6 +4148,7 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         "screen_context_used": prepared.screen_context_used,
         "text_mode": "atlas-2" if prepared.direct_mode else "standard",
         "latency_ms": round((time.monotonic() - prepared.started) * 1000),
+        "usage": _current_usage_summary(),
     }
 
 
@@ -4089,6 +4166,7 @@ async def atlas_answer(
     latency_mode: str = "standard",
     screen_context: str | None = None,
 ) -> dict[str, Any]:
+    _ATLAS_USAGE_EVENTS.set([])
     prepared = await _prepare_atlas_answer(
         organization_id,
         question,
@@ -4213,6 +4291,11 @@ async def _stream_completion_route(
                         continue
                     if not isinstance(event, dict):
                         continue
+                    _capture_provider_usage(
+                        route.endpoint,
+                        payload or prepared.payload,
+                        event,
+                    )
                     if _completion_finish_reason(event) == "length":
                         truncated = True
                     provider_error = _completion_error(event)
@@ -4258,6 +4341,7 @@ async def atlas_answer_stream(
 ) -> dict[str, Any]:
     """Stream provider deltas while preserving the regular Atlas result contract."""
 
+    _ATLAS_USAGE_EVENTS.set([])
     prepared = await _prepare_atlas_answer(
         organization_id,
         question,

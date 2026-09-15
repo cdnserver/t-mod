@@ -1003,6 +1003,81 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_ai_feedback_review
             ON atlas_ai_feedback(organization_id, rating, updated_at DESC);
 
+            CREATE TABLE IF NOT EXISTS atlas_billing_accounts (
+                user_id INTEGER PRIMARY KEY,
+                plan_code TEXT NOT NULL DEFAULT 'free',
+                subscription_status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(subscription_status IN ('active', 'past_due', 'cancelled')),
+                period_key TEXT NOT NULL,
+                period_started_at TEXT NOT NULL,
+                period_ends_at TEXT NOT NULL,
+                subscription_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS atlas_token_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount_tokens INTEGER NOT NULL,
+                entry_kind TEXT NOT NULL,
+                balance_bucket TEXT NOT NULL DEFAULT 'payg'
+                    CHECK(balance_bucket IN ('monthly', 'payg')),
+                reference_key TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                expires_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_token_ledger_user
+            ON atlas_token_ledger(user_id, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_ai_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                message_id INTEGER,
+                request_key TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                model_provider TEXT NOT NULL DEFAULT '',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_calls INTEGER NOT NULL DEFAULT 0,
+                provider_cost_microusd INTEGER NOT NULL DEFAULT 0,
+                atlas_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(organization_id) REFERENCES atlas_organizations(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES atlas_ai_messages(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_ai_usage_user
+            ON atlas_ai_usage(user_id, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_payment_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                checkout_key TEXT UNIQUE,
+                product_kind TEXT NOT NULL CHECK(product_kind IN ('subscription', 'token_pack')),
+                product_code TEXT NOT NULL,
+                amount_kopecks INTEGER NOT NULL,
+                atlas_tokens INTEGER NOT NULL DEFAULT 0,
+                plan_code TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'paid', 'failed', 'cancelled', 'refunded')),
+                provider TEXT NOT NULL DEFAULT 'robokassa',
+                provider_operation_id TEXT,
+                created_at TEXT NOT NULL,
+                paid_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_payment_orders_user
+            ON atlas_payment_orders(user_id, created_at DESC, id DESC);
+
             CREATE TABLE IF NOT EXISTS atlas_discord_threads (
                 discord_thread_id INTEGER PRIMARY KEY,
                 guild_id INTEGER NOT NULL,
@@ -3316,6 +3391,24 @@ def init_db() -> None:
             _add_column_if_missing(con, "atlas_ai_messages", column, definition)
         _add_column_if_missing(
             con,
+            "atlas_billing_accounts",
+            "subscription_expires_at",
+            "TEXT",
+        )
+        _add_column_if_missing(
+            con,
+            "atlas_token_ledger",
+            "balance_bucket",
+            "TEXT NOT NULL DEFAULT 'payg'",
+        )
+        _add_column_if_missing(con, "atlas_token_ledger", "expires_at", "TEXT")
+        _add_column_if_missing(con, "atlas_payment_orders", "checkout_key", "TEXT")
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_atlas_payment_orders_checkout "
+            "ON atlas_payment_orders(checkout_key)"
+        )
+        _add_column_if_missing(
+            con,
             "atlas_timeline_events",
             "version",
             "INTEGER NOT NULL DEFAULT 1",
@@ -3930,6 +4023,39 @@ def init_db() -> None:
                     str(document["created_at"] or catalog_now),
                 ),
             )
+
+        # A one-time transition reserve keeps every account that existed when
+        # monetisation launched uninterrupted. Future accounts receive only
+        # their normal Free allowance. The durable marker makes this safe on
+        # every subsequent startup and across SQLite/PostgreSQL deployments.
+        atlas_billing_launch_migration = "migration:atlas-billing-launch:2026-09-15-v1"
+        if con.execute(
+            "SELECT 1 FROM meta WHERE key = ?",
+            (atlas_billing_launch_migration,),
+        ).fetchone() is None:
+            billing_launch_now = utc_now_iso()
+            con.execute(
+                """
+                INSERT OR IGNORE INTO atlas_token_ledger(
+                    user_id, amount_tokens, entry_kind, balance_bucket,
+                    reference_key, description, expires_at, created_at
+                )
+                SELECT existing.user_id, 10000000, 'legacy_reserve', 'payg',
+                       'legacy-launch:' || CAST(existing.user_id AS TEXT),
+                       'Переходный резерв для действующего аккаунта', NULL, ?
+                FROM (
+                    SELECT user_id FROM web_credentials
+                    UNION
+                    SELECT user_id FROM member_profiles
+                    UNION
+                    SELECT user_id FROM atlas_memberships
+                    UNION
+                    SELECT user_id FROM members WHERE is_bot = 0
+                ) existing
+                """,
+                (billing_launch_now,),
+            )
+            set_meta(con, atlas_billing_launch_migration, billing_launch_now)
 
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)

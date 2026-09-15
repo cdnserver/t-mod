@@ -52,6 +52,7 @@ from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
 from modules.reactor_web import register_reactor_web_routes
 from modules.atlas_web import register_atlas_web_routes
+from modules.atlas_billing_web import register_atlas_billing_web_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
@@ -188,6 +189,7 @@ CONSENSUS_WEB_GUILD_ID = _configured_guild_id()
 _TOKEN_META_KEY = "consensus_web:access_token:v1"
 _ASSET_DIR = Path(__file__).resolve().parents[1] / "web" / "consensus"
 _ATLAS_ASSET_DIR = Path(__file__).resolve().parents[1] / "web" / "atlas"
+_ATLAS_BILLING_ASSET_DIR = Path(__file__).resolve().parents[1] / "web" / "atlas-billing"
 _runner: web.AppRunner | None = None
 _start_lock = asyncio.Lock()
 _runtime_token: str | None = None
@@ -2162,6 +2164,11 @@ def create_consensus_web_app(
         bot,
         guild_id=int(guild_id),
         asset_dir=_ATLAS_ASSET_DIR,
+        authenticate=authenticated_request,
+    )
+    register_atlas_billing_web_routes(
+        app,
+        asset_dir=_ATLAS_BILLING_ASSET_DIR,
         authenticate=authenticated_request,
     )
     register_sgl_web_routes(

@@ -1,0 +1,239 @@
+"""Public Atlas commerce page and authenticated token dashboard."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Awaitable, Callable
+
+from aiohttp import web
+
+from modules.atlas_billing import (
+    atlas_billing_catalog,
+    atlas_plan,
+    atlas_token_pack,
+    robokassa_config,
+    robokassa_payment_fields,
+    robokassa_result_is_valid,
+)
+from modules.consensus_web_auth import (
+    ConsensusWebPrincipal,
+    csrf_matches,
+    request_public_host,
+)
+from persistence import atlas_billing_repository as billing_storage
+
+
+AuthenticatedRequest = Callable[
+    [web.Request],
+    Awaitable[tuple[ConsensusWebPrincipal | None, bool]],
+]
+
+
+def require_atlas_billing_host(request: web.Request) -> None:
+    host = request_public_host(request).split(":", 1)[0].strip().lower()
+    # The in-process test server and direct loopback diagnostics are
+    # intentionally allowed. Public T-Mod hosts must not mirror sales pages:
+    # Robokassa reviews one canonical store at dash.tvr.lat.
+    if (host == "tvr.lat" or host.endswith(".tvr.lat")) and host != "dash.tvr.lat":
+        raise web.HTTPNotFound()
+
+
+def register_atlas_billing_web_routes(
+    app: web.Application,
+    *,
+    asset_dir: Path,
+    authenticate: AuthenticatedRequest,
+) -> None:
+    async def page(request: web.Request) -> web.FileResponse:
+        require_atlas_billing_host(request)
+        response = web.FileResponse(asset_dir / "index.html")
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    async def asset(request: web.Request) -> web.FileResponse:
+        require_atlas_billing_host(request)
+        name = str(request.match_info.get("name") or "")
+        if name not in {"app.js", "style.css", "account.css", "favicon.svg"}:
+            raise web.HTTPNotFound()
+        response = web.FileResponse(asset_dir / name)
+        response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=86400"
+        return response
+
+    async def principal(request: web.Request) -> ConsensusWebPrincipal:
+        selected, legacy = await authenticate(request)
+        if selected is None or legacy:
+            raise web.HTTPUnauthorized(
+                text=json.dumps({"error": "login_required"}),
+                content_type="application/json",
+            )
+        return selected
+
+    async def catalog(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        config = robokassa_config()
+        return web.json_response(
+            {
+                **atlas_billing_catalog(),
+                "payments": {
+                    "enabled": bool(config["enabled"] and config["password1"] and config["password2"]),
+                    "test_mode": bool(config["test_mode"]),
+                },
+            }
+        )
+
+    async def summary(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        selected = await principal(request)
+        result = await asyncio.to_thread(
+            billing_storage.atlas_billing_summary,
+            int(selected.user_id),
+        )
+        return web.json_response(
+            {
+                **result,
+                "viewer": {
+                    "id": int(selected.user_id),
+                    "name": str(selected.display_name),
+                    "csrf_token": str(selected.csrf_token),
+                },
+            }
+        )
+
+    async def admin_metrics(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        selected = await principal(request)
+        if not bool(getattr(selected, "administrator", False)):
+            raise web.HTTPForbidden(
+                text=json.dumps({"error": "administrator_required"}),
+                content_type="application/json",
+            )
+        try:
+            days = int(request.query.get("days") or 30)
+        except ValueError:
+            days = 30
+        result = await asyncio.to_thread(
+            billing_storage.atlas_billing_admin_metrics,
+            days=days,
+        )
+        return web.json_response(result)
+
+    async def checkout(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        selected = await principal(request)
+        if not csrf_matches(request, selected):
+            return web.json_response({"error": "csrf_invalid"}, status=403)
+        payment_config = robokassa_config()
+        if not (
+            payment_config["enabled"]
+            and payment_config["password1"]
+            and payment_config["password2"]
+        ):
+            return web.json_response(
+                {
+                    "error": "atlas_billing_payments_not_configured",
+                    "message": "Оплата пока закрыта. Баланс и расход уже учитываются.",
+                },
+                status=503,
+            )
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "payload_invalid"}, status=400)
+        product_kind = str(payload.get("product_kind") or "").strip().lower()
+        product_code = str(payload.get("product_code") or "").strip().lower()
+        checkout_key = str(payload.get("checkout_key") or "").strip()[:100]
+        if len(checkout_key) < 16:
+            return web.json_response({"error": "atlas_billing_checkout_key_required"}, status=400)
+        try:
+            if product_kind == "subscription":
+                plan = atlas_plan(product_code)
+                if plan.monthly_price_rub <= 0:
+                    raise ValueError("atlas_billing_product_invalid")
+                amount_kopecks = plan.monthly_price_rub * 100
+                atlas_tokens = plan.monthly_tokens
+                plan_code = plan.code
+                description = f"Подписка {plan.name} на 30 дней"
+            elif product_kind == "token_pack":
+                pack = atlas_token_pack(product_code)
+                amount_kopecks = int(pack["price_rub"]) * 100
+                atlas_tokens = int(pack["atlas_tokens"])
+                plan_code = None
+                description = str(pack["name"])
+            else:
+                raise ValueError("atlas_billing_product_invalid")
+            order = await asyncio.to_thread(
+                billing_storage.atlas_create_payment_order,
+                int(selected.user_id),
+                product_kind=product_kind,
+                product_code=product_code,
+                amount_kopecks=amount_kopecks,
+                atlas_tokens=atlas_tokens,
+                plan_code=plan_code,
+                checkout_key=checkout_key,
+            )
+            fields = robokassa_payment_fields(
+                invoice_id=int(order["id"]),
+                amount_kopecks=amount_kopecks,
+                description=description,
+                user_id=int(selected.user_id),
+            )
+        except RuntimeError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(
+            {
+                "order": order,
+                "payment": {
+                    "method": "POST",
+                    "url": robokassa_config()["payment_url"],
+                    "fields": fields,
+                },
+            },
+            status=201,
+        )
+
+    async def payment_result(request: web.Request) -> web.Response:
+        require_atlas_billing_host(request)
+        values = dict(request.query)
+        if request.can_read_body:
+            values.update(dict(await request.post()))
+        if not robokassa_result_is_valid(values):
+            return web.Response(text="bad signature", status=403)
+        try:
+            order_id = int(values.get("InvId") or values.get("InvoiceID") or 0)
+            order = await asyncio.to_thread(
+                billing_storage.atlas_payment_order,
+                order_id,
+            )
+            if order is None or int(order["user_id"]) != int(values.get("Shp_user") or 0):
+                raise ValueError("order mismatch")
+            received = Decimal(str(values.get("OutSum") or "0")).quantize(Decimal("0.01"))
+            expected = (Decimal(int(order["amount_kopecks"])) / 100).quantize(Decimal("0.01"))
+            if received != expected:
+                raise ValueError("amount mismatch")
+            await asyncio.to_thread(
+                billing_storage.atlas_settle_payment_order,
+                order_id,
+                provider_operation_id=str(values.get("OpKey") or ""),
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            return web.Response(text="order mismatch", status=400)
+        return web.Response(text=f"OK{order_id}", content_type="text/plain")
+
+    for route in ("/atlas-billing", "/atlas-billing/", "/offer", "/refunds", "/contacts"):
+        app.router.add_get(route, page)
+    app.router.add_get("/atlas-billing/assets/{name}", asset)
+    app.router.add_get("/api/atlas/billing/catalog", catalog)
+    app.router.add_get("/api/atlas/billing/summary", summary)
+    app.router.add_get("/api/atlas/billing/admin/metrics", admin_metrics)
+    app.router.add_post("/api/atlas/billing/checkout", checkout)
+    app.router.add_route("*", "/api/atlas/billing/robokassa/result", payment_result)
+    app.router.add_get("/atlas-billing/success", page)
+    app.router.add_get("/atlas-billing/fail", page)
+
+
+__all__ = ["register_atlas_billing_web_routes", "require_atlas_billing_host"]

@@ -67,6 +67,7 @@ from modules.consensus_web_auth import (
 from modules.music_providers import MusicProviderError, OpenRouterTranscriber
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as storage
+from persistence import atlas_billing_repository as billing_storage
 from persistence import atlas_forum_engine_repository as forum_engine_storage
 from persistence import atlas_forum_attachment_repository as attachment_storage
 from persistence import atlas_job_repository as job_storage
@@ -494,6 +495,79 @@ def register_atlas_web_routes(
             cooldown_seconds=120,
             component="atlas",
         )
+
+    async def record_billing_usage(
+        selected: ConsensusWebPrincipal,
+        organization_id: int,
+        *,
+        request_key: str,
+        source: str,
+        answer: dict[str, Any],
+        message_id: int,
+    ) -> None:
+        """Meter compute without ever turning telemetry into an answer outage."""
+
+        try:
+            await asyncio.to_thread(
+                billing_storage.atlas_record_ai_usage,
+                int(selected.user_id),
+                int(organization_id),
+                request_key=request_key,
+                source=source,
+                model=str(answer.get("model") or ""),
+                model_provider=str(answer.get("model_provider") or ""),
+                usage=answer.get("usage"),
+                message_id=int(message_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - metering is fail-open during rollout
+            try:
+                await atlas_log(
+                    "не удалось записать расход Atlas Token",
+                    (
+                        f"Пользователь: `{selected.user_id}`\n"
+                        f"Запрос: `{request_key}`\n"
+                        f"Ошибка: `{type(exc).__name__}: {str(exc)[:700]}`"
+                    ),
+                    level="warning",
+                    exception=exc,
+                    dedupe_key=f"atlas-billing-meter:{type(exc).__name__}",
+                )
+            except Exception:
+                # Diagnostics must be fail-open for the same reason as billing.
+                pass
+
+    async def require_ai_balance(selected: ConsensusWebPrincipal) -> dict[str, Any]:
+        try:
+            entitlement = await asyncio.to_thread(
+                billing_storage.atlas_ai_entitlement,
+                int(selected.user_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - rollout remains fail-open on telemetry failure
+            try:
+                await atlas_log(
+                    "не удалось проверить баланс Atlas Token",
+                    f"Пользователь: `{selected.user_id}`\nОшибка: `{type(exc).__name__}: {str(exc)[:700]}`",
+                    level="warning",
+                    exception=exc,
+                    dedupe_key=f"atlas-billing-entitlement:{type(exc).__name__}",
+                )
+            except Exception:
+                pass
+            return {"allowed": True, "enforcement_enabled": False, "balance_tokens": None}
+        if not bool(entitlement.get("allowed")):
+            raise web.HTTPPaymentRequired(
+                text=json.dumps(
+                    {
+                        "error": "atlas_tokens_required",
+                        "message": "Atlas Token закончились. Пополните баланс или выберите тариф.",
+                        "billing_url": "https://dash.tvr.lat/",
+                        "balance_tokens": int(entitlement.get("balance_tokens") or 0),
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            )
+        return entitlement
 
     async def user_dashboard(
         request: web.Request,
@@ -1038,6 +1112,7 @@ def register_atlas_web_routes(
         receipt_key, cached = cached_receipt(selected.user_id, request)
         if cached is not None:
             return web.json_response(cached)
+        await require_ai_balance(selected)
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
         if not question:
@@ -1234,6 +1309,14 @@ def register_atlas_web_routes(
             faction_code=answer["faction_code"],
             latency_ms=answer["latency_ms"],
         )
+        await record_billing_usage(
+            selected,
+            organization_id,
+            request_key=f"web:{assistant_message_id}",
+            source="desktop" if latency_mode == "standard" else "desktop-overlay",
+            answer=answer,
+            message_id=assistant_message_id,
+        )
         await asyncio.to_thread(
             storage.atlas_record_event,
             organization_id,
@@ -1295,6 +1378,7 @@ def register_atlas_web_routes(
                 )
             await response.write_eof()
             return response
+        await require_ai_balance(selected)
         check_rate(selected.user_id)
         question = str(payload.get("question") or "").strip()
         if not question:
@@ -1483,6 +1567,14 @@ def register_atlas_web_routes(
                 server_code=answer["server_code"],
                 faction_code=answer["faction_code"],
                 latency_ms=answer["latency_ms"],
+            )
+            await record_billing_usage(
+                selected,
+                organization_id,
+                request_key=f"web-stream:{assistant_message_id}",
+                source="desktop-overlay" if latency_mode == "overlay" else "desktop-stream",
+                answer=answer,
+                message_id=assistant_message_id,
             )
             await asyncio.to_thread(
                 storage.atlas_record_event,

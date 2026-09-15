@@ -87,6 +87,16 @@ atlas.tvr.lat {
 	}
 }
 
+dash.tvr.lat {
+	handle / {
+		rewrite * /atlas-billing
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 sgl.tvr.lat {
 	handle / {
 		rewrite * /sgl

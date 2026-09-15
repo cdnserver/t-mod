@@ -15,6 +15,7 @@ from discord.ext import commands
 from modules.atlas_ai import AtlasAIError, atlas_answer
 from modules.technical_log import log_technical_event
 from persistence import atlas_repository as atlas_storage
+from persistence import atlas_billing_repository as atlas_billing_storage
 from persistence import global_ban_repository as global_ban_storage
 from persistence import profile_repository as profile_storage
 from persistence import web_auth_repository as auth_storage
@@ -165,6 +166,22 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
     ) -> None:
         conversation_channel = channel or message.channel
         async with locks[int(conversation_channel.id)]:
+            try:
+                entitlement = await asyncio.to_thread(
+                    atlas_billing_storage.atlas_ai_entitlement,
+                    int(mapping["owner_user_id"]),
+                )
+            except Exception:
+                # A billing projection outage must never become an Atlas
+                # answer outage. The metering write below will report it.
+                entitlement = {"allowed": True}
+            if not bool(entitlement.get("allowed")):
+                await conversation_channel.send(
+                    "Atlas Token закончились. Пополните баланс или выберите тариф: "
+                    "https://dash.tvr.lat/",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
             history = await asyncio.to_thread(
                 atlas_storage.atlas_thread_messages,
                 int(mapping["organization_id"]),
@@ -207,7 +224,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 server_code=result["server_code"],
                 faction_code=result["faction_code"],
             )
-            await asyncio.to_thread(
+            assistant_message_id = await asyncio.to_thread(
                 atlas_storage.atlas_add_message,
                 int(mapping["atlas_thread_id"]),
                 "assistant",
@@ -221,6 +238,37 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
                 faction_code=result["faction_code"],
                 latency_ms=result["latency_ms"],
             )
+            try:
+                await asyncio.to_thread(
+                    atlas_billing_storage.atlas_record_ai_usage,
+                    int(mapping["owner_user_id"]),
+                    int(mapping["organization_id"]),
+                    request_key=f"discord:{assistant_message_id}",
+                    source="discord",
+                    model=result["model"],
+                    model_provider=result["model_provider"],
+                    usage=result.get("usage"),
+                    message_id=assistant_message_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - metering must not suppress the answer
+                try:
+                    await log_technical_event(
+                        bot,
+                        message.guild,
+                        title="Atlas · не удалось записать расход Atlas Token",
+                        details=(
+                            f"Пользователь: <@{int(mapping['owner_user_id'])}>\n"
+                            f"Запрос: `discord:{assistant_message_id}`\n"
+                            f"Ошибка: `{type(exc).__name__}: {str(exc)[:700]}`"
+                        ),
+                        level="warning",
+                        dedupe_key=f"atlas-billing-discord:{type(exc).__name__}",
+                        cooldown_seconds=120,
+                        exception=exc,
+                        component="atlas",
+                    )
+                except Exception:
+                    pass
             await _send_answer(conversation_channel, result)
             await asyncio.to_thread(
                 atlas_storage.atlas_record_event,

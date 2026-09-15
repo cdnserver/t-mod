@@ -26,6 +26,7 @@ from modules.profile import setup_profile
 from modules.music_setup import setup_music
 from modules.operations import setup_operations
 from modules.technical_log import log_technical_event
+from modules.text_encoding import repair_utf8_mojibake
 from modules.error_inbox import setup_error_inbox_runtime
 from modules.discord_interactions import is_expired_interaction_error
 from modules.delivery_runtime import setup_delivery
@@ -47,7 +48,9 @@ TRACK_ONLY_ROLE_ID = int(TRACK_ONLY_ROLE_ID_RAW) if TRACK_ONLY_ROLE_ID_RAW.isdig
 LOCAL_TZ = ZoneInfo(os.getenv("LOCAL_TIMEZONE", "Europe/Riga"))
 
 BOT_STATUS_ENABLED = os.getenv("BOT_STATUS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-BOT_STATUS_TEXT = os.getenv("BOT_STATUS_TEXT", "Товарищество - светлый круг").strip()
+BOT_STATUS_TEXT = repair_utf8_mojibake(
+    os.getenv("BOT_STATUS_TEXT", "Товарищество - светлый круг")
+).strip()
 BOT_STATUS_TYPE = os.getenv("BOT_STATUS_TYPE", "custom").strip().lower()
 BOT_ONLINE_STATUS = os.getenv("BOT_ONLINE_STATUS", "online").strip().lower()
 

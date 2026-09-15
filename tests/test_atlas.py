@@ -1185,7 +1185,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "drafting")
         self.assertEqual(profile.reasoning_effort, "medium")
-        self.assertIn("жёсткий предел — 160 слов", _response_delivery_contract(profile, question))
+        self.assertIn("жёсткий предел — 120 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
@@ -3391,8 +3391,8 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         # The visible answer remains compact through the editorial contract;
         # the larger provider budget leaves room for hidden reasoning so the
         # last sentence is not cut off.
-        self.assertLessEqual(payload["max_tokens"], 1100)
-        self.assertIn("жёсткий предел — 220 слов", system)
+        self.assertLessEqual(payload["max_tokens"], 760)
+        self.assertIn("жёсткий предел — 150 слов", system)
         self.assertIn("Не используй по привычке постоянные рубрики", system)
 
     async def test_complaint_prompt_forbids_invented_evidence_requirements(self) -> None:
