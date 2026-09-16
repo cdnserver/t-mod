@@ -676,6 +676,9 @@ export function App() {
       : "Нет соединения";
   const style = { "--active-accent": activeDefinition?.accent || "#8ea4ff" } as CSSProperties;
   const updateBusy = ["checking", "available", "downloading"].includes(updateState.phase);
+  const mandatoryUpdate = Boolean(
+    bootstrap.data?.client_update?.required || updateState.required,
+  );
   const updateLabel = updateState.phase === "ready"
     ? `Установить ${updateState.version ? `v${updateState.version}` : "обновление"}`
     : updateState.phase === "downloading" || updateState.phase === "available"
@@ -947,7 +950,48 @@ export function App() {
         />
       )}
       {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion}/>}
+      {mandatoryUpdate && (
+        <MandatoryUpdate updateState={updateState}/>
+      )}
     </div>
+  );
+}
+
+function MandatoryUpdate({ updateState }: { updateState: DesktopUpdateState }) {
+  const progress = Math.max(0, Math.min(100, updateState.percent || 0));
+  const ready = updateState.phase === "ready";
+  const failed = updateState.phase === "error";
+  const title = ready
+    ? "Обновление готово"
+    : failed
+      ? "Нужен новый установщик"
+      : "Обновляем T-Mod";
+  const description = ready
+    ? "Приложение автоматически перезапустится через несколько секунд."
+    : failed
+      ? updateState.message || "Автоматическое обновление недоступно. Откройте актуальный установщик."
+      : updateState.phase === "downloading" || updateState.phase === "available"
+        ? `Загружаем обязательную версию${updateState.version ? ` ${updateState.version}` : ""}.`
+        : "Проверяем канал обновлений и готовим безопасную установку.";
+  return (
+    <section className="mandatory-update" role="alert" aria-live="assertive">
+      <div className="mandatory-update-glow" aria-hidden="true"/>
+      <article>
+        <div className="mandatory-update-mark" aria-hidden="true"><i/><span>T</span><i/></div>
+        <small>T-MOD · ОБЯЗАТЕЛЬНОЕ ОБНОВЛЕНИЕ</small>
+        <h1>{title}</h1>
+        <p>{description}</p>
+        <div className="mandatory-update-version"><span>Текущая <b>{updateState.currentVersion}</b></span><i>→</i><span>Минимальная <b>{updateState.minimumVersion || updateState.version || "актуальная"}</b></span></div>
+        <div className={`mandatory-update-progress ${ready ? "ready" : ""}`}><i style={{ width: `${ready ? 100 : progress}%` }}/></div>
+        <div className="mandatory-update-actions">
+          {ready && <button onClick={() => void browserApi()?.installUpdate()}>Перезапустить сейчас</button>}
+          {failed && <button onClick={() => void browserApi()?.openReleasePage()}>Скачать установщик</button>}
+          {!ready && !failed && <span>{updateState.phase === "downloading" ? `${progress}%` : "Подготовка…"}</span>}
+          <button className="quiet" onClick={() => void browserApi()?.minimize()}>Свернуть</button>
+        </div>
+        <em>Старая версия отключена, потому что протоколы безопасности и сервисы обновлены.</em>
+      </article>
+    </section>
   );
 }
 

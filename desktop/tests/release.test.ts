@@ -37,6 +37,17 @@ describe("desktop release contract", () => {
     expect(manifest.build.mac.target).toContain("zip");
   });
 
+  it("enforces a server-required Desktop update without a later action", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    const contracts = readFileSync(resolve(root, "src/shared/contracts.ts"), "utf8");
+    expect(contracts).toContain("client_update?:");
+    expect(main).toContain("forceUpdateRequired");
+    expect(main).toContain("autoUpdater.quitAndInstall(false, true)");
+    expect(renderer).toContain("MandatoryUpdate");
+    expect(renderer).toContain("ОБЯЗАТЕЛЬНОЕ ОБНОВЛЕНИЕ");
+  });
+
   it("keeps shell controls above every remote service contour", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const preload = readFileSync(resolve(root, "src/preload/index.ts"), "utf8");

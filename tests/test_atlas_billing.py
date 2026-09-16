@@ -369,7 +369,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(page.status, 200)
                 self.assertIn("Atlas Token", await page.text())
-                self.assertIn("Понятные условия", await legal.text())
+                self.assertIn("Правовые условия", await legal.text())
                 self.assertIn("Публичная оферта", await offer.text())
                 self.assertIn("Политика обработки", await privacy.text())
                 self.assertIn("Оплата и возврат", await refunds.text())
@@ -520,3 +520,15 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertIn("ROBOKASSA_RECEIPT_TAX=none", persistent)
         self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-public-offer.pdf").is_file())
         self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-privacy-policy.pdf").is_file())
+
+    def test_public_legal_documents_are_complete_and_platform_neutral(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        offer = (root / "web" / "atlas-billing" / "offer.html").read_text(encoding="utf-8")
+        privacy = (root / "web" / "atlas-billing" / "privacy.html").read_text(encoding="utf-8")
+        combined = f"{offer}\n{privacy}".casefold()
+
+        self.assertNotIn("discord", combined)
+        self.assertNotIn("дискорд", combined)
+        self.assertIn("фактически понесённых", combined)
+        self.assertIn("федерального закона от 27.07.2006 № 152-фз", combined)
+        self.assertIn("трансграничная передача", combined)

@@ -99,6 +99,7 @@ let serviceLoading = false;
 let lastServiceError: string | undefined;
 let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
+let forcedUpdateInstallTimer: ReturnType<typeof setTimeout> | undefined;
 let idleLockTimer: ReturnType<typeof setInterval> | undefined;
 let desktopLocked = false;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
@@ -124,6 +125,7 @@ let updateState: DesktopUpdateState = {
   currentVersion: app.getVersion(),
   channel: "beta",
 };
+let forceUpdateRequired = false;
 
 app.enableSandbox();
 nativeTheme.themeSource = "dark";
@@ -320,6 +322,20 @@ function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
   return updateState;
 }
 
+function applyClientUpdatePolicy(data: DesktopBootstrap): void {
+  const policy = data.client_update;
+  forceUpdateRequired = Boolean(policy?.required);
+  setUpdateState({
+    required: forceUpdateRequired,
+    minimumVersion: policy?.minimum_version || undefined,
+    releaseUrl: policy?.release_url || RELEASE_URL,
+    message: forceUpdateRequired
+      ? policy?.message || "Для продолжения требуется обновление T-Mod Desktop."
+      : updateState.message,
+  });
+  if (forceUpdateRequired) void checkForUpdates();
+}
+
 async function checkForUpdates(): Promise<DesktopUpdateState> {
   if (!app.isPackaged) {
     return setUpdateState({
@@ -387,8 +403,24 @@ function configureAutoUpdater(): void {
       message: "Обновление загружено и готово к установке.",
       checkedAt: new Date().toISOString(),
     });
+    if (forceUpdateRequired && !forcedUpdateInstallTimer) {
+      forcedUpdateInstallTimer = setTimeout(() => {
+        forcedUpdateInstallTimer = undefined;
+        autoUpdater.quitAndInstall(false, true);
+      }, 2_500);
+    }
   });
   autoUpdater.on("update-not-available", (info) => {
+    if (forceUpdateRequired) {
+      setUpdateState({
+        phase: "error",
+        version: info.version,
+        percent: undefined,
+        message: "Обязательная версия ещё не найдена в канале обновлений. Откройте установщик.",
+        checkedAt: new Date().toISOString(),
+      });
+      return;
+    }
     setUpdateState({
       phase: "current",
       version: info.version,
@@ -780,6 +812,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         };
       }
       if (current) {
+        applyClientUpdatePolicy(data);
         lastKnownBan = undefined;
         if (!applyServiceManifest(data)) {
           clearServiceManifest();
@@ -1034,7 +1067,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:update-open-release", (event) => {
     if (!trusted(event)) return false;
-    void shell.openExternal(RELEASE_URL);
+    void shell.openExternal(updateState.releaseUrl || RELEASE_URL);
     return true;
   });
   ipcMain.handle("atlas-overlay:get-config", (event) =>
@@ -1349,5 +1382,6 @@ app.on("before-quit", () => {
   if (updateTimer) clearInterval(updateTimer);
   if (idleLockTimer) clearInterval(idleLockTimer);
   if (authProjectionTimer) clearTimeout(authProjectionTimer);
+  if (forcedUpdateInstallTimer) clearTimeout(forcedUpdateInstallTimer);
   atlasOverlay?.dispose();
 });

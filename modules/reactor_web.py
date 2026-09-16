@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -93,6 +95,43 @@ AuthenticatedRequest = Callable[
 
 
 logger = logging.getLogger(__name__)
+
+
+def _desktop_version_key(value: str) -> tuple[int, int, int, int, str, int]:
+    """Compare deployed Desktop versions without adding a packaging dependency."""
+
+    match = re.fullmatch(
+        r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?([a-zA-Z]+)(\d+)?)?",
+        str(value or "").strip(),
+    )
+    if not match:
+        return (-1, -1, -1, -1, "", -1)
+    major, minor, patch = (int(match.group(index)) for index in (1, 2, 3))
+    label = str(match.group(4) or "").lower()
+    revision = int(match.group(5) or 0)
+    return (major, minor, patch, 1 if not label else 0, label, revision)
+
+
+def _desktop_update_policy(request: web.Request) -> dict[str, Any]:
+    minimum = str(os.getenv("TMOD_DESKTOP_MIN_VERSION") or "").strip()
+    latest = str(os.getenv("TMOD_DESKTOP_LATEST_VERSION") or minimum).strip()
+    current = str(request.headers.get("X-TMod-Desktop-Version") or "").strip()
+    required = bool(minimum) and _desktop_version_key(current) < _desktop_version_key(minimum)
+    return {
+        "required": required,
+        "minimum_version": minimum or None,
+        "latest_version": latest or None,
+        "current_version": current or None,
+        "release_url": str(
+            os.getenv("TMOD_DESKTOP_RELEASE_URL")
+            or "https://github.com/cdnserver/t-mod-releases/releases/latest"
+        ).strip(),
+        "message": (
+            "Для продолжения установите обязательное обновление T-Mod Desktop."
+            if required
+            else "Установлена поддерживаемая версия T-Mod Desktop."
+        ),
+    }
 
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
@@ -1712,6 +1751,8 @@ def register_reactor_web_routes(
             device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
         )
 
+        client_update = _desktop_update_policy(request)
+        update_required = bool(client_update["required"])
         guild_member = bool(principal.guild_member)
         administrator = bool(principal.administrator)
         grants: list[dict[str, Any]] = []
@@ -1769,18 +1810,24 @@ def register_reactor_web_routes(
             enabled: bool = True,
             reason: str | None = None,
         ) -> dict[str, Any]:
+            service_enabled = bool(enabled) and not update_required
             return {
                 "id": service_id,
                 "title": title,
                 "url": url,
-                "enabled": bool(enabled),
-                "reason": reason if not enabled else None,
+                "enabled": service_enabled,
+                "reason": (
+                    "Сначала установите обязательное обновление T-Mod Desktop."
+                    if update_required
+                    else reason if not enabled else None
+                ),
             }
 
         member_reason = "Доступ открывается участникам Товарищества."
         payload = {
             "protocol_version": 1,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "client_update": client_update,
             "viewer": {
                 "id": int(principal.user_id),
                 "name": preferred_name or str(principal.display_name),

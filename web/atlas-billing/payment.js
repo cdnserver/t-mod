@@ -30,7 +30,7 @@
       try {
         const response = await fetch(`/api/atlas/billing/orders/${encodeURIComponent(orderId)}`, {credentials: 'include', cache: 'no-store'});
         if (response.status === 401) {
-          setResult('Войдите в T-Mod', 'Платёж проверяется сервером, но для просмотра заказа нужно восстановить сессию T-Mod Account.', `Заказ №${orderId}`);
+          setResult('Войдите в Учётную запись', 'Платёж проверяется сервером, но для просмотра заказа необходимо восстановить защищённую сессию.', `Заказ №${orderId}`);
           action.href = `https://tvr.lat/login?next=${encodeURIComponent(location.href)}`;
           action.textContent = 'Войти и проверить';
           return;

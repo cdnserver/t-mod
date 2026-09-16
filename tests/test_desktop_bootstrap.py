@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -119,6 +120,41 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 "system_fallback",
             )
             self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+        finally:
+            await client.close()
+
+    async def test_required_update_disables_services_and_describes_release(self) -> None:
+        principal = self.principal(administrator=True)
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch.dict(
+                    os.environ,
+                    {
+                        "TMOD_DESKTOP_MIN_VERSION": "1.3.5-p3",
+                        "TMOD_DESKTOP_LATEST_VERSION": "1.3.5-p3",
+                        "TMOD_DESKTOP_RELEASE_URL": "https://example.test/tmod",
+                    },
+                ),
+            ):
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={
+                        "X-TMod-Install-Token": "D" * 43,
+                        "X-TMod-Desktop-Platform": "win32",
+                        "X-TMod-Desktop-Version": "1.3.5-p2",
+                        "X-TMod-Device-Fingerprint": "4" * 64,
+                    },
+                )
+            payload = await response.json()
+            self.assertTrue(payload["client_update"]["required"])
+            self.assertEqual(payload["client_update"]["minimum_version"], "1.3.5-p3")
+            self.assertEqual(payload["client_update"]["release_url"], "https://example.test/tmod")
+            self.assertTrue(all(not service["enabled"] for service in payload["services"]))
+            self.assertTrue(all("обновление" in service["reason"] for service in payload["services"]))
         finally:
             await client.close()
 

@@ -31,7 +31,6 @@
           receipt,
           request_type: values.get('request_type'),
           email: values.get('email'),
-          discord_id: values.get('discord_id'),
           account_login: values.get('account_login'),
           scope: values.get('scope'),
           details: values.get('details'),

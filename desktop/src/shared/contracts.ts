@@ -36,6 +36,14 @@ export interface DesktopNotification {
 export interface DesktopBootstrap {
   protocol_version: 1;
   generated_at: string;
+  client_update?: {
+    required: boolean;
+    minimum_version: string | null;
+    latest_version: string | null;
+    current_version: string | null;
+    release_url: string;
+    message: string;
+  };
   viewer: {
     id: number;
     name: string;
@@ -133,6 +141,9 @@ export interface DesktopUpdateState {
   percent?: number;
   message?: string;
   checkedAt?: string;
+  required?: boolean;
+  minimumVersion?: string;
+  releaseUrl?: string;
 }
 
 export interface TModDesktopApi {
