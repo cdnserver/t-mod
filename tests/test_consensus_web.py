@@ -1004,8 +1004,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "https://home.tvr.lat/reactor",
         )
         self.assertEqual(atlas_store.status, 200)
-        self.assertIn("ATLAS INTELLIGENCE", atlas_store_text)
-        self.assertIn("Магазин и управление Atlas Token", atlas_store_text)
+        self.assertIn("ВЫЧИСЛИТЕЛЬНЫЙ РЕЗЕРВ ATLAS", atlas_store_text)
+        self.assertIn("Вы платите", atlas_store_text)
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)

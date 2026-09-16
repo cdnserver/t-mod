@@ -1,16 +1,16 @@
 # Atlas Token — запуск Robokassa
 
-Этот контур уже создаёт заказ на `dash.tvr.lat`, подписывает его Паролем №1,
+Этот контур создаёт заказ на `atlas.tvr.lat`, подписывает его Паролем №1,
 проверяет серверное уведомление Паролем №2 и зачисляет Atlas Token ровно один
-раз. Платёжные реквизиты карты T-Mod не получает.
+раз. Платёжные реквизиты карты Atlas не получает.
 
 ## Адреса магазина
 
-- Сайт магазина: `https://dash.tvr.lat/`
-- ResultURL: `https://dash.tvr.lat/api/atlas/billing/robokassa/result`
+- Сайт магазина: `https://atlas.tvr.lat/`
+- ResultURL: `https://atlas.tvr.lat/api/atlas/billing/robokassa/result`
 - Метод ResultURL: `POST`
-- SuccessURL: `https://dash.tvr.lat/atlas-billing/success`
-- FailURL: `https://dash.tvr.lat/atlas-billing/fail`
+- SuccessURL: `https://atlas.tvr.lat/atlas-billing/success`
+- FailURL: `https://atlas.tvr.lat/atlas-billing/fail`
 - Кодировка: UTF-8
 - Алгоритм подписи: MD5
 
@@ -28,23 +28,33 @@ ROBOKASSA_TEST_MODE=true
 ROBOKASSA_HASH_ALGORITHM=md5
 ROBOKASSA_RECEIPT_TAX=none
 ROBOKASSA_RECEIPT_SNO=
+ATLAS_PD_LOCALIZATION_READY=false
+ATLAS_PD_PRIMARY_REGION=
 ```
 
 Тестовые пароли берутся именно из тестового блока технических настроек
 Robokassa. После изменения `.env` пересоздайте `tmod-web` и `tmod-discord-bot`,
 а не только перезапустите процессы, чтобы Docker перечитал окружение.
 
-Проверьте покупку каждого тарифа и PAYG-пакета, повтор ResultURL и сценарий
+В тестовом режиме форма дополнительно передаёт Robokassa email покупателя для
+электронного чека. Проверьте покупку каждого тарифа и PAYG-пакета, повтор ResultURL и сценарий
 отмены. В таблице заказов должен остаться один заказ, а повтор ResultURL должен
 вернуть тот же `OK<номер>` без второго начисления.
 
 ## Переход в рабочий режим
 
 1. Укажите рабочие Пароль №1 и Пароль №2.
-2. Установите `ROBOKASSA_TEST_MODE=false`.
-3. Не меняйте `ATLAS_BILLING_PAYMENTS_ENABLED=true`.
-4. Пересоздайте web/bot-контейнеры.
-5. Проведите один минимальный реальный платёж и проверьте заказ, баланс и чек.
+2. Завершите перенос первичной базы персональных данных в российскую инфраструктуру.
+3. Только после фактической проверки установите `ATLAS_PD_LOCALIZATION_READY=true`
+   и `ATLAS_PD_PRIMARY_REGION=RU`.
+4. Установите `ROBOKASSA_TEST_MODE=false`.
+5. Не меняйте `ATLAS_BILLING_PAYMENTS_ENABLED=true`.
+6. Пересоздайте web/bot-контейнеры.
+7. Проведите один минимальный реальный платёж и проверьте заказ, баланс и чек.
+
+Боевой checkout работает fail-closed: без обеих отметок локализации он вернёт
+`atlas_personal_data_localization_required`. Переменные являются операционным
+подтверждением, а не заменой реального переноса и юридических действий.
 
 `ROBOKASSA_RECEIPT_TAX` и `ROBOKASSA_RECEIPT_SNO` должны соответствовать
 реальному налоговому режиму ИП и настройкам онлайн-кассы. Код передаёт
@@ -53,13 +63,13 @@ Robokassa. После изменения `.env` пересоздайте `tmod-w
 `none` для ставки применяется только если услуга действительно не облагается
 НДС. Выбор должен подтвердить владелец ИП или бухгалтер.
 
-Пароли запрещено отправлять в Discord, добавлять в Git или писать в логи.
+Пароли запрещено пересылать в мессенджерах, добавлять в Git или писать в логи.
 
 ## Чек-лист сайта перед модерацией Robokassa
 
-- На `dash.tvr.lat` открываются реальные тарифы, цены, продавец и контакты.
+- На `atlas.tvr.lat` открываются реальные тарифы, цены, продавец и контакты.
 - На том же домене доступны самостоятельные `/legal`, `/offer`, `/refunds`,
-  `/contacts`, `/privacy` и `/data-request`.
+  `/contacts`, `/privacy`, `/terms` и `/data-request`.
 - Из `/offer` и `/privacy` открываются постоянные PDF-редакции документов.
 - В оферте описаны цифровая услуга, срок, получение, отказ и возврат.
 - Указаны ИНН и ОГРНИП.

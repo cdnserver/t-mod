@@ -72,6 +72,7 @@ def atlas_billing_catalog() -> dict[str, Any]:
             "subscription_auto_renewal": False,
             "monthly_tokens_expire": True,
             "purchased_tokens_expire": False,
+            "paid_subject": "Информационно-вычислительные услуги, объём которых учитывается в Atlas Token",
         },
         "seller": {
             "name": "ИП Саниев Муртазали Бухариевич",
@@ -131,6 +132,12 @@ def robokassa_config() -> dict[str, Any]:
         "hash_algorithm": hash_algorithm,
         "receipt_tax": receipt_tax,
         "receipt_sno": receipt_sno,
+        "personal_data_localization_ready": os.getenv(
+            "ATLAS_PD_LOCALIZATION_READY", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"},
+        "personal_data_primary_region": os.getenv(
+            "ATLAS_PD_PRIMARY_REGION", ""
+        ).strip().upper(),
     }
 
 
@@ -175,6 +182,7 @@ def robokassa_payment_fields(
     amount_kopecks: int,
     description: str,
     user_id: int,
+    receipt_email: str = "",
 ) -> dict[str, str]:
     config = robokassa_config()
     if not config["enabled"] or not config["password1"] or not config["password2"]:
@@ -188,7 +196,7 @@ def robokassa_payment_fields(
         config["merchant_login"], amount, int(invoice_id), receipt, config["password1"],
         f"Shp_user={custom['Shp_user']}",
     ], algorithm=str(config["hash_algorithm"]))
-    return {
+    fields = {
         "MerchantLogin": str(config["merchant_login"]),
         "OutSum": amount,
         "InvId": str(int(invoice_id)),
@@ -200,6 +208,10 @@ def robokassa_payment_fields(
         "Encoding": "utf-8",
         **custom,
     }
+    clean_email = str(receipt_email or "").strip().lower()
+    if clean_email:
+        fields["Email"] = clean_email[:254]
+    return fields
 
 
 def robokassa_result_is_valid(values: Mapping[str, object]) -> bool:

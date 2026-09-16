@@ -1037,9 +1037,9 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         # store.  Keeping these documents on the checkout hostname is both
         # clearer for buyers and required by the payment-provider review.
         current = request_public_host(request).strip().lower().split(":", 1)[0]
-        if current != "atlas.tvr.lat" or path.rstrip("/") == "/terms":
+        if current != "atlas.tvr.lat":
             target_url = ECOSYSTEM_WEB_PUBLIC_URL
-    elif belongs_to("/atlas-billing"):
+    elif belongs_to("/atlas-billing") or belongs_to("/account"):
         target_url = ATLAS_WEB_PUBLIC_URL
     elif belongs_to("/atlas"):
         target_url = ATLAS_APP_PUBLIC_URL
@@ -1067,7 +1067,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             target_url = PORTAL_WEB_PUBLIC_URL
         elif next_path == "/atlas":
             target_url = ATLAS_APP_PUBLIC_URL
-        elif next_path == "/atlas-billing":
+        elif next_path in {"/atlas-billing", "/account"}:
             target_url = ATLAS_WEB_PUBLIC_URL
         elif next_path == "/sgl":
             target_url = SGL_WEB_PUBLIC_URL
@@ -1444,12 +1444,12 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
-            if not principal.guild_member and next_path not in {"/atlas", "/atlas-billing", "/admission"}:
+            if not principal.guild_member and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
                 raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
@@ -1584,7 +1584,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1610,7 +1610,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1743,7 +1743,7 @@ def create_consensus_web_app(
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
         if member is None and not desktop_client:
-            if next_path in {"/admission", "/atlas-billing"}:
+            if next_path in {"/admission", "/atlas-billing", "/account"}:
                 pass
             elif next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(

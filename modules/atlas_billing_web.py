@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -32,6 +33,9 @@ AuthenticatedRequest = Callable[
 ]
 
 
+_RECEIPT_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
 def require_atlas_billing_host(request: web.Request) -> None:
     host = request_public_host(request).split(":", 1)[0].strip().lower()
     # The in-process test server and direct loopback diagnostics are
@@ -51,6 +55,8 @@ def register_atlas_billing_web_routes(
     public_pages = {
         "/atlas-billing": "index.html",
         "/atlas-billing/": "index.html",
+        "/account": "account.html",
+        "/account/": "account.html",
         "/legal": "legal.html",
         "/legal/": "legal.html",
         "/offer": "offer.html",
@@ -59,6 +65,8 @@ def register_atlas_billing_web_routes(
         "/refunds/": "refunds.html",
         "/privacy": "privacy.html",
         "/privacy/": "privacy.html",
+        "/terms": "terms.html",
+        "/terms/": "terms.html",
         "/data-request": "data-request.html",
         "/data-request/": "data-request.html",
         "/contacts": "contacts.html",
@@ -73,7 +81,7 @@ def register_atlas_billing_web_routes(
             host == "tvr.lat"
             and ecosystem_asset_dir is not None
             and request.path.rstrip("/")
-            in {"/legal", "/privacy", "/data-request"}
+            in {"/legal", "/privacy", "/terms", "/data-request"}
         ):
             response = web.FileResponse(ecosystem_asset_dir / "legal.html")
             response.headers["Cache-Control"] = "no-cache"
@@ -93,7 +101,7 @@ def register_atlas_billing_web_routes(
         require_atlas_billing_host(request)
         name = str(request.match_info.get("name") or "")
         if name not in {
-            "app.js", "style.css", "account.css", "store.css", "legal.css", "legal.js", "payment.js",
+            "app.js", "account.js", "style.css", "account.css", "store.css", "legal.css", "legal.js", "payment.js",
             "favicon.svg",
         }:
             raise web.HTTPNotFound()
@@ -136,6 +144,14 @@ def register_atlas_billing_web_routes(
                     "test_mode": bool(config["test_mode"]),
                     "mode": "test" if config["test_mode"] else "live",
                 },
+                "personal_data": {
+                    "localization_ready": bool(config["personal_data_localization_ready"]),
+                    "primary_region": str(config["personal_data_primary_region"] or "not-configured"),
+                    "live_payments_allowed": bool(
+                        config["personal_data_localization_ready"]
+                        and config["personal_data_primary_region"] == "RU"
+                    ),
+                },
             }
         )
 
@@ -154,7 +170,8 @@ def register_atlas_billing_web_routes(
                     "name": str(selected.display_name),
                     "csrf_token": str(selected.csrf_token),
                 },
-            }
+            },
+            headers={"Cache-Control": "no-store"},
         )
 
     async def admin_metrics(request: web.Request) -> web.Response:
@@ -223,6 +240,26 @@ def register_atlas_billing_web_routes(
             return web.json_response({"error": "payload_invalid"}, status=400)
         product_kind = str(payload.get("product_kind") or "").strip().lower()
         product_code = str(payload.get("product_code") or "").strip().lower()
+        receipt_email = str(payload.get("receipt_email") or "").strip().lower()[:254]
+        if not _RECEIPT_EMAIL_RE.fullmatch(receipt_email):
+            return web.json_response(
+                {
+                    "error": "atlas_billing_receipt_email_invalid",
+                    "message": "Укажите действующий email для электронного кассового чека.",
+                },
+                status=400,
+            )
+        if not bool(payment_config["test_mode"]) and not (
+            bool(payment_config["personal_data_localization_ready"])
+            and str(payment_config["personal_data_primary_region"]) == "RU"
+        ):
+            return web.json_response(
+                {
+                    "error": "atlas_personal_data_localization_required",
+                    "message": "Боевые платежи закрыты до ввода российской первичной базы персональных данных.",
+                },
+                status=503,
+            )
         checkout_key = str(payload.get("checkout_key") or "").strip()[:100]
         if len(checkout_key) < 16:
             return web.json_response({"error": "atlas_billing_checkout_key_required"}, status=400)
@@ -234,13 +271,19 @@ def register_atlas_billing_web_routes(
                 amount_kopecks = plan.monthly_price_rub * 100
                 atlas_tokens = plan.monthly_tokens
                 plan_code = plan.code
-                description = f"Подписка {plan.name} на 30 дней"
+                description = (
+                    f"Вычислительный пакет Atlas {plan.name}: "
+                    f"{plan.monthly_tokens:,} AT на 30 дней"
+                ).replace(",", " ")
             elif product_kind == "token_pack":
                 pack = atlas_token_pack(product_code)
                 amount_kopecks = int(pack["price_rub"]) * 100
                 atlas_tokens = int(pack["atlas_tokens"])
                 plan_code = None
-                description = str(pack["name"])
+                description = (
+                    f"Пополнение вычислительного резерва Atlas: "
+                    f"{atlas_tokens:,} AT"
+                ).replace(",", " ")
             else:
                 raise ValueError("atlas_billing_product_invalid")
             order = await asyncio.to_thread(
@@ -258,6 +301,7 @@ def register_atlas_billing_web_routes(
                 amount_kopecks=amount_kopecks,
                 description=description,
                 user_id=int(selected.user_id),
+                receipt_email=receipt_email,
             )
         except RuntimeError as exc:
             return web.json_response({"error": str(exc)}, status=503)

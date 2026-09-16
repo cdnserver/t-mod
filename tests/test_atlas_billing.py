@@ -282,6 +282,7 @@ class RobokassaSignatureTests(unittest.TestCase):
             amount_kopecks=99_000,
             description="Atlas Start",
             user_id=42,
+            receipt_email="buyer@example.test",
         )
         receipt = quote(
             json.dumps(
@@ -307,6 +308,7 @@ class RobokassaSignatureTests(unittest.TestCase):
         self.assertEqual(fields["Receipt"], receipt)
         self.assertEqual(fields["Encoding"], "utf-8")
         self.assertEqual(fields["IsTest"], "1")
+        self.assertEqual(fields["Email"], "buyer@example.test")
 
         result = {
             "OutSum": "990.00",
@@ -351,8 +353,10 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"ATLAS_BILLING_PAYMENTS_ENABLED": "0"}, clear=False):
             async with TestClient(TestServer(app)) as client:
                 page = await client.get("/atlas-billing")
+                account = await client.get("/account")
                 legal = await client.get("/legal")
                 offer = await client.get("/offer")
+                terms = await client.get("/terms")
                 privacy = await client.get("/privacy")
                 refunds = await client.get("/refunds")
                 contacts = await client.get("/contacts")
@@ -369,8 +373,10 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(page.status, 200)
                 self.assertIn("Atlas Token", await page.text())
-                self.assertIn("Правовые условия", await legal.text())
+                self.assertIn("Покупка и использование", await legal.text())
+                self.assertIn("Личный кабинет", await account.text())
                 self.assertIn("Публичная оферта", await offer.text())
+                self.assertIn("ПРАВИЛА ATLAS", await terms.text())
                 self.assertIn("Политика обработки", await privacy.text())
                 self.assertIn("Оплата и возврат", await refunds.text())
                 self.assertIn("ИП Саниев", await contacts.text())
@@ -426,6 +432,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             "product_kind": "token_pack",
             "product_code": "at-100k",
             "checkout_key": "checkout-test-00000001",
+            "receipt_email": "buyer@example.test",
         }
         async with TestClient(TestServer(app)) as client:
             first = await client.post(
@@ -447,6 +454,10 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 first_body["payment"]["url"],
                 "https://auth.robokassa.ru/Merchant/Payment/Index",
+            )
+            self.assertEqual(
+                first_body["payment"]["fields"]["Email"],
+                "buyer@example.test",
             )
             signature = hashlib.md5(
                 f"99.00:{order_id}:password-two:Shp_user=42".encode()
@@ -504,6 +515,50 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 403)
 
+    @patch.dict(
+        os.environ,
+        {
+            "ATLAS_BILLING_PAYMENTS_ENABLED": "1",
+            "ROBOKASSA_MERCHANT_LOGIN": "tvr.lat",
+            "ROBOKASSA_PASSWORD1": "password-one",
+            "ROBOKASSA_PASSWORD2": "password-two",
+            "ROBOKASSA_TEST_MODE": "0",
+            "ATLAS_PD_LOCALIZATION_READY": "false",
+            "ATLAS_PD_PRIMARY_REGION": "",
+        },
+        clear=False,
+    )
+    async def test_live_checkout_fails_closed_without_russian_primary_database(self) -> None:
+        principal = SimpleNamespace(user_id=42, display_name="Иван", csrf_token="csrf")
+
+        async def authenticate(_request):
+            return principal, False
+
+        app = web.Application()
+        register_atlas_billing_web_routes(
+            app,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-billing",
+            authenticate=authenticate,
+        )
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/api/atlas/billing/checkout",
+                headers={"X-CSRF-Token": "csrf"},
+                json={
+                    "product_kind": "token_pack",
+                    "product_code": "at-100k",
+                    "checkout_key": "live-gate-checkout-00001",
+                    "receipt_email": "buyer@example.test",
+                },
+            )
+            body = await response.json()
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(
+            body["error"],
+            "atlas_personal_data_localization_required",
+        )
+
 
 class AtlasBillingDeploymentTests(unittest.TestCase):
     def test_atlas_is_the_direct_store_and_examples_keep_secrets_empty(self) -> None:
@@ -523,14 +578,19 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
 
     def test_public_legal_documents_are_complete_and_platform_neutral(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        offer = (root / "web" / "atlas-billing" / "offer.html").read_text(encoding="utf-8")
-        privacy = (root / "web" / "atlas-billing" / "privacy.html").read_text(encoding="utf-8")
-        combined = f"{offer}\n{privacy}".casefold()
+        legal_dir = root / "web" / "atlas-billing"
+        documents = [
+            (legal_dir / name).read_text(encoding="utf-8")
+            for name in ("offer.html", "privacy.html", "terms.html", "refunds.html", "legal.html", "contacts.html")
+        ]
+        combined = "\n".join(documents).casefold()
 
         self.assertNotIn("discord", combined)
         self.assertNotIn("дискорд", combined)
+        self.assertNotIn("t-mod", combined)
+        self.assertNotIn("tvr × sgl", combined)
         self.assertIn("фактически понесённых", combined)
-        self.assertIn("федерального закона от 27.07.2006 № 152-фз", combined)
+        self.assertIn("федеральным законом от 27.07.2006 № 152-фз", combined)
         self.assertIn("трансграничная передача", combined)
 
     def test_store_distinguishes_promotional_copy_from_contract_terms(self) -> None:

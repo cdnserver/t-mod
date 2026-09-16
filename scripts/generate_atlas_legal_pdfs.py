@@ -143,7 +143,8 @@ PRIVACY_SECTIONS = [
         "Трансграничная передача, если она требуется, осуществляется только после выполнения применимых требований законодательства Российской Федерации. При отсутствии законного основания соответствующий маршрут не используется.",
     ]),
     ("8. Локализация, хранение и уничтожение", [
-        "При сборе данных граждан Российской Федерации через Интернет запись, систематизация, накопление, хранение, уточнение и извлечение выполняются с использованием баз данных в Российской Федерации, кроме предусмотренных законом случаев.",
+        "При сборе данных граждан Российской Федерации через Интернет первичная запись, систематизация, накопление, хранение, уточнение и извлечение должны выполняться с использованием баз данных в Российской Федерации. Боевой платёжный режим Atlas программно закрыт до фактического ввода и проверки такой первичной базы.",
+        "До завершения локализации платёжная интеграция может использоваться только в тестовом режиме с синтетическими данными и без реального расчёта. Если для ИИ-запроса требуется иностранный вычислительный поставщик, маршрут с персональными данными не используется до выполнения требований к трансграничной передаче, включая необходимое уведомление уполномоченного органа и оценку получателя.",
         "После достижения цели или прекращения основания данные удаляются либо обезличиваются в установленный срок. Резервные копии выводятся из обращения по циклу ротации и не используются для обычной работы.",
     ]),
     ("9. Меры защиты", [
@@ -204,7 +205,7 @@ class AtlasDocument(BaseDocTemplate):
         super().__init__(
             str(filename), pagesize=A4, leftMargin=23 * mm, rightMargin=23 * mm,
             topMargin=28 * mm, bottomMargin=24 * mm, title=title, author=SELLER,
-            subject=subject, creator="T-Mod Atlas",
+            subject=subject, creator="Atlas",
         )
         frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id="main")
         self.addPageTemplates(PageTemplate(id="atlas", frames=[frame], onPage=self._decorate))
@@ -218,7 +219,7 @@ class AtlasDocument(BaseDocTemplate):
         canvas.line(23 * mm, height - 18 * mm, width - 23 * mm, height - 18 * mm)
         canvas.setFont("AtlasHeading", 6.7)
         canvas.setFillColor(colors.HexColor("#133554"))
-        canvas.drawString(23 * mm, height - 14 * mm, "ATLAS  /  TVR x SGL")
+        canvas.drawString(23 * mm, height - 14 * mm, "ATLAS  /  ПРАВОВОЙ ЦЕНТР")
         canvas.setFont("AtlasBody", 7.5)
         canvas.setFillColor(colors.HexColor("#62778A"))
         canvas.drawRightString(width - 23 * mm, height - 14 * mm, "ПРАВОВОЙ ДОКУМЕНТ")
@@ -272,7 +273,7 @@ def _build(path: Path, *, title: str, label: str, subtitle: str, sections: list[
 def main() -> None:
     _register_fonts()
     documents = [
-        ("atlas-public-offer.pdf", "Публичная оферта", "ПУБЛИЧНАЯ ОФЕРТА  /  ATLAS", "Условия оказания цифровой услуги Atlas и приобретения вычислительного резерва Atlas Token.", OFFER_SECTIONS),
+        ("atlas-public-offer.pdf", "Публичная оферта", "ПУБЛИЧНАЯ ОФЕРТА  /  ATLAS", "Условия оказания информационно-вычислительной услуги Atlas, объём которой учитывается в Atlas Token.", OFFER_SECTIONS),
         ("atlas-privacy-policy.pdf", "Политика обработки персональных данных", "ПОЛИТИКА ОБРАБОТКИ ПЕРСОНАЛЬНЫХ ДАННЫХ  /  ATLAS", "Порядок обработки и защиты персональных данных пользователей Atlas и магазина atlas.tvr.lat.", PRIVACY_SECTIONS),
     ]
     for filename, title, label, subtitle, sections in documents:
