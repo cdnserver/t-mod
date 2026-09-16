@@ -43,13 +43,13 @@ import {
   type AtlasOverlayForegroundProbe,
 } from "./atlas-overlay-foreground";
 
-const ATLAS_BOOTSTRAP_URL = "https://atlas.tvr.lat/api/atlas/bootstrap";
-const ATLAS_STREAM_URL = "https://atlas.tvr.lat/api/atlas/chat/stream";
-const ATLAS_TRANSCRIBE_URL = "https://atlas.tvr.lat/api/atlas/overlay/transcribe";
-const ATLAS_TTS_VOICES_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/voices";
-const ATLAS_TTS_PREVIEW_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/preview";
-const ATLAS_TTS_SYNTHESIZE_URL = "https://atlas.tvr.lat/api/atlas/overlay/tts/synthesize";
-const ATLAS_CRAFTS_URL = "https://atlas.tvr.lat/api/atlas/overlay/crafts";
+const ATLAS_BOOTSTRAP_URL = "https://dash.tvr.lat/api/atlas/bootstrap";
+const ATLAS_STREAM_URL = "https://dash.tvr.lat/api/atlas/chat/stream";
+const ATLAS_TRANSCRIBE_URL = "https://dash.tvr.lat/api/atlas/overlay/transcribe";
+const ATLAS_TTS_VOICES_URL = "https://dash.tvr.lat/api/atlas/overlay/tts/voices";
+const ATLAS_TTS_PREVIEW_URL = "https://dash.tvr.lat/api/atlas/overlay/tts/preview";
+const ATLAS_TTS_SYNTHESIZE_URL = "https://dash.tvr.lat/api/atlas/overlay/tts/synthesize";
+const ATLAS_CRAFTS_URL = "https://dash.tvr.lat/api/atlas/overlay/crafts";
 const MAX_AUDIO_BYTES = 6 * 1024 * 1024;
 const MAX_AUDIO_DURATION_MS = 25_000;
 const MAX_SCREEN_CONTEXT_BYTES = 1_200_000;
@@ -754,7 +754,7 @@ export class AtlasOverlayController {
   }
 
   async openAtlas(): Promise<void> {
-    await shell.openExternal("https://atlas.tvr.lat/");
+    await shell.openExternal("https://dash.tvr.lat/");
   }
 
   reportSpeech(active: boolean): void {
@@ -1214,7 +1214,7 @@ export class AtlasOverlayController {
     if (!this.config.characterId) throw new Error("atlas_overlay_character_required");
     const token = csrf || await this.ensureAtlasSession();
     const response = await this.options.networkSession().fetch(
-      "https://atlas.tvr.lat/api/atlas/overlay/context",
+      "https://dash.tvr.lat/api/atlas/overlay/context",
       {
         method: "POST",
         credentials: "include",

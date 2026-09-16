@@ -387,7 +387,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
                 require_atlas_billing_host(
                     SimpleNamespace(
-                        headers={}, remote="203.0.113.10", host="dash.tvr.lat", secure=True
+                        headers={}, remote="203.0.113.10", host="atlas.tvr.lat", secure=True
                     )
                 )
                 with self.assertRaises(web.HTTPNotFound):
@@ -506,13 +506,15 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AtlasBillingDeploymentTests(unittest.TestCase):
-    def test_dash_is_a_direct_caddy_site_and_examples_keep_secrets_empty(self) -> None:
+    def test_atlas_is_the_direct_store_and_examples_keep_secrets_empty(self) -> None:
         root = Path(__file__).resolve().parents[1]
         caddy = (root / "Caddyfile").read_text(encoding="utf-8")
         persistent = (root / ".env.persistent.example").read_text(encoding="utf-8")
 
-        self.assertIn("dash.tvr.lat {", caddy)
+        self.assertIn("atlas.tvr.lat {", caddy)
         self.assertIn("rewrite * /atlas-billing", caddy)
+        self.assertIn("dash.tvr.lat {", caddy)
+        self.assertIn("rewrite * /atlas", caddy)
         self.assertIn("ROBOKASSA_PASSWORD1=\n", persistent)
         self.assertIn("ROBOKASSA_PASSWORD2=\n", persistent)
         self.assertIn("ROBOKASSA_RECEIPT_TAX=none", persistent)

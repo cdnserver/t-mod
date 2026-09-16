@@ -848,7 +848,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             _canonical_surface_location(direct),  # type: ignore[arg-type]
-            "https://atlas.tvr.lat/atlas?screen=ai",
+            "https://dash.tvr.lat/atlas?screen=ai",
         )
 
         forwarded = SimpleNamespace(
@@ -867,13 +867,13 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request_public_secure(forwarded))  # type: ignore[arg-type]
         self.assertEqual(
             _canonical_surface_location(forwarded),  # type: ignore[arg-type]
-            "https://atlas.tvr.lat/atlas",
+            "https://dash.tvr.lat/atlas",
         )
 
         privacy = SimpleNamespace(
             path="/privacy",
             query={},
-            host="atlas.tvr.lat",
+            host="home.tvr.lat",
             rel_url="/privacy",
         )
         self.assertEqual(
@@ -884,7 +884,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         billing_privacy = SimpleNamespace(
             path="/privacy",
             query={},
-            host="dash.tvr.lat",
+            host="atlas.tvr.lat",
             rel_url="/privacy",
         )
         self.assertIsNone(
@@ -922,7 +922,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             canonical = await client.get(
                 "/atlas",
-                headers={"Host": "atlas.tvr.lat"},
+                headers={"Host": "dash.tvr.lat", "X-TMod-Desktop-Version": "0.3.3"},
                 allow_redirects=False,
             )
             sgl = await client.get(
@@ -942,17 +942,40 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             billing_privacy_page = await client.get(
                 "/privacy",
-                headers={"Host": "dash.tvr.lat"},
+                headers={"Host": "atlas.tvr.lat"},
                 allow_redirects=False,
             )
             billing_privacy_text = await billing_privacy_page.text()
+            ecosystem = await client.get(
+                "/ecosystem",
+                headers={"Host": "tvr.lat"},
+                allow_redirects=False,
+            )
+            ecosystem_text = await ecosystem.text()
+            senate = await client.get(
+                "/senate",
+                headers={"Host": "senate.tvr.lat"},
+                allow_redirects=False,
+            )
+            senate_text = await senate.text()
+            legacy_reactor = await client.get(
+                "/reactor",
+                headers={"Host": "tvr.lat"},
+                allow_redirects=False,
+            )
+            atlas_store = await client.get(
+                "/atlas-billing",
+                headers={"Host": "atlas.tvr.lat"},
+                allow_redirects=False,
+            )
+            atlas_store_text = await atlas_store.text()
         finally:
             await client.close()
 
         self.assertEqual(atlas.status, 308)
-        self.assertEqual(atlas.headers["Location"], "https://atlas.tvr.lat/atlas")
+        self.assertEqual(atlas.headers["Location"], "https://dash.tvr.lat/atlas")
         self.assertEqual(games.status, 308)
-        self.assertEqual(games.headers["Location"], "https://tvr.lat/games/demo-match")
+        self.assertEqual(games.headers["Location"], "https://home.tvr.lat/games/demo-match")
         self.assertEqual(ticket.status, 308)
         self.assertIn("https://reactor.tvr.lat/auth/ticket?", ticket.headers["Location"])
         self.assertEqual(canonical.status, 200)
@@ -970,6 +993,19 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "Политика обработки персональных данных",
             billing_privacy_text,
         )
+        self.assertEqual(ecosystem.status, 200)
+        self.assertIn("Технологии,", ecosystem_text)
+        self.assertIn("T-Mod Home", ecosystem_text)
+        self.assertEqual(senate.status, 200)
+        self.assertIn("Продолжить в T-Mod Desktop", senate_text)
+        self.assertEqual(legacy_reactor.status, 308)
+        self.assertEqual(
+            legacy_reactor.headers["Location"],
+            "https://home.tvr.lat/reactor",
+        )
+        self.assertEqual(atlas_store.status, 200)
+        self.assertIn("ATLAS INTELLIGENCE", atlas_store_text)
+        self.assertIn("Магазин и управление Atlas Token", atlas_store_text)
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)

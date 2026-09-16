@@ -3937,12 +3937,12 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             )
             public_api = await client.get(
                 "/api/atlas/bootstrap",
-                headers={"Host": "atlas.tvr.lat"},
+                headers={"Host": "dash.tvr.lat"},
             )
             desktop_api = await client.get(
                 "/api/atlas/bootstrap",
                 headers={
-                    "Host": "atlas.tvr.lat",
+                    "Host": "dash.tvr.lat",
                     "User-Agent": "T-Mod QA TModDesktop/0.3.5",
                 },
             )

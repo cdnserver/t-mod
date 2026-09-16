@@ -35,7 +35,7 @@ RELIABILITY_DOMAIN_CACHE_SECONDS = _env_int(
 )
 STARTED_MONOTONIC = time.monotonic()
 PUBLIC_SURFACES = (
-    ("member", "Реактор", "PORTAL_WEB_PUBLIC_URL", "https://tvr.lat"),
+    ("member", "Реактор", "PORTAL_WEB_PUBLIC_URL", "https://home.tvr.lat"),
     ("admin", "Ядерный Реактор", "REACTOR_WEB_PUBLIC_URL", "https://reactor.tvr.lat"),
     ("consensus", "Консенсус", "CONSENSUS_WEB_PUBLIC_URL", "https://consensus.tvr.lat"),
     ("atlas", "Atlas", "ATLAS_WEB_PUBLIC_URL", "https://atlas.tvr.lat"),

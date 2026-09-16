@@ -17,22 +17,23 @@ describe("desktop service boundary", () => {
   });
 
   it("allows secure T-Mod hosts and rejects lookalikes", () => {
-    expect(isTrustedTModUrl("https://tvr.lat/reactor")).toBe(true);
+    expect(isTrustedTModUrl("https://home.tvr.lat/")).toBe(true);
     expect(isTrustedTModUrl("https://consensus.tvr.lat/")).toBe(true);
-    expect(isTrustedTModUrl("http://tvr.lat/reactor")).toBe(false);
+    expect(isTrustedTModUrl("http://home.tvr.lat/")).toBe(false);
     expect(isTrustedTModUrl("https://tvr.lat.attacker.example/")).toBe(false);
     expect(isTrustedTModUrl("https://unknown.tvr.lat/")).toBe(false);
     expect(isTrustedTModUrl("https://tvr.lat:8443/reactor")).toBe(false);
     expect(isTrustedTModUrl("https://user:password@tvr.lat/reactor")).toBe(false);
     expect(isTrustedTModUrl("javascript:alert(1)")).toBe(false);
     expect(TRUSTED_TMOD_HOSTS.has("atlas.tvr.lat")).toBe(true);
+    expect(TRUSTED_TMOD_HOSTS.has("dash.tvr.lat")).toBe(true);
   });
 
   it("recognizes only canonical T-Mod authentication routes", () => {
     expect(isTModAuthenticationUrl("https://tvr.lat/login?next=/reactor")).toBe(true);
     expect(isTModAuthenticationUrl("https://reactor.tvr.lat/auth/login?client=desktop")).toBe(true);
-    expect(isTModAuthenticationUrl("https://atlas.tvr.lat/logout")).toBe(true);
-    expect(isTModAuthenticationUrl("https://atlas.tvr.lat/atlas")).toBe(false);
+    expect(isTModAuthenticationUrl("https://dash.tvr.lat/logout")).toBe(true);
+    expect(isTModAuthenticationUrl("https://dash.tvr.lat/atlas")).toBe(false);
     expect(isTModAuthenticationUrl("https://tvr.lat.attacker.example/login")).toBe(false);
   });
 

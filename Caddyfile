@@ -55,7 +55,27 @@
 
 tvr.lat {
 	handle / {
+		rewrite * /ecosystem
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
+home.tvr.lat {
+	handle / {
 		rewrite * /reactor
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
+senate.tvr.lat {
+	handle / {
+		rewrite * /senate
 		import tmod_backend
 	}
 	handle {
@@ -79,7 +99,7 @@ consensus.tvr.lat {
 
 atlas.tvr.lat {
 	handle / {
-		rewrite * /atlas
+		rewrite * /atlas-billing
 		import tmod_backend
 	}
 	handle {
@@ -89,7 +109,7 @@ atlas.tvr.lat {
 
 dash.tvr.lat {
 	handle / {
-		rewrite * /atlas-billing
+		rewrite * /atlas
 		import tmod_backend
 	}
 	handle {

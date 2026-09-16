@@ -395,7 +395,7 @@ def register_atlas_web_routes(
         # hosts are denied as well, rather than accidentally bypassing the
         # desktop-only policy.
         public_request = has_trusted_forwarded_host(request)
-        if public_request and host != "atlas.tvr.lat":
+        if public_request and host != "dash.tvr.lat":
             raise web.HTTPForbidden(
                 text=json.dumps(
                     {
@@ -408,7 +408,7 @@ def register_atlas_web_routes(
             )
         if _is_tmod_desktop_request(request):
             return
-        if host != "atlas.tvr.lat":
+        if host != "dash.tvr.lat":
             return
         raise web.HTTPForbidden(
             text=json.dumps(
@@ -560,7 +560,7 @@ def register_atlas_web_routes(
                     {
                         "error": "atlas_tokens_required",
                         "message": "Atlas Token закончились. Пополните баланс или выберите тариф.",
-                        "billing_url": "https://dash.tvr.lat/",
+                        "billing_url": "https://atlas.tvr.lat/#plans",
                         "balance_tokens": int(entitlement.get("balance_tokens") or 0),
                     },
                     ensure_ascii=False,

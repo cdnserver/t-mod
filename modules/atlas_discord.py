@@ -178,7 +178,7 @@ def setup_atlas_discord(bot: commands.Bot) -> None:
             if not bool(entitlement.get("allowed")):
                 await conversation_channel.send(
                     "Atlas Token закончились. Пополните баланс или выберите тариф: "
-                    "https://dash.tvr.lat/",
+                    "https://atlas.tvr.lat/#plans",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return

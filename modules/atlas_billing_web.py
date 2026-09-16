@@ -36,8 +36,8 @@ def require_atlas_billing_host(request: web.Request) -> None:
     host = request_public_host(request).split(":", 1)[0].strip().lower()
     # The in-process test server and direct loopback diagnostics are
     # intentionally allowed. Public T-Mod hosts must not mirror sales pages:
-    # Robokassa reviews one canonical store at dash.tvr.lat.
-    if (host == "tvr.lat" or host.endswith(".tvr.lat")) and host != "dash.tvr.lat":
+    # Robokassa reviews one canonical store at atlas.tvr.lat.
+    if (host == "tvr.lat" or host.endswith(".tvr.lat")) and host != "atlas.tvr.lat":
         raise web.HTTPNotFound()
 
 
@@ -46,6 +46,7 @@ def register_atlas_billing_web_routes(
     *,
     asset_dir: Path,
     authenticate: AuthenticatedRequest,
+    ecosystem_asset_dir: Path | None = None,
 ) -> None:
     public_pages = {
         "/atlas-billing": "index.html",
@@ -67,6 +68,16 @@ def register_atlas_billing_web_routes(
     }
 
     async def page(request: web.Request) -> web.FileResponse:
+        host = request_public_host(request).split(":", 1)[0].strip().lower()
+        if (
+            host == "tvr.lat"
+            and ecosystem_asset_dir is not None
+            and request.path.rstrip("/")
+            in {"/legal", "/privacy", "/data-request"}
+        ):
+            response = web.FileResponse(ecosystem_asset_dir / "legal.html")
+            response.headers["Cache-Control"] = "no-cache"
+            return response
         require_atlas_billing_host(request)
         filename = public_pages.get(request.path)
         if filename is None:

@@ -25,7 +25,7 @@ export const services: ServiceDefinition[] = [
     eyebrow: "Личный контур",
     description: "Мандат, казна, законопроекты и личные события.",
     accent: "#aa8cff",
-    url: "https://tvr.lat/reactor",
+    url: "https://home.tvr.lat/",
     shortcut: "⌘ 2",
   },
   {
@@ -43,7 +43,7 @@ export const services: ServiceDefinition[] = [
     eyebrow: "Интеллектуальный контур",
     description: "Правовой помощник, источники и специализированные агенты.",
     accent: "#52dfc1",
-    url: "https://atlas.tvr.lat/",
+    url: "https://dash.tvr.lat/",
     shortcut: "⌘ 4",
   },
   {
@@ -68,7 +68,7 @@ export const services: ServiceDefinition[] = [
     eyebrow: "Игровой зал",
     description: "Шахматы, нарды и приватные матчи по приглашению.",
     accent: "#d58af0",
-    url: "https://tvr.lat/games",
+    url: "https://home.tvr.lat/games",
   },
   {
     id: "tasks",
@@ -97,9 +97,11 @@ export const serviceById = Object.fromEntries(
 // arbitrary subdomain must never become an embedded T-Mod surface.
 export const TRUSTED_TMOD_HOSTS = new Set([
   "tvr.lat",
+  "home.tvr.lat",
   "reactor.tvr.lat",
   "consensus.tvr.lat",
   "atlas.tvr.lat",
+  "dash.tvr.lat",
   "sgl.tvr.lat",
   "ovr.tvr.lat",
   "phx.tvr.lat",

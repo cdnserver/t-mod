@@ -1795,7 +1795,7 @@ def register_reactor_web_routes(
                 service(
                     "reactor",
                     "Мой Reactor",
-                    "https://tvr.lat/reactor",
+                    "https://home.tvr.lat/",
                     enabled=guild_member,
                     reason=member_reason,
                 ),
@@ -1803,7 +1803,7 @@ def register_reactor_web_routes(
                 service(
                     "atlas",
                     "Atlas",
-                    "https://atlas.tvr.lat/",
+                    "https://dash.tvr.lat/",
                     enabled=atlas_access,
                     reason="Доступ к Atlas AI выдаётся администраторами.",
                 ),
@@ -1818,7 +1818,7 @@ def register_reactor_web_routes(
                 service(
                     "games",
                     "T-Mod Games",
-                    "https://tvr.lat/games",
+                    "https://home.tvr.lat/games",
                     enabled=guild_member,
                     reason=member_reason,
                 ),
@@ -1845,12 +1845,12 @@ def register_reactor_web_routes(
                 "catalog": overlay_context["catalog"],
                 "default_hotkey": "Ctrl+Shift+Space",
                 "endpoints": {
-                    "context": "https://atlas.tvr.lat/api/atlas/overlay/context",
-                    "transcribe": "https://atlas.tvr.lat/api/atlas/overlay/transcribe",
-                    "stream": "https://atlas.tvr.lat/api/atlas/chat/stream",
-                    "tts_voices": "https://atlas.tvr.lat/api/atlas/overlay/tts/voices",
-                    "tts_preview": "https://atlas.tvr.lat/api/atlas/overlay/tts/preview",
-                    "tts_synthesize": "https://atlas.tvr.lat/api/atlas/overlay/tts/synthesize",
+                    "context": "https://dash.tvr.lat/api/atlas/overlay/context",
+                    "transcribe": "https://dash.tvr.lat/api/atlas/overlay/transcribe",
+                    "stream": "https://dash.tvr.lat/api/atlas/chat/stream",
+                    "tts_voices": "https://dash.tvr.lat/api/atlas/overlay/tts/voices",
+                    "tts_preview": "https://dash.tvr.lat/api/atlas/overlay/tts/preview",
+                    "tts_synthesize": "https://dash.tvr.lat/api/atlas/overlay/tts/synthesize",
                 },
                 "capabilities": {
                     "push_to_talk": True,

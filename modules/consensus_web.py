@@ -150,11 +150,23 @@ REACTOR_WEB_PUBLIC_URL = _configured_surface_url(
 )
 PORTAL_WEB_PUBLIC_URL = _configured_surface_url(
     "PORTAL_WEB_PUBLIC_URL",
+    "https://home.tvr.lat",
+)
+ECOSYSTEM_WEB_PUBLIC_URL = _configured_surface_url(
+    "ECOSYSTEM_WEB_PUBLIC_URL",
     "https://tvr.lat",
+)
+SENATE_WEB_PUBLIC_URL = _configured_surface_url(
+    "SENATE_WEB_PUBLIC_URL",
+    "https://senate.tvr.lat",
 )
 ATLAS_WEB_PUBLIC_URL = _configured_surface_url(
     "ATLAS_WEB_PUBLIC_URL",
     "https://atlas.tvr.lat",
+)
+ATLAS_APP_PUBLIC_URL = _configured_surface_url(
+    "ATLAS_APP_PUBLIC_URL",
+    "https://dash.tvr.lat",
 )
 ZIGMUND_WEB_PUBLIC_URL = _configured_surface_url(
     "ZIGMUND_WEB_PUBLIC_URL",
@@ -244,8 +256,8 @@ def consensus_web_entry_url(
         base_url = REACTOR_WEB_PUBLIC_URL
     elif destination == "/reactor" and PORTAL_WEB_PUBLIC_URL:
         base_url = PORTAL_WEB_PUBLIC_URL
-    elif destination == "/atlas" and ATLAS_WEB_PUBLIC_URL:
-        base_url = ATLAS_WEB_PUBLIC_URL
+    elif destination == "/atlas" and ATLAS_APP_PUBLIC_URL:
+        base_url = ATLAS_APP_PUBLIC_URL
     elif destination == "/sgl" and SGL_WEB_PUBLIC_URL:
         base_url = SGL_WEB_PUBLIC_URL
     elif destination == "/admission" and ADMISSION_WEB_PUBLIC_URL:
@@ -1008,6 +1020,10 @@ def _canonical_surface_location(request: web.Request) -> str | None:
 
     if path == "/":
         target_url = consensus_url
+    elif belongs_to("/ecosystem"):
+        target_url = ECOSYSTEM_WEB_PUBLIC_URL
+    elif belongs_to("/senate"):
+        target_url = SENATE_WEB_PUBLIC_URL
     elif belongs_to("/host"):
         target_url = consensus_url
     elif belongs_to("/admin"):
@@ -1017,14 +1033,16 @@ def _canonical_surface_location(request: web.Request) -> str | None:
     elif path.rstrip("/") in {
         "/legal", "/privacy", "/terms", "/cookies", "/data-request"
     }:
-        # dash.tvr.lat owns a complete, public legal centre for the Atlas
+        # atlas.tvr.lat owns a complete, public legal centre for the Atlas
         # store.  Keeping these documents on the checkout hostname is both
         # clearer for buyers and required by the payment-provider review.
         current = request_public_host(request).strip().lower().split(":", 1)[0]
-        if current != "dash.tvr.lat" or path.rstrip("/") == "/terms":
-            target_url = PORTAL_WEB_PUBLIC_URL
-    elif belongs_to("/atlas"):
+        if current != "atlas.tvr.lat" or path.rstrip("/") == "/terms":
+            target_url = ECOSYSTEM_WEB_PUBLIC_URL
+    elif belongs_to("/atlas-billing"):
         target_url = ATLAS_WEB_PUBLIC_URL
+    elif belongs_to("/atlas"):
+        target_url = ATLAS_APP_PUBLIC_URL
     elif belongs_to("/sgl"):
         target_url = SGL_WEB_PUBLIC_URL
     elif belongs_to("/ovr") or path.startswith("/api/ovr"):
@@ -1048,6 +1066,8 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         elif next_path in {"/reactor", "/games"}:
             target_url = PORTAL_WEB_PUBLIC_URL
         elif next_path == "/atlas":
+            target_url = ATLAS_APP_PUBLIC_URL
+        elif next_path == "/atlas-billing":
             target_url = ATLAS_WEB_PUBLIC_URL
         elif next_path == "/sgl":
             target_url = SGL_WEB_PUBLIC_URL
@@ -1070,9 +1090,12 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         str(urlsplit(value).hostname or "").lower()
         for value in (
             consensus_url,
+            ECOSYSTEM_WEB_PUBLIC_URL,
+            SENATE_WEB_PUBLIC_URL,
             REACTOR_WEB_PUBLIC_URL,
             PORTAL_WEB_PUBLIC_URL,
             ATLAS_WEB_PUBLIC_URL,
+            ATLAS_APP_PUBLIC_URL,
             ZIGMUND_WEB_PUBLIC_URL,
             SGL_WEB_PUBLIC_URL,
             OVR_WEB_PUBLIC_URL,
@@ -1248,6 +1271,12 @@ def create_consensus_web_app(
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
 
+    async def ecosystem_page(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "ecosystem.html")
+
+    async def senate_page(_: web.Request) -> web.FileResponse:
+        return web.FileResponse(_ASSET_DIR / "senate.html")
+
     async def tasks_page(request: web.Request) -> web.StreamResponse:
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is None or not principal.guild_member:
@@ -1403,6 +1432,8 @@ def create_consensus_web_app(
             "global-log.css",
             "global-log.js",
             "global-log-client.js",
+            "ecosystem.css",
+            "ecosystem.js",
         }:
             raise web.HTTPNotFound()
         response = web.FileResponse(_ASSET_DIR / name)
@@ -1413,12 +1444,12 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
-            if not principal.guild_member and next_path not in {"/atlas", "/admission"}:
+            if not principal.guild_member and next_path not in {"/atlas", "/atlas-billing", "/admission"}:
                 raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
@@ -1553,7 +1584,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1579,7 +1610,7 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else "/"
         )
         if len(attempts) >= 15:
@@ -1712,7 +1743,7 @@ def create_consensus_web_app(
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
         if member is None and not desktop_client:
-            if next_path == "/admission":
+            if next_path in {"/admission", "/atlas-billing"}:
                 pass
             elif next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(
@@ -2111,6 +2142,10 @@ def create_consensus_web_app(
         return web.json_response(response_payload)
 
     app.router.add_get("/", index)
+    app.router.add_get("/ecosystem", ecosystem_page)
+    app.router.add_get("/ecosystem/", ecosystem_page)
+    app.router.add_get("/senate", senate_page)
+    app.router.add_get("/senate/", senate_page)
     app.router.add_get("/tasks", tasks_page)
     app.router.add_get("/tasks/", tasks_page)
     app.router.add_get("/banned", banned_page)
@@ -2175,6 +2210,7 @@ def create_consensus_web_app(
         app,
         asset_dir=_ATLAS_BILLING_ASSET_DIR,
         authenticate=authenticated_request,
+        ecosystem_asset_dir=_ASSET_DIR,
     )
     register_sgl_web_routes(
         app,
