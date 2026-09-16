@@ -37,6 +37,10 @@ body { font-size: 16px; }
 .eyebrow, .plan small, .store-trust-grid small, .atlas-intelligence small { font-size: 10px; }
 .principles p, .plan p, .plan ul, .token-section p, .store-trust > header > p:last-child { font-size: 15px; }
 .plan button, .pack button, #checkout-submit, .hero-actions a { font-size: 13px; }
+.hero h1 sup { margin-left: .18em; color: #8fcfff; font: 500 .22em/1 Unbounded, sans-serif; vertical-align: top; }
+.offer-disclaimer { max-width: 680px; margin: 22px 0 0; color: #6f8499; font-size: 11px; line-height: 1.6; }
+.offer-disclaimer b { color: #9eb4c9; font-weight: 700; }
+.offer-disclaimer a { color: #93cfff; text-decoration-color: #6fbfff55; text-underline-offset: 3px; }
 .store-trust-grid span, .payment-trust small { font-size: 14px; }
 .intelligence-grid p { font-size: 15px; }
 .intelligence-main > div span { font-size: 11px; }

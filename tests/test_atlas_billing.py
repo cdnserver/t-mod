@@ -532,3 +532,11 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertIn("фактически понесённых", combined)
         self.assertIn("федерального закона от 27.07.2006 № 152-фз", combined)
         self.assertIn("трансграничная передача", combined)
+
+    def test_store_distinguishes_promotional_copy_from_contract_terms(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "atlas-billing" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("* Не является публичной офертой.", html)
+        self.assertIn("Рекламные слоганы и образные описания", html)
+        self.assertIn('href="/offer"', html)
