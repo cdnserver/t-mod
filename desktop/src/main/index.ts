@@ -38,6 +38,7 @@ import type {
   DesktopUpdateState,
   ServiceId,
 } from "../shared/contracts";
+import { desktopProduct } from "../shared/product";
 
 const { autoUpdater } = electronUpdater;
 
@@ -58,7 +59,7 @@ const bundleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const SHELL_HEADER_HEIGHT = 70;
 const SHELL_SIDEBAR_WIDTH = 286;
 const SHELL_SIDEBAR_COLLAPSED_WIDTH = 78;
-const DESKTOP_PARTITION = "persist:tmod-desktop-v1";
+const DESKTOP_PARTITION = desktopProduct.partition;
 const ACCOUNT_SESSION_COOKIE = "tmod_account_session";
 const BOOTSTRAP_URLS = [
   "https://tvr.lat/api/desktop/v1/bootstrap",
@@ -71,7 +72,7 @@ const AUTH_LOGIN_URLS = [
   "https://reactor.tvr.lat/auth/login?client=desktop",
 ] as const;
 const LOGOUT_URL = "https://tvr.lat/logout";
-const RELEASE_URL = "https://github.com/cdnserver/t-mod-releases/releases/latest";
+const RELEASE_URL = desktopProduct.releaseUrl;
 const ATLAS_OVERLAY_SETTINGS_URL = "https://tvr.lat/desktop/atlas-overlay-settings";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
 const BOOTSTRAP_WAVES = 3;
@@ -89,7 +90,7 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   serviceZoom: 1,
   idleLockMinutes: 10,
   lockSound: true,
-  updateChannel: "beta",
+  updateChannel: desktopProduct.updateChannel,
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -123,7 +124,7 @@ let atlasOverlay: AtlasOverlayController | undefined;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
   currentVersion: app.getVersion(),
-  channel: "beta",
+  channel: desktopProduct.updateChannel,
 };
 let forceUpdateRequired = false;
 
@@ -138,7 +139,7 @@ const INSTALL_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
 
 async function loadOrCreateDesktopInstallToken(): Promise<string> {
   const directory = app.getPath("userData");
-  const destination = path.join(directory, "desktop-installation.json");
+  const destination = path.join(directory, desktopProduct.installationFile);
   try {
     const record = JSON.parse(await readFile(destination, "utf8")) as {
       protected?: boolean;
@@ -231,11 +232,15 @@ function desktopIdentityHeaders(): Record<string, string> {
         "X-TMod-Install-Token": desktopInstallToken,
         "X-TMod-Desktop-Platform": process.platform,
         "X-TMod-Desktop-Version": app.getVersion(),
+        "X-TMod-Desktop-Edition": desktopProduct.edition,
         ...(desktopDeviceFingerprint
           ? { "X-TMod-Device-Fingerprint": desktopDeviceFingerprint }
           : {}),
       }
-    : { "X-TMod-Desktop-Version": app.getVersion() };
+    : {
+        "X-TMod-Desktop-Version": app.getVersion(),
+        "X-TMod-Desktop-Edition": desktopProduct.edition,
+      };
 }
 
 function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {}): void {
@@ -330,13 +335,20 @@ function applyClientUpdatePolicy(data: DesktopBootstrap): void {
     minimumVersion: policy?.minimum_version || undefined,
     releaseUrl: policy?.release_url || RELEASE_URL,
     message: forceUpdateRequired
-      ? policy?.message || "Для продолжения требуется обновление T-Mod Desktop."
+      ? policy?.message || `Для продолжения требуется обновление ${desktopProduct.fullName}.`
       : updateState.message,
   });
   if (forceUpdateRequired) void checkForUpdates();
 }
 
 async function checkForUpdates(): Promise<DesktopUpdateState> {
+  if (desktopProduct.privateEdition) {
+    return setUpdateState({
+      phase: "current",
+      message: "Приватная редакция получает только персонально опубликованные сборки.",
+      checkedAt: new Date().toISOString(),
+    });
+  }
   if (!app.isPackaged) {
     return setUpdateState({
       phase: "development",
@@ -358,6 +370,14 @@ async function checkForUpdates(): Promise<DesktopUpdateState> {
 }
 
 function configureAutoUpdater(): void {
+  if (desktopProduct.privateEdition) {
+    setUpdateState({
+      phase: "current",
+      message: "LUMEN подключён к закрытому каналу выпусков.",
+      checkedAt: new Date().toISOString(),
+    });
+    return;
+  }
   if (!app.isPackaged) {
     setUpdateState({ phase: "development" });
     return;
@@ -480,7 +500,9 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
     idleLockMinutes: [0, 5, 10, 15, 30].includes(idleLockMinutes) ? idleLockMinutes : 10,
     lockSound: candidate.lockSound !== false,
-    updateChannel: candidate.updateChannel === "dev" ? "dev" : "beta",
+    updateChannel: desktopProduct.privateEdition
+      ? "private"
+      : candidate.updateChannel === "dev" ? "dev" : "beta",
   };
 }
 
@@ -762,6 +784,20 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         }
         return { authenticated: false, online: true, error: "login_required" };
       }
+      if (response.status === 403 && desktopProduct.privateEdition) {
+        if (current) {
+          lastSuccessfulBootstrap = undefined;
+          lastSuccessfulBootstrapAt = undefined;
+          clearServiceManifest();
+          reconcileActiveServiceAccess();
+          await applyAtlasOverlayBootstrapSafely(undefined);
+        }
+        return {
+          authenticated: false,
+          online: true,
+          error: "private_access_required",
+        };
+      }
       if (response.status === 423) {
         let decision = { reason: "Решение администратора T-Mod.", reference: "—" };
         try {
@@ -914,6 +950,9 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
     if (!response) return { ok: false, error: "network_unavailable" };
     if (response.status === 403 || response.status === 423) {
       if (response.status === 423) await bootstrap();
+      if (response.status === 403 && desktopProduct.privateEdition) {
+        return { ok: false, error: "private_access_required" };
+      }
       return { ok: false, error: "banned" };
     }
     const error = loginErrorFromLocation(response.headers.get("location") || response.url);
@@ -927,7 +966,9 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
     if (!result?.authenticated) {
       return {
         ok: false,
-        error: result?.online ? "login_failed" : "network_unavailable",
+        error: result?.error === "private_access_required"
+          ? "private_access_required"
+          : result?.online ? "login_failed" : "network_unavailable",
       };
     }
     activeService = "home";
@@ -1120,7 +1161,7 @@ function registerIpc(): void {
 }
 
 async function createWindow(): Promise<void> {
-  log.info("Creating T-Mod desktop window");
+  log.info(`Creating ${desktopProduct.fullName} window`);
   desktopInstallToken = await loadOrCreateDesktopInstallToken();
   desktopDeviceFingerprint = await buildDesktopDeviceFingerprint();
   const { workArea } = screen.getPrimaryDisplay();
@@ -1136,7 +1177,7 @@ async function createWindow(): Promise<void> {
     show: false,
     frame: false,
     backgroundColor: "#07090f",
-    title: "T-Mod",
+    title: desktopProduct.fullName,
     webPreferences: {
       preload: path.join(bundleDirectory, "../preload/index.cjs"),
       contextIsolation: true,
@@ -1159,10 +1200,10 @@ async function createWindow(): Promise<void> {
   secureContents(mainWindow.webContents, { local: true });
   secureContents(serviceView.webContents, { local: false });
   serviceView.webContents.setUserAgent(
-    `${serviceView.webContents.getUserAgent()} TModDesktop/${app.getVersion()}`,
+    `${serviceView.webContents.getUserAgent()} TModDesktop/${app.getVersion()} ${desktopProduct.name}/${app.getVersion()}`,
   );
   const networkSession = desktopSession();
-  const desktopUserAgent = `${networkSession.getUserAgent()} TModDesktop/${app.getVersion()}`;
+  const desktopUserAgent = `${networkSession.getUserAgent()} TModDesktop/${app.getVersion()} ${desktopProduct.name}/${app.getVersion()}`;
   networkSession.setUserAgent(desktopUserAgent);
   networkSession.webRequest.onBeforeSendHeaders(
     { urls: ["https://tvr.lat/*", "https://*.tvr.lat/*"] },
@@ -1329,10 +1370,10 @@ async function createWindow(): Promise<void> {
   } else {
     await mainWindow.loadFile(path.join(bundleDirectory, "../renderer/index.html"));
   }
-  log.info("T-Mod desktop shell loaded");
+  log.info(`${desktopProduct.fullName} shell loaded`);
   mainWindow.show();
   mainWindow.focus();
-  log.info("T-Mod desktop window shown");
+  log.info(`${desktopProduct.fullName} window shown`);
 }
 
 const ownsInstanceLock = app.requestSingleInstanceLock();
@@ -1349,8 +1390,8 @@ if (!ownsInstanceLock) {
 
 app.whenReady().then(async () => {
   if (!ownsInstanceLock) return;
-  app.setAppUserModelId("lat.tvr.tmod.desktop");
-  app.setAsDefaultProtocolClient("tmod");
+  app.setAppUserModelId(desktopProduct.appId);
+  app.setAsDefaultProtocolClient(desktopProduct.protocol);
   registerIpc();
   configureAutoUpdater();
   await createWindow();
@@ -1365,10 +1406,10 @@ app.whenReady().then(async () => {
   });
 }).catch((error: unknown) => {
   const message = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack || ""}` : String(error);
-  log.error("T-Mod startup failed", message);
-  console.error("T-Mod startup failed", message);
+  log.error(`${desktopProduct.fullName} startup failed`, message);
+  console.error(`${desktopProduct.fullName} startup failed`, message);
   dialog.showErrorBox(
-    "T-Mod не удалось запустить",
+    `${desktopProduct.name} не удалось запустить`,
     "Приложение не смогло открыть главное окно. Переустановите последнюю версию или отправьте журнал разработчику.",
   );
   app.quit();

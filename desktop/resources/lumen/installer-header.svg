@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="57" viewBox="0 0 150 57">
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#071721"/><stop offset="1" stop-color="#0b0d13"/></linearGradient>
+    <linearGradient id="light" x2="1" y2="1"><stop stop-color="#f2d49b"/><stop offset="1" stop-color="#8ddcff"/></linearGradient>
+  </defs>
+  <rect width="150" height="57" fill="url(#bg)"/>
+  <path d="M120 3 147 28.5 120 54 93 28.5 120 3Z" fill="none" stroke="#8ddcff" stroke-opacity=".25"/>
+  <circle cx="120" cy="28.5" r="15" fill="#08141d" stroke="url(#light)"/>
+  <path d="M114 18v18h12" fill="none" stroke="url(#light)" stroke-width="4" stroke-linecap="round"/>
+  <text x="12" y="26" fill="#f7e7bf" font-family="Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="2">LUMEN</text>
+  <text x="12" y="40" fill="#668391" font-family="Arial,sans-serif" font-size="5.5" letter-spacing="1">PRIVATE OWNER EDITION</text>
+</svg>
+

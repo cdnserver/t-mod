@@ -1,0 +1,61 @@
+appId: lat.tvr.technology.lumen
+productName: LUMEN
+artifactName: LUMEN-Private-${version}-${os}-${arch}.${ext}
+directories:
+  output: release-lumen
+  buildResources: resources
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: resources/atlas-overlay-hotkey.ps1
+    to: atlas-overlay-hotkey.ps1
+asar: true
+compression: maximum
+icon: resources/lumen/icon.png
+win:
+  icon: resources/lumen/icon.png
+  target: nsis
+  artifactName: LUMEN-Private-Setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: LUMEN
+  uninstallDisplayName: LUMEN — Технологии Товарищества
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  installerSidebar: resources/lumen/installer-sidebar.bmp
+  uninstallerSidebar: resources/lumen/installer-sidebar.bmp
+  installerHeader: resources/lumen/installer-header.bmp
+  include: resources/lumen/installer.nsh
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+  artifactName: LUMEN-Private-mac-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+dmg:
+  background: resources/dmg-background.png
+  iconSize: 112
+  window:
+    width: 600
+    height: 420
+  contents:
+    - x: 170
+      y: 220
+      type: file
+    - x: 430
+      y: 220
+      type: link
+      path: /Applications
+linux:
+  target: AppImage
+  category: Utility
+  artifactName: LUMEN-Private-Linux-${arch}.${ext}

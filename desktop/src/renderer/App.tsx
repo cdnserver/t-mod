@@ -27,6 +27,7 @@ import type {
   AtlasOverlayRuntimeStatus,
   AtlasOverlayVoiceCatalog,
 } from "../shared/atlas-overlay";
+import { desktopProduct } from "../shared/product";
 import {
   DEFAULT_ATLAS_OVERLAY_CONFIG,
   normalizeAtlasOverlayConfig,
@@ -47,7 +48,7 @@ type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
   "maximize" | "close" | "settings" | "menu" | "link" | "external";
 
-const PREFERENCES_KEY = "tmod-desktop-preferences-v1";
+const PREFERENCES_KEY = desktopProduct.preferencesKey;
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   preferredName: "",
   sidebarCollapsed: false,
@@ -57,7 +58,7 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   serviceZoom: 1,
   idleLockMinutes: 10,
   lockSound: true,
-  updateChannel: "beta",
+  updateChannel: desktopProduct.updateChannel,
 };
 
 function loadPreferences(): DesktopShellPreferences {
@@ -75,7 +76,9 @@ function loadPreferences(): DesktopShellPreferences {
         ? Number(stored.idleLockMinutes)
         : 10,
       lockSound: stored.lockSound !== false,
-      updateChannel: stored.updateChannel === "dev" ? "dev" : "beta",
+      updateChannel: desktopProduct.privateEdition
+        ? "private"
+        : stored.updateChannel === "dev" ? "dev" : "beta",
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -663,7 +666,7 @@ export function App() {
   const userName = cinematicPreviewName
     || preferences.preferredName.trim()
     || bootstrap.data?.viewer.name
-    || "T-Mod";
+    || (desktopProduct.privateEdition ? "Владелец" : desktopProduct.name);
   const connectionState = bootstrap.online
     ? "online"
     : bootstrap.authenticated
@@ -761,6 +764,7 @@ export function App() {
     preferences.compactMode ? "compact-mode" : "",
     preferences.reduceMotion ? "reduce-motion" : "",
     preferences.solidSurfaces ? "solid-surfaces" : "",
+    `edition-${desktopProduct.edition}`,
   ].filter(Boolean).join(" ");
 
   const copyCurrentLink = async () => {
@@ -777,16 +781,16 @@ export function App() {
           aria-label={preferences.sidebarCollapsed ? "Развернуть меню" : "Свернуть меню"}
           title={preferences.sidebarCollapsed ? "Развернуть меню" : "Свернуть меню"}
         ><Icon name="menu"/></button>
-        <button className="brand" onClick={() => void selectService("home")} aria-label="T-Mod — домой">
-          <span className="brand-mark"><span>T</span></span>
-          <span><strong>T-Mod</strong><small>desktop system</small></span>
+        <button className="brand" onClick={() => void selectService("home")} aria-label={`${desktopProduct.name} — домой`}>
+          <span className="brand-mark"><span>{desktopProduct.mark}</span></span>
+          <span><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "technologies · private" : "desktop system"}</small></span>
         </button>
 
         <button className="quick-search" onClick={() => setPaletteOpen(true)}>
           <Icon name="search"/><span>Найти или открыть</span><kbd>⌘ K</kbd>
         </button>
 
-        <nav className="nav-list" aria-label="Сервисы T-Mod">
+        <nav className="nav-list" aria-label={`Сервисы ${desktopProduct.name}`}>
           {services.map((service) => {
             const remote = service.id === "home" ? undefined : access.get(service.id);
             const locked = service.id !== "home" && (
@@ -817,7 +821,7 @@ export function App() {
           <div className="identity-row">
           <button className="identity" onClick={() => bootstrap.authenticated ? void selectService("reactor") : void selectService("home")}>
             <span className="avatar">{userName.slice(0, 1).toUpperCase()}</span>
-            <span><strong>{bootstrap.authenticated ? userName : "Войти в T-Mod"}</strong><small>{bootstrap.data?.viewer.account_tier === "administrator" ? "Администратор" : bootstrap.data?.viewer.guild_member ? "Товарищество" : "Единый аккаунт"}</small></span>
+            <span><strong>{bootstrap.authenticated ? userName : `Войти в ${desktopProduct.name}`}</strong><small>{bootstrap.data?.viewer.account_tier === "administrator" ? "Администратор" : bootstrap.data?.viewer.guild_member ? "Товарищество" : "Единый аккаунт"}</small></span>
             <span className="identity-arrow">›</span>
           </button>
           {bootstrap.authenticated && <button className="logout-button" onClick={() => void logout()} title="Выйти из аккаунта"><Icon name="logout"/></button>}
@@ -837,7 +841,7 @@ export function App() {
               className={`update-pill ${updateState.phase}`}
               onClick={runUpdateAction}
               disabled={updateBusy}
-              title={updateState.message || "Проверить обновления T-Mod"}
+              title={updateState.message || `Проверить обновления ${desktopProduct.name}`}
             >
               <Icon name={updateState.phase === "ready" ? "download" : "refresh"}/>
               <span>{updateLabel}</span>
@@ -846,9 +850,9 @@ export function App() {
               )}
             </button>
           )}
-          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel.toUpperCase()}</button>
+          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel === "private" ? "OWNER" : preferences.updateChannel.toUpperCase()}</button>
           {desktopState.activeService === "atlas" && <button className={`atlas-overlay-shortcut ${overlayConfig.enabled ? "active" : ""} ${atlasSettingsOpen ? "selected" : ""}`} onClick={openAtlasSettings} title="Настройки Atlas"><Icon name="atlas"/><span>Настройки Atlas</span><i/></button>}
-          <button className="circle-action" onClick={lockNow} title="Заблокировать T-Mod"><Icon name="lock"/></button>
+          <button className="circle-action" onClick={lockNow} title={`Заблокировать ${desktopProduct.name}`}><Icon name="lock"/></button>
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
@@ -934,7 +938,7 @@ export function App() {
       {updateState.phase === "ready" && dismissedUpdate !== updateState.version && (
         <aside className="update-toast" role="status">
           <span className="update-toast-icon"><Icon name="download"/></span>
-          <div><small>T-Mod готов к обновлению</small><strong>Версия {updateState.version}</strong><p>Перезапуск займёт несколько секунд.</p></div>
+          <div><small>{desktopProduct.name} готов к обновлению</small><strong>Версия {updateState.version}</strong><p>Перезапуск займёт несколько секунд.</p></div>
           <button className="update-later" onClick={() => setDismissedUpdate(updateState.version)}>Позже</button>
           <button className="update-install" onClick={() => void browserApi()?.installUpdate()}>Перезапустить</button>
         </aside>
@@ -965,7 +969,7 @@ function MandatoryUpdate({ updateState }: { updateState: DesktopUpdateState }) {
     ? "Обновление готово"
     : failed
       ? "Нужен новый установщик"
-      : "Обновляем T-Mod";
+      : `Обновляем ${desktopProduct.name}`;
   const description = ready
     ? "Приложение автоматически перезапустится через несколько секунд."
     : failed
@@ -978,7 +982,7 @@ function MandatoryUpdate({ updateState }: { updateState: DesktopUpdateState }) {
       <div className="mandatory-update-glow" aria-hidden="true"/>
       <article>
         <div className="mandatory-update-mark" aria-hidden="true"><i/><span>T</span><i/></div>
-        <small>T-MOD · ОБЯЗАТЕЛЬНОЕ ОБНОВЛЕНИЕ</small>
+        <small>{desktopProduct.name.toUpperCase()} · ОБЯЗАТЕЛЬНОЕ ОБНОВЛЕНИЕ</small>
         <h1>{title}</h1>
         <p>{description}</p>
         <div className="mandatory-update-version"><span>Текущая <b>{updateState.currentVersion}</b></span><i>→</i><span>Минимальная <b>{updateState.minimumVersion || updateState.version || "актуальная"}</b></span></div>
@@ -1061,6 +1065,7 @@ function Home({
       reset_required: "PIN заблокирован. Напишите T-Mod команду /reset в Discord.",
       character_required: "Сначала добавьте персонажа через /account в Discord.",
       atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
+      private_access_required: "LUMEN — личная редакция владельца. Этот аккаунт не включён в закрытый список доступа.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
       network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
       login_failed: "Вход принят, но подтверждение сессии задержалось. Повторите нажатие — PIN вводить заново не потребуется.",
@@ -1081,19 +1086,19 @@ function Home({
     return (
       <section className="login-stage">
         <div className="login-visual">
-          <div className="login-sigil"><span>T</span><i/><i/><i/></div>
-          <p className="kicker">ЕДИНЫЙ КОНТУР</p>
-          <h1>Один вход.<br/>Вся экосистема.</h1>
-          <p>Ваши права, сервисы и сессия синхронизируются через защищённый T-Mod Account.</p>
+          <div className="login-sigil"><span>{desktopProduct.mark}</span><i/><i/><i/></div>
+          <p className="kicker">{desktopProduct.privateEdition ? "PRIVATE OWNER EDITION" : "ЕДИНЫЙ КОНТУР"}</p>
+          <h1>{desktopProduct.privateEdition ? <>Ваш контур.<br/>Без компромиссов.</> : <>Один вход.<br/>Вся экосистема.</>}</h1>
+          <p>{desktopProduct.privateEdition ? "Персональная система Технологий Товарищества. Допуск проверяется сервером при каждом запуске." : "Ваши права, сервисы и сессия синхронизируются через защищённый T-Mod Account."}</p>
           <div className="login-assurances"><span><Icon name="shield"/><b>HttpOnly-сессия</b></span><span><i/>Все домены tvr.lat</span></div>
         </div>
         <form className="desktop-login-form" onSubmit={(event) => void submit(event)}>
-          <header><p>T·ID</p><h2>Войти в T-Mod</h2><span>Данные задаются через <b>/account</b> в личных сообщениях боту.</span></header>
+          <header><p>{desktopProduct.privateEdition ? "LUMEN · OWNER" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
           <label><span>Логин</span><input value={loginValue} onChange={(event) => setLoginValue(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="ваш.логин" disabled={loginBusy}/></label>
           <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
           {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
-          {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите T-Mod из последнего релиза.</output>}
-          <button className={`primary ${loginBusy ? "busy" : ""}`} type="submit" disabled={loginBusy || !bridgeAvailable} aria-busy={loginBusy}>{loginBusy ? "Устанавливаем защищённую сессию…" : "Войти в T-Mod"}<span>{loginBusy ? "•••" : "→"}</span></button>
+          {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите {desktopProduct.name} из последней приватной сборки.</output>}
+          <button className={`primary ${loginBusy ? "busy" : ""}`} type="submit" disabled={loginBusy || !bridgeAvailable} aria-busy={loginBusy}>{loginBusy ? "Устанавливаем защищённую сессию…" : `Войти в ${desktopProduct.name}`}<span>{loginBusy ? "•••" : "→"}</span></button>
           <footer className={bootstrap.online ? "online" : "reconnecting"}><i/><span>{bootstrap.online ? "Сервер T-Mod доступен" : "Восстанавливаем соединение с T-Mod…"}</span>{!bootstrap.online && <button type="button" onClick={() => void onRetry()} aria-label="Повторить подключение"><Icon name="refresh"/></button>}</footer>
         </form>
       </section>
@@ -1186,7 +1191,7 @@ function SettingsDrawer({
     onChange({ ...preferences, [key]: !preferences[key] });
 
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
-    <header><div><p className="kicker">T-MOD DESKTOP</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <header><div><p className="kicker">{desktopProduct.name} · {desktopProduct.privateEdition ? "OWNER EDITION" : "DESKTOP"}</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     <div className="settings-scroll">
       <section><p className="settings-label">Обращение</p>
         <label className="preferred-name-setting">
@@ -1206,9 +1211,11 @@ function SettingsDrawer({
         <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
       </section>
       <section><p className="settings-label">Обновления</p>
-        <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>
+        {desktopProduct.privateEdition
+          ? <div className="update-channel-setting"><div><button className="active"><strong>Owner</strong><small>Закрытые персональные сборки</small></button></div><p>Публичные Beta и Dev выпуски отключены. LUMEN получает только сборки, опубликованные владельцу.</p></div>
+          : <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>}
       </section>
-      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? "T-Mod на связи" : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>
+      <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? `${desktopProduct.name} на связи` : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>
       <button className="reset-preferences" onClick={() => onChange({ ...DEFAULT_PREFERENCES })}>Вернуть настройки по умолчанию</button>
     </div>
   </aside></>;

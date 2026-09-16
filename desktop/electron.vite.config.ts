@@ -2,9 +2,15 @@ import { defineConfig } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 
+const edition = process.env.TMOD_DESKTOP_EDITION === "lumen" ? "lumen" : "tmod";
+const productDefines = {
+  __TMOD_DESKTOP_EDITION__: JSON.stringify(edition),
+};
+
 export default defineConfig({
-  main: {},
+  main: { define: productDefines },
   preload: {
+    define: productDefines,
     build: {
       rollupOptions: {
         input: {
@@ -20,6 +26,7 @@ export default defineConfig({
     },
   },
   renderer: {
+    define: productDefines,
     plugins: [react()],
     build: {
       rollupOptions: {

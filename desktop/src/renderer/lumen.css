@@ -1,0 +1,23 @@
+/* LUMEN is a separately packaged owner edition, not a theme toggle in T-Mod. */
+.edition-lumen{--lumen-cold:#8ddcff;--lumen-warm:#f2d49b;--lumen-deep:#07111a;background:radial-gradient(circle at 77% -12%,rgba(80,184,226,.16),transparent 36%),radial-gradient(circle at 32% 112%,rgba(221,177,104,.08),transparent 42%),linear-gradient(137deg,#071019,#07090f 58%,#0b0d13)}
+.desktop.edition-lumen:before{position:fixed;z-index:0;inset:0;pointer-events:none;content:"";opacity:.34;background-image:linear-gradient(rgba(146,211,235,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(146,211,235,.02) 1px,transparent 1px);background-size:72px 72px;mask-image:radial-gradient(circle at 65% 35%,#000,transparent 76%)}
+.edition-lumen .sidebar{background:linear-gradient(180deg,rgba(6,15,23,.94),rgba(8,10,15,.92));border-right-color:rgba(141,220,255,.09)}
+.edition-lumen .topbar{background:rgba(6,13,20,.82);border-bottom-color:rgba(141,220,255,.08)}
+.edition-lumen .brand-mark{color:#f8e7bd;border-color:rgba(244,214,159,.24);background:linear-gradient(145deg,rgba(243,210,146,.18),rgba(77,169,210,.06));box-shadow:inset 0 1px rgba(255,255,255,.16),0 13px 38px rgba(0,0,0,.35),0 0 34px rgba(104,199,237,.08)}
+.edition-lumen .brand-mark:before{inset:-6px;border-color:rgba(139,218,250,.23);border-radius:18px;transform:rotate(45deg) scale(.72)}
+.edition-lumen .brand strong{letter-spacing:.08em}.edition-lumen .brand small{color:#7793a3;letter-spacing:.13em}
+.edition-lumen .quick-search{border-color:rgba(138,215,245,.09);background:rgba(110,189,219,.035)}
+.edition-lumen .nav-item.active{background:linear-gradient(90deg,color-mix(in srgb,var(--service-accent) 11%,rgba(92,179,213,.04)),transparent)}
+.edition-lumen .channel-badge.private{min-width:58px;color:#eed49e;border-color:rgba(238,205,139,.23);background:linear-gradient(135deg,rgba(218,177,100,.12),rgba(69,153,187,.06));box-shadow:0 0 22px rgba(217,180,111,.05)}
+.edition-lumen .login-sigil{color:#f4dfb3;border-color:rgba(140,218,249,.18);background:radial-gradient(circle,rgba(238,203,135,.13),rgba(76,170,207,.045) 58%,transparent 59%)}
+.edition-lumen .desktop-login-form{border-color:rgba(139,215,245,.13);background:linear-gradient(145deg,rgba(11,29,41,.95),rgba(9,12,18,.97));box-shadow:0 42px 140px rgba(0,0,0,.46),inset 0 1px rgba(255,255,255,.055)}
+.edition-lumen .desktop-login-form header p{color:#e5ca91}.edition-lumen .desktop-login-form input:focus{border-color:rgba(128,210,242,.44);box-shadow:0 0 0 4px rgba(93,184,221,.07)}
+.edition-lumen .desktop-login-form .primary{color:#071017;background:linear-gradient(110deg,#f0d69f,#8fd9ee)}
+.edition-lumen .connection.online .connection-dot{background:#8bd9ec;box-shadow:0 0 12px rgba(139,217,236,.8)}
+
+.cinema-launch.edition-lumen{background:radial-gradient(circle at 66% 34%,rgba(91,192,226,.13),transparent 34%),linear-gradient(145deg,#06121b,#03070b 68%)}
+.cinema-launch.edition-lumen .cinema-focus{filter:hue-rotate(-18deg) saturate(.82)}
+.cinema-launch.edition-lumen .cinema-tmod strong{color:#f2ddb0;letter-spacing:.16em;text-shadow:0 0 34px rgba(237,210,151,.18)}
+.cinema-launch.edition-lumen .cinema-tvrs strong{color:#a9ddeb}.cinema-launch.edition-lumen .cinema-collaboration>i{color:#6eaec2}
+.cosmic-lock.edition-lumen{background:radial-gradient(circle at 50% 78%,rgba(63,155,190,.12),transparent 38%),linear-gradient(150deg,#06121b,#03070b 66%)}
+.cosmic-lock.edition-lumen .lock-collab strong{color:#f1dcae;letter-spacing:.14em}.cosmic-lock.edition-lumen .lock-resume{border-color:rgba(136,213,240,.19)}

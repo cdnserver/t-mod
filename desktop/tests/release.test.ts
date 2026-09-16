@@ -37,6 +37,22 @@ describe("desktop release contract", () => {
     expect(manifest.build.mac.target).toContain("zip");
   });
 
+  it("ships LUMEN as an isolated owner-only successor profile", () => {
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const product = readFileSync(resolve(root, "src/shared/product.ts"), "utf8");
+    const builder = readFileSync(resolve(root, "electron-builder.lumen.yml"), "utf8");
+    const script = readFileSync(resolve(root, "scripts/build-lumen.mjs"), "utf8");
+    expect(product).toContain('edition === "lumen"');
+    expect(product).toContain("persist:tt-lumen-private-v1");
+    expect(main).toContain('"X-TMod-Desktop-Edition"');
+    expect(main).toContain("desktopProduct.privateEdition");
+    expect(builder).toContain("appId: lat.tvr.technology.lumen");
+    expect(builder).toContain("output: release-lumen");
+    expect(builder).not.toContain("t-mod-releases");
+    expect(script).toContain('TMOD_DESKTOP_EDITION: "lumen"');
+    expect(existsSync(resolve(root, "resources/lumen/mark.svg"))).toBe(true);
+  });
+
   it("enforces a server-required Desktop update without a later action", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");

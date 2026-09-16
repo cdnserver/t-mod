@@ -158,6 +158,39 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_lumen_private_edition_allows_only_configured_owner(self) -> None:
+        principal = self.principal(administrator=True)
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch.dict(os.environ, {"TMOD_LUMEN_OWNER_IDS": "42"}),
+            ):
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={"X-TMod-Desktop-Edition": "lumen"},
+                )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["client"]["edition"], "lumen")
+            self.assertTrue(payload["client"]["private"])
+
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch.dict(os.environ, {"TMOD_LUMEN_OWNER_IDS": "99"}),
+            ):
+                denied = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={"X-TMod-Desktop-Edition": "lumen"},
+                )
+            self.assertEqual(denied.status, 403)
+            self.assertEqual((await denied.json())["error"], "lumen_private_access_required")
+            self.assertEqual(denied.headers["Cache-Control"], "private, no-store")
+        finally:
+            await client.close()
+
     async def test_zero_account_keeps_public_services_but_locks_reactor(self) -> None:
         identity = TModAccountIdentity(id=99, display_name="Внешний пользователь")
         principal = ConsensusWebPrincipal(

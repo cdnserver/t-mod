@@ -16,4 +16,5 @@ tmp/
 build/
 desktop/out/
 desktop/release/
+desktop/release-lumen/
 desktop/.vite/

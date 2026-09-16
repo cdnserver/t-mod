@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
+import { desktopProduct } from "../shared/product";
 import type { DesktopLockReason } from "../shared/contracts";
 
 type StopSound = () => void;
@@ -349,7 +350,7 @@ function StarClock({ hour, minute, date }: { hour: string; minute: string; date:
 
 export function CinematicLaunch({ name, reduced }: { name: string; reduced: boolean }) {
   return (
-    <section className={`cinema-launch ${reduced ? "reduced" : ""}`} aria-label="T-Mod запускается" aria-live="polite">
+    <section className={`cinema-launch edition-${desktopProduct.edition} ${reduced ? "reduced" : ""}`} aria-label={`${desktopProduct.name} запускается`} aria-live="polite">
       <div className="cinema-space" aria-hidden="true"><i/><b/><em/></div>
       <Starfield/>
       <CosmicSignatures mode="launch"/>
@@ -358,14 +359,14 @@ export function CinematicLaunch({ name, reduced }: { name: string; reduced: bool
       <div className="cinema-horizon" aria-hidden="true"><i/><b/></div>
       <div className="cinema-story">
         <div className="cinema-collaboration">
-          <span className="cinema-tmod"><strong>T‑MOD</strong><small>by cdnserver</small></span>
-          <i>×</i>
-          <span className="cinema-tvrs"><strong>ТОВАРИЩЕСТВО</strong><small>Светлый круг</small></span>
+          <span className="cinema-tmod"><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "private owner edition" : "by cdnserver"}</small></span>
+          <i>{desktopProduct.privateEdition ? "·" : "×"}</i>
+          <span className="cinema-tvrs"><strong>{desktopProduct.privateEdition ? "ТЕХНОЛОГИИ ТОВАРИЩЕСТВА" : "ТОВАРИЩЕСТВО"}</strong><small>{desktopProduct.privateEdition ? "Персональный контур" : "Светлый круг"}</small></span>
         </div>
         <div className="cinema-greeting">
           <small>ВАШЕ ПРОСТРАНСТВО ГОТОВО</small>
           <h1>{greetingFor(name)}.</h1>
-          <p>Добро пожаловать в T‑Mod.</p>
+          <p>Добро пожаловать в {desktopProduct.name}.</p>
         </div>
       </div>
       <div className="cinema-finale" aria-hidden="true"><i/><b/></div>
@@ -396,13 +397,13 @@ export function VaultScreen({
   const minute = String(now.getMinutes()).padStart(2, "0");
   const date = new Intl.DateTimeFormat("ru", { weekday: "long", day: "numeric", month: "long" }).format(now);
   return (
-    <section className={`cosmic-lock ${reduced ? "reduced" : ""} ${unlocking ? "unlocking" : ""}`} role="dialog" aria-modal="true" aria-label="T-Mod заблокирован" data-reason={reason}>
+    <section className={`cosmic-lock edition-${desktopProduct.edition} ${reduced ? "reduced" : ""} ${unlocking ? "unlocking" : ""}`} role="dialog" aria-modal="true" aria-label={`${desktopProduct.name} заблокирован`} data-reason={reason}>
       <div className="lock-space" aria-hidden="true"><i/><b/><em/></div>
       <Starfield/>
       <CosmicSignatures mode="lock"/>
       <MeteorShower mode="lock"/>
       <header className="lock-topbar">
-        <div className="lock-collab"><strong>T‑MOD</strong><small>by cdnserver</small><i>×</i><span>Товарищество</span></div>
+        <div className="lock-collab"><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "private" : "by cdnserver"}</small><i>×</i><span>{desktopProduct.organization}</span></div>
         <button type="button" className="lock-minimize" aria-label="Свернуть приложение" title="Свернуть приложение" onClick={onMinimize}><i/></button>
       </header>
       <div className="lock-celestial" aria-hidden="true">
@@ -416,7 +417,7 @@ export function VaultScreen({
       </div>
       <main className="lock-center">
         <div className="lock-message">
-          <small>{unlocking ? "СЕАНС ВОССТАНОВЛЕН" : "T‑MOD РЯДОМ"}</small>
+          <small>{unlocking ? "СЕАНС ВОССТАНОВЛЕН" : `${desktopProduct.name.toUpperCase()} РЯДОМ`}</small>
           <h1>{unlocking ? "С возвращением." : `${greetingFor(name, now)}.`}</h1>
           <p>{unlocking ? "Открываем рабочее пространство…" : phrase}</p>
         </div>

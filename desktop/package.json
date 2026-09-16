@@ -9,12 +9,15 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:lumen": "node scripts/build-lumen.mjs build",
     "preview": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:bundle": "node --check out/main/index.js && node --check out/preload/index.cjs",
     "package": "pnpm build && electron-builder --dir",
-    "dist": "pnpm build && electron-builder"
+    "package:lumen": "node scripts/build-lumen.mjs package",
+    "dist": "pnpm build && electron-builder",
+    "dist:lumen": "node scripts/build-lumen.mjs dist"
   },
   "dependencies": {
     "@fontsource/manrope": "5.3.0",

@@ -36,6 +36,11 @@ export interface DesktopNotification {
 export interface DesktopBootstrap {
   protocol_version: 1;
   generated_at: string;
+  client?: {
+    edition: "tmod" | "lumen";
+    private: boolean;
+    title: string;
+  };
   client_update?: {
     required: boolean;
     minimum_version: string | null;
@@ -88,7 +93,7 @@ export interface DesktopShellPreferences {
   serviceZoom: number;
   idleLockMinutes: number;
   lockSound: boolean;
-  updateChannel: "beta" | "dev";
+  updateChannel: "beta" | "dev" | "private";
 }
 
 export type DesktopLockReason = "idle" | "manual";
@@ -108,6 +113,7 @@ export interface DesktopLoginResult {
     | "reset_required"
     | "character_required"
     | "atlas_access"
+    | "private_access_required"
     | "banned"
     | "network_unavailable"
     | "login_failed"
@@ -136,7 +142,7 @@ export type DesktopUpdatePhase =
 export interface DesktopUpdateState {
   phase: DesktopUpdatePhase;
   currentVersion: string;
-  channel: "beta" | "dev";
+  channel: "beta" | "dev" | "private";
   version?: string;
   percent?: number;
   message?: string;
