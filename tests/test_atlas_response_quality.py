@@ -141,6 +141,41 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10.1", result["answer"])
         self.assertEqual(provider.await_count, 2)
 
+    async def test_article_for_offence_uses_numbered_clauses_without_model_rewrite(self) -> None:
+        source = {
+            "source_id": 5,
+            "title": "Уголовный кодекс",
+            "url": None,
+            "text": (
+                "10.5\nГрабеж, то есть открытое хищение чужого имущества.\n"
+                "Приоритет розыска 3\nНаказание: до 30 месяцев.\n\n"
+                "10.6\nРазбойное ограбление — нападение с опасным насилием.\n"
+                "Приоритет розыска 5\nНаказание: до 50 месяцев."
+            ),
+            "structured": True,
+            "reference": "article:10.5",
+            "pinpoints": ["статья 10.5"],
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "score": 10.0,
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])) as search, patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            result = await atlas_ai.atlas_answer(
+                77,
+                "Назови точные статьи за грабеж или разбойное ограбление",
+            )
+
+        self.assertIn("10.5", result["answer"])
+        self.assertIn("10.6", result["answer"])
+        self.assertEqual(result["model_provider"], "tmod")
+        search.assert_awaited_once()
+        request.assert_not_awaited()
+
     async def test_all_refusal_completion_becomes_a_useful_prompt(self) -> None:
         provider = AsyncMock(
             return_value={

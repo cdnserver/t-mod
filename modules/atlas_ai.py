@@ -2409,6 +2409,23 @@ _ATLAS_VISUAL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_ATLAS_ARTICLE_REQUEST_RE = re.compile(
+    r"\b(?:назов(?:и|ите)|укаж(?:и|ите)|какая|какую|точн\w*)\b"
+    r"[^.!?\n]{0,80}\bстать\w*\b",
+    re.IGNORECASE,
+)
+_ATLAS_OFFENSE_RE = re.compile(
+    r"\b(?:краж\w*|грабеж\w*|ограб\w*|разбо\w*|убийств\w*|похищ\w*|"
+    r"террор\w*|взятк\w*|наркот\w*|оружи\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_thematic_article_request(question: str) -> bool:
+    """Recognize a short inverse lookup that can be answered from clauses."""
+
+    clean = " ".join(str(question or "").split())
+    return bool(_ATLAS_ARTICLE_REQUEST_RE.search(clean) and _ATLAS_OFFENSE_RE.search(clean))
 
 
 def _last_dialog_message(
@@ -2744,6 +2761,11 @@ def _should_build_intelligence_brief(
         "no",
         "off",
     }:
+        return False
+    # A short "which article covers …" lookup is resolved from the canonical
+    # numbered clauses below. Do not spend a model request on a planning pass
+    # that cannot improve an exact answer and only adds latency.
+    if _is_thematic_article_request(question):
         return False
     if mode == "aristotle" or task.intent == "exact_lookup":
         return False
@@ -4183,6 +4205,71 @@ def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     return ""
 
 
+def _deterministic_thematic_lookup(prepared: _AtlasAnswerRequest) -> str:
+    """Answer «какая статья за …» from extracted articles, without rewriting.
+
+    These short inverse lookups are where a generative model most often
+    substituted a neighbouring article or claimed that the title was absent.
+    When retrieval already supplied complete numbered clauses, return the
+    matching clauses verbatim and leave interpretation to an explicit follow-up.
+    """
+
+    if prepared.intent != "legal_analysis":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    if not messages:
+        return ""
+    raw_question = messages[-1].get("content") if isinstance(messages[-1], dict) else ""
+    if isinstance(raw_question, list):
+        raw_question = " ".join(
+            str(item.get("text") or "")
+            for item in raw_question
+            if isinstance(item, dict)
+        )
+    question = " ".join(str(raw_question or "").split())
+    if not _ATLAS_ARTICLE_REQUEST_RE.search(question):
+        return ""
+    lowered = question.casefold()
+    offense_markers = tuple(
+        marker
+        for marker in (
+            "краж",
+            "грабеж",
+            "ограб",
+            "разбо",
+            "убийств",
+            "похищ",
+            "террор",
+            "взятк",
+            "наркот",
+            "оружи",
+        )
+        if marker in lowered
+    )
+    if not offense_markers:
+        return ""
+    results: list[str] = []
+    seen: set[str] = set()
+    for index, source in enumerate(prepared.sources, 1):
+        if str(source.get("corpus_kind") or "").casefold() not in {"law", "procedure"}:
+            continue
+        sections = _atlas_numbered_rule_sections(str(source.get("text") or ""))
+        for number, section in sections:
+            folded = section.casefold()
+            if not any(marker in folded for marker in offense_markers):
+                continue
+            key = f"{source.get('source_id')}:{number}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(f"{section.strip()}\n\n[{index}, статья {number}]")
+            if len(results) >= 2:
+                break
+        if len(results) >= 2:
+            break
+    return "\n\n".join(results)
+
+
 def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
     """Keep greetings instant and free from irrelevant server/interface prose."""
 
@@ -4331,6 +4418,12 @@ async def atlas_answer(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             exact_answer,
+        )
+    thematic_answer = _deterministic_thematic_lookup(prepared)
+    if thematic_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            thematic_answer,
         )
     body, used_route = await _completion_with_fallback(
         prepared,
@@ -4516,6 +4609,13 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             exact_answer,
+        )
+    thematic_answer = _deterministic_thematic_lookup(prepared)
+    if thematic_answer:
+        await on_delta(thematic_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            thematic_answer,
         )
     # Legal text is buffered until the grounded-answer guard has inspected it.
     # This deliberately trades a small amount of first-token latency for
