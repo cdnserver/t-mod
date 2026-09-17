@@ -4131,11 +4131,19 @@ async def _retry_empty_completion(
                 raise
     if last_error is not None:
         raise last_error
-    raise AtlasAIError(
-        "answer_invalid",
-        "ИИ-провайдер завершил генерацию без видимого ответа. Запрос можно повторить.",
-        retryable=True,
-    )
+    # A provider can return an HTTP-success payload with no visible text. Do
+    # not surface that transport detail to the user: use canonical evidence
+    # when it is available, otherwise ask for one concrete clarification.
+    fallback = _grounded_refusal_fallback(prepared)
+    if not fallback:
+        if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
+            fallback = (
+                "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+                "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+            )
+        else:
+            fallback = "Уточни, что именно нужно определить, одним коротким предложением."
+    return fallback, initial_route or prepared.model_route
 
 
 def _citation_health(answer: str, source_count: int) -> dict[str, Any]:

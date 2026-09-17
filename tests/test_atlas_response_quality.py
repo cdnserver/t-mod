@@ -316,6 +316,19 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("библиотек", result["answer"].casefold())
         self.assertIn("уточни", result["answer"].casefold())
 
+    async def test_blank_provider_completion_becomes_a_user_facing_prompt(self) -> None:
+        provider = AsyncMock(return_value={"choices": [{"message": {"content": ""}}]})
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[])), patch(
+            "modules.atlas_ai._json_request", provider
+        ):
+            result = await atlas_ai.atlas_answer(77, "Что происходит?", latency_mode="overlay")
+
+        self.assertNotIn("модель не вернула", result["answer"].casefold())
+        self.assertIn("уточни", result["answer"].casefold())
+
     def test_refusal_led_essay_does_not_leave_speculative_tail(self) -> None:
         prepared = SimpleNamespace(intent="legal_analysis", sources=[], payload={})
         answer = (
