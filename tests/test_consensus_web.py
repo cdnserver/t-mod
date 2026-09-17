@@ -1808,6 +1808,14 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(accepted.headers["Location"], "/admin")
             self.assertIn("tmod_account_session=", accepted.headers["Set-Cookie"])
 
+            account = await client.post(
+                "/auth/login?next=/account",
+                data={"login": "operator", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(account.status, 303)
+            self.assertEqual(account.headers["Location"], "/account")
+
             member.guild_permissions.administrator = False
             not_admin = await client.post(
                 "/auth/login?next=/admin",

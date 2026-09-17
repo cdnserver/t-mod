@@ -7,12 +7,13 @@ const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
 const context = document.querySelector("#login-context small");
 const requestedNext = params.get("next");
-const next = ["/admin", "/reactor", "/atlas", "/atlas-billing", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"].includes(requestedNext) ? requestedNext : "/";
+const next = ["/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"].includes(requestedNext) ? requestedNext : "/";
 const destinations = {
   "/admin": "После входа откроется Ядерный Реактор.",
   "/reactor": "После входа откроется ваш личный Реактор.",
   "/atlas": "После входа откроется контур Atlas.",
   "/atlas-billing": "После входа откроется ваш баланс и магазин Atlas Token.",
+  "/account": "После входа откроется ваш личный кабинет Atlas.",
   "/games": "После входа откроется T-Mod Games.",
   "/sgl": "После входа откроется защищённый контур SGL.",
   "/ovr": "После входа откроется портал ОВР.",

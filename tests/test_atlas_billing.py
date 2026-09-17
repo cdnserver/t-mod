@@ -620,3 +620,15 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertIn("* Не является публичной офертой.", html)
         self.assertIn("Рекламные слоганы и образные описания", html)
         self.assertIn('href="/offer"', html)
+
+    def test_login_returns_to_account_and_resumes_selected_purchase(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        login = (root / "web" / "consensus" / "login.js").read_text(encoding="utf-8")
+        store = (root / "web" / "atlas-billing" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('"/account"', login)
+        self.assertIn('form.action = `/auth/login?next=${encodeURIComponent(next)}`', login)
+        self.assertIn("atlas.pending-purchase.v1", store)
+        self.assertIn("rememberPendingPurchase(value)", store)
+        self.assertIn("takePendingPurchase()", store)
+        self.assertIn("requestAnimationFrame(()=>openCheckout(pending))", store)
