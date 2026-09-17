@@ -51,6 +51,27 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(answer.startswith("УК — Уголовный кодекс"))
         self.assertLess(len(answer.split()), 30)
 
+    def test_explicit_missing_article_gets_a_fast_specific_clarification(self) -> None:
+        prepared = SimpleNamespace(
+            intent="exact_lookup",
+            sources=[
+                {
+                    "text": (
+                        "16.1 Первая норма с достаточным текстом.\n"
+                        "16.2 Вторая норма с достаточным текстом.\n"
+                        "17.1 Другая норма с достаточным текстом."
+                    ),
+                }
+            ],
+            payload={"messages": [{"role": "user", "content": "Напиши статью 16 УК"}]},
+        )
+
+        answer = atlas_ai._deterministic_missing_reference_reply(prepared)
+
+        self.assertIn("16.1", answer)
+        self.assertIn("16.2", answer)
+        self.assertNotIn("библиотек", answer.casefold())
+
     def test_visual_router_is_separate_from_legal_retrieval(self) -> None:
         profile = atlas_ai._atlas_task_profile(
             "Что за растение спереди меня?",

@@ -4349,6 +4349,40 @@ def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     return ""
 
 
+def _deterministic_missing_reference_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Resolve an explicit-but-ambiguous number without a slow model refusal."""
+
+    if prepared.intent != "exact_lookup":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = str(last_message.get("content") or "")
+    references = _atlas_requested_structured_references(question)
+    if not references or any(item.get("structured") for item in prepared.sources):
+        return ""
+    for reference in sorted(references):
+        kind, _, value = reference.partition(":")
+        if kind != "article" or not value.isdigit():
+            continue
+        prefix = f"{value}."
+        children: set[str] = set()
+        for source in prepared.sources:
+            content = str(source.get("text") or source.get("content_text") or "")
+            for number, _section in _atlas_numbered_rule_sections(content):
+                if number.startswith(prefix):
+                    children.add(number)
+        if children:
+            listed = ", ".join(sorted(children, key=lambda item: tuple(int(part) for part in item.split(".")))[:6])
+            return (
+                f"Уточни номер нормы: в этом кодексе используются статьи {listed}. "
+                f"Нужна конкретная статья из этого ряда, а не общий номер {value}."
+            )
+    return (
+        "Уточни название документа и полный номер нормы (например, 16.1): "
+        "одинаковые номера могут встречаться в разных кодексах."
+    )
+
+
 def _deterministic_thematic_lookup(prepared: _AtlasAnswerRequest) -> str:
     """Answer «какая статья за …» from extracted articles, without rewriting.
 
@@ -4779,6 +4813,12 @@ async def atlas_answer(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             exact_answer,
         )
+    missing_reference_answer = _deterministic_missing_reference_reply(prepared)
+    if missing_reference_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            missing_reference_answer,
+        )
     thematic_answer = _deterministic_thematic_lookup(prepared)
     if thematic_answer:
         return _atlas_answer_result(
@@ -4976,6 +5016,13 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             exact_answer,
+        )
+    missing_reference_answer = _deterministic_missing_reference_reply(prepared)
+    if missing_reference_answer:
+        await on_delta(missing_reference_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            missing_reference_answer,
         )
     thematic_answer = _deterministic_thematic_lookup(prepared)
     if thematic_answer:
