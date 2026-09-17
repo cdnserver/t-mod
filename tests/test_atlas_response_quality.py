@@ -262,6 +262,39 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("article:10.5", references)
         self.assertNotIn("article:3.15", references)
 
+    async def test_thematic_lookup_does_not_wait_for_semantic_search(self) -> None:
+        source = {
+            "id": 905,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Уголовный Кодекс штата San Andreas",
+            "content_text": "10.5 Грабеж — открытое хищение чужого имущества. Наказание: до 30 месяцев.",
+            "source_url": "https://forum.majestic-rp.ru/threads/uk.905/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock()) as embed, patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            result = await atlas_ai.atlas_search(
+                77,
+                "Какая статья за грабеж?",
+                expanded=True,
+            )
+
+        self.assertEqual(result[0]["reference"], "article:10.5")
+        embed.assert_not_awaited()
+        request.assert_not_awaited()
+
     async def test_exact_lookup_does_not_return_wrong_numbered_clause(self) -> None:
         wrong = {
             "source_id": 3,

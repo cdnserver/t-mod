@@ -2130,47 +2130,58 @@ async def atlas_search(
     filters: list[dict[str, Any]] = [
         {"key": "access_scope", "match": {"any": access_scopes}}
     ]
-    try:
-        vectors = await atlas_embed(variants)
-        bodies = await asyncio.gather(
-            *(
-                _json_request(
-                    "POST",
-                    f"{config.qdrant_url}/collections/{config.collection}/points/query",
-                    headers=_qdrant_headers(config),
-                    payload={
-                        "query": vector,
-                        "filter": {"must": filters},
-                        "limit": max(1, min(24, int(limit) * (2 if expanded else 1))),
-                        "with_payload": True,
-                        "with_vector": False,
-                    },
-                    timeout=12,
+    # Complete numbered clauses are already available from the canonical
+    # database.  An embedding round-trip cannot improve an exact article or
+    # inverse-offence lookup; skipping it removes a sizeable source of
+    # latency and prevents neighbouring semantic hits from diluting the
+    # deterministic answer. Ordinary questions still use Qdrant below.
+    deterministic_legal = bool(
+        structured_candidates or rule_candidates or thematic_candidates
+    )
+    if deterministic_legal:
+        bodies = []
+    else:
+        try:
+            vectors = await atlas_embed(variants)
+            bodies = await asyncio.gather(
+                *(
+                    _json_request(
+                        "POST",
+                        f"{config.qdrant_url}/collections/{config.collection}/points/query",
+                        headers=_qdrant_headers(config),
+                        payload={
+                            "query": vector,
+                            "filter": {"must": filters},
+                            "limit": max(1, min(24, int(limit) * (2 if expanded else 1))),
+                            "with_payload": True,
+                            "with_vector": False,
+                        },
+                        timeout=12,
+                    )
+                    for vector in vectors
                 )
-                for vector in vectors
             )
-        )
-    except AtlasAIError as exc:
-        # SQLite is the canonical knowledge store. Semantic search is an
-        # accelerator, not a single point of failure: when embeddings or
-        # Qdrant are temporarily unavailable, keep answering from exact and
-        # abbreviation-expanded matches already found in the saved corpus.
-        if lexical_candidates or structured_candidates or rule_candidates or thematic_candidates:
-            bodies = []
-        elif exc.code == "upstream_not_found":
-            raise AtlasAIError(
-                "atlas_index_missing",
-                "Atlas готовит библиотеку к первому поиску. Повторите вопрос немного позже.",
-                retryable=True,
-            ) from exc
-        elif exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
-            raise AtlasAIError(
-                "atlas_index_recovery_required",
-                "Atlas восстанавливает поисковую библиотеку. Материалы сохранены; повторите вопрос немного позже.",
-                retryable=True,
-            ) from exc
-        else:
-            raise
+        except AtlasAIError as exc:
+            # SQLite is the canonical knowledge store. Semantic search is an
+            # accelerator, not a single point of failure: when embeddings or
+            # Qdrant are temporarily unavailable, keep answering from exact and
+            # abbreviation-expanded matches already found in the saved corpus.
+            if lexical_candidates or structured_candidates or rule_candidates or thematic_candidates:
+                bodies = []
+            elif exc.code == "upstream_not_found":
+                raise AtlasAIError(
+                    "atlas_index_missing",
+                    "Atlas готовит библиотеку к первому поиску. Повторите вопрос немного позже.",
+                    retryable=True,
+                ) from exc
+            elif exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
+                raise AtlasAIError(
+                    "atlas_index_recovery_required",
+                    "Atlas восстанавливает поисковую библиотеку. Материалы сохранены; повторите вопрос немного позже.",
+                    retryable=True,
+                ) from exc
+            else:
+                raise
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
     semantic_hits: list[tuple[int, int, float, dict[str, Any]]] = []
     for variant_index, body in enumerate(bodies):
