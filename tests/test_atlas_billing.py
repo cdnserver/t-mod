@@ -20,6 +20,7 @@ from modules.atlas_ai import (
 from modules.atlas_billing import (
     atlas_billing_catalog,
     atlas_tokens_for_cost,
+    robokassa_config,
     robokassa_payment_fields,
     robokassa_result_is_valid,
 )
@@ -263,6 +264,25 @@ class AtlasProviderUsageTests(unittest.TestCase):
 
 
 class RobokassaSignatureTests(unittest.TestCase):
+    def test_human_readable_boolean_environment_values_are_honored(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ATLAS_BILLING_PAYMENTS_ENABLED": "true",
+                "ROBOKASSA_TEST_MODE": "false",
+                "ATLAS_PD_LOCALIZATION_READY": "yes",
+                "ATLAS_PD_PRIMARY_REGION": "ru",
+                "ROBOKASSA_RECEIPT_TAX": "none",
+            },
+            clear=False,
+        ):
+            config = robokassa_config()
+
+        self.assertTrue(config["enabled"])
+        self.assertFalse(config["test_mode"])
+        self.assertTrue(config["personal_data_localization_ready"])
+        self.assertEqual(config["personal_data_primary_region"], "RU")
+
     @patch.dict(
         os.environ,
         {

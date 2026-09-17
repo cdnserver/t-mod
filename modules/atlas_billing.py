@@ -109,8 +109,22 @@ def atlas_tokens_for_cost(cost_usd: object) -> int:
     return int((cost / ATLAS_TOKEN_COST_USD).to_integral_value(rounding=ROUND_CEILING))
 
 
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    """Parse human-friendly boolean environment values consistently."""
+
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return bool(default)
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name.lower()}_invalid")
+
+
 def robokassa_config() -> dict[str, Any]:
-    test_mode = os.getenv("ROBOKASSA_TEST_MODE", "1").strip() != "0"
+    test_mode = _env_bool("ROBOKASSA_TEST_MODE", default=True)
     hash_algorithm = os.getenv("ROBOKASSA_HASH_ALGORITHM", "md5").strip().lower()
     if hash_algorithm not in {"md5", "sha256", "sha512"}:
         raise RuntimeError("robokassa_hash_algorithm_invalid")
@@ -127,14 +141,14 @@ def robokassa_config() -> dict[str, Any]:
         "password1": os.getenv("ROBOKASSA_PASSWORD1", "").strip(),
         "password2": os.getenv("ROBOKASSA_PASSWORD2", "").strip(),
         "test_mode": test_mode,
-        "enabled": os.getenv("ATLAS_BILLING_PAYMENTS_ENABLED", "0").strip() == "1",
+        "enabled": _env_bool("ATLAS_BILLING_PAYMENTS_ENABLED", default=False),
         "payment_url": "https://auth.robokassa.ru/Merchant/Payment/Index",
         "hash_algorithm": hash_algorithm,
         "receipt_tax": receipt_tax,
         "receipt_sno": receipt_sno,
-        "personal_data_localization_ready": os.getenv(
-            "ATLAS_PD_LOCALIZATION_READY", "0"
-        ).strip().lower() in {"1", "true", "yes", "on"},
+        "personal_data_localization_ready": _env_bool(
+            "ATLAS_PD_LOCALIZATION_READY", default=False
+        ),
         "personal_data_primary_region": os.getenv(
             "ATLAS_PD_PRIMARY_REGION", ""
         ).strip().upper(),
@@ -142,9 +156,7 @@ def robokassa_config() -> dict[str, Any]:
 
 
 def atlas_billing_enforcement_enabled() -> bool:
-    return os.getenv("ATLAS_BILLING_ENFORCEMENT_ENABLED", "1").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    return _env_bool("ATLAS_BILLING_ENFORCEMENT_ENABLED", default=True)
 
 
 def _signature(parts: list[object], *, algorithm: str | None = None) -> str:
