@@ -124,6 +124,13 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10.1 Кража", fallback)
         self.assertNotIn("библиотек", fallback.casefold())
 
+    def test_incomplete_trailing_list_marker_is_removed(self) -> None:
+        answer = "1. Сохраните запись.\n2. Подайте жалобу.\n3."
+
+        clean = atlas_ai._sanitize_incomplete_answer(answer)
+
+        self.assertEqual(clean, "1. Сохраните запись.\n2. Подайте жалобу.")
+
     async def test_provider_timeout_does_not_become_an_atlas_5xx_for_legal_query(self) -> None:
         source = {
             "source_id": 33,

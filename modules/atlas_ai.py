@@ -5126,11 +5126,32 @@ def _sanitize_overlay_completion(answer: str) -> str:
     return clean.rstrip(" \t\n")
 
 
+def _sanitize_incomplete_answer(answer: str) -> str:
+    """Drop an empty trailing list marker left by a stopped completion.
+
+    Providers occasionally finish with ``3.`` or ``-`` after emitting the
+    preceding complete steps.  That is not useful content and makes the UI
+    look broken even when the substantive answer is correct.  Only remove a
+    marker that occupies the whole final line; real numbered clauses and
+    hyphenated prose remain untouched.
+    """
+
+    clean = str(answer or "").strip()
+    if not clean:
+        return clean
+    previous = None
+    while clean != previous:
+        previous = clean
+        clean = re.sub(r"(?:\n|\A)\s*(?:\d{1,3}[.)]|[-*•])\s*$", "", clean).rstrip()
+    return clean
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
+    clean_answer = _sanitize_incomplete_answer(clean_answer)
     if prepared.latency_mode == "overlay":
         clean_answer = _sanitize_overlay_completion(clean_answer)
     clean_answer = _compact_answer_for_delivery(prepared, clean_answer)
