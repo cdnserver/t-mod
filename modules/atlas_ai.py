@@ -2135,8 +2135,19 @@ async def atlas_search(
     # inverse-offence lookup; skipping it removes a sizeable source of
     # latency and prevents neighbouring semantic hits from diluting the
     # deterministic answer. Ordinary questions still use Qdrant below.
+    procedural_legal_query = bool(
+        lexical_candidates
+        and _ATLAS_PROCEDURE_RE.search(primary_query)
+        and (
+            _ATLAS_LEGAL_RE.search(primary_query)
+            or re.search(r"\b(?:задерж|арест|обыск|допрос)\w*", primary_query, re.IGNORECASE)
+        )
+    )
     deterministic_legal = bool(
-        structured_candidates or rule_candidates or thematic_candidates
+        structured_candidates
+        or rule_candidates
+        or thematic_candidates
+        or procedural_legal_query
     )
     if deterministic_legal:
         bodies = []

@@ -316,6 +316,39 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         embed.assert_not_awaited()
         request.assert_not_awaited()
 
+    async def test_overlay_procedure_with_canonical_hit_does_not_wait_for_semantic_search(self) -> None:
+        source = {
+            "id": 906,
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "server",
+            "title": "Процессуальный Кодекс штата San Andreas",
+            "content_text": "2.2 Сотрудник вправе провести установление личности при задержании.",
+            "source_url": "https://forum.majestic-rp.ru/threads/procedure.906/",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "procedure"}},
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[source],
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock()) as embed, patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            result = await atlas_ai.atlas_search(
+                77,
+                "Что делать, если меня задержали сотрудники LSPD?",
+                expanded=True,
+            )
+
+        self.assertTrue(result)
+        embed.assert_not_awaited()
+        request.assert_not_awaited()
+
     async def test_exact_lookup_does_not_return_wrong_numbered_clause(self) -> None:
         wrong = {
             "source_id": 3,
