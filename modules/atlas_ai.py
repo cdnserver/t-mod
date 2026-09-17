@@ -4549,6 +4549,78 @@ def _deterministic_visual_reply(prepared: _AtlasAnswerRequest) -> str:
     return "Пришли скриншот — тогда я опишу только то, что действительно видно."
 
 
+def _deterministic_overlay_detention_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Answer the common first-person detention query from retrieved clauses.
+
+    This is intentionally narrower than the general procedural model route:
+    the overlay needs a stable field answer for the high-frequency question
+    "меня задержали", and the governing procedural codex is already present in
+    ``prepared.sources``.  If the codex or its relevant stages are absent, the
+    request stays on the normal grounded model path instead of guessing.
+    """
+
+    if prepared.latency_mode != "overlay" or prepared.intent != "procedural_advice":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = str(last_message.get("content") or "")
+    if not re.search(
+        r"\bменя\s+(?:только\s+что\s+)?(?:задержали|арестовали)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        return ""
+
+    procedural_source: tuple[int, dict[str, Any]] | None = None
+    for index, source in enumerate(prepared.sources, 1):
+        title = str(source.get("title") or "").casefold()
+        if "процессуальн" in title and "кодекс" in title:
+            procedural_source = (index, source)
+            break
+    if procedural_source is None:
+        return ""
+
+    source_index, source = procedural_source
+    pinpoints = [
+        str(value).strip()
+        for value in source.get("pinpoints") or []
+        if str(value).strip()
+    ]
+    normalized_pinpoints = " ".join(pinpoints).casefold()
+
+    def has_pinpoint(number: str) -> bool:
+        # Pinpoints are normalized upstream, but a structured fragment may
+        # expose just ``2.1`` rather than ``статья 2.1``.  The number is safe
+        # to use here because it came from the procedural source itself.
+        return bool(re.search(rf"(?<!\d){re.escape(number)}(?!\d)", normalized_pinpoints))
+
+    has_reason_stage = has_pinpoint("2.1")
+    has_lawyer_stage = has_pinpoint("2.6")
+    if not (has_reason_stage or has_lawyer_stage):
+        return ""
+
+    cited = []
+    if has_reason_stage:
+        cited.append(f"[Источник {source_index}, статья 2.1]")
+    if has_lawyer_stage:
+        cited.append(f"[Источник {source_index}, статья 2.6]")
+    citation = "; ".join(cited)
+    if has_reason_stage and has_lawyer_stage:
+        return (
+            "Сохраняйте спокойствие и не сопротивляйтесь. Попросите назвать причину задержания "
+            f"и предложить адвоката {citation}."
+        )
+    if has_reason_stage:
+        return (
+            "Сохраняйте спокойствие и попросите назвать причину задержания "
+            f"{citation}."
+        )
+    return (
+        "Сохраняйте спокойствие и попросите предложить адвоката "
+        f"{citation}."
+    )
+
+
 def _local_exact_route() -> AtlasModelRoute:
     return AtlasModelRoute(
         provider="tmod",
@@ -4833,6 +4905,12 @@ async def atlas_answer(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
         )
+    detention_answer = _deterministic_overlay_detention_reply(prepared)
+    if detention_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            detention_answer,
+        )
     body, used_route = await _completion_with_fallback(
         prepared,
         prepared.payload,
@@ -5038,6 +5116,13 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
+        )
+    detention_answer = _deterministic_overlay_detention_reply(prepared)
+    if detention_answer:
+        await on_delta(detention_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            detention_answer,
         )
     # Legal text is buffered until the grounded-answer guard has inspected it.
     # This deliberately trades a small amount of first-token latency for

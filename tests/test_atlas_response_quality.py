@@ -389,6 +389,37 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         embed.assert_not_awaited()
         request.assert_not_awaited()
 
+    async def test_overlay_detention_uses_compact_local_procedure_answer(self) -> None:
+        source = {
+            "source_id": 33,
+            "title": "Процессуальный Кодекс штата San Andreas",
+            "url": "https://forum.example/procedure",
+            "text": "2.1 Причина задержания.\n\n2.6 Порядок предоставления адвоката.",
+            "structured": True,
+            "reference": "",
+            "pinpoints": ["статья 2.1", "статья 2.6"],
+            "knowledge_domain": "ic",
+            "corpus_kind": "procedure",
+            "score": 10.0,
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])), patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            result = await atlas_ai.atlas_answer(
+                77,
+                "Меня задержали сотрудники LSPD. Что делать?",
+                latency_mode="overlay",
+            )
+
+        self.assertEqual(result["model_provider"], "tmod")
+        self.assertIn("назвать причину задержания", result["answer"])
+        self.assertIn("предложить адвоката", result["answer"])
+        self.assertLessEqual(len(result["answer"].split()), 42)
+        request.assert_not_awaited()
+
     async def test_exact_lookup_does_not_return_wrong_numbered_clause(self) -> None:
         wrong = {
             "source_id": 3,
