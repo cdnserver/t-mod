@@ -199,6 +199,43 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("article:10.5", references)
         self.assertNotIn("article:3.15", references)
 
+    async def test_exact_lookup_does_not_return_wrong_numbered_clause(self) -> None:
+        wrong = {
+            "source_id": 3,
+            "structured": True,
+            "reference": "article:3.15",
+            "pinpoints": ["статья 3.15"],
+            "title": "Уголовный кодекс",
+            "url": None,
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "score": 4.0,
+            "text": "3.15 Полоса движения.",
+        }
+        target = {
+            "source_id": 5,
+            "structured": True,
+            "reference": "article:16",
+            "pinpoints": ["статья 16"],
+            "title": "Уголовный кодекс",
+            "url": None,
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "score": 9.0,
+            "text": "16. Статья о составе преступления.",
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[wrong, target])), patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            result = await atlas_ai.atlas_answer(77, "Напиши полностью статью 16 УК")
+
+        self.assertIn("статья о составе", result["answer"].casefold())
+        self.assertNotIn("полоса движения", result["answer"].casefold())
+        request.assert_not_awaited()
+
     async def test_all_refusal_completion_becomes_a_useful_prompt(self) -> None:
         provider = AsyncMock(
             return_value={

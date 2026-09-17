@@ -3955,10 +3955,13 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     messages = list(payload.get("messages") or []) if isinstance(payload, dict) else []
     last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
     question = str(last_message.get("content") or "")
+    requested_references = _atlas_requested_structured_references(question)
     if _is_thematic_article_request(question):
         return ""
     for index, source in enumerate(prepared.sources, 1):
         if not source.get("structured"):
+            continue
+        if requested_references and str(source.get("reference") or "").strip() not in requested_references:
             continue
         text = str(source.get("text") or "").strip()
         if len(text) < 20:
@@ -4191,6 +4194,23 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
     return _compact_overlay_answer(value, max_words=180, max_chars=1_800)
 
 
+def _atlas_requested_structured_references(question: str) -> set[str]:
+    """Extract explicit article/chapter targets from the user's own wording."""
+
+    clean = " ".join(str(question or "").split())
+    references: set[str] = set()
+    patterns = (
+        ("chapter", r"\bглав[ауые]\s*(?:№\s*)?(\d+(?:\.\d+)*)"),
+        ("section", r"\bраздел\s*(?:№\s*)?(\d+(?:\.\d+)*)"),
+        ("article", r"\b(?:стать\w*|ст\.)\s*(?:№\s*)?(\d+(?:\.\d+)*)"),
+        ("clause", r"\b(?:пункт|п\.)\s*(?:№\s*)?(\d+(?:\.\d+)*)"),
+    )
+    for kind, pattern in patterns:
+        for match in re.finditer(pattern, clean, re.IGNORECASE):
+            references.add(f"{kind}:{re.sub(r'\s+', '', match.group(1))}")
+    return references
+
+
 def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     """Return an extracted article/chapter verbatim without a paid rewrite.
 
@@ -4202,10 +4222,18 @@ def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
 
     if prepared.intent != "exact_lookup":
         return ""
+    payload = getattr(prepared, "payload", {})
+    messages = list(payload.get("messages") or []) if isinstance(payload, dict) else []
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    requested_references = _atlas_requested_structured_references(
+        str(last_message.get("content") or "")
+    )
     for index, source in enumerate(prepared.sources, 1):
         if not source.get("structured"):
             continue
         reference = str(source.get("reference") or "").strip()
+        if requested_references and reference not in requested_references:
+            continue
         text = str(source.get("text") or "").strip()
         if not reference or len(text) < 20:
             continue
