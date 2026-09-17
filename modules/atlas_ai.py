@@ -4122,6 +4122,8 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"(?:невозможн\w*|нельзя|затрудн\w*))"
     r"|(?:\bне\s+вижу\b[^.\n]{0,80}"
     r"(?:в\s+(?:контекст\w*|материал\w*|источник\w*)|данн\w*|информац\w*))"
+    r"|(?:\b(?:баз[аеы]\s+знан\w*|контекст\w*|источник\w*)\b[^.\n]{0,120}"
+    r"(?:не\s+содерж\w*|пуст\w*|нет\b|отсутств\w*))"
     # Newer provider releases use softer wording that slipped past the
     # original guard: ``в контексте нет...``, ``по запросу ничего не
     # найдено`` or ``Atlas не знает``.  These are the same internal retrieval
@@ -4146,6 +4148,12 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"|(?:\b(?:not\s+found|no\s+(?:relevant\s+)?"
     r"(?:information|data|source|article|text))\b[^.\n]{0,100}"
     r"\b(?:library|libraries|knowledge|context|source|sources)\b)"
+    r"|(?:\b(?:knowledge\s+base|provided\s+context|available\s+sources?)\b"
+    r"[^.\n]{0,120}\b(?:does\s+not\s+contain|contains\s+no|lacks?|"
+    r"no\s+(?:relevant\s+)?(?:information|data|answer|article|text))\b)"
+    r"|(?:\b(?:couldn['’]?t|cannot|can['’]?t)\s+(?:find|identify|determine|answer)\b"
+    r"[^.\n]{0,100}\b(?:provided|available|relevant)\s+"
+    r"(?:context|sources?|information|data)\b)"
     r")",
     re.IGNORECASE,
 )
