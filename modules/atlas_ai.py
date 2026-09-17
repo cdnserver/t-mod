@@ -4537,6 +4537,22 @@ def _compact_overlay_answer(
     return prefix.rstrip(" ,;:-") + "…"
 
 
+def _finish_bounded_answer(value: str) -> str:
+    """Prefer a complete final sentence when a hard bound had to cut prose."""
+
+    compact = str(value or "").strip()
+    if not compact.endswith("…"):
+        return compact
+    body = compact[:-1].rstrip()
+    boundaries = [
+        match.end()
+        for match in re.finditer(r"[.!?](?=\s|$)", body)
+    ]
+    if boundaries:
+        return body[: boundaries[-1]].rstrip()
+    return compact
+
+
 def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> str:
     """Enforce the editorial bound after generation, not only in the prompt.
 
@@ -4558,29 +4574,23 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         if len(exact_text) <= 2_200 and len(exact_text.split()) <= 180:
             return exact_text
     if prepared.latency_mode == "overlay":
-        return _compact_overlay_answer(value)
+        return _finish_bounded_answer(_compact_overlay_answer(value))
     if prepared.intent in {"exact_lookup", "drafting", "brainstorm"}:
         return str(value or "").strip()
     if prepared.depth == "deep":
-        return _compact_overlay_answer(value, max_words=650, max_chars=6_000)
+        return _finish_bounded_answer(
+            _compact_overlay_answer(value, max_words=650, max_chars=6_000)
+        )
     if prepared.depth == "quick":
         # Quick questions are the normal chat equivalent of the overlay:
         # keep one useful paragraph and never let a provider turn a short
         # request into a multi-screen explanation.
-        compact = _compact_overlay_answer(value, max_words=110, max_chars=1_100)
-        if compact.endswith("…"):
-            # The bound can land immediately after a complete citation while
-            # the provider's next sentence is only partially present.  The
-            # user should see the finished sentence, not a dangling ellipsis.
-            body = compact[:-1].rstrip()
-            boundaries = [
-                match.end()
-                for match in re.finditer(r"[.!?](?=\s|$)", body)
-            ]
-            if boundaries:
-                compact = body[: boundaries[-1]].rstrip()
-        return compact
-    return _compact_overlay_answer(value, max_words=140, max_chars=1_400)
+        return _finish_bounded_answer(
+            _compact_overlay_answer(value, max_words=110, max_chars=1_100)
+        )
+    return _finish_bounded_answer(
+        _compact_overlay_answer(value, max_words=140, max_chars=1_400)
+    )
 
 
 def _atlas_requested_structured_references(question: str) -> set[str]:

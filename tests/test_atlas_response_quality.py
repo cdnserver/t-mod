@@ -132,6 +132,13 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(clean, "1. Сохраните запись.\n2. Подайте жалобу.")
 
+    def test_bounded_answer_drops_dangling_ellipsis_after_complete_sentence(self) -> None:
+        compact = atlas_ai._finish_bounded_answer(
+            "Сначала определите вид решения. Затем подайте жалобу в срок.…"
+        )
+
+        self.assertEqual(compact, "Сначала определите вид решения. Затем подайте жалобу в срок.")
+
     async def test_provider_timeout_does_not_become_an_atlas_5xx_for_legal_query(self) -> None:
         source = {
             "source_id": 33,
@@ -326,7 +333,7 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(compact), 1_801)
         self.assertLessEqual(len(compact.split()), 180)
         self.assertTrue(compact.startswith("Прямой вывод."))
-        self.assertTrue(compact.endswith("…"))
+        self.assertTrue(compact.endswith("."))
 
     def test_quick_answer_is_tighter_than_standard_delivery(self) -> None:
         prepared = SimpleNamespace(latency_mode="standard", intent="procedural_advice", depth="quick")
