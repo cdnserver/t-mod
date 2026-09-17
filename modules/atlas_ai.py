@@ -4207,6 +4207,18 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ATLAS_RETRIEVAL_REFUSAL_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"в\s+(?:текущей\s+)?библиотек\w*"
+    r"|не\s+(?:мог\w*|удал\w*|смог\w*|наш\w*|располага\w*)"
+    r"|информац\w*\s+(?:недостаточн\w*|нет)"
+    r"|у\s+меня\s+нет\s+(?:доступ\w*|данн\w*|информац\w*)"
+    r"|(?:the|i)\s+(?:provided|available|couldn['’]?t|was\s+unable\s+to|"
+    r"don['’]?t\s+have|there\s+is\s+not)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _answer_without_internal_search_state(
     prepared: _AtlasAnswerRequest,
@@ -5841,10 +5853,48 @@ async def atlas_answer_stream(
         "visual",
     }
     defer_output = defer_legal_output or defer_retrieval_output
+    # Source-free answers normally stream immediately, but a provider can
+    # begin with an internal retrieval diagnostic (for example, "В
+    # библиотеке Atlas нет...").  Hold only that uncertain prefix so it
+    # cannot flash in the UI/TTS; ordinary answers resume as soon as their
+    # opening is clearly substantive.
+    stream_guard_buffer: list[str] = []
+    stream_guard_passed = False
+    stream_guard_blocked = False
 
     async def emit_stream_delta(delta: str) -> None:
-        if not defer_output:
+        nonlocal stream_guard_passed, stream_guard_blocked
+        if defer_output or stream_guard_blocked:
+            return
+        if stream_guard_passed or prepared.intent in {"social", "visual"}:
             await on_delta(delta)
+            return
+        piece = str(delta or "")
+        if not piece:
+            return
+        stream_guard_buffer.append(piece)
+        probe = "".join(stream_guard_buffer)
+        suspicious_prefix = _ATLAS_RETRIEVAL_REFUSAL_PREFIX_RE.match(probe)
+        if _atlas_answer_is_retrieval_refusal(probe) and re.search(
+            r"[.!?](?:\s|$)", probe
+        ):
+            stream_guard_blocked = True
+            return
+        # A normal answer should not wait for a whole sentence to arrive.
+        # The larger bound is a safety valve for a long first sentence that
+        # happens to start with a phrase such as "в библиотеке".
+        if not suspicious_prefix and len(probe) >= 24:
+            stream_guard_passed = True
+            await on_delta(probe)
+            stream_guard_buffer.clear()
+        elif (
+            suspicious_prefix
+            and len(probe) >= 96
+            and not _atlas_answer_is_retrieval_refusal(probe)
+        ):
+            stream_guard_passed = True
+            await on_delta(probe)
+            stream_guard_buffer.clear()
 
     answer_parts: list[str] = []
     # Keep the streamed text and system TTS in the same compact envelope as
@@ -5971,6 +6021,16 @@ async def atlas_answer_stream(
         # used by the renderer and TTS. Source-backed non-legal answers use
         # the same path so retrieval diagnostics never become visible.
         await on_delta(result["answer"])
+    elif not stream_guard_passed:
+        # Flush a short ordinary stream exactly as received (preserving the
+        # existing delta contract), but replace a held refusal with the
+        # sanitized authoritative result.
+        buffered = "".join(stream_guard_buffer)
+        if stream_guard_blocked or _atlas_answer_is_retrieval_refusal(buffered):
+            await on_delta(result["answer"])
+        else:
+            for piece in stream_guard_buffer:
+                await on_delta(piece)
     if prepared.research_plan:
         await _atlas_progress(
             on_progress,
