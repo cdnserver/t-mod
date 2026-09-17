@@ -124,6 +124,7 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
     def test_provider_failure_has_local_legal_fallback(self) -> None:
         prepared = SimpleNamespace(
             intent="legal_analysis",
+            latency_mode="standard",
             sources=[
                 {
                     "structured": True,
@@ -738,6 +739,86 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("библиотек", result["answer"].casefold())
         self.assertIn("10.1", result["answer"])
         self.assertEqual(provider.await_count, 2)
+
+    async def test_retrieval_repair_timeout_never_becomes_a_transport_error(self) -> None:
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            latency_mode="standard",
+            sources=[
+                {
+                    "structured": False,
+                    "title": "Несвязанный материал",
+                    "text": "Общий организационный текст без нормы.",
+                    "score": 0.2,
+                }
+            ],
+            payload={
+                "messages": [
+                    {"role": "user", "content": "Какая статья регулирует редкий случай?"}
+                ]
+            },
+        )
+        route = SimpleNamespace(provider="openrouter", model="test", endpoint="https://example.test")
+        with patch(
+            "modules.atlas_ai._completion_with_fallback",
+            AsyncMock(
+                side_effect=atlas_ai.AtlasAIError(
+                    "upstream_unavailable",
+                    "timeout",
+                    retryable=True,
+                )
+            ),
+        ):
+            answer, _used_route = await atlas_ai._repair_retrieval_refusal(
+                prepared,
+                "В библиотеке Atlas нет точной статьи.",
+                route,
+            )
+
+        self.assertNotIn("библиотек", answer.casefold())
+        self.assertIn("опиши ситуацию", answer.casefold())
+
+    async def test_repeated_retrieval_refusal_is_replaced_even_without_matching_excerpt(self) -> None:
+        prepared = SimpleNamespace(
+            intent="summary",
+            latency_mode="standard",
+            sources=[
+                {
+                    "structured": False,
+                    "title": "Материал без совпадения",
+                    "text": "Текст о другой теме, не связанный с запросом.",
+                    "score": 0.1,
+                }
+            ],
+            payload={
+                "messages": [
+                    {"role": "user", "content": "Кратко объясни редкую процедуру"}
+                ]
+            },
+        )
+        route = SimpleNamespace(provider="openrouter", model="test", endpoint="https://example.test")
+        with patch(
+            "modules.atlas_ai._completion_with_fallback",
+            AsyncMock(
+                return_value=(
+                    {
+                        "choices": [
+                            {"message": {"content": "В предоставленном контексте нет данных."}}
+                        ]
+                    },
+                    route,
+                )
+            ),
+        ):
+            answer, _used_route = await atlas_ai._repair_retrieval_refusal(
+                prepared,
+                "В библиотеке Atlas нет точной статьи.",
+                route,
+            )
+
+        self.assertNotIn("библиотек", answer.casefold())
+        self.assertNotIn("контексте нет", answer.casefold())
+        self.assertIn("уточни", answer.casefold())
 
     async def test_article_for_offence_uses_numbered_clauses_without_model_rewrite(self) -> None:
         source = {

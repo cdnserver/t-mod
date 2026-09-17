@@ -4432,18 +4432,42 @@ async def _repair_retrieval_refusal(
         or not _atlas_answer_is_retrieval_refusal(clean)
     ):
         return clean, used_route
-    retry_body, retry_route = await _completion_with_fallback(
-        prepared,
-        _retrieval_refusal_retry_payload(prepared, clean),
-        timeout=120,
-        initial_route=used_route,
-    )
+    try:
+        retry_body, retry_route = await _completion_with_fallback(
+            prepared,
+            _retrieval_refusal_retry_payload(prepared, clean),
+            timeout=120,
+            initial_route=used_route,
+        )
+    except AtlasAIError:
+        # The repair request is an optional second pass.  A timeout or rate
+        # limit here must never turn an already successful retrieval into a
+        # 5xx/504 for the user; use canonical evidence or the same concise
+        # local fallback as the ordinary provider-failure path.
+        fallback = _provider_failure_fallback(prepared)
+        if not fallback:
+            fallback = (
+                "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+                "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+                if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}
+                else "Уточни, что именно нужно определить, одним коротким предложением."
+            )
+        return fallback, _local_exact_route()
     repaired = _answer_text(retry_body).strip()
-    if not repaired or _atlas_answer_is_retrieval_refusal(repaired):
-        grounded = _grounded_refusal_fallback(prepared)
-        if grounded:
-            return grounded, _local_exact_route()
-    return (repaired or clean), retry_route
+    if repaired and not _atlas_answer_is_retrieval_refusal(repaired):
+        return repaired, retry_route
+    # If the second model pass repeats the diagnostic (or returns an empty
+    # payload), never return that diagnostic just because no excerpt happened
+    # to meet the conservative overlap gate.
+    fallback = _provider_failure_fallback(prepared)
+    if not fallback:
+        fallback = (
+            "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+            "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+            if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}
+            else "Уточни, что именно нужно определить, одним коротким предложением."
+        )
+    return fallback, _local_exact_route()
 
 
 def _completion_payload_for_route(
