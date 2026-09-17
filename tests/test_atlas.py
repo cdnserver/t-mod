@@ -1568,6 +1568,16 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "В статье 6.2 нет отдельного запрета на оказание первой помощи."
             )
         )
+        self.assertTrue(
+            _atlas_answer_is_retrieval_refusal(
+                "В предоставленной мне библиотеке источников нет полного текста главы 16."
+            )
+        )
+        self.assertTrue(
+            _atlas_answer_is_retrieval_refusal(
+                "Не могу точно сказать, потому что соответствующий фрагмент отсутствует."
+            )
+        )
 
     def test_retrieval_refusal_fallback_returns_exact_structured_evidence(self) -> None:
         prepared = SimpleNamespace(
