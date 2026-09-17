@@ -1133,14 +1133,33 @@ def _atlas_query_variants(
 def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
     """Build stable title stems for the canonical-store rescue path."""
 
+    identifiers: list[str] = []
     terms: list[str] = []
     for token in re.findall(r"[a-zа-яё0-9-]{3,}", str(query or "").casefold()):
-        if token in _ATLAS_SEARCH_STOP_WORDS or token.isdigit():
+        if token.isdigit():
+            # Static IDs, case numbers and forum topic IDs are often the only
+            # precise key in a user's question. Dropping every numeric token
+            # made the canonical content lane fall back to unrelated recent
+            # rows, especially for overlay complaints.
+            if len(token) >= 3:
+                identifiers.append(token)
+            continue
+        if token in _ATLAS_SEARCH_STOP_WORDS:
             continue
         # Six characters preserve useful distinctions while matching common
         # Russian endings: ``уголовный`` / ``уголовного`` and similar forms.
         terms.append(token[:7] if len(token) >= 9 else token[:6])
-    return _ordered_distinct(terms, limit=12)
+    return _ordered_distinct([*identifiers, *terms], limit=12)
+
+
+def _atlas_overlay_content_search_needed(question: str) -> bool:
+    """Enable a bounded forum-body scan for precise player/topic identifiers."""
+
+    # The normal overlay path intentionally avoids scanning thousands of forum
+    # posts. A 3+ digit identifier is a high-signal exception: without a body
+    # lookup the request can only see generic rules and cannot locate the
+    # player's complaint or case.
+    return bool(re.search(r"(?<!\w)\d{3,}(?!\w)", str(question or "")))
 
 
 def _atlas_lexical_query_terms(
@@ -3594,7 +3613,10 @@ async def _prepare_atlas_answer(
         expanded=selected_latency != "overlay" or overlay_legal,
         query_variants=research_queries,
         allowed_domains=selected_agent.knowledge_domains,
-        include_content_search=selected_latency != "overlay",
+        include_content_search=(
+            selected_latency != "overlay"
+            or _atlas_overlay_content_search_needed(clean_question)
+        ),
     )
     sources = _atlas_merge_source_fragments(sources)
     if selected_latency == "overlay":

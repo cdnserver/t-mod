@@ -46,6 +46,15 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             any("Дорожный Кодекс" in item and "ответственность" in item for item in variants)
         )
 
+    def test_repository_terms_preserve_precise_numeric_identifiers(self) -> None:
+        terms = atlas_ai._atlas_repository_query_terms("жалоба на игрока со статиком 228392")
+
+        self.assertIn("228392", terms)
+
+    def test_overlay_content_search_is_reserved_for_precise_identifiers(self) -> None:
+        self.assertTrue(atlas_ai._atlas_overlay_content_search_needed("жалоба, статик 228392"))
+        self.assertFalse(atlas_ai._atlas_overlay_content_search_needed("что делать при ДТП"))
+
     def test_colloquial_legal_questions_get_their_governing_document_lane(self) -> None:
         checks = {
             "какие права у адвоката": ("Процессуальный Кодекс", "коллегии адвокатов"),
