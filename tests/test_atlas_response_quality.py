@@ -29,7 +29,7 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         }
 
     def test_social_router_handles_colloquial_greetings_without_faction_prose(self) -> None:
-        for question in ("Привет, как дела?", "как ты?", "что нового", "Здорово"):
+        for question in ("Привет, как дела?", "Привет, Атлас", "как ты?", "что нового", "Здорово"):
             profile = atlas_ai._atlas_task_profile(question, mode="balanced")
             self.assertEqual(profile.intent, "social", question)
 

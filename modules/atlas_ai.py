@@ -2400,6 +2400,15 @@ _ATLAS_SOCIAL_RE = re.compile(
     r"спасибо|благодарю|до\s+свидания|пока)(?:[\s!?.🙂👋]*)$",
     re.IGNORECASE,
 )
+_ATLAS_SOCIAL_WITH_NAME_RE = re.compile(
+    r"^\s*(?:привет(?:ик)?|здравствуй(?:те)?|салют|хай|hello|здорово|"
+    r"доброе\s+(?:утро|день|вечер)|добрый\s+(?:день|вечер))"
+    r"\s*[,!—-]?\s*(?:atlas|атлас)"
+    r"(?:\s*[,!—-]?\s*(?:как\s+дела(?:\s+у\s+тебя)?|как\s+ты|"
+    r"как\s+поживаешь|что\s+нового))?"
+    r"[\s!?.🙂👋]*$",
+    re.IGNORECASE,
+)
 _ATLAS_VISUAL_RE = re.compile(
     r"\b(?:"
     r"что\s+(?:это\s+)?за\s+(?:растени\w*|человек\w*|персон\w*|машин\w*|автомобил\w*|"
@@ -2489,7 +2498,7 @@ def _atlas_task_profile(
         and bool(_ATLAS_FOLLOWUP_RE.search(clean))
     )
 
-    if _ATLAS_SOCIAL_RE.fullmatch(clean):
+    if _ATLAS_SOCIAL_RE.fullmatch(clean) or _ATLAS_SOCIAL_WITH_NAME_RE.fullmatch(clean):
         intent = "social"
     elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
@@ -3490,6 +3499,16 @@ async def _prepare_atlas_answer(
             "таблицы, повтор вопроса, приветствие и длинные оговорки. Если нужно уточнение, сначала "
             "дай безопасное действие, затем задай один критичный вопрос."
         )
+        if task_profile.intent == "procedural_advice" and re.search(
+            r"\bменя\s+(?:только\s+что\s+)?(?:задержали|арестовали)\b",
+            clean_question,
+            re.IGNORECASE,
+        ):
+            overlay_instruction += (
+                " Пользователь описывает задержание себя: обращайся к задержанному и называй его "
+                "ближайшие действия и права. Не пиши инструкции сотруднику, не используй повелительное "
+                "«наденьте наручники» и не меняй сторону ситуации."
+            )
     clean_screen_context = (
         str(screen_context or "").strip()
         if selected_latency == "overlay" and task_profile.intent != "social"
