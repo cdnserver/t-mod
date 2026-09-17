@@ -4183,6 +4183,26 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"(?:context|sources?|information|data)\b)"
     r"|(?:\b(?:i\s+don['’]?t\s+have|there\s+is\s+not\s+enough)\b"
     r"[^.\n]{0,100}\b(?:information|data|context|source|evidence)\b)"
+    # Cover equivalent provider wording that does not use ``find``/``not
+    # found`` directly: ``unable to establish``, ``insufficient information``
+    # and ``the provided context doesn't include``.  These are still search
+    # diagnostics, not answers, and must be routed through the grounded retry.
+    r"|(?:\b(?:не\s+удалось|не\s+могу|невозможно|нельзя|затрудн\w*)\b"
+    r"[^.\n]{0,100}\b(?:установить|подтвердить|определить|сделать\s+вывод)\b"
+    r"[^.\n]{0,80}\b(?:по\s+)?(?:эт(?:ому|им)|имеющ(?:имся|иеся)|доступн\w*)"
+    r"\s+(?:материал\w*|контекст\w*|источник\w*|данн\w*)\b)"
+    r"|(?:\b(?:информац\w*|данн\w*|сведен\w*|контекст\w*)\b"
+    r"[^.\n]{0,50}\b(?:недостаточн\w*|нехват\w*)\b)"
+    r"|(?:\b(?:у\s+(?:меня|atlas|атлас)\s+нет\s+доступа|"
+    r"доступ\s+к\s+(?:данн\w*|источник\w*|контекст\w*)\s+отсутствует)\b"
+    r"[^.\n]{0,80}(?:ответ|информац|норм\w*|стать\w*|вывод))"
+    r"|(?:\b(?:i\s+was\s+unable\s+to|unable\s+to)\s+"
+    r"(?:find|identify|determine|establish|confirm)\b[^.\n]{0,120}\b"
+    r"(?:provided|available|relevant)\s+(?:context|sources?|information|data)\b)"
+    r"|(?:\b(?:the\s+provided\s+context|available\s+sources?)\b"
+    r"[^.\n]{0,100}\b(?:doesn['’]?t|do\s+not|does\s+not)\s+"
+    r"(?:include|provide|show|specify)\b[^.\n]{0,80}\b"
+    r"(?:information|data|answer|article|text|evidence)\b)"
     r")",
     re.IGNORECASE,
 )

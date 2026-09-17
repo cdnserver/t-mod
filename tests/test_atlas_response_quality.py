@@ -100,6 +100,11 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             "Не располагаю достаточными сведениями для вывода.",
             "В ответе нет доступной информации.",
             "Я не вижу в контексте нужной нормы.",
+            "Не удалось установить ответ по имеющимся материалам.",
+            "Информации недостаточно для точного вывода.",
+            "У меня нет доступа к источникам для ответа.",
+            "I was unable to determine the answer from the provided context.",
+            "The provided context doesn't include the relevant article text.",
         ):
             self.assertTrue(
                 atlas_ai._atlas_answer_is_retrieval_refusal(answer),
