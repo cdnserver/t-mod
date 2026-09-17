@@ -3831,6 +3831,41 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
 )
 
 
+def _answer_without_internal_search_state(
+    prepared: _AtlasAnswerRequest,
+    answer: str,
+) -> str:
+    """Keep provider search diagnostics out of the user-facing answer.
+
+    A provider occasionally ignores the editorial contract and responds with
+    a sentence such as «в библиотеке Atlas нет…».  That is not a useful answer
+    and is especially confusing in the overlay.  Prefer canonical evidence
+    when it exists; otherwise keep any substantive sentences and replace an
+    all-refusal completion with one concrete next input instead of exposing
+    internal retrieval state.
+    """
+
+    clean = str(answer or "").strip()
+    if not _atlas_answer_is_retrieval_refusal(clean):
+        return clean
+    grounded = _grounded_refusal_fallback(prepared)
+    if grounded:
+        return grounded
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", clean)
+        if part.strip() and not _atlas_answer_is_retrieval_refusal(part)
+    ]
+    if sentences:
+        return " ".join(sentences)
+    if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
+        return (
+            "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+            "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+        )
+    return "Уточни, что именно нужно определить, одним коротким предложением."
+
+
 def _atlas_answer_is_retrieval_refusal(answer: str) -> bool:
     """Recognize an answer that reports search state instead of doing the job."""
 
@@ -4180,7 +4215,7 @@ def _local_visual_route() -> AtlasModelRoute:
 
 
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
-    clean_answer = str(answer or "").strip()
+    clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     if prepared.latency_mode == "overlay":
@@ -4461,12 +4496,14 @@ async def atlas_answer_stream(
             exact_answer,
         )
     # Legal text is buffered until the grounded-answer guard has inspected it.
-    # This deliberately trades first-token latency for correctness: a false
-    # "nothing found" must never be streamed to the user and then retracted.
-    defer_legal_output = (
-        prepared.latency_mode != "overlay"
-        and prepared.intent in {"legal_analysis", "procedural_advice"}
-    )
+    # This deliberately trades a small amount of first-token latency for
+    # correctness: a false search refusal must never be streamed to the user
+    # (or to overlay TTS) and then retracted.
+    defer_legal_output = prepared.intent in {
+        "exact_lookup",
+        "legal_analysis",
+        "procedural_advice",
+    }
 
     async def emit_stream_delta(delta: str) -> None:
         if not defer_legal_output:
@@ -4552,11 +4589,15 @@ async def atlas_answer_stream(
             final_answer,
             used_route,
         )
-        await on_delta(final_answer)
     result = _atlas_answer_result(
         replace(prepared, model_route=used_route, fallback_model_route=None),
         final_answer,
     )
+    if defer_legal_output:
+        # Emit the authoritative, sanitized result rather than the raw
+        # provider text. In overlay mode this is also the compacted version
+        # used by the renderer and TTS.
+        await on_delta(result["answer"])
     if prepared.research_plan:
         await _atlas_progress(
             on_progress,

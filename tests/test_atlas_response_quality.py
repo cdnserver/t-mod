@@ -102,6 +102,52 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["answer"], "Короткий ответ.")
         self.assertLessEqual(request.await_args_list[1].kwargs["payload"]["max_tokens"], 180)
 
+    async def test_retrieval_refusal_is_repaired_before_it_reaches_the_user(self) -> None:
+        source = {
+            "source_id": 12,
+            "title": "Уголовный кодекс",
+            "url": None,
+            "text": "Статья 10.1. Кража — тайное хищение имущества. [1]",
+            "structured": True,
+            "reference": "article:10.1",
+            "pinpoints": ["статья 10.1"],
+            "score": 9.0,
+        }
+        provider = AsyncMock(
+            side_effect=[
+                {"choices": [{"message": {"content": "В библиотеке Atlas нет точной статьи."}}]},
+                {"choices": [{"message": {"content": "Статья 10.1 применима к тайному хищению [1]."}}]},
+            ]
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])), patch(
+            "modules.atlas_ai._json_request", provider
+        ):
+            result = await atlas_ai.atlas_answer(77, "Какая статья за кражу?")
+
+        self.assertNotIn("библиотек", result["answer"].casefold())
+        self.assertIn("10.1", result["answer"])
+        self.assertEqual(provider.await_count, 2)
+
+    async def test_all_refusal_completion_becomes_a_useful_prompt(self) -> None:
+        provider = AsyncMock(
+            return_value={
+                "choices": [{"message": {"content": "В библиотеке Atlas нет данных по этому вопросу."}}]
+            }
+        )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock(return_value=[])), patch(
+            "modules.atlas_ai._json_request", provider
+        ):
+            result = await atlas_ai.atlas_answer(77, "Что это за процедура?")
+
+        self.assertNotIn("библиотек", result["answer"].casefold())
+        self.assertIn("уточни", result["answer"].casefold())
+
 
 if __name__ == "__main__":
     unittest.main()
