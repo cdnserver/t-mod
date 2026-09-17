@@ -2749,6 +2749,12 @@ def _bounded_dialog_messages(
         content = str(item.get("content_text") or item.get("content") or "").strip()
         if not content:
             continue
+        if role == "assistant" and _atlas_answer_is_retrieval_refusal(content):
+            # Old threads can contain answers produced before the refusal
+            # guard existed.  Never feed those diagnostics back to the model:
+            # otherwise a follow-up may simply repeat «в библиотеке нет» even
+            # though the current retrieval pass has better evidence.
+            continue
         normalized.append({"role": role, "content": content[:12_000]})
     if not normalized:
         return []
@@ -2793,6 +2799,10 @@ def _cross_chat_context(memory: list[dict[str, Any]] | None) -> str:
         role = "Пользователь" if role_value == "user" else "Atlas · подтверждено пользователем"
         title = str(item.get("thread_title") or "Предыдущий диалог").strip()[:120]
         content = str(item.get("content_text") or "").strip()[:2400]
+        if role_value == "assistant" and _atlas_answer_is_retrieval_refusal(content):
+            # A historical positive reaction must not turn an obsolete search
+            # refusal into durable cross-chat memory.
+            continue
         fingerprint = " ".join(content.casefold().split())
         if content and fingerprint not in seen:
             rows.append(f"[{title} · {role}]\n{content}")

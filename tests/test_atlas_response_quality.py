@@ -104,6 +104,29 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(compact.endswith("…"))
         self.assertTrue(compact.endswith("."))
 
+    def test_obsolete_search_refusals_are_not_reused_from_dialog_history(self) -> None:
+        history = atlas_ai._bounded_dialog_messages(
+            [
+                {"role": "user", "content": "Какая статья за кражу?"},
+                {"role": "assistant", "content": "В библиотеке Atlas нет точной статьи."},
+                {"role": "user", "content": "Тогда уточни номер."},
+                {"role": "assistant", "content": "10.1 — тайное хищение имущества [Источник 1]."},
+            ]
+        )
+        joined = " ".join(item["content"] for item in history)
+        self.assertNotIn("В библиотеке Atlas нет", joined)
+        self.assertIn("10.1", joined)
+
+    def test_obsolete_search_refusals_are_not_reused_as_cross_chat_memory(self) -> None:
+        memory = atlas_ai._cross_chat_context(
+            [
+                {"role": "assistant", "feedback_rating": "good", "content_text": "В библиотеке Atlas нет нормы."},
+                {"role": "assistant", "feedback_rating": "good", "content_text": "10.1 — кража [Источник 1]."},
+            ]
+        )
+        self.assertNotIn("библиотек", memory.casefold())
+        self.assertIn("10.1", memory)
+
     def test_overlay_detention_answer_does_not_switch_to_officer_perspective(self) -> None:
         prepared = SimpleNamespace(
             latency_mode="overlay",
