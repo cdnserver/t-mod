@@ -73,6 +73,37 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(license_profile.intent, {"legal_analysis", "procedural_advice"})
         self.assertIn(bug_profile.intent, {"legal_analysis", "procedural_advice"})
 
+    def test_colloquial_dm_question_enters_ooc_rules_lane(self) -> None:
+        question = "Что делать если меня убили без причины?"
+        self.assertTrue(atlas_ai._atlas_ooc_question_signal(question))
+        variants = atlas_ai._atlas_query_variants(question)
+        self.assertTrue(any("OOC правила" in item for item in variants))
+
+    def test_plain_numbered_road_article_is_parsed_for_dtp(self) -> None:
+        source = (
+            "Дорожный Кодекс штата San Andreas\n"
+            "Статья 9. При аварии водитель обязан немедленно остановиться.\n"
+            "Наказание: штраф.\n"
+            "Статья 10. Иная норма."
+        )
+        sections = atlas_ai._atlas_numbered_rule_sections(source)
+        self.assertTrue(any(number == "9" and "аварии" in text for number, text in sections))
+
+    def test_dtp_routes_to_the_accident_article_not_definitions(self) -> None:
+        source = {
+            "id": 32,
+            "title": "Дорожный Кодекс штата San Andreas",
+            "content_text": (
+                "Статья 9. При аварии водитель обязан немедленно остановиться. "
+                "Если есть пострадавшие, вызвать EMS. Наказание: штраф.\n"
+                "Статья 10. Общая норма о документах."
+            ),
+            "source_url": "https://example.test/road",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        candidates = atlas_ai._atlas_thematic_legal_candidates("Что делать при ДТП?", [source])
+        self.assertTrue(any(item["reference"] == "article:9" for item in candidates))
+
     def test_vehicle_eviction_wording_matches_the_road_clause(self) -> None:
         source = {
             "id": 42,

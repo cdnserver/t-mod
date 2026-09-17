@@ -1617,6 +1617,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "По запросу ничего не найдено.",
             "Atlas не знает ответа по этому вопросу.",
             "В релевантных источниках отсутствуют данные.",
+            "Библиотека пока не содержит доступных названий.",
             "No relevant information in the knowledge base.",
         ):
             self.assertTrue(_atlas_answer_is_retrieval_refusal(variant), variant)
@@ -2964,7 +2965,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.await_count, 2)
         sleep.assert_awaited_once_with(2)
 
-    async def test_search_converts_qdrant_gridstore_panic_into_recovery_state(self) -> None:
+    async def test_search_treats_qdrant_gridstore_panic_as_optional_accelerator(self) -> None:
         corrupted = AtlasAIError(
             "qdrant_index_corrupted",
             "Service internal error: task panicked with OutputTooSmall",
@@ -2976,12 +2977,14 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "modules.atlas_ai._json_request",
             AsyncMock(side_effect=corrupted),
-        ), self.assertRaises(AtlasAIError) as raised:
-            await atlas_search(77, "порядок задержания")
+        ):
+            result = await atlas_search(77, "порядок задержания")
 
-        self.assertEqual(raised.exception.code, "atlas_index_recovery_required")
-        self.assertTrue(raised.exception.retryable)
-        self.assertIn("Материалы сохранены", str(raised.exception))
+        # The canonical database remains authoritative. A broken Qdrant
+        # vector must not turn a normal question into a 5xx/retrieval refusal;
+        # the caller can still answer from lexical evidence or the model's
+        # grounded fallback while the index is rebuilt in the background.
+        self.assertEqual(result, [])
 
     async def test_collection_probe_detects_missing_and_corrupt_payload(self) -> None:
         missing = AsyncMock(side_effect=AtlasAIError("upstream_not_found", "missing"))

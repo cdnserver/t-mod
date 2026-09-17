@@ -1056,10 +1056,7 @@ def _atlas_query_variants(
     if expanded != clean:
         variants.extend((expanded, *matched_expansions))
     lowered = expanded.casefold()
-    ooc_rules_question = bool(
-        _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered)
-        or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", lowered)
-    )
+    ooc_rules_question = _atlas_ooc_question_signal(lowered)
     ic_legal_question = bool(_ATLAS_LEGAL_RE.search(lowered)) and not ooc_rules_question
     # Short natural questions rarely contain the formal title of the right
     # codex. Embeddings alone are not reliable enough here: ``статья за
@@ -1193,9 +1190,15 @@ def _atlas_lexical_query_terms(
         if (
             re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", expanded)
             or re.search(r"\bбез\s+(?:ic[- ]?)?причин\w*\b", expanded)
-            or _ATLAS_OOC_RULE_SIGNAL_RE.search(expanded)
+            or _atlas_ooc_question_signal(expanded)
         ):
             raw_terms.append("dm")
+    # The Road Code uses the formal word ``авария`` while players normally
+    # type ``ДТП`` or ``столкнулись``.  Add the canonical stems so the
+    # complete accident clause (usually article 9) wins over introductory
+    # definitions that only mention vehicles.
+    if re.search(r"\b(?:дтп|авари\w*|столкнов\w*|происшеств\w*)\b", expanded, re.IGNORECASE):
+        raw_terms.extend(("авари", "столкнов", "происшеств"))
     # Everyday vehicle wording does not match the formal Road Code nouns
     # (``эвакуировали`` → ``эвакуация``, ``машину`` → ``транспортное
     # средство``). Keep the formal stems beside the user's wording so the
@@ -1245,6 +1248,21 @@ def _atlas_numbered_rule_sections(content: str) -> list[tuple[str, str]]:
 
     clean = _atlas_legal_search_text(content)
     matches = list(_ATLAS_NUMBERED_RULE_RE.finditer(clean))
+    # Some codices write whole-number provisions as ``Статья 9.`` while
+    # OOC rules and sub-articles use dotted numbers.  The general extractor
+    # intentionally requires a dot to avoid treating list numbers as clauses;
+    # add only explicitly labelled whole-number articles here.
+    plain_article_re = re.compile(
+        r"(?im)^[^\S\r\n]*(?:стать(?:я|и)|ст\.)\s*(\d{1,3})"
+        r"(?!\.\d)(?=[.)\s:—-]|$)"
+    )
+    existing_starts = {match.start() for match in matches}
+    matches.extend(
+        match
+        for match in plain_article_re.finditer(clean)
+        if match.start() not in existing_starts
+    )
+    matches.sort(key=lambda match: match.start())
     result: list[tuple[str, str]] = []
     for index, match in enumerate(matches):
         number = re.sub(r"\s+", "", str(match.group(1)))
@@ -1392,16 +1410,17 @@ def _atlas_thematic_legal_candidates(
     lowered = str(query or "").casefold()
     road_event_route = bool(
         re.search(
-            r"\b(?:парковк|эваку\w*|отбуксир\w*|угон\w*|номерн\w*|vin)\w*\b",
+            r"\b(?:дтп|авари\w*|столкнов\w*|парковк|эваку\w*|отбуксир\w*|"
+            r"угон\w*|номерн\w*|vin)\w*\b",
             lowered,
             re.IGNORECASE,
         )
     )
-    if _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered) or not (
+    if _atlas_ooc_question_signal(lowered) or not (
         _ATLAS_LEGAL_RE.search(lowered)
         or road_event_route
         or re.search(
-            r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
+            r"\b(?:уби\w*|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
             r"преступлен|задерж|арест|обыск)\w*",
             lowered,
             re.IGNORECASE,
@@ -2119,7 +2138,7 @@ async def atlas_search(
     lexical_candidates: list[dict[str, Any]] = []
     primary_query = raw_queries[0] if raw_queries else ""
     extract_numbered_rules = bool(
-        _ATLAS_OOC_RULE_SIGNAL_RE.search(primary_query)
+        _atlas_ooc_question_signal(primary_query)
         or re.search(
             r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b",
             primary_query,
@@ -2221,20 +2240,16 @@ async def atlas_search(
             # abbreviation-expanded matches already found in the saved corpus.
             if lexical_candidates or structured_candidates or rule_candidates or thematic_candidates:
                 bodies = []
-            elif exc.code == "upstream_not_found":
-                raise AtlasAIError(
-                    "atlas_index_missing",
-                    "Atlas готовит библиотеку к первому поиску. Повторите вопрос немного позже.",
-                    retryable=True,
-                ) from exc
-            elif exc.code == "qdrant_index_corrupted" or _qdrant_index_corrupted(exc):
-                raise AtlasAIError(
-                    "atlas_index_recovery_required",
-                    "Atlas восстанавливает поисковую библиотеку. Материалы сохранены; повторите вопрос немного позже.",
-                    retryable=True,
-                ) from exc
             else:
-                raise
+                # Qdrant is an accelerator, never the source of truth.  A
+                # cold, missing or temporarily corrupted vector index must
+                # not turn into a user-facing ``library is empty`` refusal
+                # (or a 5xx).  Keep the canonical lexical corpus—possibly
+                # empty for a purely conversational question—and let the
+                # normal answer path either respond from it or ask one
+                # concrete clarification without exposing infrastructure
+                # state.
+                bodies = []
     candidates: dict[tuple[int, int], dict[str, Any]] = {}
     semantic_hits: list[tuple[int, int, float, dict[str, Any]]] = []
     for variant_index, body in enumerate(bodies):
@@ -2346,7 +2361,7 @@ async def atlas_search(
             ) else -0.15
         if re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
-        elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
+        elif _atlas_ooc_question_signal(query_folded):
             score += 0.42 if corpus == "server_rule" or domain == "ooc" else -0.12 if domain == "ic" else 0
         elif _ATLAS_LEGAL_RE.search(query_folded):
             score += 0.18 if domain == "ic" else 0
@@ -2366,7 +2381,7 @@ async def atlas_search(
             )
         if (
             (
-                _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded)
+                _atlas_ooc_question_signal(query_folded)
                 or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", query_folded)
             )
             and not re.search(
@@ -2454,6 +2469,28 @@ _ATLAS_OOC_RULE_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Players often describe an OOC violation without using its short rule code:
+# ``меня убили без причины`` is the everyday wording for DM.  Keep this
+# separate from the lexical rule-code regex so ordinary legal words such as
+# ``получить`` cannot accidentally enter the server-rules lane.
+_ATLAS_OOC_CONTEXT_RE = re.compile(
+    r"(?:\b(?:меня|его|е[её]|тебя)\s+(?:убил\w*|застрел\w*|слил\w*)"
+    r"[^.\n]{0,80}\bбез\s+(?:всяк\w*\s+)?причин\w*\b|"
+    r"\bуби\w*\s+без\s+(?:всяк\w*\s+)?причин\w*\b)",
+    re.IGNORECASE,
+)
+
+
+def _atlas_ooc_question_signal(query: str) -> bool:
+    """Return whether colloquial wording belongs to the OOC rules corpus."""
+
+    lowered = str(query or "").casefold()
+    return bool(
+        _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered)
+        or _ATLAS_OOC_CONTEXT_RE.search(lowered)
+        or re.search(r"\bправил\w*\s+(?:сервера|проекта)\b", lowered)
+    )
+
 
 # Canonical document identities used by the Phoenix corpus.  These are
 # retrieval hints, not legal conclusions: the final source scope and text are
@@ -2517,6 +2554,16 @@ def _atlas_document_route_hints(query: str) -> tuple[str, ...]:
     for pattern, titles in _ATLAS_DOCUMENT_ROUTE_RULES:
         if re.search(pattern, lowered, re.IGNORECASE):
             hints.extend(titles)
+    # ``меня убили без причины`` is an OOC DM report even though the word
+    # ``убили`` also appears in the Criminal Code route.  Keeping the IC
+    # criminal title in the hint set makes semantic retrieval return two
+    # competing corpora and invites a model to answer the wrong question.
+    if _ATLAS_OOC_CONTEXT_RE.search(lowered):
+        hints = [
+            hint
+            for hint in hints
+            if "уголовн" not in str(hint).casefold()
+        ]
     return _ordered_distinct(hints, limit=8)
 
 
@@ -2680,7 +2727,7 @@ def _atlas_task_profile(
         intent = "procedural_advice"
     elif (
         _ATLAS_LEGAL_RE.search(routed_text)
-        or _ATLAS_OOC_RULE_SIGNAL_RE.search(routed_text)
+        or _atlas_ooc_question_signal(routed_text)
         or re.search(r"\bправил(?:о|а|у|е|ом|ы|ам|ами|ах)\b", routed_text, re.IGNORECASE)
     ):
         intent = "legal_analysis"
@@ -4077,6 +4124,8 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"|(?:\b(?:atlas|атлас)\b[^.\n]{0,90}"
     r"(?:не\s+(?:зна\w*|располага\w*|виж\w*)|нет\s+(?:данн\w*|информац\w*)|"
     r"не\s+(?:найден\w*|обнаружен\w*)))"
+    r"|(?:\bбиблиотек\w*\b[^.\n]{0,90}"
+    r"(?:не\s+содерж\w*|пуст\w*|нет\s+доступн\w*))"
     r"|(?:не\s+могу\s+(?:ответить|помочь|сказать)[^.\n]{0,120}"
     r"(?:информац\w*|данн\w*|источник\w*|норм\w*|стать\w*|"
     r"не\s+найден\w*|нет\b))"
