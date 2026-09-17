@@ -510,7 +510,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(order_id, int(second_body["order"]["id"]))
             self.assertEqual(
                 first_body["payment"]["url"],
-                "https://auth.robokassa.ru/Merchant/Payment/Index",
+                "https://auth.robokassa.ru/Merchant/Index.aspx",
             )
             self.assertEqual(
                 first_body["payment"]["fields"]["Email"],

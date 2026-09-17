@@ -142,7 +142,9 @@ def robokassa_config() -> dict[str, Any]:
         "password2": os.getenv("ROBOKASSA_PASSWORD2", "").strip(),
         "test_mode": test_mode,
         "enabled": _env_bool("ATLAS_BILLING_PAYMENTS_ENABLED", default=False),
-        "payment_url": "https://auth.robokassa.ru/Merchant/Payment/Index",
+        # Robokassa's current public payment form.  The similarly named
+        # /Merchant/Payment/Index endpoint returns a branded 404 in browsers.
+        "payment_url": "https://auth.robokassa.ru/Merchant/Index.aspx",
         "hash_algorithm": hash_algorithm,
         "receipt_tax": receipt_tax,
         "receipt_sno": receipt_sno,
