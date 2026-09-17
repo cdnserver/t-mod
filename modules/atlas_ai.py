@@ -4091,6 +4091,9 @@ def _truncated_output_retry_payload(
 _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"(?:"
     r"(?:не\s+(?:могу|удалось)\s+(?:найти|назвать|определить|подтвердить))"
+    r"|(?:\b(?:не\s+смог(?:ла|ли)?|не\s+наш(?:е?л|ё?л|ла|ло|ли|лось|лись))\b"
+    r"[^.\n]{0,100}\b(?:найти|обнаружить|назвать|определить|подтвердить|ответ|"
+    r"информац\w*|данн\w*|стать\w*|норм\w*|источник\w*)\b)"
     r"|(?:в\s+(?:текущей\s+)?(?:библиотеке|базе|источниках|материалах)[^.\n]{0,100}"
     r"(?:нет|не\s+найден|отсутств))"
     r"|(?:(?:нет|не\s+найден|отсутств)[^.\n]{0,100}"
@@ -4108,6 +4111,15 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"|(?:не\s+располагаю[^.\n]{0,100}(?:информац|данн|текст|норм|стать))"
     r"|(?:не\s+могу\s+точно\s+сказать[^.\n]{0,120}"
     r"(?:нет|отсутств|не\s+найден))"
+    r"|(?:(?:недостаточн\w*|нехват\w*)[^.\n]{0,80}"
+    r"(?:информац\w*|данн\w*|сведен\w*|контекст\w*|источник\w*))"
+    r"|(?:\b(?:сведен\w*|информац\w*|данн\w*)\b[^.\n]{0,80}"
+    r"(?:не\s+предоставлен\w*|не\s+доступн\w*|отсутств\w*))"
+    r"|(?:\b(?:точн\w*\s+ответ|ответ\s+на\s+этот\s+вопрос|"
+    r"назват\w*\s+стать\w*)\b[^.\n]{0,80}"
+    r"(?:невозможн\w*|нельзя|затрудн\w*))"
+    r"|(?:\bне\s+вижу\b[^.\n]{0,80}"
+    r"(?:в\s+(?:контекст\w*|материал\w*|источник\w*)|данн\w*|информац\w*))"
     # Newer provider releases use softer wording that slipped past the
     # original guard: ``в контексте нет...``, ``по запросу ничего не
     # найдено`` or ``Atlas не знает``.  These are the same internal retrieval
@@ -4250,6 +4262,32 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
             reference.replace(":", " ", 1) or "точная норма",
         )
         return f"По найденной норме:\n\n{text}\n\n[{index}, {label}]"
+    return ""
+
+
+def _provider_failure_fallback(prepared: _AtlasAnswerRequest) -> str:
+    """Return a useful local answer when the generative provider is down.
+
+    The canonical store is authoritative.  For a legal request with a
+    structured match, returning that exact clause is safer than turning a
+    transient OpenRouter timeout into a 5xx.  If no clause was extracted, a
+    single concrete clarification is preferable to exposing provider or
+    library state.
+    """
+
+    if prepared.intent in {"social", "visual"}:
+        return ""
+    thematic = _deterministic_thematic_lookup(prepared)
+    if thematic:
+        return thematic
+    grounded = _grounded_refusal_fallback(prepared)
+    if grounded:
+        return grounded
+    if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
+        return (
+            "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+            "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+        )
     return ""
 
 
@@ -5251,26 +5289,39 @@ async def atlas_answer(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             detention_answer,
         )
-    body, used_route = await _completion_with_fallback(
-        prepared,
-        prepared.payload,
-        timeout=90,
-    )
-    answer = _answer_text(body).strip()
-    if answer and _completion_finish_reason(body) == "length":
-        retry_body, used_route = await _completion_with_fallback(
+    try:
+        body, used_route = await _completion_with_fallback(
             prepared,
-            _truncated_output_retry_payload(prepared),
+            prepared.payload,
             timeout=90,
-            initial_route=used_route,
         )
-        retry_answer = _answer_text(retry_body).strip()
-        if retry_answer:
-            answer = retry_answer
-    if not answer:
-        answer, used_route = await _retry_empty_completion(
-            prepared,
-            initial_route=used_route,
+        answer = _answer_text(body).strip()
+        if answer and _completion_finish_reason(body) == "length":
+            retry_body, used_route = await _completion_with_fallback(
+                prepared,
+                _truncated_output_retry_payload(prepared),
+                timeout=90,
+                initial_route=used_route,
+            )
+            retry_answer = _answer_text(retry_body).strip()
+            if retry_answer:
+                answer = retry_answer
+        if not answer:
+            answer, used_route = await _retry_empty_completion(
+                prepared,
+                initial_route=used_route,
+            )
+    except AtlasAIError:
+        fallback = _provider_failure_fallback(prepared)
+        if not fallback:
+            raise
+        return _atlas_answer_result(
+            replace(
+                prepared,
+                model_route=_local_exact_route(),
+                fallback_model_route=None,
+            ),
+            fallback,
         )
     answer, used_route = await _repair_retrieval_refusal(
         prepared,
@@ -5533,6 +5584,17 @@ async def atlas_answer_stream(
         except AtlasAIError as exc:
             if exc.retryable and index < len(routes) - 1:
                 continue
+            fallback = _provider_failure_fallback(prepared)
+            if fallback and defer_legal_output:
+                await on_delta(fallback)
+                return _atlas_answer_result(
+                    replace(
+                        prepared,
+                        model_route=_local_exact_route(),
+                        fallback_model_route=None,
+                    ),
+                    fallback,
+                )
             raise
         if stream_failure is not None and parts:
             # Once the user has received a delta, changing model would make a
@@ -5573,6 +5635,17 @@ async def atlas_answer_stream(
             used_route = route
             break
         if stream_failure is not None and not stream_failure.retryable:
+            fallback = _provider_failure_fallback(prepared)
+            if fallback and defer_legal_output:
+                await on_delta(fallback)
+                return _atlas_answer_result(
+                    replace(
+                        prepared,
+                        model_route=_local_exact_route(),
+                        fallback_model_route=None,
+                    ),
+                    fallback,
+                )
             raise stream_failure
         used_route = route
     if not answer_parts:
@@ -5580,10 +5653,16 @@ async def atlas_answer_stream(
             on_progress,
             {"phase": "retry", "status": "running", "reason": "empty_provider_output"},
         )
-        fallback, used_route = await _retry_empty_completion(
-            prepared,
-            initial_route=used_route,
-        )
+        try:
+            fallback, used_route = await _retry_empty_completion(
+                prepared,
+                initial_route=used_route,
+            )
+        except AtlasAIError:
+            fallback = _provider_failure_fallback(prepared)
+            if not fallback:
+                raise
+            used_route = _local_exact_route()
         answer_parts.append(fallback[:stream_answer_limit])
         await emit_stream_delta(answer_parts[0])
     final_answer = "".join(answer_parts)

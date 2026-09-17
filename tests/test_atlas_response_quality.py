@@ -79,6 +79,80 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         variants = atlas_ai._atlas_query_variants(question)
         self.assertTrue(any("OOC правила" in item for item in variants))
 
+    def test_provider_refusal_variants_are_filtered_without_matching_real_negation(self) -> None:
+        for answer in (
+            "Я не смог найти ответ по этому вопросу.",
+            "Не нашёл нужную статью в материалах.",
+            "Недостаточно данных для точного вывода.",
+            "В ответе нет доступной информации.",
+            "Я не вижу в контексте нужной нормы.",
+        ):
+            self.assertTrue(
+                atlas_ai._atlas_answer_is_retrieval_refusal(answer),
+                answer,
+            )
+        self.assertFalse(
+            atlas_ai._atlas_answer_is_retrieval_refusal(
+                "В статье 6.2 нет отдельного запрета на оказание первой помощи."
+            )
+        )
+
+    def test_provider_failure_has_local_legal_fallback(self) -> None:
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            sources=[
+                {
+                    "structured": True,
+                    "text": "10.1 Кража — тайное хищение чужого имущества.",
+                    "reference": "article:10.1",
+                    "pinpoints": ["статья 10.1"],
+                    "corpus_kind": "law",
+                }
+            ],
+            payload={
+                "messages": [{"role": "user", "content": "Какая статья за кражу?"}]
+            },
+        )
+
+        fallback = atlas_ai._provider_failure_fallback(prepared)
+
+        self.assertIn("10.1 Кража", fallback)
+        self.assertNotIn("библиотек", fallback.casefold())
+
+    async def test_provider_timeout_does_not_become_an_atlas_5xx_for_legal_query(self) -> None:
+        source = {
+            "source_id": 33,
+            "title": "Процессуальный Кодекс",
+            "url": None,
+            "text": "2.2 Сотрудник вправе провести установление личности при задержании.",
+            "structured": True,
+            "reference": "article:2.2",
+            "pinpoints": ["статья 2.2"],
+            "knowledge_domain": "ic",
+            "corpus_kind": "procedure",
+            "score": 9.0,
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai._should_build_intelligence_brief", return_value=False), patch(
+            "modules.atlas_ai.atlas_search", AsyncMock(return_value=[source])
+        ), patch(
+            "modules.atlas_ai._completion_with_fallback",
+            AsyncMock(
+                side_effect=atlas_ai.AtlasAIError(
+                    "upstream_unavailable", "timeout", retryable=True
+                )
+            ),
+        ):
+            result = await atlas_ai.atlas_answer(
+                77,
+                "Какие полномочия у сотрудника при задержании?",
+            )
+
+        self.assertIn("2.2", result["answer"])
+        self.assertNotIn("библиотек", result["answer"].casefold())
+
     def test_plain_numbered_road_article_is_parsed_for_dtp(self) -> None:
         source = (
             "Дорожный Кодекс штата San Andreas\n"
