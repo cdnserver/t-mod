@@ -5162,6 +5162,18 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
     clean_answer = _sanitize_incomplete_answer(clean_answer)
+    if not clean_answer:
+        # A provider can return only an unfinished list marker (``3.``) or a
+        # lone bullet. After sanitizing that transport artefact there is no
+        # user-facing answer left; prefer the canonical clause/clarification
+        # path over returning an empty payload to the UI.
+        clean_answer = _provider_failure_fallback(prepared)
+        if not clean_answer:
+            clean_answer = (
+                "Опиши ситуацию конкретно: что произошло, где и кто участвовал."
+                if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}
+                else "Уточни вопрос одним коротким предложением."
+            )
     if prepared.latency_mode == "overlay":
         clean_answer = _sanitize_overlay_completion(clean_answer)
     clean_answer = _compact_answer_for_delivery(prepared, clean_answer)

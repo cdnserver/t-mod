@@ -139,6 +139,33 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(compact, "Сначала определите вид решения. Затем подайте жалобу в срок.")
 
+    def test_only_incomplete_marker_gets_user_facing_fallback(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="general",
+            depth="standard",
+            model_route=SimpleNamespace(provider="openrouter", model="test", release="test"),
+            sources=[],
+            payload={"messages": [{"role": "user", "content": "Что происходит?"}]},
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="lspd",
+            response_mode="balanced",
+            requested_response_mode="balanced",
+            research_plan=[],
+            agent=SimpleNamespace(public=lambda: {}),
+            intelligence_brief=None,
+            evidence_map=SimpleNamespace(public=lambda: {}),
+            screen_context_used=False,
+            direct_mode=False,
+            fallback_model_route=None,
+            started=0.0,
+        )
+
+        result = atlas_ai._atlas_answer_result(prepared, "3.")
+
+        self.assertEqual(result["answer"], "Уточни вопрос одним коротким предложением.")
+
     async def test_provider_timeout_does_not_become_an_atlas_5xx_for_legal_query(self) -> None:
         source = {
             "source_id": 33,
