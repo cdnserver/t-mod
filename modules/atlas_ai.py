@@ -5690,18 +5690,26 @@ async def atlas_answer_stream(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             detention_answer,
         )
-    # Legal text is buffered until the grounded-answer guard has inspected it.
-    # This deliberately trades a small amount of first-token latency for
-    # correctness: a false search refusal must never be streamed to the user
-    # (or to overlay TTS) and then retracted.
+    # Any answer backed by retrieved material is buffered until the grounded
+    # answer guard has inspected it. Legal text was already handled this way;
+    # extending the same boundary to the other RAG lanes prevents a provider's
+    # internal ``library/context has no data`` sentence from flashing in the
+    # UI or reaching overlay TTS before the final sanitization. Greetings,
+    # visual prompts without RAG and source-free creative/general replies keep
+    # their normal token streaming path.
     defer_legal_output = prepared.intent in {
         "exact_lookup",
         "legal_analysis",
         "procedural_advice",
     }
+    defer_retrieval_output = bool(prepared.sources) and prepared.intent not in {
+        "social",
+        "visual",
+    }
+    defer_output = defer_legal_output or defer_retrieval_output
 
     async def emit_stream_delta(delta: str) -> None:
-        if not defer_legal_output:
+        if not defer_output:
             await on_delta(delta)
 
     answer_parts: list[str] = []
@@ -5732,7 +5740,7 @@ async def atlas_answer_stream(
             if exc.retryable and index < len(routes) - 1:
                 continue
             fallback = _provider_failure_fallback(prepared)
-            if fallback and defer_legal_output:
+            if fallback and defer_output:
                 await on_delta(fallback)
                 return _atlas_answer_result(
                     replace(
@@ -5783,7 +5791,7 @@ async def atlas_answer_stream(
             break
         if stream_failure is not None and not stream_failure.retryable:
             fallback = _provider_failure_fallback(prepared)
-            if fallback and defer_legal_output:
+            if fallback and defer_output:
                 await on_delta(fallback)
                 return _atlas_answer_result(
                     replace(
@@ -5813,7 +5821,7 @@ async def atlas_answer_stream(
         answer_parts.append(fallback[:stream_answer_limit])
         await emit_stream_delta(answer_parts[0])
     final_answer = "".join(answer_parts)
-    if defer_legal_output:
+    if defer_output:
         final_answer, used_route = await _repair_retrieval_refusal(
             prepared,
             final_answer,
@@ -5823,10 +5831,11 @@ async def atlas_answer_stream(
         replace(prepared, model_route=used_route, fallback_model_route=None),
         final_answer,
     )
-    if defer_legal_output:
+    if defer_output:
         # Emit the authoritative, sanitized result rather than the raw
         # provider text. In overlay mode this is also the compacted version
-        # used by the renderer and TTS.
+        # used by the renderer and TTS. Source-backed non-legal answers use
+        # the same path so retrieval diagnostics never become visible.
         await on_delta(result["answer"])
     if prepared.research_plan:
         await _atlas_progress(

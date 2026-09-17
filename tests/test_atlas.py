@@ -3071,6 +3071,68 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["model"], "test/model")
         self.assertEqual(result["model_provider"], "openrouter")
 
+    async def test_source_backed_stream_never_leaks_provider_retrieval_refusal(self) -> None:
+        async def completion(request: web.Request) -> web.StreamResponse | web.Response:
+            body = await request.json()
+            refusal = "В библиотеке Atlas нет точной статьи."
+            if not body.get("stream"):
+                return web.json_response({"choices": [{"message": {"content": refusal}}]})
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            await response.write(
+                f'data: {{"choices":[{{"delta":{{"content":"{refusal}"}}}}]}}\n\n'.encode()
+            )
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application()
+        app.router.add_post("/chat", completion)
+        server = TestServer(app)
+        await server.start_server()
+        config = AtlasAIConfig(
+            openrouter_key="test",
+            openrouter_url=str(server.make_url("/chat")),
+            chat_model="test/model",
+            embedding_model="test/embed",
+            qdrant_url="http://qdrant",
+            qdrant_key="",
+            collection="atlas",
+            referer="",
+            title="Atlas",
+        )
+        chunks: list[str] = []
+
+        async def receive(text: str) -> None:
+            chunks.append(text)
+
+        source = {
+            "source_id": 7,
+            "title": "Правила проекта",
+            "url": "https://example.test/rules",
+            "text": "Правила поведения участника проекта.",
+            "structured": False,
+            "reference": "",
+            "pinpoints": [],
+            "knowledge_domain": "ooc",
+            "corpus_kind": "rules",
+            "score": 5.0,
+        }
+        try:
+            with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
+                "modules.atlas_ai.atlas_search",
+                AsyncMock(return_value=[source]),
+            ):
+                result = await atlas_answer_stream(77, "Что происходит?", on_delta=receive)
+        finally:
+            await server.close()
+
+        joined = "".join(chunks)
+        self.assertNotIn("библиотек", joined.casefold())
+        self.assertNotIn("библиотек", result["answer"].casefold())
+        self.assertIn("уточни", result["answer"].casefold())
+        self.assertEqual(chunks, [result["answer"]])
+
     async def test_partial_stream_continues_after_provider_token_limit(self) -> None:
         requests: list[dict] = []
 
