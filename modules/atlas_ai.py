@@ -4299,7 +4299,19 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         # Quick questions are the normal chat equivalent of the overlay:
         # keep one useful paragraph and never let a provider turn a short
         # request into a multi-screen explanation.
-        return _compact_overlay_answer(value, max_words=110, max_chars=1_100)
+        compact = _compact_overlay_answer(value, max_words=110, max_chars=1_100)
+        if compact.endswith("…"):
+            # The bound can land immediately after a complete citation while
+            # the provider's next sentence is only partially present.  The
+            # user should see the finished sentence, not a dangling ellipsis.
+            body = compact[:-1].rstrip()
+            boundaries = [
+                match.end()
+                for match in re.finditer(r"[.!?](?=\s|$)", body)
+            ]
+            if boundaries:
+                compact = body[: boundaries[-1]].rstrip()
+        return compact
     return _compact_overlay_answer(value, max_words=140, max_chars=1_400)
 
 

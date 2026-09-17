@@ -97,6 +97,13 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(compact), 1_101)
         self.assertTrue(compact.startswith("Прямой вывод."))
 
+    def test_quick_answer_drops_dangling_ellipsis_after_finished_sentence(self) -> None:
+        prepared = SimpleNamespace(latency_mode="standard", intent="procedural_advice", depth="quick")
+        value = "Сначала назовите причину задержания. " + "Дополнительная деталь. " * 200
+        compact = atlas_ai._compact_answer_for_delivery(prepared, value)
+        self.assertFalse(compact.endswith("…"))
+        self.assertTrue(compact.endswith("."))
+
     def test_overlay_detention_answer_does_not_switch_to_officer_perspective(self) -> None:
         prepared = SimpleNamespace(
             latency_mode="overlay",
