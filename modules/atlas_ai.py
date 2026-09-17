@@ -2433,6 +2433,13 @@ _ATLAS_SOCIAL_WITH_NAME_RE = re.compile(
     r"[\s!?.🙂👋]*$",
     re.IGNORECASE,
 )
+_ATLAS_SOCIAL_EXTENDED_RE = re.compile(
+    r"^\s*(?:atlas|атлас)?\s*[,.:—-]?\s*"
+    r"(?:привет(?:ик)?|здравствуй(?:те)?|салют|хай|hello|здорово|"
+    r"доброе\s+(?:утро|день|вечер)|добрый\s+(?:день|вечер))\b"
+    r"[^\n]{0,150}$",
+    re.IGNORECASE,
+)
 _ATLAS_VISUAL_RE = re.compile(
     r"\b(?:"
     r"что\s+(?:это\s+)?за\s+(?:растени\w*|человек\w*|персон\w*|машин\w*|автомобил\w*|"
@@ -2522,7 +2529,17 @@ def _atlas_task_profile(
         and bool(_ATLAS_FOLLOWUP_RE.search(clean))
     )
 
-    if _ATLAS_SOCIAL_RE.fullmatch(clean) or _ATLAS_SOCIAL_WITH_NAME_RE.fullmatch(clean):
+    extended_social = bool(
+        _ATLAS_SOCIAL_EXTENDED_RE.fullmatch(clean)
+        and not _ATLAS_LEGAL_RE.search(routed_text)
+        and not _CREATIVE_REQUEST_RE.search(routed_text)
+        and not _ATLAS_PROCEDURE_RE.search(routed_text)
+    )
+    if (
+        _ATLAS_SOCIAL_RE.fullmatch(clean)
+        or _ATLAS_SOCIAL_WITH_NAME_RE.fullmatch(clean)
+        or extended_social
+    ):
         intent = "social"
     elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
