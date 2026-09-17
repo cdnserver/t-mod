@@ -5222,7 +5222,25 @@ def _sanitize_incomplete_answer(answer: str) -> str:
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
-        raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
+        # A provider may return an HTTP-success payload without visible text
+        # even after the bounded retry.  This is a transport detail, not a
+        # useful Atlas response.  Never leak it as ``Модель не вернула...``
+        # (which used to become a 5xx in the web/overlay clients); use the
+        # same grounded/local fallback as the provider-error path.
+        clean_answer = _provider_failure_fallback(prepared)
+        if not clean_answer:
+            intent = str(getattr(prepared, "intent", "") or "")
+            if intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
+                clean_answer = (
+                    "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
+                    "Я сопоставлю её с применимой нормой и назову точный пункт без догадок."
+                )
+            elif intent == "visual":
+                clean_answer = "Пришли скриншот — тогда я опишу только то, что действительно видно."
+            elif intent == "social":
+                clean_answer = "Привет! Чем помочь?"
+            else:
+                clean_answer = "Уточни вопрос одним коротким предложением."
     clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
     clean_answer = _sanitize_incomplete_answer(clean_answer)
     if not clean_answer:

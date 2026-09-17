@@ -200,6 +200,35 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["answer"], "Уточни вопрос одним коротким предложением.")
 
+    def test_empty_answer_result_never_exposes_transport_error(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="general",
+            depth="standard",
+            model_route=SimpleNamespace(provider="openrouter", model="test", release="test"),
+            sources=[],
+            payload={"messages": [{"role": "user", "content": "Что происходит?"}]},
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="lspd",
+            response_mode="balanced",
+            requested_response_mode="balanced",
+            research_plan=[],
+            agent=SimpleNamespace(public=lambda: {}),
+            intelligence_brief=None,
+            evidence_map=SimpleNamespace(public=lambda: {}),
+            screen_context_used=False,
+            direct_mode=False,
+            fallback_model_route=None,
+            started=0.0,
+        )
+
+        result = atlas_ai._atlas_answer_result(prepared, "")
+
+        self.assertTrue(result["answer"])
+        self.assertNotIn("модель не вернула", result["answer"].casefold())
+        self.assertNotIn("библиотек", result["answer"].casefold())
+
     async def test_provider_timeout_does_not_become_an_atlas_5xx_for_legal_query(self) -> None:
         source = {
             "source_id": 33,
