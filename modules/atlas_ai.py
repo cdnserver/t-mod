@@ -1344,6 +1344,9 @@ _ATLAS_THEMATIC_LEGAL_GENERIC_TERMS = _ATLAS_RULE_GENERIC_TERMS | frozenset(
     {
         "назови",
         "назват",
+        "точн",
+        "точную",
+        "точные",
         "статью",
         "статья",
         "кодекс",
@@ -3945,6 +3948,15 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     exposing a false retrieval refusal and cannot invent a missing provision.
     """
 
+    # Inverse offence lookups have a stricter safety rule: if no clause
+    # matched the offence marker, never expose an arbitrary structured hit
+    # (for example a traffic definition returned by semantic search).
+    payload = getattr(prepared, "payload", {})
+    messages = list(payload.get("messages") or []) if isinstance(payload, dict) else []
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = str(last_message.get("content") or "")
+    if _is_thematic_article_request(question):
+        return ""
     for index, source in enumerate(prepared.sources, 1):
         if not source.get("structured"):
             continue

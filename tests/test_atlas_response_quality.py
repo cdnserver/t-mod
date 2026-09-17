@@ -176,6 +176,29 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         search.assert_awaited_once()
         request.assert_not_awaited()
 
+    def test_thematic_lookup_ignores_generic_word_matches(self) -> None:
+        sources = [
+            {
+                "id": 3,
+                "title": "Уголовный Кодекс штата San Andreas",
+                "content_text": "3.15\nПолоса движения имеет ширину, достаточную для движения автомобилей.",
+                "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+            },
+            {
+                "id": 5,
+                "title": "Уголовный Кодекс штата San Andreas",
+                "content_text": "10.5\nГрабеж, то есть открытое хищение чужого имущества.",
+                "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+            },
+        ]
+        candidates = atlas_ai._atlas_thematic_legal_candidates(
+            "Назови точную статью за грабеж",
+            sources,
+        )
+        references = {item["reference"] for item in candidates}
+        self.assertIn("article:10.5", references)
+        self.assertNotIn("article:3.15", references)
+
     async def test_all_refusal_completion_becomes_a_useful_prompt(self) -> None:
         provider = AsyncMock(
             return_value={
