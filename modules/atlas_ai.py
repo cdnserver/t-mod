@@ -3906,13 +3906,10 @@ def _answer_without_internal_search_state(
     grounded = _grounded_refusal_fallback(prepared)
     if grounded:
         return grounded
-    sentences = [
-        part.strip()
-        for part in re.split(r"(?<=[.!?])\s+", clean)
-        if part.strip() and not _atlas_answer_is_retrieval_refusal(part)
-    ]
-    if sentences:
-        return " ".join(sentences)
+    # Do not preserve the non-refusal sentences from a refusal-led answer:
+    # providers often append an ungrounded "Тем не менее…" paragraph after
+    # admitting that they could not locate the governing text. Keeping it
+    # would turn a safe refusal guard into an accidental source of speculation.
     if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
         return (
             "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "

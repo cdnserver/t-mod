@@ -316,6 +316,20 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("библиотек", result["answer"].casefold())
         self.assertIn("уточни", result["answer"].casefold())
 
+    def test_refusal_led_essay_does_not_leave_speculative_tail(self) -> None:
+        prepared = SimpleNamespace(intent="legal_analysis", sources=[], payload={})
+        answer = (
+            "В предоставленной мне библиотеке источников нет полного текста главы 16. "
+            "Тем не менее, эта глава, вероятно, регулирует самые тяжкие составы. "
+            "Любые конкретные утверждения будут спекуляцией."
+        )
+
+        clean = atlas_ai._answer_without_internal_search_state(prepared, answer)
+
+        self.assertIn("опиши ситуацию", clean.casefold())
+        self.assertNotIn("вероятно", clean.casefold())
+        self.assertNotIn("спекуляц", clean.casefold())
+
 
 if __name__ == "__main__":
     unittest.main()
