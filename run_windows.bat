@@ -338,6 +338,31 @@ if errorlevel 1 (
   call :pause_if_interactive
   exit /b 1
 )
+rem Restart returns before Caddy has rejoined the Docker network. Wait for the
+rem new process and the freshly recreated tmod-web DNS record before exposing
+rem the release; otherwise the first login or checkout can receive HTTP 502.
+set CADDY_RESTART_READY=0
+for /l %%i in (1,1,30) do (
+  set CADDY_HEALTH=
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-caddy 2^>nul') do set CADDY_HEALTH=%%H
+  if /I "!CADDY_HEALTH!"=="healthy" (
+    set CADDY_RESTART_READY=1
+    goto :caddy_restart_ready
+  )
+  call :sleep 2
+)
+:caddy_restart_ready
+if not "%CADDY_RESTART_READY%"=="1" (
+  call :fail "Caddy did not recover after its network refresh"
+  docker compose logs --no-color --tail 80 tmod-caddy
+  call :pause_if_interactive
+  exit /b 1
+)
+call :wait_for_gateway_ready
+if errorlevel 1 (
+  call :pause_if_interactive
+  exit /b 1
+)
 call :ok "HTTPS routes refreshed"
 
 call :stage "11" "Minecraft RCON verification"
@@ -369,7 +394,11 @@ if exist "%CONTROL_INSTALLER%" (
   call :warn "Native T-Mod Control installer is missing"
 )
 
-if exist "%~dp0configure_auto_update_windows.ps1" (
+if "%TMOD_TRANSACTIONAL_UPDATE%"=="1" (
+  rem The scheduled task already owns this transaction. Recreating it here can
+  rem re-enable a task paused by the operator and start another update cycle.
+  call :ok "Automatic update task registration preserved"
+) else if exist "%~dp0configure_auto_update_windows.ps1" (
   powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0configure_auto_update_windows.ps1" -ProjectDir "%CD%" -IntervalMinutes 2
   if errorlevel 1 (
     call :warn "Automatic GitHub update watcher could not be registered"
@@ -537,7 +566,16 @@ for /l %%i in (1,1,80) do (
   call :sleep 3
 )
 echo.
-call :warn "The bot is running, but the web panel did not answer within 240 seconds."
+rem A Discord reconnect can be delayed independently of the database and web
+rem runtime. Rolling a healthy release back cannot repair a Discord outage and
+rem used to create a second web outage. Accept a live gateway/upstream while
+rem clearly reporting that Discord is still reconnecting.
+powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/gateway-ready' -TimeoutSec 5; if ($r.status -eq 'ready') { exit 0 } } catch {}; exit 1" >nul 2>nul
+if not errorlevel 1 (
+  call :warn "Web runtime is healthy; Discord is still reconnecting in the background."
+  exit /b 0
+)
+call :warn "The web runtime did not answer within 240 seconds."
 docker compose ps tmod-discord-bot tmod-web tmod-worker
 echo --- tmod-discord-bot ---
 docker compose logs --no-color --tail 120 tmod-discord-bot
@@ -545,6 +583,20 @@ echo --- tmod-web ---
 docker compose logs --no-color --tail 120 tmod-web
 echo --- tmod-worker ---
 docker compose logs --no-color --tail 120 tmod-worker
+exit /b 1
+
+:wait_for_gateway_ready
+for /l %%i in (1,1,30) do (
+  powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/gateway-ready' -TimeoutSec 4; if ($r.status -eq 'ready') { exit 0 } } catch {}; exit 1" >nul 2>nul
+  if not errorlevel 1 (
+    call :ok "Web gateway and application upstream are ready"
+    exit /b 0
+  )
+  call :sleep 2
+)
+call :fail "Web gateway did not reconnect to the application within 60 seconds"
+docker compose ps tmod-discord-bot tmod-web tmod-caddy
+docker compose logs --no-color --tail 100 tmod-web tmod-caddy
 exit /b 1
 
 :postgres_accepts_connections

@@ -146,8 +146,8 @@ try {
     if (Test-Path -LiteralPath $SafeUpdateStatusPath) {
         try {
             $previousStatus = Get-Content -Raw -LiteralPath $SafeUpdateStatusPath | ConvertFrom-Json
-            if ($previousStatus.state -eq "rolled_back" -and $previousStatus.new_commit -eq $RemoteCommit) {
-                Write-WatcherState -State "release_quarantined" -Message "Этот релиз уже был отклонён; ожидается следующий коммит." -CurrentCommit $CurrentCommit -RemoteCommit $RemoteCommit
+            if (@("rolled_back", "failed") -contains [string]$previousStatus.state -and $previousStatus.new_commit -eq $RemoteCommit) {
+                Write-WatcherState -State "release_quarantined" -Message "Этот релиз уже был отклонён или не смог безопасно восстановиться; ожидается следующий коммит." -CurrentCommit $CurrentCommit -RemoteCommit $RemoteCommit
                 exit 0
             }
         }
