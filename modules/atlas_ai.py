@@ -4295,6 +4295,11 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         return str(value or "").strip()
     if prepared.depth == "deep":
         return _compact_overlay_answer(value, max_words=650, max_chars=6_000)
+    if prepared.depth == "quick":
+        # Quick questions are the normal chat equivalent of the overlay:
+        # keep one useful paragraph and never let a provider turn a short
+        # request into a multi-screen explanation.
+        return _compact_overlay_answer(value, max_words=110, max_chars=1_100)
     return _compact_overlay_answer(value, max_words=140, max_chars=1_400)
 
 

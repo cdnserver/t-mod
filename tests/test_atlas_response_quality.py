@@ -89,6 +89,14 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(compact.startswith("Прямой вывод."))
         self.assertTrue(compact.endswith("…"))
 
+    def test_quick_answer_is_tighter_than_standard_delivery(self) -> None:
+        prepared = SimpleNamespace(latency_mode="standard", intent="procedural_advice", depth="quick")
+        long_answer = "Прямой вывод. " + "Лишнее пояснение без новой пользы. " * 300
+        compact = atlas_ai._compact_answer_for_delivery(prepared, long_answer)
+        self.assertLessEqual(len(compact.split()), 110)
+        self.assertLessEqual(len(compact), 1_101)
+        self.assertTrue(compact.startswith("Прямой вывод."))
+
     def test_overlay_detention_answer_does_not_switch_to_officer_perspective(self) -> None:
         prepared = SimpleNamespace(
             latency_mode="overlay",
