@@ -4333,7 +4333,22 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     # useless.  Rescue one conservative excerpt when the user's meaningful
     # terms occur in that same source.  The overlap check prevents an
     # arbitrary semantic neighbour from becoming an authoritative fallback.
-    if prepared.intent in {"legal_analysis", "procedural_advice"}:
+    # A retrieval refusal is not limited to legal questions.  Summaries,
+    # follow-ups and drafts can also have a perfectly usable forum, handbook,
+    # charter or case-law fragment attached to them.  Returning one
+    # conservative excerpt is more useful than falling back to a generic
+    # clarification, while the overlap gate below prevents an unrelated
+    # semantic neighbour from being presented as the answer.
+    rescue_intents = {
+        "legal_analysis",
+        "procedural_advice",
+        "summary",
+        "followup",
+        "general",
+        "drafting",
+        "brainstorm",
+    }
+    if prepared.intent in rescue_intents:
         query_terms, _query_phrases = _atlas_lexical_query_terms(
             question,
             list(prepared.sources),
@@ -4355,14 +4370,19 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
                     f"{str(source.get('title') or '')}\n{text}"
                 ).casefold()
                 overlap = sum(term in searchable for term in meaningful_terms)
+                title_searchable = str(source.get("title") or "").casefold()
+                title_overlap = sum(term in title_searchable for term in meaningful_terms)
+                # For a short query, an exact title hit is sufficient.  For
+                # longer natural-language requests require two independent
+                # terms unless the source title itself identifies the topic.
                 required = 1 if len(meaningful_terms) <= 2 else 2
-                if overlap < required:
+                if overlap < required and title_overlap < 1:
                     continue
                 try:
                     source_score = float(source.get("score") or 0)
                 except (TypeError, ValueError):
                     source_score = 0.0
-                ranked.append((overlap, source_score, -index, text))
+                ranked.append((overlap + title_overlap, source_score, -index, text))
             if ranked:
                 _overlap, _score, negative_index, text = max(ranked)
                 source_index = -negative_index

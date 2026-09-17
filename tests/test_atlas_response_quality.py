@@ -171,6 +171,60 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(fallback.split()), 100)
         self.assertNotIn("библиотек", fallback.casefold())
 
+    def test_provider_refusal_rescues_summary_material_not_only_legal_sources(self) -> None:
+        prepared = SimpleNamespace(
+            intent="summary",
+            payload={
+                "messages": [
+                    {"role": "user", "content": "Кратко перескажи памятку по вступлению"}
+                ]
+            },
+            sources=[
+                {
+                    "structured": False,
+                    "title": "Памятка по вступлению в Товарищество",
+                    "text": (
+                        "Сначала создайте Т-Мод аккаунт и заполните анкету. "
+                        "Затем дождитесь проверки ОВР и приглашения на консенсус."
+                    ),
+                    "score": 4.2,
+                }
+            ],
+        )
+
+        fallback = atlas_ai._provider_failure_fallback(prepared)
+
+        self.assertIn("Т-Мод аккаунт", fallback)
+        self.assertIn("[1]", fallback)
+        self.assertNotIn("библиотек", fallback.casefold())
+
+    def test_provider_refusal_rescues_draft_context_without_claiming_library_is_empty(self) -> None:
+        prepared = SimpleNamespace(
+            intent="drafting",
+            payload={
+                "messages": [
+                    {"role": "user", "content": "Составь обращение по проверке ОВР"}
+                ]
+            },
+            sources=[
+                {
+                    "structured": False,
+                    "title": "Регламент проверки ОВР",
+                    "text": (
+                        "Заявка передаётся в ОВР для проверки сведений кандидата. "
+                        "Решение оформляется после изучения анкеты и материалов."
+                    ),
+                    "score": 5.1,
+                }
+            ],
+        )
+
+        fallback = atlas_ai._provider_failure_fallback(prepared)
+
+        self.assertIn("ОВР", fallback)
+        self.assertIn("[1]", fallback)
+        self.assertNotIn("библиотек", fallback.casefold())
+
     def test_complaint_procedure_is_short_and_local_when_regulation_is_present(self) -> None:
         prepared = SimpleNamespace(
             intent="procedural_advice",
