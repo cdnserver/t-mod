@@ -2389,9 +2389,24 @@ _ATLAS_DEEP_RE = re.compile(
     re.IGNORECASE,
 )
 _ATLAS_SOCIAL_RE = re.compile(
-    r"^\s*(?:atlas[\s,.:—-]*)?(?:привет(?:ик)?|здравствуй(?:те)?|"
-    r"доброе\s+(?:утро|день)|добрый\s+(?:день|вечер)|как\s+дела|"
+    r"^\s*(?:atlas[\s,.:—-]*)?(?:(?:привет(?:ик)?|здравствуй(?:те)?|"
+    r"салют|хай|hello|здорово|доброе\s+(?:утро|день|вечер)|"
+    r"добрый\s+(?:день|вечер))(?:\s*[,!—-]?\s*(?:как\s+дела(?:\s+у\s+тебя)?|"
+    r"как\s+ты|как\s+поживаешь|что\s+нового))?|"
+    r"как\s+дела(?:\s+у\s+тебя)?|как\s+ты|как\s+поживаешь|что\s+нового|"
     r"спасибо|благодарю|до\s+свидания|пока)(?:[\s!?.🙂👋]*)$",
+    re.IGNORECASE,
+)
+_ATLAS_VISUAL_RE = re.compile(
+    r"\b(?:"
+    r"что\s+(?:это\s+)?за\s+(?:растени\w*|человек\w*|персон\w*|машин\w*|автомобил\w*|"
+    r"предмет\w*|объект\w*|одежд\w*|мест\w*)|"
+    r"кто\s+это|что\s+(?:я\s+)?вижу|что\s+(?:на|перед|спереди)\s+мной|"
+    r"что\s+изображен\w*|что\s+на\s+(?:фото|скрин(?:шот)?|картинк\w*)|"
+    r"на\s+(?:фото|скрин(?:шот)?|картинк\w*)|"
+    r"во\s+что\s+(?:он|она|человек)\s+одет|как\s+выглядит|"
+    r"опиши\s+(?:что\s+)?на\s+(?:экране|изображени\w*|фото|скрин(?:шот)?)"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -2457,6 +2472,11 @@ def _atlas_task_profile(
         intent = "social"
     elif _ATLAS_EXACT_LOOKUP_RE.search(clean):
         intent = "exact_lookup"
+    elif _ATLAS_VISUAL_RE.search(routed_text) and not _ATLAS_LEGAL_RE.search(routed_text):
+        # Visual questions must not be sent through the legal RAG lane. That
+        # lane otherwise returns unrelated statutes for a screen-only query
+        # (for example, identifying a plant or clothing in the game).
+        intent = "visual"
     elif _CREATIVE_REQUEST_RE.search(routed_text):
         intent = "drafting"
     elif _ATLAS_BRAINSTORM_RE.search(routed_text):
@@ -2499,6 +2519,11 @@ def _atlas_task_profile(
         "social": (
             "Это обычное человеческое обращение. Ответь естественно одной короткой фразой; не "
             "обсуждай интерфейс, режим, источники, поиск, персонажа или внутреннее устройство Atlas."
+        ),
+        "visual": (
+            "Это запрос о видимом объекте. Опирайся только на приложенный кадр и называй лишь "
+            "наблюдаемые признаки. Не угадывай скрытые данные, личность или точный вид, если их "
+            "нельзя уверенно различить; при нехватке кадра прямо попроси новый скриншот."
         ),
         "exact_lookup": (
             "Пользователь просит точную норму. Если она есть в материалах, приведи запрошенный "
@@ -2570,6 +2595,8 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         length = (
             "Приведи найденную норму полностью; после неё допускается не более 120 слов пояснения."
         )
+    elif task.intent == "visual":
+        length = "Цель — 25–70 слов, жёсткий предел — 90 слов; опиши только видимое и закончи мысль."
     elif re.search(
         r"\b(?:кратк\w*|коротк\w*|в\s+двух\s+словах|без\s+подробностей)\b",
         clean,
@@ -2588,7 +2615,7 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
             "полями [укажите ...], а неизвестное поведение не утверждай вовсе."
         )
     else:
-        length = "Ориентир — 110–220 слов; жёсткий предел — 280 слов, если пользователь явно не просил подробный разбор."
+        length = "Ориентир — 70–150 слов; жёсткий предел — 200 слов, если пользователь явно не просил подробный разбор."
 
     layouts = {
         "exact_lookup": (
@@ -2608,6 +2635,10 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         ),
         "summary": (
             "Дай связную выжимку и сохрани только условия, без которых смысл станет неверным.",
+        ),
+        "visual": (
+            "Начни с прямого описания того, что видно; не добавляй догадки и справочную лекцию.",
+            "Назови объект и один-два заметных признака, а сомнение укажи одной короткой фразой.",
         ),
         "general": (
             "Ответь естественной прозой; список используй только если перечисление действительно нужно.",
@@ -3283,7 +3314,7 @@ async def _prepare_atlas_answer(
     overlay_legal = task_profile.intent in {
         "exact_lookup", "legal_analysis", "procedural_advice"
     }
-    sources = [] if task_profile.intent == "social" else await atlas_search(
+    sources = [] if task_profile.intent in {"social", "visual"} else await atlas_search(
         organization_id,
         task_profile.retrieval_query,
         server_code=server_code,
@@ -3334,15 +3365,21 @@ async def _prepare_atlas_answer(
         "Для обычного приветствия внешние источники не требуются."
         if task_profile.intent == "social"
         else (
-            "Продолжай разбор по доступному игровому праву. Не выдумывай номер нормы: установи "
-            "правовую область, дай безопасный порядок действий и задай только один вопрос, если "
-            "без него действительно нельзя различить две применимые нормы. Не отвечай отчётом "
-            "о состоянии библиотеки или поиска."
-            if task_profile.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
-            else
-            "Внешний источник для этого запроса не требуется. Используй общие "
-            "знания, рассуждение и творческие способности; не выдавай неподтверждённые игровые "
-            "нормы за действующие и не отвечай шаблонным отказом о библиотеке."
+            "Для визуального запроса правовые источники не нужны. Опиши только то, что явно видно "
+            "на приложенном кадре; если кадра нет или объект неразличим, коротко попроси новый "
+            "скриншот и не выдумывай ответ."
+            if task_profile.intent == "visual"
+            else (
+                "Продолжай разбор по доступному игровому праву. Не выдумывай номер нормы: установи "
+                "правовую область, дай безопасный порядок действий и задай только один вопрос, если "
+                "без него действительно нельзя различить две применимые нормы. Не отвечай отчётом "
+                "о состоянии библиотеки или поиска."
+                if task_profile.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
+                else
+                "Внешний источник для этого запроса не требуется. Используй общие "
+                "знания, рассуждение и творческие способности; не выдавай неподтверждённые игровые "
+                "нормы за действующие и не отвечай шаблонным отказом о библиотеке."
+            )
         )
     )
     agent_reports: list[dict[str, str]] = []
@@ -3398,25 +3435,35 @@ async def _prepare_atlas_answer(
             "противоречия и формируй цельный итог. Не раскрывай скрытые рассуждения."
         ),
     }[mode]
-    overlay_instruction = (
-        " Обычное общение: ответь дружелюбно одной короткой фразой. Не упоминай полевой интерфейс, "
-        "настройки, экран, источники, режим работы или правовую базу, если об этом не спрашивали."
-        if selected_latency == "overlay" and task_profile.intent == "social"
-        else
-        " Полевой интерфейс: цель — 18–36 слов и максимум два коротких шага; этот лимит имеет "
-        "приоритет над общим редакторским контрактом выше. "
-        "Первая фраза должна содержать ответ или ближайшее безопасное действие. "
-        "Если вопрос касается статьи, нарушения, задержания, обыска, наказания или полномочия, "
-        "в первой же фразе назови наиболее применимую точную статью. Если формулировка неоднозначна, "
-        "назови основную норму и одно короткое условие, "
-        "которое может изменить квалификацию. Не сообщай пользователю состояние поиска. "
-        "Оставь только применимое сейчас: действие, одно критичное условие и точную норму. "
-        "Не используй таблицы, повтор вопроса, приветствие и "
-        "длинные оговорки. Если нужно уточнение, сначала дай безопасное действие, затем задай один "
-        "критичный вопрос."
-        if selected_latency == "overlay"
-        else ""
-    )
+    if selected_latency != "overlay":
+        overlay_instruction = ""
+    elif task_profile.intent == "social":
+        overlay_instruction = (
+            " Обычное общение: ответь дружелюбно одной короткой фразой. Не упоминай полевой "
+            "интерфейс, настройки, экран, источники, режим работы или правовую базу, если об "
+            "этом не спрашивали."
+        )
+    elif task_profile.intent == "visual":
+        overlay_instruction = (
+            " Визуальный запрос: ответь по приложенному кадру в 1–3 коротких предложениях, "
+            "цель — 15–35 слов, жёсткий предел — 60 слов. Назови только явно видимые признаки. "
+            "Если объект неразличим, скажи это и попроси новый скриншот. Не выдумывай вид, "
+            "личность, характеристики или детали за пределами кадра."
+        )
+    else:
+        overlay_instruction = (
+            " Полевой интерфейс: цель — 18–36 слов и максимум два коротких шага; этот лимит имеет "
+            "приоритет над общим редакторским контрактом выше. Первая фраза должна содержать ответ "
+            "или ближайшее безопасное действие. Если вопрос касается статьи, нарушения, задержания, "
+            "обыска, наказания или полномочия, в первой же фразе назови точную статью только когда "
+            "она прямо подтверждена приложенным источником; никогда не придумывай номер. Если точной "
+            "статьи в фрагментах нет, назови подтверждённый пункт или дай действие без номера. Если "
+            "формулировка неоднозначна, назови основную норму и одно короткое условие, которое может "
+            "изменить квалификацию. Не сообщай пользователю состояние поиска. Оставь "
+            "только применимое сейчас: действие, одно критичное условие и точную норму. Не используй "
+            "таблицы, повтор вопроса, приветствие и длинные оговорки. Если нужно уточнение, сначала "
+            "дай безопасное действие, затем задай один критичный вопрос."
+        )
     clean_screen_context = (
         str(screen_context or "").strip()
         if selected_latency == "overlay" and task_profile.intent != "social"
@@ -3710,7 +3757,11 @@ def _empty_output_retry_payload(prepared: _AtlasAnswerRequest) -> dict[str, Any]
         current_limit = int(payload.get("max_tokens") or 0)
     except (TypeError, ValueError):
         current_limit = 0
-    payload["max_tokens"] = max(current_limit, 3200)
+    payload["max_tokens"] = (
+        min(180, max(current_limit, 120))
+        if prepared.latency_mode == "overlay"
+        else max(current_limit, 3200)
+    )
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, dict):
         payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
@@ -3729,7 +3780,11 @@ def _truncated_output_retry_payload(
         current_limit = int(payload.get("max_tokens") or 0)
     except (TypeError, ValueError):
         current_limit = 0
-    payload["max_tokens"] = min(4000, max(1800, current_limit * 2))
+    payload["max_tokens"] = (
+        min(180, max(current_limit, 120))
+        if prepared.latency_mode == "overlay"
+        else min(4000, max(1800, current_limit * 2))
+    )
     reasoning = payload.get("reasoning")
     if isinstance(reasoning, dict):
         payload["reasoning"] = {**reasoning, "effort": "minimal", "exclude": True}
@@ -3793,7 +3848,11 @@ def _retrieval_refusal_retry_payload(
         current_limit = int(payload.get("max_tokens") or 0)
     except (TypeError, ValueError):
         current_limit = 0
-    payload["max_tokens"] = max(current_limit, 1800)
+    payload["max_tokens"] = (
+        min(180, max(current_limit, 120))
+        if prepared.latency_mode == "overlay"
+        else max(current_limit, 1800)
+    )
     messages = list(payload.get("messages") or [])
     messages.extend(
         (
@@ -4077,9 +4136,17 @@ def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
         return "Пожалуйста!"
     if re.search(r"\b(?:до\s+свидания|пока)\b", content):
         return "До встречи!"
-    if "как дела" in content:
-        return "Всё отлично. Что сегодня разберём?"
+    if re.search(r"\b(?:как\s+(?:дела|ты|поживаешь)|что\s+нового)\b", content):
+        return "Всё хорошо. Что разберём?"
     return "Привет! Чем помочь?"
+
+
+def _deterministic_visual_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Avoid hallucinating a visual answer when the overlay has no frame."""
+
+    if prepared.intent != "visual" or prepared.screen_context_used:
+        return ""
+    return "Пришли скриншот — тогда я опишу только то, что действительно видно."
 
 
 def _local_exact_route() -> AtlasModelRoute:
@@ -4099,6 +4166,16 @@ def _local_social_route() -> AtlasModelRoute:
         endpoint="",
         api_key="",
         release="dialog-v1",
+    )
+
+
+def _local_visual_route() -> AtlasModelRoute:
+    return AtlasModelRoute(
+        provider="tmod",
+        model="atlas-vision-guard",
+        endpoint="",
+        api_key="",
+        release="vision-v1",
     )
 
 
@@ -4185,6 +4262,12 @@ async def atlas_answer(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
             social_answer,
+        )
+    visual_answer = _deterministic_visual_reply(prepared)
+    if visual_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_visual_route(), fallback_model_route=None),
+            visual_answer,
         )
     exact_answer = _deterministic_exact_lookup(prepared)
     if exact_answer:
@@ -4363,6 +4446,13 @@ async def atlas_answer_stream(
             replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
             social_answer,
         )
+    visual_answer = _deterministic_visual_reply(prepared)
+    if visual_answer:
+        await on_delta(visual_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_visual_route(), fallback_model_route=None),
+            visual_answer,
+        )
     exact_answer = _deterministic_exact_lookup(prepared)
     if exact_answer:
         await on_delta(exact_answer)
@@ -4383,7 +4473,11 @@ async def atlas_answer_stream(
             await on_delta(delta)
 
     answer_parts: list[str] = []
-    stream_answer_limit = 700 if prepared.latency_mode == "overlay" else 30000
+    # Keep the streamed text and system TTS in the same compact envelope as
+    # the final result. Previously the backend could emit 700 characters,
+    # while the rendered answer was shortened only after the overlay had
+    # already spoken the excess.
+    stream_answer_limit = 460 if prepared.latency_mode == "overlay" else 30000
     used_route = prepared.model_route
     stream_failure: AtlasAIError | None = None
     routes = _completion_routes(prepared)
