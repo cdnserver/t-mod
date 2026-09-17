@@ -3495,16 +3495,13 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "modules.atlas_ai._json_request",
             AsyncMock(return_value={"choices": [{"message": {"content": "Короткий ответ [1]."}}]}),
         ) as request:
-            await atlas_answer(77, "Что такое УК?")
+            result = await atlas_answer(77, "Что такое УК?")
 
-        payload = request.await_args.kwargs["payload"]
-        system = payload["messages"][0]["content"]
-        # The visible answer remains compact through the editorial contract;
-        # the larger provider budget leaves room for hidden reasoning so the
-        # last sentence is not cut off.
-        self.assertLessEqual(payload["max_tokens"], 760)
-        self.assertIn("жёсткий предел — 150 слов", system)
-        self.assertIn("Не используй по привычке постоянные рубрики", system)
+        # Core glossary terms use the local bounded route: no planning or
+        # provider completion can turn a two-word question into an essay.
+        request.assert_not_awaited()
+        self.assertTrue(result["answer"].startswith("УК — Уголовный кодекс"))
+        self.assertLessEqual(len(result["answer"].split()), 30)
 
     async def test_complaint_prompt_forbids_invented_evidence_requirements(self) -> None:
         config = AtlasAIConfig(

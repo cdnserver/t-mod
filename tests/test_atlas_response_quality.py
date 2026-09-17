@@ -33,6 +33,17 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             profile = atlas_ai._atlas_task_profile(question, mode="balanced")
             self.assertEqual(profile.intent, "social", question)
 
+    def test_core_term_definition_is_short_and_deterministic(self) -> None:
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            payload={"messages": [{"role": "user", "content": "что такое УК?"}]},
+        )
+
+        answer = atlas_ai._deterministic_term_reply(prepared)
+
+        self.assertTrue(answer.startswith("УК — Уголовный кодекс"))
+        self.assertLess(len(answer.split()), 30)
+
     def test_visual_router_is_separate_from_legal_retrieval(self) -> None:
         profile = atlas_ai._atlas_task_profile(
             "Что за растение спереди меня?",

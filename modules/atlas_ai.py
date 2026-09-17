@@ -2775,6 +2775,11 @@ def _should_build_intelligence_brief(
         "off",
     }:
         return False
+    # Core glossary terms have a bounded local answer. A planning request for
+    # "что такое УК/OOC/IC" only adds latency and can reintroduce a verbose
+    # model paraphrase, so keep this route entirely deterministic.
+    if _is_core_term_definition(question):
+        return False
     # A short "which article covers …" lookup is resolved from the canonical
     # numbered clauses below. Do not spend a model request on a planning pass
     # that cannot improve an exact answer and only adds latency.
@@ -3349,7 +3354,7 @@ async def _prepare_atlas_answer(
     overlay_legal = task_profile.intent in {
         "exact_lookup", "legal_analysis", "procedural_advice"
     }
-    sources = [] if task_profile.intent in {"social", "visual"} else await atlas_search(
+    sources = [] if task_profile.intent in {"social", "visual"} or _is_core_term_definition(clean_question) else await atlas_search(
         organization_id,
         task_profile.retrieval_query,
         server_code=server_code,
@@ -4412,6 +4417,49 @@ def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
     return "Привет! Чем помочь?"
 
 
+def _is_core_term_definition(question: str) -> bool:
+    clean = " ".join(str(question or "").split())
+    if not re.search(
+        r"\b(?:что\s+такое|что\s+значит|что\s+означает|расшифруй|расшифровка)\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        return False
+    lowered = clean.casefold()
+    return bool(
+        re.search(
+            r"(?<!\w)(?:ук|уголовн\w*\s+кодекс|ooc|оос|ic|ис)(?!\w)",
+            lowered,
+        )
+    )
+
+
+def _deterministic_term_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Give compact, stable definitions for the core Atlas abbreviations."""
+
+    if prepared.intent not in {"general", "legal_analysis"}:
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = " ".join(str(last_message.get("content") or "").split())
+    if not _is_core_term_definition(question):
+        return ""
+    lowered = question.casefold()
+    if re.search(r"(?<!\w)(?:ук|уголовн\w*\s+кодекс)(?!\w)", lowered):
+        return (
+            "УК — Уголовный кодекс штата San Andreas. В нём описаны составы преступлений, "
+            "их признаки и предусмотренные наказания."
+        )
+    if re.search(r"(?<!\w)(?:ooc|оос)(?!\w)", lowered):
+        return (
+            "ООС (OOC) — правила поведения игрока вне роли: честная игра, взаимодействие с "
+            "администрацией, баги и другие серверные требования."
+        )
+    if re.search(r"(?<!\w)(?:ic|ис)(?!\w)", lowered):
+        return "IC — всё, что происходит внутри игровой роли и относится к миру персонажа."
+    return ""
+
+
 def _deterministic_visual_reply(prepared: _AtlasAnswerRequest) -> str:
     """Avoid hallucinating a visual answer when the overlay has no frame."""
 
@@ -4596,6 +4644,12 @@ async def atlas_answer(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
             social_answer,
+        )
+    term_answer = _deterministic_term_reply(prepared)
+    if term_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            term_answer,
         )
     visual_answer = _deterministic_visual_reply(prepared)
     if visual_answer:
@@ -4785,6 +4839,13 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_social_route(), fallback_model_route=None),
             social_answer,
+        )
+    term_answer = _deterministic_term_reply(prepared)
+    if term_answer:
+        await on_delta(term_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            term_answer,
         )
     visual_answer = _deterministic_visual_reply(prepared)
     if visual_answer:
