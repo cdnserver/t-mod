@@ -4697,10 +4697,10 @@ def _finish_bounded_answer(value: str) -> str:
 def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> str:
     """Enforce the editorial bound after generation, not only in the prompt.
 
-    Full chapters, ready-to-send documents and explicitly requested variant
-    lists are intentionally preserved. Every ordinary/quick/deep explanation
-    still gets a hard ceiling because providers may ignore token and word
-    instructions (historically some saved answers exceeded 90k characters).
+    Full chapters and explicitly requested long documents/variant lists are
+    intentionally preserved. Ordinary drafts and explanations still get a
+    hard ceiling because providers may ignore token and word instructions
+    (historically some saved answers exceeded 90k characters).
     """
 
     # A local exact lookup is already canonical text from the requested
@@ -4716,7 +4716,34 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
             return exact_text
     if prepared.latency_mode == "overlay":
         return _finish_bounded_answer(_compact_overlay_answer(value))
-    if prepared.intent in {"exact_lookup", "drafting", "brainstorm"}:
+    if prepared.intent == "exact_lookup":
+        return str(value or "").strip()
+    if prepared.intent in {"drafting", "brainstorm"}:
+        # The prompt asks for a ready-to-use draft or several concrete ideas,
+        # but providers occasionally append a long tutorial after delivering
+        # the requested material. Keep explicit full-length requests intact;
+        # ordinary requests get a deterministic ceiling so one answer cannot
+        # turn into an unreadable essay.
+        payload = getattr(prepared, "payload", {})
+        messages = payload.get("messages", []) if isinstance(payload, dict) else []
+        last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+        question = " ".join(str(last_message.get("content") or "").split())
+        expanded_request = bool(
+            re.search(
+                r"\b(?:полн\w*|подробн\w*|развернут\w*|длинн\w*|"
+                r"максимальн\w*|не\s+сокращ\w*|\d{3,4}\s*слов)\b",
+                question,
+                re.IGNORECASE,
+            )
+        )
+        if not expanded_request:
+            if prepared.intent == "drafting":
+                return _finish_bounded_answer(
+                    _compact_overlay_answer(value, max_words=360, max_chars=3_600)
+                )
+            return _finish_bounded_answer(
+                _compact_overlay_answer(value, max_words=420, max_chars=4_200)
+            )
         return str(value or "").strip()
     if prepared.depth == "deep":
         return _finish_bounded_answer(

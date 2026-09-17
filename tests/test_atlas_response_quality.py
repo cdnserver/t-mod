@@ -528,6 +528,33 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(compact.endswith("…"))
         self.assertTrue(compact.endswith("."))
 
+    def test_regular_draft_is_bounded_after_provider_ignores_editorial_limit(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="drafting",
+            depth="standard",
+            payload={"messages": [{"role": "user", "content": "Составь короткое обращение"}]},
+        )
+        value = "Готовый текст обращения. " + "Лишнее пояснение без новой пользы. " * 500
+
+        compact = atlas_ai._compact_answer_for_delivery(prepared, value)
+
+        self.assertLessEqual(len(compact.split()), 360)
+        self.assertLessEqual(len(compact), 3_601)
+        self.assertTrue(compact.startswith("Готовый текст обращения."))
+        self.assertTrue(compact.endswith("."))
+
+    def test_explicit_full_draft_is_not_truncated_by_regular_draft_bound(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="drafting",
+            depth="standard",
+            payload={"messages": [{"role": "user", "content": "Составь подробный полный документ"}]},
+        )
+        value = "Полный документ. " + "Существенная формулировка. " * 250
+
+        self.assertEqual(atlas_ai._compact_answer_for_delivery(prepared, value), value.strip())
+
     def test_obsolete_search_refusals_are_not_reused_from_dialog_history(self) -> None:
         history = atlas_ai._bounded_dialog_messages(
             [
