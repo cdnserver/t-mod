@@ -4213,6 +4213,18 @@ def _compact_overlay_answer(
         prefix = prefix[: boundaries[-1]]
     else:
         prefix = prefix[: prefix.rfind(" ") if " " in prefix else cutoff]
+    # Never expose a half-written source marker (for example ``[Источник 1,
+    # ст.2.…``). If the cut enters a citation, retreat to the last complete
+    # sentence before it; the full citation remains available in metadata.
+    last_open = prefix.rfind("[")
+    last_close = prefix.rfind("]")
+    if last_open > last_close:
+        before_citation = prefix[:last_open].rstrip()
+        boundaries = [
+            match.end()
+            for match in re.finditer(r"[.!?](?=\s|$)", before_citation)
+        ]
+        prefix = before_citation[: boundaries[-1] if boundaries else len(before_citation)]
     return prefix.rstrip(" ,;:-") + "…"
 
 

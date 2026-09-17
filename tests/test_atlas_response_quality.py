@@ -69,6 +69,17 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("надеть наручники", compact.casefold())
         self.assertIn("[Источник 1, статья 2.2.1]", compact)
 
+    def test_overlay_bound_never_cuts_inside_citation(self) -> None:
+        value = (
+            "Первый шаг завершён и подтверждён [Источник 1, статья 2.2.1]. "
+            "Второй шаг содержит дополнительные условия [Источник 2, статья 3.2]."
+        )
+        compact = atlas_ai._compact_overlay_answer(value, max_words=10, max_chars=460)
+
+        self.assertNotIn("[Источник 2", compact)
+        self.assertNotIn("статья 2.…", compact)
+        self.assertTrue(compact.endswith("…"))
+
     async def test_visual_question_without_frame_gets_actionable_short_reply(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
             "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
