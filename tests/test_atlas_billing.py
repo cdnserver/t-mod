@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -422,6 +423,42 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
                             headers={}, remote="203.0.113.10", host="tvr.lat", secure=True
                         )
                     )
+
+    async def test_summary_serializes_postgres_decimal_aggregates(self) -> None:
+        principal = SimpleNamespace(
+            user_id=42, display_name="Иван", csrf_token="csrf", administrator=True
+        )
+
+        async def authenticate(_request):
+            return principal, False
+
+        app = web.Application()
+        register_atlas_billing_web_routes(
+            app,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-billing",
+            authenticate=authenticate,
+        )
+        postgres_result = {
+            "balance_tokens": 50_000,
+            "period_usage": {"atlas_tokens": Decimal("2581")},
+            "usage_by_model": [
+                {"model": "openai/gpt-5-mini", "atlas_tokens": Decimal("2581")}
+            ],
+            "diagnostic_ratio": Decimal("1.25"),
+        }
+        with patch.object(
+            atlas_billing_repository,
+            "atlas_billing_summary",
+            return_value=postgres_result,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/atlas/billing/summary")
+                body = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["period_usage"]["atlas_tokens"], 2581)
+        self.assertEqual(body["usage_by_model"][0]["atlas_tokens"], 2581)
+        self.assertEqual(body["diagnostic_ratio"], "1.25")
 
     @patch.dict(
         os.environ,

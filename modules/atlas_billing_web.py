@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -34,6 +35,24 @@ AuthenticatedRequest = Callable[
 
 
 _RECEIPT_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _json_ready(value):
+    """Normalize PostgreSQL numeric aggregates before aiohttp JSON encoding.
+
+    SQLite returns integer ``SUM`` values as ``int`` while psycopg returns
+    ``Decimal`` for the same query.  Keeping this conversion at the HTTP
+    boundary gives both database backends one stable API contract.
+    """
+
+    if isinstance(value, Decimal):
+        integral = value.to_integral_value()
+        return int(integral) if value == integral else format(value, "f")
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 def require_atlas_billing_host(request: web.Request) -> None:
@@ -163,14 +182,14 @@ def register_atlas_billing_web_routes(
             int(selected.user_id),
         )
         return web.json_response(
-            {
+            _json_ready({
                 **result,
                 "viewer": {
                     "id": int(selected.user_id),
                     "name": str(selected.display_name),
                     "csrf_token": str(selected.csrf_token),
                 },
-            },
+            }),
             headers={"Cache-Control": "no-store"},
         )
 
@@ -190,7 +209,7 @@ def register_atlas_billing_web_routes(
             billing_storage.atlas_billing_admin_metrics,
             days=days,
         )
-        return web.json_response(result)
+        return web.json_response(_json_ready(result))
 
     async def order_status(request: web.Request) -> web.Response:
         require_atlas_billing_host(request)
@@ -308,14 +327,14 @@ def register_atlas_billing_web_routes(
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(
-            {
+            _json_ready({
                 "order": order,
                 "payment": {
                     "method": "POST",
                     "url": robokassa_config()["payment_url"],
                     "fields": fields,
                 },
-            },
+            }),
             status=201,
         )
 
