@@ -1497,6 +1497,7 @@ def atlas_searchable_knowledge_sources(
     faction_code: str = "lspd",
     query_terms: tuple[str, ...] | list[str] | None = None,
     limit: int = 800,
+    include_content_search: bool = True,
 ) -> list[dict[str, Any]]:
     """Return a durable local retrieval corpus, not merely the newest rows.
 
@@ -1555,23 +1556,27 @@ def atlas_searchable_knowledge_sources(
                     (*scope_params, *(f"%{term}%" for term in clean_terms), min(220, clean_limit)),
                 ).fetchall()
             )
-            # A forum thread often has a neutral title (an ID, a player's
-            # name, or just "Рассмотрено"), while the decisive legal wording
-            # appears only in its body. Search the canonical text as a
-            # separate bounded batch so older pages are not evicted by the
-            # recent-news fallback when the forum grows beyond 360 rows.
-            content_sql = " OR ".join("lower(content_text) LIKE ?" for _ in clean_terms)
-            batches.append(
-                con.execute(
-                    f"""
-                    SELECT * FROM atlas_knowledge_sources
-                    WHERE {scope_sql} AND ({content_sql})
-                    ORDER BY updated_at DESC, id DESC
-                    LIMIT ?
-                    """,
-                    (*scope_params, *(f"%{term}%" for term in clean_terms), min(600, clean_limit)),
-                ).fetchall()
-            )
+            if include_content_search:
+                # A forum thread often has a neutral title (an ID, a player's
+                # name, or just "Рассмотрено"), while the decisive legal wording
+                # appears only in its body. Search the canonical text as a
+                # separate bounded batch so older pages are not evicted by the
+                # recent-news fallback when the forum grows beyond 360 rows.
+                # This scan is intentionally optional: the low-latency overlay
+                # already receives the primary code/ruleset from the reference
+                # batch and must not scan hundreds of megabytes of forum text.
+                content_sql = " OR ".join("lower(content_text) LIKE ?" for _ in clean_terms)
+                batches.append(
+                    con.execute(
+                        f"""
+                        SELECT * FROM atlas_knowledge_sources
+                        WHERE {scope_sql} AND ({content_sql})
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT ?
+                        """,
+                        (*scope_params, *(f"%{term}%" for term in clean_terms), min(600, clean_limit)),
+                    ).fetchall()
+                )
         reference_sql = " OR ".join("lower(title) LIKE ?" for _ in reference_markers)
         batches.append(
             con.execute(

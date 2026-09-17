@@ -1998,6 +1998,7 @@ async def atlas_search(
     expanded: bool = False,
     query_variants: list[str] | None = None,
     allowed_domains: tuple[str, ...] | list[str] | set[str] | None = None,
+    include_content_search: bool = True,
 ) -> list[dict[str, Any]]:
     config = atlas_ai_config()
     try:
@@ -2051,6 +2052,7 @@ async def atlas_search(
             server_code=clean_server,
             faction_code=clean_faction,
             query_terms=repository_terms,
+            include_content_search=include_content_search,
         )
     except Exception:
         canonical_sources = []
@@ -3394,6 +3396,7 @@ async def _prepare_atlas_answer(
         expanded=selected_latency != "overlay" or overlay_legal,
         query_variants=research_queries,
         allowed_domains=selected_agent.knowledge_domains,
+        include_content_search=selected_latency != "overlay",
     )
     sources = _atlas_merge_source_fragments(sources)
     if selected_latency == "overlay":
