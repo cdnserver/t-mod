@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageOps
 
 
 ROOT = Path(__file__).resolve().parent
@@ -28,8 +28,15 @@ def resized(image: Image.Image, size: int) -> Image.Image:
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
-def recolor(image: Image.Image, color: str) -> Image.Image:
-    alpha = image.getchannel("A")
+def recolor_highlights(image: Image.Image, color: str) -> Image.Image:
+    """Preserve every mark's internal drawing instead of filling its silhouette."""
+
+    source_alpha = image.getchannel("A")
+    luminance = ImageOps.grayscale(image)
+    highlights = luminance.point(
+        lambda value: 0 if value < 18 else min(255, round((value - 18) * 1.55))
+    )
+    alpha = ImageChops.multiply(source_alpha, highlights)
     result = Image.new("RGBA", image.size, color)
     result.putalpha(alpha)
     return result
@@ -40,7 +47,7 @@ def export() -> None:
     for name, source in SOURCES.items():
         image = Image.open(source).convert("RGBA")
         for variant, color in VARIANTS.items():
-            variant_image = image if color is None else recolor(image, color)
+            variant_image = image if color is None else recolor_highlights(image, color)
             destination = output / variant / name
             destination.mkdir(parents=True, exist_ok=True)
             for size in SIZES:
