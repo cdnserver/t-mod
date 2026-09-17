@@ -2675,7 +2675,7 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
     ):
         length = "Цель — 45–90 слов, жёсткий предел — 120 слов; обязательно закончи последнюю фразу."
     elif task.depth == "quick":
-        length = "Цель — 60–110 слов, жёсткий предел — 150 слов; обязательно закончи последнюю фразу."
+        length = "Цель — 35–80 слов, жёсткий предел — 110 слов; обязательно закончи последнюю фразу."
     elif task.depth == "deep":
         length = "Ориентир — 350–650 слов, только если каждая часть добавляет новую пользу."
     elif task.intent == "drafting":
@@ -2686,7 +2686,7 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
             "полями [укажите ...], а неизвестное поведение не утверждай вовсе."
         )
     else:
-        length = "Ориентир — 70–150 слов; жёсткий предел — 200 слов, если пользователь явно не просил подробный разбор."
+        length = "Ориентир — 50–110 слов; жёсткий предел — 140 слов, если пользователь явно не просил подробный разбор."
 
     layouts = {
         "exact_lookup": (
@@ -4295,7 +4295,7 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         return str(value or "").strip()
     if prepared.depth == "deep":
         return _compact_overlay_answer(value, max_words=650, max_chars=6_000)
-    return _compact_overlay_answer(value, max_words=180, max_chars=1_800)
+    return _compact_overlay_answer(value, max_words=140, max_chars=1_400)
 
 
 def _atlas_requested_structured_references(question: str) -> set[str]:
