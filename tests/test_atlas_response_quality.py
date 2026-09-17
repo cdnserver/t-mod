@@ -90,6 +90,28 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Визуальный запрос", prompt)
         self.assertNotIn("Полевой интерфейс", prompt)
 
+    async def test_overlay_screen_question_is_visual_even_without_object_name(self) -> None:
+        provider = {
+            "choices": [{"message": {"content": "На экране виден игровой интерфейс."}}]
+        }
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai.atlas_search", AsyncMock()) as search, patch(
+            "modules.atlas_ai._json_request", AsyncMock(return_value=provider)
+        ) as request:
+            result = await atlas_ai.atlas_answer(
+                77,
+                "Что видно на экране?",
+                latency_mode="overlay",
+                screen_context="data:image/png;base64,dmFsaWQ=",
+            )
+
+        self.assertEqual(result["intent"], "visual")
+        self.assertEqual(result["citations"], [])
+        search.assert_not_awaited()
+        self.assertIn("Визуальный запрос", request.await_args.kwargs["payload"]["messages"][0]["content"])
+
     async def test_overlay_retry_keeps_compact_token_budget(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
             "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
