@@ -96,6 +96,11 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
                 "В статье 6.2 нет отдельного запрета на оказание первой помощи."
             )
         )
+        self.assertFalse(
+            atlas_ai._atlas_answer_is_retrieval_refusal(
+                "По статье 6.2 я не нашёл нарушений в описанном поведении."
+            )
+        )
 
     def test_provider_failure_has_local_legal_fallback(self) -> None:
         prepared = SimpleNamespace(
