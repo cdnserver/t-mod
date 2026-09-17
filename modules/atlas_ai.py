@@ -120,7 +120,8 @@ _ATLAS_NUMBERED_RULE_RE = re.compile(
     # XenForo exports sometimes render ``1. 3`` instead of ``1.3``. Accept
     # both forms so one parsed clause cannot accidentally swallow the rest of
     # a multi-page ruleset and inherit unrelated keywords from later rules.
-    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.)\s*)?(\d+(?:\.\s*\d+){1,3})"
+    r"(?im)^[^\S\r\n]*(?:(?:пункт|п\.|стать(?:я|и)|ст\.)\s*)?"
+    r"(\d+(?:\.\s*\d+){1,3})"
     r"(?![\d.])(?=[.)\s:—-]|$)"
 )
 _ATLAS_EXPLICIT_RULE_REFERENCE_RE = re.compile(
@@ -1084,7 +1085,12 @@ def _atlas_query_variants(
         variants.append(
             f"{clean}\nПроцессуальный Кодекс штата San Andreas: основание, порядок и сроки"
         )
-    if re.search(r"\b(?:дорожн|пдд|парковк|скорост|движени|водител)\w*", lowered):
+    if re.search(
+        r"\b(?:дорожн|пдд|парковк|скорост|движени|водител|останов\w*|"
+        r"эвакуир\w*|эвакуац\w*|машин\w*|автомобил\w*|транспорт\w*)\b",
+        lowered,
+        re.IGNORECASE,
+    ):
         variants.append(
             f"{clean}\nДорожный Кодекс штата San Andreas: применимая статья и ответственность"
         )
@@ -1185,6 +1191,14 @@ def _atlas_lexical_query_terms(
             or _ATLAS_OOC_RULE_SIGNAL_RE.search(expanded)
         ):
             raw_terms.append("dm")
+    # Everyday vehicle wording does not match the formal Road Code nouns
+    # (``эвакуировали`` → ``эвакуация``, ``машину`` → ``транспортное
+    # средство``). Keep the formal stems beside the user's wording so the
+    # canonical lexical lane can reach the governing road clause.
+    if re.search(r"\b(?:эваку\w*|отбуксир\w*|забрал\w*)\b", expanded, re.IGNORECASE):
+        raw_terms.extend(("эвакуац", "эвакуир", "транспортн"))
+    if re.search(r"\b(?:машин\w*|автомобил\w*|транспорт\w*)\b", expanded, re.IGNORECASE):
+        raw_terms.extend(("транспортн", "автомобил"))
     # Exact substrings alone miss ordinary Russian morphology (for example,
     # ``задержали`` versus ``задержание``). Rank with conservative stems and
     # retain dotted article numbers verbatim.
@@ -1371,8 +1385,16 @@ def _atlas_thematic_legal_candidates(
     """
 
     lowered = str(query or "").casefold()
+    road_event_route = bool(
+        re.search(
+            r"\b(?:парковк|эваку\w*|отбуксир\w*|угон\w*|номерн\w*|vin)\w*\b",
+            lowered,
+            re.IGNORECASE,
+        )
+    )
     if _ATLAS_OOC_RULE_SIGNAL_RE.search(lowered) or not (
         _ATLAS_LEGAL_RE.search(lowered)
+        or road_event_route
         or re.search(
             r"\b(?:убийств|похищ|краж|ограб|разбо|террор|взятк|наркот|оружи|"
             r"преступлен|задерж|арест|обыск)\w*",
@@ -1385,6 +1407,17 @@ def _atlas_thematic_legal_candidates(
     meaningful_terms = [
         term for term in terms if term not in _ATLAS_THEMATIC_LEGAL_GENERIC_TERMS
     ]
+    if road_event_route:
+        # ``транспортное средство`` is present in almost every Road Code
+        # article and must not outrank the user's actual event (эвакуация,
+        # парковка or traffic stop). Keep only event-specific stems for the
+        # thematic lane; the broad vehicle terms are still useful in the
+        # ordinary semantic search variants.
+        meaningful_terms = [
+            term
+            for term in meaningful_terms
+            if not term.startswith(("транспо", "автомоб", "машин", "эвакуир"))
+        ]
     if not meaningful_terms and not phrases:
         return []
     criminal_route = bool(
@@ -1408,6 +1441,8 @@ def _atlas_thematic_legal_candidates(
             or "кодекс" in title_folded
             or "закон" in title_folded
         ):
+            continue
+        if road_event_route and "дорожн" not in title_folded:
             continue
         if criminal_route and not (
             "уголовн" in title_folded and "кодекс" in title_folded
@@ -4591,6 +4626,68 @@ def _deterministic_visual_reply(prepared: _AtlasAnswerRequest) -> str:
     return "Пришли скриншот — тогда я опишу только то, что действительно видно."
 
 
+def _deterministic_overlay_vehicle_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Keep common traffic-stop questions factual and field-sized.
+
+    Semantic retrieval can return a nearby legal chunk for an everyday phrase
+    such as ``машину эвакуировали``.  In a HUD that is worse than a short,
+    source-bound answer: the model may invent a department or a fee that the
+    retrieved rule never mentions.  Route the two high-frequency road events
+    through the canonical wording instead.
+    """
+
+    if prepared.latency_mode != "overlay" or prepared.intent not in {
+        "procedural_advice",
+        "legal_analysis",
+    }:
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = str(last_message.get("content") or "").casefold()
+    if re.search(r"\b(?:эваку\w*|отбуксир\w*|забрал\w*\s+машин\w*)\b", question):
+        for index, source in enumerate(prepared.sources, 1):
+            title = str(source.get("title") or "").casefold()
+            if "дорожн" not in title:
+                continue
+            reference = str(source.get("reference") or "")
+            if reference != "article:17.3":
+                continue
+            return (
+                "Эвакуация возможна за нарушение парковки/остановки, отсутствие или повреждение "
+                "номера или VIN, угон, более 10 неоплаченных штрафов либо розыск/тюрьму владельца "
+                f"[Источник {index}, статья 17.3]."
+            )
+    if re.search(r"\b(?:меня\s+)?останов\w*\b|\bтрафик[-\s]?стоп\b", question):
+        return (
+            "Остановитесь безопасно, заглушите двигатель, подготовьте документы и спокойно "
+            "следуйте законным требованиям сотрудника."
+        )
+    return ""
+
+
+def _deterministic_overlay_low_evidence_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Avoid provider speculation when retrieval has no usable match."""
+
+    if (
+        prepared.latency_mode != "overlay"
+        or bool(getattr(prepared, "screen_context_used", False))
+        or prepared.intent not in {
+        "procedural_advice",
+        "legal_analysis",
+        }
+    ):
+        return ""
+    if any(item.get("structured") for item in prepared.sources):
+        return ""
+    scores = [float(item.get("score") or 0) for item in prepared.sources]
+    if scores and max(scores) >= 4.0:
+        return ""
+    return (
+        "Уточни одним сообщением: что именно произошло, где и кто участвовал. "
+        "После этого я назову применимую норму и короткий порядок действий."
+    )
+
+
 def _deterministic_overlay_detention_reply(prepared: _AtlasAnswerRequest) -> str:
     """Answer the common first-person detention query from retrieved clauses.
 
@@ -4947,6 +5044,18 @@ async def atlas_answer(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
         )
+    vehicle_answer = _deterministic_overlay_vehicle_reply(prepared)
+    if vehicle_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            vehicle_answer,
+        )
+    low_evidence_answer = _deterministic_overlay_low_evidence_reply(prepared)
+    if low_evidence_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            low_evidence_answer,
+        )
     detention_answer = _deterministic_overlay_detention_reply(prepared)
     if detention_answer:
         return _atlas_answer_result(
@@ -5158,6 +5267,20 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
+        )
+    vehicle_answer = _deterministic_overlay_vehicle_reply(prepared)
+    if vehicle_answer:
+        await on_delta(vehicle_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            vehicle_answer,
+        )
+    low_evidence_answer = _deterministic_overlay_low_evidence_reply(prepared)
+    if low_evidence_answer:
+        await on_delta(low_evidence_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            low_evidence_answer,
         )
     detention_answer = _deterministic_overlay_detention_reply(prepared)
     if detention_answer:

@@ -40,6 +40,61 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             profile = atlas_ai._atlas_task_profile(question, mode="balanced")
             self.assertEqual(profile.intent, "social", question)
 
+    def test_vehicle_questions_add_a_road_code_search_lane(self) -> None:
+        variants = atlas_ai._atlas_query_variants("Что делать если машину эвакуировали?")
+        self.assertTrue(
+            any("Дорожный Кодекс" in item and "ответственность" in item for item in variants)
+        )
+
+    def test_vehicle_eviction_wording_matches_the_road_clause(self) -> None:
+        source = {
+            "id": 42,
+            "title": "Дорожный Кодекс Штата San Andreas",
+            "content_text": (
+                "Статья 17.3\nОснования для эвакуации транспортного средства:\n"
+                "Парковка с нарушением правил; отсутствие номерного знака или VIN-кода."
+            ),
+            "source_url": "https://example.test/road",
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+        }
+        candidates = atlas_ai._atlas_thematic_legal_candidates(
+            "Что делать если машину эвакуировали?",
+            [source],
+        )
+        self.assertTrue(any(item["reference"] == "article:17.3" for item in candidates))
+        self.assertNotEqual(candidates[0]["reference"], "article:1.5")
+
+    def test_overlay_vehicle_answer_is_short_and_source_bound(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="procedural_advice",
+            sources=[
+                {
+                    "title": "Дорожный Кодекс Штата San Andreas",
+                    "reference": "article:17.3",
+                }
+            ],
+            payload={"messages": [{"role": "user", "content": "Что делать если машину эвакуировали?"}]},
+        )
+        answer = atlas_ai._deterministic_overlay_vehicle_reply(prepared)
+        self.assertIn("статья 17.3", answer)
+        self.assertNotIn("отдел хранения", answer.casefold())
+        self.assertLessEqual(len(answer.split()), 42)
+
+    def test_overlay_unknown_procedure_does_not_invent_a_department(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="procedural_advice",
+            sources=[{"title": "Основные правила проекта", "score": 1.2}],
+            payload={"messages": [{"role": "user", "content": "Что делать если пропал предмет?"}]},
+        )
+        answer = atlas_ai._deterministic_overlay_low_evidence_reply(prepared)
+        self.assertIn("Уточни", answer)
+        self.assertNotIn("библиотек", answer.casefold())
+
     def test_core_term_definition_is_short_and_deterministic(self) -> None:
         prepared = SimpleNamespace(
             intent="legal_analysis",
