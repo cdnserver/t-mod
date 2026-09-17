@@ -4588,7 +4588,7 @@ def _reframe_overlay_detainee_answer(prepared: _AtlasAnswerRequest, answer: str)
     into an instruction for the opposite side of the situation.
     """
 
-    if prepared.latency_mode != "overlay" or prepared.intent != "procedural_advice":
+    if prepared.intent != "procedural_advice":
         return str(answer or "").strip()
     messages = list(prepared.payload.get("messages") or [])
     last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
@@ -4617,12 +4617,20 @@ def _reframe_overlay_detainee_answer(prepared: _AtlasAnswerRequest, answer: str)
         # Remove only officer-facing directives. A neutral sentence such as
         # "сотрудник обязан назвать основание" remains useful as a right.
         if re.search(
-            r"(?:надеть\s+наручники|наденьте\s+наручники|сотрудник\s+должен\s+"
+            r"(?:наденьте\s+наручники|сотрудник\s+должен\s+"
             r"(?:надеть|зачитать|объявить))",
             sentence,
             re.IGNORECASE,
         ):
             continue
+        # Keep a neutral explanation useful to the detainee while removing
+        # the provider's officer-side imperative from the same sentence.
+        sentence = re.sub(
+            r"\bнадеть\s+наручники\b",
+            "попросить сотрудника применить наручники",
+            sentence,
+            flags=re.IGNORECASE,
+        )
         kept.append(sentence)
     if not kept:
         kept = sentences[:1]

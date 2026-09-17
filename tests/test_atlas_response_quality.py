@@ -108,6 +108,18 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("надеть наручники", compact.casefold())
         self.assertIn("[Источник 1, статья 2.2.1]", compact)
 
+    def test_detainee_wording_rewrites_bare_officer_clause_in_standard_mode(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="procedural_advice",
+            payload={"messages": [{"role": "user", "content": "что делать если меня задержали?"}]},
+        )
+        answer = "При отказе начнётся процедура: надеть наручники и проверить документы."
+
+        clean = atlas_ai._reframe_overlay_detainee_answer(prepared, answer)
+
+        self.assertIn("попросить сотрудника применить наручники", clean)
+
     def test_overlay_bound_never_cuts_inside_citation(self) -> None:
         value = (
             "Первый шаг завершён и подтверждён [Источник 1, статья 2.2.1]. "
