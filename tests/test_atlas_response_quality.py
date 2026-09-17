@@ -138,6 +138,27 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10.1 Кража", fallback)
         self.assertNotIn("библиотек", fallback.casefold())
 
+    def test_complaint_procedure_is_short_and_local_when_regulation_is_present(self) -> None:
+        prepared = SimpleNamespace(
+            intent="procedural_advice",
+            payload={"messages": [{"role": "user", "content": "Как подать жалобу на игрока?"}]},
+            sources=[
+                {
+                    "text": (
+                        "Регламент жалоб-обращений. 1. Каждый игрок имеет право оформить жалобу "
+                        "через систему обращений (F2-Обращения). 3. Укажите статический ID и ссылку."
+                    )
+                }
+            ],
+        )
+
+        answer = atlas_ai._deterministic_complaint_procedure_reply(prepared)
+
+        self.assertIn("F2", answer)
+        self.assertIn("статический ID", answer)
+        self.assertLess(len(answer.split()), 45)
+        self.assertNotIn("библиотек", answer.casefold())
+
     def test_incomplete_trailing_list_marker_is_removed(self) -> None:
         answer = "1. Сохраните запись.\n2. Подайте жалобу.\n3."
 

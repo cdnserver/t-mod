@@ -4811,6 +4811,35 @@ def _deterministic_thematic_lookup(prepared: _AtlasAnswerRequest) -> str:
     return "\n\n".join(results)
 
 
+def _deterministic_complaint_procedure_reply(prepared: _AtlasAnswerRequest) -> str:
+    """Answer the common «how do I file a player complaint» question locally."""
+
+    if prepared.intent != "procedural_advice":
+        return ""
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = " ".join(str(last_message.get("content") or "").split())
+    if not re.search(r"\bжалоб\w*\b", question, re.IGNORECASE):
+        return ""
+    if not re.search(
+        r"\b(?:как|куда|где|через\s+что|порядок)\b[^.!?\n]{0,90}"
+        r"(?:подат\w*|оформит\w*|написат\w*|создат\w*|пожаловат\w*)",
+        question,
+        re.IGNORECASE,
+    ):
+        return ""
+    for index, source in enumerate(prepared.sources, 1):
+        text = str(source.get("text") or source.get("content_text") or "")
+        folded = text.casefold()
+        if "f2-обращения" not in folded and "регламент жалоб" not in folded:
+            continue
+        return (
+            "Подайте жалобу через F2‑Обращения: кратко опишите нарушение, укажите статический ID "
+            f"нарушителя и приложите ссылку на доказательства. Затем ожидайте ответ администрации. [{index}]"
+        )
+    return ""
+
+
 def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
     """Keep greetings instant and free from irrelevant server/interface prose."""
 
@@ -5344,6 +5373,12 @@ async def atlas_answer(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
         )
+    complaint_procedure_answer = _deterministic_complaint_procedure_reply(prepared)
+    if complaint_procedure_answer:
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            complaint_procedure_answer,
+        )
     vehicle_answer = _deterministic_overlay_vehicle_reply(prepared)
     if vehicle_answer:
         return _atlas_answer_result(
@@ -5594,6 +5629,13 @@ async def atlas_answer_stream(
         return _atlas_answer_result(
             replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
             thematic_answer,
+        )
+    complaint_procedure_answer = _deterministic_complaint_procedure_reply(prepared)
+    if complaint_procedure_answer:
+        await on_delta(complaint_procedure_answer)
+        return _atlas_answer_result(
+            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            complaint_procedure_answer,
         )
     vehicle_answer = _deterministic_overlay_vehicle_reply(prepared)
     if vehicle_answer:
