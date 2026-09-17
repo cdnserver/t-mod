@@ -25,6 +25,7 @@ from modules.consensus_simulator import (
     register_consensus_simulation,
 )
 from modules.consensus_web import (
+    _apply_security_headers,
     _canonical_surface_location,
     _request_remote,
     _result_payload,
@@ -127,6 +128,29 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         storage.DATA_DIR = self.old_data_dir
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
+
+    def test_atlas_store_csp_allows_only_official_payment_form(self) -> None:
+        atlas_response = web.Response()
+        _apply_security_headers(
+            atlas_response,
+            request_path="/",
+            request_host="atlas.tvr.lat",
+        )
+        consensus_response = web.Response()
+        _apply_security_headers(
+            consensus_response,
+            request_path="/",
+            request_host="consensus.tvr.lat",
+        )
+
+        self.assertIn(
+            "form-action 'self' https://auth.robokassa.ru",
+            atlas_response.headers["Content-Security-Policy"],
+        )
+        self.assertNotIn(
+            "auth.robokassa.ru",
+            consensus_response.headers["Content-Security-Policy"],
+        )
 
     def _principal(self, user_id: int = 1) -> ConsensusWebPrincipal:
         member = SimpleNamespace(

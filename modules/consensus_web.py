@@ -1126,12 +1126,20 @@ async def _security_middleware(
         # error logger (or the GitHub defect inbox).
         response = web.Response(status=499)
     except web.HTTPException as exc:
-        _apply_security_headers(exc, request_path=request.path)
+        _apply_security_headers(
+            exc,
+            request_path=request.path,
+            request_host=request_public_host(request),
+        )
         exc.headers["Server-Timing"] = (
             f'app;dur={(time.perf_counter() - started_at) * 1000:.1f}'
         )
         raise
-    _apply_security_headers(response, request_path=request.path)
+    _apply_security_headers(
+        response,
+        request_path=request.path,
+        request_host=request_public_host(request),
+    )
     response.headers["Server-Timing"] = (
         f'app;dur={(time.perf_counter() - started_at) * 1000:.1f}'
     )
@@ -1142,8 +1150,10 @@ def _apply_security_headers(
     response: web.StreamResponse,
     *,
     request_path: str = "",
+    request_host: str = "",
 ) -> None:
     path = str(request_path or "")
+    host = str(request_host or "").strip().lower().split(":", 1)[0].rstrip(".")
     if path.startswith(("/assets/", "/sgl/assets/")):
         if path.endswith((".woff2", ".mp3")):
             response.headers["Cache-Control"] = (
@@ -1165,6 +1175,12 @@ def _apply_security_headers(
     response.headers["Permissions-Policy"] = (
         "camera=(), geolocation=(), payment=(), usb=()"
     )
+    form_action = "'self'"
+    if host == "atlas.tvr.lat" and path.rstrip("/") in {"", "/atlas-billing"}:
+        # Checkout is prepared on our server, then posted directly to the
+        # official Robokassa payment origin. No other T-Mod surface receives
+        # this exception to the default same-origin form policy.
+        form_action += " https://auth.robokassa.ru"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; "
         "style-src 'self' "
@@ -1172,7 +1188,7 @@ def _apply_security_headers(
         "'sha256-kivcxaEPD+v/Ecc3Z+TNAW/Uf1rs+0/EwVf6c/m1dKc='; "
         "img-src 'self' data:; connect-src 'self' https://api.open-meteo.com; "
         "frame-ancestors 'none'; "
-        "base-uri 'none'; object-src 'none'; form-action 'self'"
+        f"base-uri 'none'; object-src 'none'; form-action {form_action}"
     )
 
 
