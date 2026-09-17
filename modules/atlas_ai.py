@@ -4260,25 +4260,59 @@ def _deterministic_thematic_lookup(prepared: _AtlasAnswerRequest) -> str:
     )
     if not offense_markers:
         return ""
-    results: list[str] = []
-    seen: set[str] = set()
+    # Keep the best clause for each requested offence marker. A semantic hit
+    # may contain the word in a cross-reference later in the article (for
+    # example a definitions section); the article whose opening actually
+    # defines the offence must win.
+    ranked: dict[str, tuple[float, int, int, int, str, str, str]] = {}
     for index, source in enumerate(prepared.sources, 1):
         if str(source.get("corpus_kind") or "").casefold() not in {"law", "procedure"}:
             continue
         sections = _atlas_numbered_rule_sections(str(source.get("text") or ""))
-        for number, section in sections:
+        for section_index, (number, section) in enumerate(sections):
             folded = section.casefold()
-            if not any(marker in folded for marker in offense_markers):
-                continue
-            key = f"{source.get('source_id')}:{number}"
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(f"{section.strip()}\n\n[{index}, статья {number}]")
-            if len(results) >= 2:
-                break
-        if len(results) >= 2:
+            opening = folded[:360]
+            for marker in offense_markers:
+                position = folded.find(marker)
+                if position < 0:
+                    continue
+                score = 1.0
+                if marker in opening:
+                    score += 8.0
+                if position < 140:
+                    score += 2.0
+                key = f"{source.get('source_id')}:{number}"
+                candidate = (
+                    score,
+                    -index,
+                    -section_index,
+                    index,
+                    key,
+                    number,
+                    section.strip(),
+                )
+                previous = ranked.get(marker)
+                if previous is None or candidate[:3] > previous[:3]:
+                    ranked[marker] = candidate
+
+    selected: list[tuple[float, int, str, str, str]] = []
+    seen_keys: set[str] = set()
+    for score, _source_order, _section_order, source_index, key, number, section in sorted(
+        ranked.values(),
+        key=lambda item: (-item[0], item[1], item[2]),
+    ):
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        selected.append((score, source_index, key, number, section))
+        # At most one clause per distinct user marker; synonyms in the same
+        # clause are deduplicated by key above.
+        if len(selected) >= min(2, len(offense_markers)):
             break
+    results = [
+        f"{section}\n\n[{source_index}, статья {number}]"
+        for _score, source_index, _key, number, section in selected
+    ]
     return "\n\n".join(results)
 
 
