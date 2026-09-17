@@ -4567,11 +4567,64 @@ def _reframe_overlay_detainee_answer(prepared: _AtlasAnswerRequest, answer: str)
     return result
 
 
+def _sanitize_overlay_completion(answer: str) -> str:
+    """Remove provider artefacts that make a field answer look unfinished."""
+
+    clean = str(answer or "").strip()
+    if not clean:
+        return clean
+    # Some providers echo the citation list before the actual answer. It is
+    # metadata, not useful speech, and is especially distracting in the game
+    # overlay. Keep citations that are attached to a substantive sentence.
+    clean = re.sub(
+        r"^(?:\s*\[(?:источник\s*)?\d{1,3}[^\]]*\])+\s*",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    # De-duplicate adjacent copies produced when the provider cites both a
+    # source and its pinpoint in separate chunks.
+    clean = re.sub(
+        r"(\[(?:источник\s*)?\d{1,3}[^\]]*\])(?:\s*\1)+",
+        r"\1",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if not clean:
+        return clean
+    trailing_citations = re.search(
+        r"(?:\s*\[(?:источник\s*)?\d{1,3}[^\]]*\])+$",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    body = clean[: trailing_citations.start()].rstrip() if trailing_citations else clean
+    suffix = clean[trailing_citations.start() :].strip() if trailing_citations else ""
+    # A streamed provider can stop after a word while still returning HTTP
+    # success. Never read an unfinished final clause aloud: retreat to the
+    # last complete sentence and retain its citation when one exists.
+    if body and not re.search(r"[.!?]$", body):
+        boundaries = [
+            match.end()
+            for match in re.finditer(r"[.!?](?=\s|$)", body)
+        ]
+        if boundaries:
+            body = body[: boundaries[-1]].rstrip()
+            suffix = suffix.split("\n", 1)[0].strip() if suffix else ""
+            clean = f"{body} {suffix}".strip()
+        elif suffix:
+            # The citation is not evidence for a half sentence. Remove it
+            # rather than presenting a dangling marker as a complete answer.
+            clean = body
+    return clean.rstrip(" \t\n")
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
+    if prepared.latency_mode == "overlay":
+        clean_answer = _sanitize_overlay_completion(clean_answer)
     clean_answer = _compact_answer_for_delivery(prepared, clean_answer)
     if (
         prepared.latency_mode == "overlay"

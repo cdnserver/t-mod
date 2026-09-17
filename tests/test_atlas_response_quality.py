@@ -91,6 +91,19 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("статья 2.…", compact)
         self.assertTrue(compact.endswith("…"))
 
+    def test_overlay_removes_leading_citations_and_incomplete_tail(self) -> None:
+        value = (
+            "[1, п.2.2.1][1, п.2.2]\n\nКороткие шаги:\n"
+            "1) Представьтесь и предъявите документы. [1, п.2.2.3]\n"
+            "2) Если вас задержали — ждите"
+        )
+
+        clean = atlas_ai._sanitize_overlay_completion(value)
+
+        self.assertFalse(clean.startswith("["))
+        self.assertIn("Представьтесь и предъявите документы.", clean)
+        self.assertNotIn("Если вас задержали", clean)
+
     async def test_visual_question_without_frame_gets_actionable_short_reply(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
             "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
