@@ -4751,10 +4751,10 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         if not expanded_request:
             if prepared.intent == "drafting":
                 return _finish_bounded_answer(
-                    _compact_overlay_answer(value, max_words=360, max_chars=3_600)
+                    _compact_overlay_answer(value, max_words=220, max_chars=2_200)
                 )
             return _finish_bounded_answer(
-                _compact_overlay_answer(value, max_words=420, max_chars=4_200)
+                _compact_overlay_answer(value, max_words=280, max_chars=2_800)
             )
         return str(value or "").strip()
     if prepared.depth == "deep":
