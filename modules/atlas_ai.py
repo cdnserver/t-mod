@@ -4163,6 +4163,21 @@ def _compact_overlay_answer(
     word_matches = list(re.finditer(r"\S+", text))
     if len(text) <= max_chars and len(word_matches) <= max_words:
         return text
+    # Canonical legal lookups are deliberately returned verbatim.  Their
+    # article text can fit the character budget while the trailing pinpoint
+    # citation adds only a few whitespace-separated tokens and accidentally
+    # trips the word guard.  Keep that citation attached instead of returning
+    # a misleading ``.…`` or silently dropping the source marker.
+    citation_tail = re.search(
+        r"(?:\n\s*)+(?:\[(?:источник\s*)?\d{1,3}[^\]]*\])+$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if citation_tail:
+        body = text[: citation_tail.start()].rstrip()
+        body_words = len(re.findall(r"\S+", body))
+        if len(text) <= max_chars and body_words <= max_words:
+            return text
     word_cutoff = (
         word_matches[max_words - 1].end()
         if len(word_matches) >= max_words

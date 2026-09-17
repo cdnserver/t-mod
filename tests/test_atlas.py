@@ -3679,6 +3679,18 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(compact.startswith("Сначала остановитесь"))
         self.assertTrue(compact.endswith("…"))
 
+    def test_overlay_keeps_short_canonical_clause_citation(self) -> None:
+        answer = (
+            "10.6\n(F/R)\nРазбойное ограбление — нападение с опасным насилием.\n"
+            "Приоритет розыска 4\nНаказание: до 40 месяцев лишения свободы.\n\n"
+            "[1, статья 10.6]"
+        )
+        compact = _compact_overlay_answer(answer)
+
+        self.assertEqual(compact, answer)
+        self.assertIn("[1, статья 10.6]", compact)
+        self.assertNotIn(".…", compact)
+
 
 class AtlasKnowledgeFileTests(unittest.TestCase):
     def test_plain_text_and_docx_are_extracted(self) -> None:
