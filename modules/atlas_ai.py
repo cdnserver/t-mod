@@ -4497,6 +4497,16 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
     clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
     clean_answer = _compact_answer_for_delivery(prepared, clean_answer)
+    if (
+        prepared.latency_mode == "overlay"
+        and prepared.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
+        and clean_answer.endswith("…")
+        and re.search(r"\[(?:источник\s*)?\d{1,3}[^\]]*\]", clean_answer, re.IGNORECASE)
+    ):
+        # A legal field answer ending at a complete cited sentence is already
+        # safe to display. Do not leave the user with the ugly ``.…`` marker
+        # merely because the provider added a low-value sentence afterwards.
+        clean_answer = clean_answer[:-1].rstrip()
     for step in prepared.research_plan:
         if step.get("id") == "synthesis":
             step["status"] = "complete"
