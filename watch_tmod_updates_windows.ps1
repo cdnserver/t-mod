@@ -51,6 +51,29 @@ function Write-WatcherLog([string]$Message) {
     )
 }
 
+function Get-LocalCommit {
+    param([Parameter(Mandatory = $true)][string]$Directory)
+    # Capture the native exit code immediately. In Windows PowerShell 5.1,
+    # inspecting $LASTEXITCODE after piping git into Select-Object can retain a
+    # stale value and falsely report that a perfectly valid checkout is broken.
+    $output = @(& git.exe -C $Directory rev-parse HEAD 2>&1)
+    $exitCode = $LASTEXITCODE
+    $commit = [string](
+        $output |
+            ForEach-Object { [string]$_ } |
+            Where-Object { $_ -match '^[0-9a-fA-F]{40,64}$' } |
+            Select-Object -First 1
+    )
+    $commit = $commit.Trim().ToLowerInvariant()
+    if ($exitCode -ne 0 -or -not $commit) {
+        $detail = (($output | ForEach-Object { [string]$_ }) -join " ").Trim()
+        if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+        Write-WatcherLog "Local Git rev-parse failed (exit=$exitCode): $detail"
+        return $null
+    }
+    return $commit
+}
+
 function Get-RemoteCommitBounded {
     param(
         [Parameter(Mandatory = $true)][string]$Directory,
@@ -112,8 +135,8 @@ try {
         throw "Guarded launcher is missing: $GuardedLauncherPath"
     }
 
-    $CurrentCommit = (& git -C $ProjectDir rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $CurrentCommit) {
+    $CurrentCommit = Get-LocalCommit -Directory $ProjectDir
+    if (-not $CurrentCommit) {
         throw "Could not read the installed Git commit"
     }
 
@@ -167,7 +190,8 @@ try {
         -Remote $Remote
     $updateExitCode = $LASTEXITCODE
 
-    $installedCommit = (& git -C $ProjectDir rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+    $installedCommit = Get-LocalCommit -Directory $ProjectDir
+    if (-not $installedCommit) { $installedCommit = "unknown" }
     if ($updateExitCode -eq 0 -and $installedCommit -eq $RemoteCommit) {
         Write-WatcherState -State "updated" -Message "Релиз $shortRemote проверен и запущен." -CurrentCommit $installedCommit -RemoteCommit $RemoteCommit
         Write-WatcherLog "Update completed: $shortRemote"

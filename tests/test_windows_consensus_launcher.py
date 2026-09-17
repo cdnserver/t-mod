@@ -393,6 +393,8 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('@("rolled_back", "failed")', watcher)
         self.assertIn("Local\\TModAutoUpdateWatcher", watcher)
         self.assertIn("Get-RemoteCommitBounded", watcher)
+        self.assertIn("function Get-LocalCommit", watcher)
+        self.assertIn("Local Git rev-parse failed", watcher)
         self.assertIn("GitTimeoutSeconds", watcher)
         self.assertIn("WaitForExit", watcher)
         self.assertIn("taskkill.exe", watcher)
