@@ -4438,10 +4438,64 @@ def _local_visual_route() -> AtlasModelRoute:
     )
 
 
+def _reframe_overlay_detainee_answer(prepared: _AtlasAnswerRequest, answer: str) -> str:
+    """Keep a first-person detention request focused on the detained player.
+
+    Providers sometimes copy an officer-facing clause verbatim (for example
+    ``надеть наручники``) even though the player asked what *they* should do.
+    The source remains available in citations; the field answer must not turn
+    into an instruction for the opposite side of the situation.
+    """
+
+    if prepared.latency_mode != "overlay" or prepared.intent != "procedural_advice":
+        return str(answer or "").strip()
+    messages = list(prepared.payload.get("messages") or [])
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    question = str(last_message.get("content") or "")
+    if not re.search(
+        r"\bменя\s+(?:только\s+что\s+)?(?:задержали|арестовали)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        return str(answer or "").strip()
+    clean = str(answer or "").strip()
+    if not clean:
+        return clean
+    citations = re.findall(
+        r"\[(?:источник\s*)?\d{1,3}[^\]]*\]",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", clean)
+        if part.strip()
+    ]
+    kept: list[str] = []
+    for sentence in sentences:
+        # Remove only officer-facing directives. A neutral sentence such as
+        # "сотрудник обязан назвать основание" remains useful as a right.
+        if re.search(
+            r"(?:надеть\s+наручники|наденьте\s+наручники|сотрудник\s+должен\s+"
+            r"(?:надеть|зачитать|объявить))",
+            sentence,
+            re.IGNORECASE,
+        ):
+            continue
+        kept.append(sentence)
+    if not kept:
+        kept = sentences[:1]
+    result = " ".join(kept).strip()
+    if citations and not re.search(r"\[(?:источник\s*)?\d{1,3}[^\]]*\]", result, re.IGNORECASE):
+        result = f"{result} {citations[0]}".strip()
+    return result
+
+
 def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str, Any]:
     clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
+    clean_answer = _reframe_overlay_detainee_answer(prepared, clean_answer)
     clean_answer = _compact_answer_for_delivery(prepared, clean_answer)
     for step in prepared.research_plan:
         if step.get("id") == "synthesis":

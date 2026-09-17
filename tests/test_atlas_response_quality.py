@@ -50,6 +50,25 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(compact.startswith("Прямой вывод."))
         self.assertTrue(compact.endswith("…"))
 
+    def test_overlay_detention_answer_does_not_switch_to_officer_perspective(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="procedural_advice",
+            payload={"messages": [{"role": "user", "content": "что делать если меня задержали сотрудники LSPD?"}]},
+        )
+        answer = (
+            "Сохраняйте спокойствие и попросите назвать основание задержания. "
+            "Сотрудник должен надеть наручники и уведомить: «Вы задержаны». "
+            "Попросите разъяснить права [Источник 1, статья 2.2.1]."
+        )
+
+        compact = atlas_ai._reframe_overlay_detainee_answer(prepared, answer)
+
+        self.assertIn("Сохраняйте спокойствие", compact)
+        self.assertIn("Попросите разъяснить права", compact)
+        self.assertNotIn("надеть наручники", compact.casefold())
+        self.assertIn("[Источник 1, статья 2.2.1]", compact)
+
     async def test_visual_question_without_frame_gets_actionable_short_reply(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
             "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
