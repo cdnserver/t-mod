@@ -715,6 +715,40 @@ class AtlasRepositoryTests(unittest.TestCase):
         self.assertEqual(sources[0]["id"], law["id"])
         self.assertEqual(sources[0]["title"], "Уголовный кодекс штата San Andreas")
 
+    def test_searchable_corpus_finds_old_neutral_thread_by_body_text(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        old_thread = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Рассмотрено — дело 001",
+            content="Редкая формулировка: фиолетовый протокол действует при проверке документов.",
+            visibility_scope="server",
+        )
+        with connect() as con:
+            con.execute(
+                "UPDATE atlas_knowledge_sources SET updated_at = ? WHERE id = ?",
+                ("2000-01-01T00:00:00+00:00", int(old_thread["id"])),
+            )
+        for index in range(365):
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Новость форума {index}",
+                content=f"Свежий общий материал без искомого термина, запись {index}.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("фиолетовый",),
+            limit=5,
+        )
+
+        self.assertIn(int(old_thread["id"]), {int(item["id"]) for item in sources})
+
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])

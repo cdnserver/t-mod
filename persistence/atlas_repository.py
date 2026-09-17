@@ -1555,6 +1555,23 @@ def atlas_searchable_knowledge_sources(
                     (*scope_params, *(f"%{term}%" for term in clean_terms), min(220, clean_limit)),
                 ).fetchall()
             )
+            # A forum thread often has a neutral title (an ID, a player's
+            # name, or just "Рассмотрено"), while the decisive legal wording
+            # appears only in its body. Search the canonical text as a
+            # separate bounded batch so older pages are not evicted by the
+            # recent-news fallback when the forum grows beyond 360 rows.
+            content_sql = " OR ".join("lower(content_text) LIKE ?" for _ in clean_terms)
+            batches.append(
+                con.execute(
+                    f"""
+                    SELECT * FROM atlas_knowledge_sources
+                    WHERE {scope_sql} AND ({content_sql})
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (*scope_params, *(f"%{term}%" for term in clean_terms), min(600, clean_limit)),
+                ).fetchall()
+            )
         reference_sql = " OR ".join("lower(title) LIKE ?" for _ in reference_markers)
         batches.append(
             con.execute(
