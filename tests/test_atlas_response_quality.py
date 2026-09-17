@@ -52,6 +52,7 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             "как получить ордер": ("Процессуальный Кодекс",),
             "что делать при ДТП": ("Дорожный Кодекс",),
             "что делать если меня убили без причины": ("Основные правила проекта",),
+            "как обжаловать решение": ("Процессуальный Кодекс", "Судебный Кодекс"),
         }
         for question, hints in checks.items():
             variants = atlas_ai._atlas_query_variants(question)
