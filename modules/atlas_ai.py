@@ -4201,7 +4201,12 @@ def _answer_without_internal_search_state(
 def _atlas_answer_is_retrieval_refusal(answer: str) -> bool:
     """Recognize an answer that reports search state instead of doing the job."""
 
-    return bool(_ATLAS_RETRIEVAL_REFUSAL_RE.search(str(answer or "")))
+    # Providers frequently wrap a sentence at a markdown line break (for
+    # example ``В библиотеке Atlas\nнет точной статьи``).  The refusal guard
+    # is semantic at the sentence level, so presentation whitespace must not
+    # let the diagnostic leak into the user-facing answer.
+    normalized = re.sub(r"\s+", " ", str(answer or "")).strip()
+    return bool(_ATLAS_RETRIEVAL_REFUSAL_RE.search(normalized))
 
 
 def _retrieval_refusal_retry_payload(
