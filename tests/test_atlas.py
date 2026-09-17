@@ -1621,6 +1621,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "No relevant information in the knowledge base.",
             "Knowledge base does not contain relevant information.",
             "I couldn't find the answer in the provided context.",
+            "I don't have enough information in the available sources.",
             "Контекст не содержит применимой нормы.",
         ):
             self.assertTrue(_atlas_answer_is_retrieval_refusal(variant), variant)
