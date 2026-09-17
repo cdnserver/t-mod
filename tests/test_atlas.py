@@ -749,6 +749,40 @@ class AtlasRepositoryTests(unittest.TestCase):
 
         self.assertIn(int(old_thread["id"]), {int(item["id"]) for item in sources})
 
+    def test_searchable_corpus_prioritizes_old_exact_identifier_hits(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        old_complaint = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Рассмотрено — дело 001",
+            content="Жалоба на игрока со статиком 228392 и приложенными доказательствами.",
+            visibility_scope="server",
+        )
+        with connect() as con:
+            con.execute(
+                "UPDATE atlas_knowledge_sources SET updated_at = ? WHERE id = ?",
+                ("2000-01-01T00:00:00+00:00", int(old_complaint["id"])),
+            )
+        for index in range(610):
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Рассмотрено — дело {index + 100}",
+                content=f"Свежая жалоба без нужного идентификатора, запись {index}.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("228392",),
+            limit=5,
+        )
+
+        self.assertIn(int(old_complaint["id"]), {int(item["id"]) for item in sources})
+
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])

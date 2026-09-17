@@ -1544,6 +1544,51 @@ def atlas_searchable_knowledge_sources(
     with connect_readonly() as con:
         batches: list[list[Any]] = []
         if clean_terms:
+            # Static IDs, case numbers and forum topic IDs are high-signal
+            # identifiers.  A generic content batch is capped and ordered by
+            # recency, so an older complaint could be evicted by thousands of
+            # newer threads before Atlas ever saw it.  Search identifiers in
+            # their own bounded batch first and rank rows containing the exact
+            # token ahead of incidental substring matches.
+            identifier_terms = tuple(
+                term
+                for term in clean_terms
+                if re.fullmatch(r"\d{3,}(?:\.\d+)*", term)
+            )
+            if identifier_terms and include_content_search:
+                identifier_match_sql = " OR ".join(
+                    "(lower(title) LIKE ? OR lower(content_text) LIKE ?)"
+                    for _term in identifier_terms
+                )
+                identifier_rank_sql = " + ".join(
+                    "CASE WHEN lower(title) LIKE ? OR lower(content_text) LIKE ? "
+                    "THEN 1 ELSE 0 END"
+                    for _term in identifier_terms
+                )
+                identifier_params: list[Any] = []
+                for term in identifier_terms:
+                    pattern = f"%{term}%"
+                    identifier_params.extend((pattern, pattern))
+                rank_params: list[Any] = []
+                for term in identifier_terms:
+                    pattern = f"%{term}%"
+                    rank_params.extend((pattern, pattern))
+                batches.append(
+                    con.execute(
+                        f"""
+                        SELECT * FROM atlas_knowledge_sources
+                        WHERE {scope_sql} AND ({identifier_match_sql})
+                        ORDER BY ({identifier_rank_sql}) DESC, updated_at DESC, id DESC
+                        LIMIT ?
+                        """,
+                        (
+                            *scope_params,
+                            *identifier_params,
+                            *rank_params,
+                            min(160, clean_limit),
+                        ),
+                    ).fetchall()
+                )
             title_sql = " OR ".join("lower(title) LIKE ?" for _ in clean_terms)
             batches.append(
                 con.execute(
