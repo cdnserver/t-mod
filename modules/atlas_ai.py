@@ -1094,6 +1094,11 @@ def _atlas_query_variants(
         variants.append(
             f"{clean}\nДорожный Кодекс штата San Andreas: применимая статья и ответственность"
         )
+    # Colloquial questions rarely repeat the exact forum title.  Add a
+    # deterministic document lane before the generic IC/OOC expansions so the
+    # most useful title hints survive the bounded retrieval budget.
+    for title_hint in _atlas_document_route_hints(expanded):
+        variants.append(f"{clean}\n{title_hint}: применимая норма и порядок действий")
     if re.search(
         r"\bправил\w*\s+(?:государственн\w*\s+структур|гос\.?\s*структур|"
         r"госорганизац)\w*",
@@ -2330,6 +2335,15 @@ async def atlas_search(
         domain = str(item.get("knowledge_domain") or "mixed")
         corpus = str(item.get("corpus_kind") or "other")
         title_folded = str(item.get("title") or "").casefold()
+        route_hints = _atlas_document_route_hints(query_folded)
+        if route_hints:
+            # A title match is stronger evidence of document identity than a
+            # generic body word (``права``, ``сотрудник`` or ``порядок``).
+            # Reward the governing source, while keeping other sources as
+            # supporting material instead of discarding them outright.
+            score += 2.4 if any(
+                str(hint).casefold() in title_folded for hint in route_hints
+            ) else -0.15
         if re.search(r"\b(?:ooc|оо[сc]|правил\w*\s+(?:сервера|проекта))\b", query_folded):
             score += 0.32 if domain == "ooc" else -0.08 if domain == "ic" else 0
         elif _ATLAS_OOC_RULE_SIGNAL_RE.search(query_folded):
@@ -2423,17 +2437,92 @@ _ATLAS_FOLLOWUP_RE = re.compile(
 _ATLAS_LEGAL_RE = re.compile(
     r"\b(?:закон|кодекс|стать|глав|норм|прав[оа]|полномочи|наказани|"
     r"задержан|арест|обыск|суд|иск|жалоб|доказательств|устав|регламент|"
+    r"лицензи|ордер|адвокат|взятк|дтп|авари|машин|автомобил|"
+    r"правительств|губернатор|министерств|труд|обжалован|"
     r"ic|и[сc]|ooc|оо[сc])\w*",
     re.IGNORECASE,
 )
 _ATLAS_OOC_RULE_SIGNAL_RE = re.compile(
-    r"\b(?:аккаунт|мультиаккаунт|permban|hardban|demorgan|gunban|warn|mute|"
-    r"dm|db|pg|mg|rk|nlr|sk|tk|nonrp|ooc|оо[сc]|оскорблен|родствен|администрац|"
-    r"жалоб[аыуе]?|бан|сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\w*",
+    # Each alternative owns its word boundary.  A boundary only before the
+    # whole group makes ``чит\w*`` match the middle of ``получить`` and
+    # incorrectly routes an ordinary question into OOC rules.
+    r"\b(?:аккаунт\w*|мультиаккаунт\w*|permban\b|hardban\b|demorgan\b|"
+    r"gunban\b|warn\b|mute\b|dm\b|db\b|pg\b|mg\b|rk\b|nlr\b|sk\b|"
+    r"tk\b|nonrp\b|ooc\b|оо[сc]\b|оскорблен\w*|родствен\w*|администрац\w*|"
+    r"жалоб\w*|бан\w*|баг\w*|эксплойт\w*|чит\w*|сторонн\w*\s+по|"
+    r"провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\b",
     re.IGNORECASE,
 )
+
+
+# Canonical document identities used by the Phoenix corpus.  These are
+# retrieval hints, not legal conclusions: the final source scope and text are
+# still checked against the user's server/faction before an answer is formed.
+_ATLAS_DOCUMENT_ROUTE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        r"(?:уби\w*|расстрел\w*|застрел\w*)[^.\n]{0,80}"
+        r"без\s+(?:всяк\w*\s+)?причин\w*",
+        ("Основные правила проекта",),
+    ),
+    (
+        r"(?:дтп|авари\w*|эваку\w*|парковк\w*|скорост\w*|водител\w*|"
+        r"машин\w*|автомобил\w*|транспорт\w*|номер\w*|vin)",
+        ("Дорожный Кодекс",),
+    ),
+    (
+        r"(?:задерж\w*|арест\w*|обыск\w*|допрос\w*|ордер\w*|"
+        r"достав\w*|адвокат\w*|защитник\w*)",
+        ("Процессуальный Кодекс", "коллегии адвокатов"),
+    ),
+    (
+        r"(?:уби\w*|краж\w*|грабеж\w*|ограб\w*|разбо\w*|"
+        r"похищ\w*|террор\w*|взятк\w*|наркот\w*|оружи\w*|"
+        r"преступлен\w*|розыск\w*)",
+        ("Уголовный Кодекс",),
+    ),
+    (
+        r"(?:лицензи\w*|изъят\w*|изъять|боеприпас\w*|огнестрел\w*|спецсредств\w*)",
+        ("обороте оружия", "Уголовный Кодекс"),
+    ),
+    (
+        r"(?:правительств\w*|губернатор\w*|министерств\w*|"
+        r"государственн\w*\s+орган\w*)",
+        ("О Правительстве",),
+    ),
+    (
+        r"(?:труд\w*|увольн\w*|работодател\w*|сотрудник\w*\s+на\s+работ\w*)",
+        ("Трудовой кодекс",),
+    ),
+    (
+        r"(?:конституц\w*|основн\w*\s+прав\w*\s+штат\w*)",
+        ("Конституция",),
+    ),
+    (
+        r"(?:иск\w*|судебн\w*|подсудн\w*|суд\w*|обжалован\w*)",
+        ("Процессуальный Кодекс", "Судебный Кодекс"),
+    ),
+    (
+        r"\b(?:жалоб\w*|dm\b|db\b|pg\b|mg\b|rk\b|nlr\b|"
+        r"nonrp\b|бан\w*|баг\w*|чит\w*|сторонн\w*\s+по)\b",
+        ("Основные правила проекта",),
+    ),
+)
+
+
+def _atlas_document_route_hints(query: str) -> tuple[str, ...]:
+    """Return stable source-title hints for colloquial user wording."""
+
+    lowered = str(query or "").casefold()
+    hints: list[str] = []
+    for pattern, titles in _ATLAS_DOCUMENT_ROUTE_RULES:
+        if re.search(pattern, lowered, re.IGNORECASE):
+            hints.extend(titles)
+    return _ordered_distinct(hints, limit=8)
+
+
 _ATLAS_PROCEDURE_RE = re.compile(
-    r"\b(?:что\s+(?:мне\s+)?делать|как\s+(?:мне\s+)?(?:действовать|поступить)|"
+    r"\b(?:что\s+(?:мне\s+)?делать|как\s+(?:мне\s+)?(?:действовать|поступить|"
+    r"получить|оформить|подать|обжаловать)|куда\s+обратиться|"
     r"порядок|процедур|пошагов|этап|алгоритм|меня\s+(?:задержали|арестовали))\b",
     re.IGNORECASE,
 )
@@ -3972,6 +4061,28 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"|(?:не\s+располагаю[^.\n]{0,100}(?:информац|данн|текст|норм|стать))"
     r"|(?:не\s+могу\s+точно\s+сказать[^.\n]{0,120}"
     r"(?:нет|отсутств|не\s+найден))"
+    # Newer provider releases use softer wording that slipped past the
+    # original guard: ``в контексте нет...``, ``по запросу ничего не
+    # найдено`` or ``Atlas не знает``.  These are the same internal retrieval
+    # diagnostic and must never become the final answer.
+    r"|(?:\b(?:в\s+(?:этом|предоставленном|доступном)\s+"
+    r"(?:контекст\w*|фрагмент\w*|материал\w*|текст\w*)|"
+    r"в\s+приложенн\w*\s+(?:материал\w*|источник\w*))[^.\n]{0,120}"
+    r"(?:нет|отсутств|не\s+содерж))"
+    r"|(?:(?:\b(?:релевантн\w*|подходящ\w*|нужн\w*)\s+"
+    r"(?:информац\w*|данн\w*|источник\w*|фрагмент\w*|"
+    r"норм\w*|стать\w*)|\b(?:по\s+этому\s+вопросу|по\s+запросу|"
+    r"в\s+ответе)\b)[^.\n]{0,100}"
+    r"(?:ничего\s+не\s+найден\w*|нет|отсутств|не\s+обнаружен\w*))"
+    r"|(?:\b(?:atlas|атлас)\b[^.\n]{0,90}"
+    r"(?:не\s+(?:зна\w*|располага\w*|виж\w*)|нет\s+(?:данн\w*|информац\w*)|"
+    r"не\s+(?:найден\w*|обнаружен\w*)))"
+    r"|(?:не\s+могу\s+(?:ответить|помочь|сказать)[^.\n]{0,120}"
+    r"(?:информац\w*|данн\w*|источник\w*|норм\w*|стать\w*|"
+    r"не\s+найден\w*|нет\b))"
+    r"|(?:\b(?:not\s+found|no\s+(?:relevant\s+)?"
+    r"(?:information|data|source|article|text))\b[^.\n]{0,100}"
+    r"\b(?:library|libraries|knowledge|context|source|sources)\b)"
     r")",
     re.IGNORECASE,
 )
@@ -4939,6 +5050,21 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
     for step in prepared.research_plan:
         if step.get("id") == "synthesis":
             step["status"] = "complete"
+    # A clarification generated after a weak retrieval pass is not evidence
+    # about the question.  Do not attach the unrelated fallback fragments to
+    # it: doing so makes the UI look authoritative and encourages the next
+    # model turn to anchor on the wrong document.
+    citation_sources = prepared.sources
+    if (
+        prepared.sources
+        and not re.search(r"\[(?:источник\s*)?\d{1,3}[^\]]*\]", clean_answer, re.IGNORECASE)
+        and re.match(
+            r"^(?:Опиши ситуацию конкретно|Уточни(?:\s+номер(?:\s+нормы)?|\s+одним сообщением|,\s+что именно))",
+            clean_answer,
+            re.IGNORECASE,
+        )
+    ):
+        citation_sources = []
     citations = [
         {
             "index": index,
@@ -4948,7 +5074,7 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
             "score": item["score"],
             "pinpoints": list(item.get("pinpoints") or []),
         }
-        for index, item in enumerate(prepared.sources, 1)
+        for index, item in enumerate(citation_sources, 1)
     ]
     return {
         "answer": clean_answer[:30000],
@@ -4969,7 +5095,7 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
             else {"source": "direct", "search_queries": []}
         ),
         "evidence": prepared.evidence_map.public(),
-        "citation_health": _citation_health(clean_answer, len(prepared.sources)),
+        "citation_health": _citation_health(clean_answer, len(citation_sources)),
         "intent": prepared.intent,
         "depth": prepared.depth,
         "latency_mode": prepared.latency_mode,
@@ -5047,13 +5173,27 @@ async def atlas_answer(
     vehicle_answer = _deterministic_overlay_vehicle_reply(prepared)
     if vehicle_answer:
         return _atlas_answer_result(
-            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            replace(
+                prepared,
+                model_route=_local_exact_route(),
+                fallback_model_route=None,
+                sources=(
+                    prepared.sources
+                    if "[Источник" in vehicle_answer
+                    else []
+                ),
+            ),
             vehicle_answer,
         )
     low_evidence_answer = _deterministic_overlay_low_evidence_reply(prepared)
     if low_evidence_answer:
         return _atlas_answer_result(
-            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            replace(
+                prepared,
+                model_route=_local_exact_route(),
+                fallback_model_route=None,
+                sources=[],
+            ),
             low_evidence_answer,
         )
     detention_answer = _deterministic_overlay_detention_reply(prepared)
@@ -5272,14 +5412,28 @@ async def atlas_answer_stream(
     if vehicle_answer:
         await on_delta(vehicle_answer)
         return _atlas_answer_result(
-            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            replace(
+                prepared,
+                model_route=_local_exact_route(),
+                fallback_model_route=None,
+                sources=(
+                    prepared.sources
+                    if "[Источник" in vehicle_answer
+                    else []
+                ),
+            ),
             vehicle_answer,
         )
     low_evidence_answer = _deterministic_overlay_low_evidence_reply(prepared)
     if low_evidence_answer:
         await on_delta(low_evidence_answer)
         return _atlas_answer_result(
-            replace(prepared, model_route=_local_exact_route(), fallback_model_route=None),
+            replace(
+                prepared,
+                model_route=_local_exact_route(),
+                fallback_model_route=None,
+                sources=[],
+            ),
             low_evidence_answer,
         )
     detention_answer = _deterministic_overlay_detention_reply(prepared)

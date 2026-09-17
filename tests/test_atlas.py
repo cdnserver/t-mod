@@ -1612,6 +1612,19 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 "Не могу точно сказать, потому что соответствующий фрагмент отсутствует."
             )
         )
+        for variant in (
+            "В этом контексте нет информации о статье.",
+            "По запросу ничего не найдено.",
+            "Atlas не знает ответа по этому вопросу.",
+            "В релевантных источниках отсутствуют данные.",
+            "No relevant information in the knowledge base.",
+        ):
+            self.assertTrue(_atlas_answer_is_retrieval_refusal(variant), variant)
+        self.assertFalse(
+            _atlas_answer_is_retrieval_refusal(
+                "В статье 6.2 нет отдельного запрета на оказание первой помощи."
+            )
+        )
 
     def test_retrieval_refusal_fallback_returns_exact_structured_evidence(self) -> None:
         prepared = SimpleNamespace(

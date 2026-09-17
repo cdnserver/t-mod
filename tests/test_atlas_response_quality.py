@@ -46,6 +46,33 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             any("Дорожный Кодекс" in item and "ответственность" in item for item in variants)
         )
 
+    def test_colloquial_legal_questions_get_their_governing_document_lane(self) -> None:
+        checks = {
+            "какие права у адвоката": ("Процессуальный Кодекс", "коллегии адвокатов"),
+            "как получить ордер": ("Процессуальный Кодекс",),
+            "что делать при ДТП": ("Дорожный Кодекс",),
+            "что делать если меня убили без причины": ("Основные правила проекта",),
+        }
+        for question, hints in checks.items():
+            variants = atlas_ai._atlas_query_variants(question)
+            joined = "\n".join(variants).casefold()
+            self.assertTrue(
+                any(hint.casefold() in joined for hint in hints),
+                question,
+            )
+
+    def test_legal_router_recognizes_license_and_ooc_bug_questions(self) -> None:
+        license_profile = atlas_ai._atlas_task_profile(
+            "Кто может изъять лицензию?",
+            mode="balanced",
+        )
+        bug_profile = atlas_ai._atlas_task_profile(
+            "Можно ли использовать баги?",
+            mode="balanced",
+        )
+        self.assertIn(license_profile.intent, {"legal_analysis", "procedural_advice"})
+        self.assertIn(bug_profile.intent, {"legal_analysis", "procedural_advice"})
+
     def test_vehicle_eviction_wording_matches_the_road_clause(self) -> None:
         source = {
             "id": 42,
@@ -94,6 +121,45 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         answer = atlas_ai._deterministic_overlay_low_evidence_reply(prepared)
         self.assertIn("Уточни", answer)
         self.assertNotIn("библиотек", answer.casefold())
+
+    def test_weak_overlay_clarification_does_not_expose_unrelated_citations(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="procedural_advice",
+            depth="quick",
+            model_route=SimpleNamespace(
+                provider="tmod",
+                model="atlas-exact-retrieval",
+                release="index-v3",
+            ),
+            sources=[
+                {
+                    "source_id": 9,
+                    "title": "Случайный документ",
+                    "url": "https://example.test/random",
+                    "score": 1.1,
+                }
+            ],
+            payload={"messages": [{"role": "user", "content": "Что делать при неизвестном событии?"}]},
+            project_code="majestic-rp",
+            server_code="phoenix-15",
+            faction_code="lspd",
+            response_mode="balanced",
+            requested_response_mode="balanced",
+            research_plan=[],
+            agent=SimpleNamespace(public=lambda: {}),
+            intelligence_brief=None,
+            evidence_map=SimpleNamespace(public=lambda: {}),
+            screen_context_used=False,
+            direct_mode=False,
+            fallback_model_route=None,
+            started=0.0,
+        )
+        result = atlas_ai._atlas_answer_result(
+            prepared,
+            "Уточни одним сообщением: что именно произошло, где и кто участвовал.",
+        )
+        self.assertEqual(result["citations"], [])
 
     def test_core_term_definition_is_short_and_deterministic(self) -> None:
         prepared = SimpleNamespace(
@@ -461,6 +527,54 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "article:10.5")
         embed.assert_not_awaited()
         request.assert_not_awaited()
+
+    async def test_document_route_ranks_governing_source_above_neighbouring_articles(self) -> None:
+        sources = [
+            {
+                "id": 11,
+                "organization_id": 1,
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
+                "visibility_scope": "server",
+                "federation_scope": "server",
+                "title": "Уголовный Кодекс штата San Andreas",
+                "content_text": "4.1 Общие положения. Права лиц регулируются законом.",
+                "source_url": "https://example.test/criminal",
+                "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+            },
+            {
+                "id": 12,
+                "organization_id": 1,
+                "project_code": "majestic-rp",
+                "server_code": "phoenix-15",
+                "faction_code": "lspd",
+                "visibility_scope": "server",
+                "federation_scope": "server",
+                "title": "Закон \"О коллегии адвокатов штата San Andreas\"",
+                "content_text": "1.9 Адвокат имеет право на защиту и участие в деле.",
+                "source_url": "https://example.test/lawyers",
+                "metadata": {"taxonomy": {"domain": "ic", "corpus_kind": "law"}},
+            },
+        ]
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1]])), patch(
+            "modules.atlas_ai._json_request",
+            AsyncMock(return_value={"result": {"points": []}}),
+        ):
+            result = await atlas_ai.atlas_search(
+                77,
+                "Какие права у адвоката?",
+                expanded=True,
+            )
+
+        self.assertTrue(result)
+        self.assertIn("коллегии адвокатов", result[0]["title"].casefold())
 
     async def test_overlay_procedure_with_canonical_hit_does_not_wait_for_semantic_search(self) -> None:
         source = {
