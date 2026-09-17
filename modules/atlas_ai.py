@@ -4139,6 +4139,24 @@ def _compact_overlay_answer(
     return prefix.rstrip(" ,;:-") + "…"
 
 
+def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> str:
+    """Enforce the editorial bound after generation, not only in the prompt.
+
+    Full chapters, ready-to-send documents and explicitly requested variant
+    lists are intentionally preserved. Every ordinary/quick/deep explanation
+    still gets a hard ceiling because providers may ignore token and word
+    instructions (historically some saved answers exceeded 90k characters).
+    """
+
+    if prepared.latency_mode == "overlay":
+        return _compact_overlay_answer(value)
+    if prepared.intent in {"exact_lookup", "drafting", "brainstorm"}:
+        return str(value or "").strip()
+    if prepared.depth == "deep":
+        return _compact_overlay_answer(value, max_words=650, max_chars=6_000)
+    return _compact_overlay_answer(value, max_words=180, max_chars=1_800)
+
+
 def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     """Return an extracted article/chapter verbatim without a paid rewrite.
 
@@ -4223,8 +4241,7 @@ def _atlas_answer_result(prepared: _AtlasAnswerRequest, answer: str) -> dict[str
     clean_answer = _answer_without_internal_search_state(prepared, answer)
     if not clean_answer:
         raise AtlasAIError("answer_invalid", "Модель не вернула текстовый ответ.", retryable=True)
-    if prepared.latency_mode == "overlay":
-        clean_answer = _compact_overlay_answer(clean_answer)
+    clean_answer = _compact_answer_for_delivery(prepared, clean_answer)
     for step in prepared.research_plan:
         if step.get("id") == "synthesis":
             step["status"] = "complete"
@@ -4519,7 +4536,14 @@ async def atlas_answer_stream(
     # the final result. Previously the backend could emit 700 characters,
     # while the rendered answer was shortened only after the overlay had
     # already spoken the excess.
-    stream_answer_limit = 460 if prepared.latency_mode == "overlay" else 30000
+    if prepared.latency_mode == "overlay":
+        stream_answer_limit = 460
+    elif prepared.intent in {"exact_lookup", "drafting", "brainstorm"}:
+        stream_answer_limit = 30_000
+    elif prepared.depth == "deep":
+        stream_answer_limit = 6_000
+    else:
+        stream_answer_limit = 1_800
     used_route = prepared.model_route
     stream_failure: AtlasAIError | None = None
     routes = _completion_routes(prepared)

@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from modules import atlas_ai
@@ -39,6 +40,15 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(profile.intent, "visual")
         self.assertIn("видим", profile.response_brief)
+
+    def test_ordinary_answer_has_a_hard_delivery_ceiling(self) -> None:
+        prepared = SimpleNamespace(latency_mode="standard", intent="legal_analysis", depth="standard")
+        long_answer = "Прямой вывод. " + "Лишнее пояснение без новой пользы. " * 300
+        compact = atlas_ai._compact_answer_for_delivery(prepared, long_answer)
+        self.assertLessEqual(len(compact), 1_801)
+        self.assertLessEqual(len(compact.split()), 180)
+        self.assertTrue(compact.startswith("Прямой вывод."))
+        self.assertTrue(compact.endswith("…"))
 
     async def test_visual_question_without_frame_gets_actionable_short_reply(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
