@@ -138,6 +138,34 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10.1 Кража", fallback)
         self.assertNotIn("библиотек", fallback.casefold())
 
+    def test_provider_refusal_rescues_relevant_unstructured_source_excerpt(self) -> None:
+        prepared = SimpleNamespace(
+            intent="procedural_advice",
+            payload={
+                "messages": [
+                    {"role": "user", "content": "Меня задержали, как получить адвоката?"}
+                ]
+            },
+            sources=[
+                {
+                    "structured": False,
+                    "title": "Памятка о задержании",
+                    "text": (
+                        "При задержании сообщите причину и попросите предоставить адвоката. "
+                        "Сотрудник обязан разъяснить порядок дальнейших действий участнику."
+                    ),
+                    "score": 8.0,
+                }
+            ],
+        )
+
+        fallback = atlas_ai._grounded_refusal_fallback(prepared)
+
+        self.assertIn("адвоката", fallback.casefold())
+        self.assertIn("[1]", fallback)
+        self.assertLessEqual(len(fallback.split()), 100)
+        self.assertNotIn("библиотек", fallback.casefold())
+
     def test_complaint_procedure_is_short_and_local_when_regulation_is_present(self) -> None:
         prepared = SimpleNamespace(
             intent="procedural_advice",

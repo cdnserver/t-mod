@@ -4306,6 +4306,49 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
             reference.replace(":", " ", 1) or "точная норма",
         )
         return f"По найденной норме:\n\n{text}\n\n[{index}, {label}]"
+
+    # Forum and handbook imports are not always split into numbered clauses.
+    # They can still contain the answer, and returning only a clarification
+    # after a provider refusal made a successfully retrieved document look
+    # useless.  Rescue one conservative excerpt when the user's meaningful
+    # terms occur in that same source.  The overlap check prevents an
+    # arbitrary semantic neighbour from becoming an authoritative fallback.
+    if prepared.intent in {"legal_analysis", "procedural_advice"}:
+        query_terms, _query_phrases = _atlas_lexical_query_terms(
+            question,
+            list(prepared.sources),
+        )
+        meaningful_terms = {
+            term
+            for term in query_terms
+            if len(term) >= 4 and term not in _ATLAS_RULE_GENERIC_TERMS
+        }
+        if meaningful_terms:
+            ranked: list[tuple[int, float, int, str]] = []
+            for index, source in enumerate(prepared.sources, 1):
+                if source.get("structured"):
+                    continue
+                text = str(source.get("text") or source.get("content_text") or "").strip()
+                if len(text) < 40:
+                    continue
+                searchable = (
+                    f"{str(source.get('title') or '')}\n{text}"
+                ).casefold()
+                overlap = sum(term in searchable for term in meaningful_terms)
+                required = 1 if len(meaningful_terms) <= 2 else 2
+                if overlap < required:
+                    continue
+                try:
+                    source_score = float(source.get("score") or 0)
+                except (TypeError, ValueError):
+                    source_score = 0.0
+                ranked.append((overlap, source_score, -index, text))
+            if ranked:
+                _overlap, _score, negative_index, text = max(ranked)
+                source_index = -negative_index
+                excerpt = _compact_overlay_answer(text, max_words=90, max_chars=900)
+                if excerpt and not _atlas_answer_is_retrieval_refusal(excerpt):
+                    return f"По найденному материалу:\n\n{excerpt}\n\n[{source_index}]"
     return ""
 
 
