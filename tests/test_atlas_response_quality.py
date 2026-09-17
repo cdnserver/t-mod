@@ -104,6 +104,14 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Представьтесь и предъявите документы.", clean)
         self.assertNotIn("Если вас задержали", clean)
 
+        partial = (
+            "2.2; п.2.2.1–2.2.4]. Шаги: 1) Предъявите документы и спокойно"
+        )
+        self.assertEqual(
+            atlas_ai._sanitize_overlay_completion(partial),
+            "Шаги: 1) Предъявите документы и спокойно",
+        )
+
     async def test_visual_question_without_frame_gets_actionable_short_reply(self) -> None:
         with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
             "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",

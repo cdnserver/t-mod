@@ -4582,6 +4582,22 @@ def _sanitize_overlay_completion(answer: str) -> str:
         clean,
         flags=re.IGNORECASE,
     ).strip()
+    # Streaming can begin in the middle of a citation token, leaving a
+    # fragment such as ``2.2; п.2.2.1–2.2.4].`` before the real sentence.
+    # Treat that non-sentence prefix as transport noise, but only when it
+    # contains a legal pinpoint marker or starts with a number.
+    partial_citation = re.match(
+        r"^\s*(?:(?!\]\.).){1,180}\]\.\s*",
+        clean,
+    )
+    if partial_citation:
+        prefix = partial_citation.group(0)
+        if re.match(r"^\s*\d", prefix) or re.match(
+            r"^\s*(?:п\.|ст\.|источник|source)\b",
+            prefix,
+            re.IGNORECASE,
+        ):
+            clean = clean[partial_citation.end() :].lstrip()
     # De-duplicate adjacent copies produced when the provider cites both a
     # source and its pinpoint in separate chunks.
     clean = re.sub(
