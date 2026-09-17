@@ -4303,6 +4303,17 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
     instructions (historically some saved answers exceeded 90k characters).
     """
 
+    # A local exact lookup is already canonical text from the requested
+    # article.  Keep a normal-sized article intact in the overlay so an
+    # explicit request never ends with a misleading half-sentence.  Very
+    # large chapters still use the field bound below to keep the HUD usable.
+    if (
+        prepared.intent == "exact_lookup"
+        and getattr(getattr(prepared, "model_route", None), "provider", "") == "tmod"
+    ):
+        exact_text = str(value or "").strip()
+        if len(exact_text) <= 2_200 and len(exact_text.split()) <= 180:
+            return exact_text
     if prepared.latency_mode == "overlay":
         return _compact_overlay_answer(value)
     if prepared.intent in {"exact_lookup", "drafting", "brainstorm"}:

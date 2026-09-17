@@ -169,6 +169,19 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("статья 2.…", compact)
         self.assertTrue(compact.endswith("…"))
 
+    def test_overlay_local_exact_article_stays_complete_when_small(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="exact_lookup",
+            depth="quick",
+            model_route=SimpleNamespace(provider="tmod"),
+        )
+        value = (
+            "17.3\n(F/R)\nОскорбление представителя власти при исполнении.\n"
+            "Наказание: до 20 месяцев лишения свободы.\n\n[1, статья 17.3]"
+        )
+        self.assertEqual(atlas_ai._compact_answer_for_delivery(prepared, value), value)
+
     def test_overlay_removes_leading_citations_and_incomplete_tail(self) -> None:
         value = (
             "[1, п.2.2.1][1, п.2.2]\n\nКороткие шаги:\n"
