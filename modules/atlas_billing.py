@@ -49,9 +49,9 @@ PLANS = (
 )
 
 TOKEN_PACKS = (
-    {"code": "at-100k", "name": "100 000 Atlas Token", "atlas_tokens": 100_000, "price_rub": 99},
-    {"code": "at-1m", "name": "1 000 000 Atlas Token", "atlas_tokens": 1_000_000, "price_rub": 990},
-    {"code": "at-5m", "name": "5 000 000 Atlas Token", "atlas_tokens": 5_000_000, "price_rub": 4_990},
+    {"code": "at-100k", "name": "Пакет ИИ-обработки · 100 000 AT", "atlas_tokens": 100_000, "price_rub": 99},
+    {"code": "at-1m", "name": "Пакет ИИ-обработки · 1 000 000 AT", "atlas_tokens": 1_000_000, "price_rub": 990},
+    {"code": "at-5m", "name": "Пакет ИИ-обработки · 5 000 000 AT", "atlas_tokens": 5_000_000, "price_rub": 4_990},
 )
 
 
@@ -72,7 +72,18 @@ def atlas_billing_catalog() -> dict[str, Any]:
             "subscription_auto_renewal": False,
             "monthly_tokens_expire": True,
             "purchased_tokens_expire": False,
-            "paid_subject": "Информационно-вычислительные услуги, объём которых учитывается в Atlas Token",
+            "paid_subject": (
+                "Дистанционная обработка запросов с применением искусственного интеллекта; "
+                "объём услуги учитывается в Atlas Token"
+            ),
+            "required_software": "T-Mod Desktop или его официальная последующая версия",
+            "software_price_rub": 0,
+            "software_url": "https://github.com/cdnserver/t-mod-releases/releases/latest",
+            "requirements": [
+                "Учётная запись T-Mod",
+                "подключение к сети Интернет",
+                "поддерживаемая операционная система и актуальная версия приложения",
+            ],
         },
         "seller": {
             "name": "ИП Саниев Муртазали Бухариевич",

@@ -1624,6 +1624,24 @@
                 <div id="atlas-ai-metrics" class="system-metrics"></div>
               </article>
             </div>
+            <article id="atlas-token-admin" class="panel atlas-token-admin" hidden>
+              <header class="panel-head">
+                <div><span class="panel-kicker">ATLAS TOKEN CONTROL</span><h2>Вычислительный резерв</h2><p>Проверка баланса и бессрочное начисление AT. Каждая операция защищена от повторной отправки и попадает в аудит.</p></div>
+                <span id="atlas-token-issued" class="health-pill">только администраторы</span>
+              </header>
+              <div class="dual-grid">
+                <form id="atlas-token-form" class="atlas-config-form wide">
+                  <label><span>Получатель · Discord ID</span><input id="atlas-token-user" name="user_id" inputmode="numeric" pattern="[0-9]{15,22}" required placeholder="902235631952998410"></label>
+                  <label><span>Начислить Atlas Token</span><input name="amount_tokens" type="number" min="1" max="100000000" step="1" required placeholder="1000000"></label>
+                  <label class="wide"><span>Основание</span><input name="reason" minlength="5" maxlength="240" required placeholder="Компенсация, промо-пакет или административное решение"></label>
+                  <div class="inline-actions">
+                    <button id="atlas-token-lookup" class="secondary-button" type="button">Проверить баланс</button>
+                    <button class="primary-button" type="submit">Начислить AT</button>
+                  </div>
+                </form>
+                <div id="atlas-token-account" class="compact-list"><div class="empty-state">Введите Discord ID, чтобы увидеть тариф, баланс и последние операции.</div></div>
+              </div>
+            </article>
             <div class="atlas-config-grid">
               <article class="panel atlas-config-card">
                 <header class="panel-head"><div><span class="panel-kicker">SERVER CATALOG</span><h2>Серверы Atlas</h2><p>Сервер задаёт общий контур IC- и OOC-материалов.</p></div></header>

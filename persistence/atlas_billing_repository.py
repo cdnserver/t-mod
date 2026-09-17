@@ -171,8 +171,19 @@ def atlas_billing_summary(user_id: int) -> dict[str, Any]:
         "balance_tokens": int(balances["value"] if balances else 0),
         "monthly_balance_tokens": int(balances["monthly_value"] if balances else 0),
         "payg_balance_tokens": int(balances["payg_value"] if balances else 0),
-        "period_usage": dict(period_usage) if period_usage is not None else {},
-        "usage_by_model": [dict(row) for row in usage_by_model],
+        "period_usage": {
+            key: int(value or 0)
+            for key, value in (dict(period_usage) if period_usage is not None else {}).items()
+        },
+        "usage_by_model": [
+            {
+                **dict(row),
+                "requests": int(row["requests"] or 0),
+                "atlas_tokens": int(row["atlas_tokens"] or 0),
+                "total_tokens": int(row["total_tokens"] or 0),
+            }
+            for row in usage_by_model
+        ],
         "ledger": [dict(row) for row in ledger],
         "orders": [dict(row) for row in orders],
         "enforcement_enabled": atlas_billing_enforcement_enabled(),
@@ -266,8 +277,87 @@ def atlas_billing_admin_metrics(*, days: int = 30) -> dict[str, Any]:
         "paying_users": int(revenue_data.get("paying_users") or 0),
         "revenue_kopecks": revenue_kopecks,
         "revenue_rub": f"{revenue_kopecks / 100:.2f}",
-        "accounts_by_plan": [dict(row) for row in accounts],
-        "models": [dict(row) for row in models],
+        "accounts_by_plan": [
+            {**dict(row), "accounts": int(row["accounts"] or 0)}
+            for row in accounts
+        ],
+        "models": [
+            {
+                **dict(row),
+                "requests": int(row["requests"] or 0),
+                "atlas_tokens": int(row["atlas_tokens"] or 0),
+                "model_tokens": int(row["model_tokens"] or 0),
+                "provider_cost_microusd": int(row["provider_cost_microusd"] or 0),
+            }
+            for row in models
+        ],
+    }
+
+
+def atlas_admin_grant_tokens(
+    user_id: int,
+    *,
+    actor_user_id: int,
+    amount_tokens: int,
+    reason: str,
+    request_key: str,
+) -> dict[str, Any]:
+    """Grant a durable, idempotent pay-as-you-go reserve from the Reactor."""
+
+    target_id = int(user_id)
+    actor_id = int(actor_user_id)
+    amount = int(amount_tokens)
+    clean_reason = " ".join(str(reason or "").split())[:240]
+    clean_key = str(request_key or "").strip()[:120]
+    if target_id <= 0 or actor_id <= 0:
+        raise ValueError("atlas_billing_admin_identity_invalid")
+    if amount < 1 or amount > 100_000_000:
+        raise ValueError("atlas_billing_admin_amount_invalid")
+    if len(clean_reason) < 5:
+        raise ValueError("atlas_billing_admin_reason_required")
+    if len(clean_key) < 8:
+        raise ValueError("atlas_billing_admin_request_key_required")
+    reference_key = f"admin-grant:{clean_key}"
+    now = utc_now_iso()
+    description = f"Начисление администратором {actor_id}: {clean_reason}"
+    with _db_lock, connect() as con:
+        _ensure_account_in_connection(con, target_id)
+        existing = con.execute(
+            "SELECT * FROM atlas_token_ledger WHERE reference_key = ?",
+            (reference_key,),
+        ).fetchone()
+        if existing is not None:
+            if (
+                int(existing["user_id"]) != target_id
+                or int(existing["amount_tokens"]) != amount
+                or str(existing["entry_kind"]) != "admin_grant"
+            ):
+                raise ValueError("atlas_billing_admin_request_key_conflict")
+            con.commit()
+            entry = dict(existing)
+            created = False
+        else:
+            cursor = con.execute(
+                """
+                INSERT INTO atlas_token_ledger(
+                    user_id, amount_tokens, entry_kind, balance_bucket,
+                    reference_key, description, expires_at, created_at
+                ) VALUES(?, ?, 'admin_grant', 'payg', ?, ?, NULL, ?)
+                """,
+                (target_id, amount, reference_key, description, now),
+            )
+            entry = dict(
+                con.execute(
+                    "SELECT * FROM atlas_token_ledger WHERE id = ?",
+                    (int(cursor.lastrowid),),
+                ).fetchone()
+            )
+            con.commit()
+            created = True
+    return {
+        "created": created,
+        "entry": entry,
+        "summary": atlas_billing_summary(target_id),
     }
 
 
@@ -535,6 +625,7 @@ def atlas_settle_payment_order(
 
 __all__ = [
     "atlas_ai_entitlement",
+    "atlas_admin_grant_tokens",
     "atlas_billing_admin_metrics",
     "atlas_billing_summary",
     "atlas_record_ai_usage",

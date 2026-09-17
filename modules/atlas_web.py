@@ -75,6 +75,7 @@ from persistence import atlas_case_repository as case_storage
 from persistence import atlas_document_repository as document_storage
 from persistence import atlas_media_repository as media_storage
 from persistence import atlas_search_repository as search_storage
+from persistence import activity_repository as activity_storage
 from persistence import craft_repository as craft_storage
 from persistence import web_auth_repository as web_auth_storage
 
@@ -3631,6 +3632,16 @@ def register_atlas_web_routes(
             if not any(str(item["section"]) == "atlas" for item in grants):
                 raise web.HTTPForbidden(text='{"error":"atlas_admin_required"}', content_type="application/json")
 
+    def require_platform_administrator(selected: ConsensusWebPrincipal) -> None:
+        if not selected.administrator:
+            raise web.HTTPForbidden(
+                text=(
+                    '{"error":"administrator_required",'
+                    '"message":"Управление Atlas Token доступно только администраторам."}'
+                ),
+                content_type="application/json",
+            )
+
     async def admin_overview(request: web.Request) -> web.Response:
         selected = await principal(request)
         await require_atlas_admin(selected)
@@ -3638,11 +3649,18 @@ def register_atlas_web_routes(
             asyncio.to_thread(storage.atlas_admin_snapshot, int(guild_id)),
             atlas_ai_health(),
         )
+        billing = None
+        if selected.administrator:
+            billing = await asyncio.to_thread(
+                billing_storage.atlas_billing_admin_metrics,
+                days=30,
+            )
         guild = bot.get_guild(int(guild_id))
         return web.json_response(
             {
                 **snapshot,
                 "ai": health,
+                "billing": billing,
                 "viewer": {
                     "id": int(selected.user_id),
                     "name": str(selected.display_name),
@@ -3655,6 +3673,96 @@ def register_atlas_web_routes(
                     "name": str(getattr(guild, "name", "T-Mod")),
                 },
             }
+        )
+
+    async def admin_tokens_control(request: web.Request) -> web.Response:
+        selected = await principal(request)
+        require_platform_administrator(selected)
+        if request.method == "GET":
+            user_id_text = str(request.query.get("user_id") or "").strip()
+            if not user_id_text.isdigit() or not 15 <= len(user_id_text) <= 22:
+                return web.json_response(
+                    {
+                        "error": "atlas_billing_user_id_invalid",
+                        "message": "Укажите Discord ID длиной от 15 до 22 цифр.",
+                    },
+                    status=400,
+                )
+            summary = await asyncio.to_thread(
+                billing_storage.atlas_billing_summary,
+                int(user_id_text),
+            )
+            return web.json_response(
+                {"user_id": user_id_text, "summary": summary},
+            )
+
+        payload = await body(request, selected)
+        user_id_text = str(payload.get("user_id") or "").strip()
+        if not user_id_text.isdigit() or not 15 <= len(user_id_text) <= 22:
+            return web.json_response(
+                {
+                    "error": "atlas_billing_user_id_invalid",
+                    "message": "Укажите Discord ID длиной от 15 до 22 цифр.",
+                },
+                status=400,
+            )
+        if str(payload.get("action") or "grant") != "grant":
+            return web.json_response(
+                {"error": "atlas_billing_admin_action_invalid"},
+                status=400,
+            )
+        try:
+            result = await asyncio.to_thread(
+                billing_storage.atlas_admin_grant_tokens,
+                int(user_id_text),
+                actor_user_id=int(selected.user_id),
+                amount_tokens=int(payload.get("amount_tokens") or 0),
+                reason=str(payload.get("reason") or ""),
+                request_key=str(
+                    request.headers.get("X-Idempotency-Key")
+                    or payload.get("request_key")
+                    or ""
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "message": "Проверьте получателя, количество AT и основание начисления.",
+                },
+                status=400,
+            )
+        if result["created"]:
+            await asyncio.to_thread(
+                activity_storage.bot_record_action,
+                guild_id=int(guild_id),
+                actor_id=int(selected.user_id),
+                actor_display=str(selected.display_name),
+                module="atlas_billing",
+                action_kind="token_grant",
+                target_type="member",
+                target_id=user_id_text,
+                summary=(
+                    f"Начислено {int(result['entry']['amount_tokens']):,} Atlas Token"
+                ).replace(",", " "),
+                payload={
+                    "source": "nuclear-reactor",
+                    "ledger_id": int(result["entry"]["id"]),
+                    "amount_tokens": int(result["entry"]["amount_tokens"]),
+                    "reason": str(payload.get("reason") or "")[:240],
+                },
+                reversible=False,
+            )
+        return web.json_response(
+            {
+                **result,
+                "message": (
+                    "Atlas Token начислены и записаны в журнал."
+                    if result["created"]
+                    else "Начисление уже было выполнено; баланс не продублирован."
+                ),
+            },
+            status=201,
         )
 
     async def admin_catalog_control(request: web.Request) -> web.Response:
@@ -3909,6 +4017,8 @@ def register_atlas_web_routes(
     app.router.add_get("/api/admin/atlas", admin_overview)
     app.router.add_post("/api/admin/atlas/catalog", admin_catalog_control)
     app.router.add_post("/api/admin/atlas/spaces", admin_space_control)
+    app.router.add_get("/api/admin/atlas/tokens", admin_tokens_control)
+    app.router.add_post("/api/admin/atlas/tokens", admin_tokens_control)
 
 
 __all__ = ["register_atlas_web_routes"]

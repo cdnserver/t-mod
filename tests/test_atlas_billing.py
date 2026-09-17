@@ -60,6 +60,36 @@ class AtlasBillingRepositoryTests(unittest.TestCase):
         self.assertTrue(all(item["manual_features"] == "unlimited" for item in catalog["plans"]))
         self.assertEqual(catalog["seller"]["name"], "ИП Саниев Муртазали Бухариевич")
         self.assertEqual(catalog["seller"]["inn"], "370266611106")
+        self.assertEqual(catalog["service"]["software_price_rub"], 0)
+        self.assertIn("T-Mod Desktop", catalog["service"]["required_software"])
+
+    def test_admin_grant_is_idempotent_and_never_expires(self) -> None:
+        first = atlas_billing_repository.atlas_admin_grant_tokens(
+            825331775857360906,
+            actor_user_id=902235631952998410,
+            amount_tokens=750_000,
+            reason="Компенсация после технического инцидента",
+            request_key="admin-grant-test-1",
+        )
+        repeated = atlas_billing_repository.atlas_admin_grant_tokens(
+            825331775857360906,
+            actor_user_id=902235631952998410,
+            amount_tokens=750_000,
+            reason="Повтор не должен создать новое начисление",
+            request_key="admin-grant-test-1",
+        )
+
+        self.assertEqual(first["entry"]["id"], repeated["entry"]["id"])
+        self.assertEqual(first["entry"]["balance_bucket"], "payg")
+        self.assertIsNone(first["entry"]["expires_at"])
+        self.assertEqual(repeated["summary"]["payg_balance_tokens"], 750_000)
+        with connect() as con:
+            self.assertEqual(
+                con.execute(
+                    "SELECT COUNT(*) FROM atlas_token_ledger WHERE entry_kind = 'admin_grant'"
+                ).fetchone()[0],
+                1,
+            )
 
     def test_provider_cost_is_converted_to_atlas_tokens_with_ceiling(self) -> None:
         self.assertEqual(atlas_tokens_for_cost("0"), 0)
@@ -397,6 +427,10 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Покупка и использование", await legal.text())
                 self.assertIn("Личный кабинет", await account.text())
                 self.assertIn("Публичная оферта", await offer.text())
+                offer_text = await (await client.get("/offer")).text()
+                self.assertIn("T-Mod Desktop", offer_text)
+                self.assertIn("Что именно покупает Пользователь", offer_text)
+                self.assertNotIn("Robokassa", offer_text)
                 self.assertIn("ПРАВИЛА ATLAS", await terms.text())
                 self.assertIn("Политика обработки", await privacy.text())
                 self.assertIn("Оплата и возврат", await refunds.text())
@@ -633,7 +667,7 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-public-offer.pdf").is_file())
         self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-privacy-policy.pdf").is_file())
 
-    def test_public_legal_documents_are_complete_and_platform_neutral(self) -> None:
+    def test_public_legal_documents_are_complete_and_name_required_client(self) -> None:
         root = Path(__file__).resolve().parents[1]
         legal_dir = root / "web" / "atlas-billing"
         documents = [
@@ -644,7 +678,9 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
 
         self.assertNotIn("discord", combined)
         self.assertNotIn("дискорд", combined)
-        self.assertNotIn("t-mod", combined)
+        self.assertNotIn("robokassa", combined)
+        self.assertNotIn("робокасс", combined)
+        self.assertIn("t-mod desktop", combined)
         self.assertNotIn("tvr × sgl", combined)
         self.assertIn("фактически понесённых", combined)
         self.assertIn("федеральным законом от 27.07.2006 № 152-фз", combined)
@@ -656,6 +692,8 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
 
         self.assertIn("* Не является публичной офертой.", html)
         self.assertIn("Рекламные слоганы и образные описания", html)
+        self.assertIn("Вы оплачиваете дистанционную ИИ‑обработку запросов", html)
+        self.assertIn("Клиент T‑Mod Desktop предоставляется бесплатно", html)
         self.assertIn('href="/offer"', html)
 
     def test_login_returns_to_account_and_resumes_selected_purchase(self) -> None:

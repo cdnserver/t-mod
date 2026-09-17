@@ -517,7 +517,7 @@ function idempotencyKey() {
     .slice(2)}`;
 }
 
-async function postJSON(path, body) {
+async function postJSON(path, body, requestKey = "") {
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
@@ -525,7 +525,7 @@ async function postJSON(path, body) {
       Accept: "application/json",
       "Content-Type": "application/json",
       "X-CSRF-Token": appState.csrfToken,
-      "X-Idempotency-Key": idempotencyKey(),
+      "X-Idempotency-Key": requestKey || idempotencyKey(),
     },
     body: JSON.stringify(body),
     signal: requestTimeoutSignal(90000),
@@ -3632,6 +3632,15 @@ async function loadAtlas(silent = false) {
   try {
     const data = await fetchJSON("/api/admin/atlas");
     if (!showApplication(data)) return;
+    const tokenAdmin = byId("atlas-token-admin");
+    tokenAdmin.hidden = data.viewer?.administrator !== true;
+    const billing = data.billing || {};
+    setText(
+      "atlas-token-issued",
+      data.viewer?.administrator === true
+        ? `${formatNumber(billing.atlas_tokens || 0)} AT · 30 дней`
+        : "только администраторы",
+    );
     const totals = data.totals || {};
     setText("atlas-organizations", formatNumber(totals.organizations || 0));
     setText("atlas-members", formatNumber(totals.members || 0));
@@ -3702,6 +3711,37 @@ async function loadAtlas(silent = false) {
   } finally {
     if (!silent) setLoading(false);
   }
+}
+
+function renderAtlasTokenAccount(data) {
+  const summary = data?.summary || {};
+  const plan = summary.plan || {};
+  const ledger = Array.isArray(summary.ledger) ? summary.ledger.slice(0, 6) : [];
+  replaceChildren("atlas-token-account", [
+    compactItem(
+      `Баланс · ${formatNumber(summary.balance_tokens || 0)} AT`,
+      plan.name || "Atlas Free",
+      `бессрочно ${formatNumber(summary.payg_balance_tokens || 0)} AT`,
+    ),
+    ...ledger.map((item) => compactItem(
+      item.description || item.entry_kind,
+      `${Number(item.amount_tokens || 0) >= 0 ? "+" : ""}${formatNumber(item.amount_tokens || 0)} AT`,
+      formatDate(item.created_at),
+    )),
+  ]);
+}
+
+async function loadAtlasTokenAccount() {
+  const userId = byId("atlas-token-user").value.trim();
+  if (!/^[0-9]{15,22}$/.test(userId)) {
+    showToast("Укажите корректный Discord ID.", true);
+    return;
+  }
+  setLoading(true);
+  try {
+    renderAtlasTokenAccount(await fetchJSON(`/api/admin/atlas/tokens?user_id=${encodeURIComponent(userId)}`));
+  } catch (error) { handleError(error); }
+  finally { setLoading(false); }
 }
 
 function friendlyKey(key) {
@@ -4184,6 +4224,38 @@ function bindEvents() {
       await postJSON("/api/admin/atlas/spaces", values);
       event.currentTarget.reset();
       showToast("Частное пространство Atlas создано.", false, { title: "Контур готов", icon: "✦" });
+      await loadAtlas(true);
+    } catch (error) { handleError(error); }
+    finally { button.disabled = false; }
+  });
+  byId("atlas-token-lookup").addEventListener("click", loadAtlasTokenAccount);
+  byId("atlas-token-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = formValues("atlas-token-form");
+    const amount = Number(values.amount_tokens || 0);
+    const approved = await window.TModReactor.confirm({
+      title: `Начислить ${formatNumber(amount)} AT?`,
+      message: `Получатель: ${values.user_id}. Основание: ${values.reason}`,
+      accept: "Начислить Atlas Token",
+      tone: "warning",
+    });
+    if (!approved) return;
+    const button = event.currentTarget.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const requestKey = event.currentTarget.dataset.requestKey || idempotencyKey();
+      event.currentTarget.dataset.requestKey = requestKey;
+      const result = await postJSON("/api/admin/atlas/tokens", {
+        action: "grant",
+        user_id: values.user_id,
+        amount_tokens: amount,
+        reason: values.reason,
+      }, requestKey);
+      delete event.currentTarget.dataset.requestKey;
+      renderAtlasTokenAccount(result);
+      showToast(result.message || "Atlas Token начислены.", false, { title: "Резерв обновлён", icon: "AT", sound: "success" });
+      event.currentTarget.elements.amount_tokens.value = "";
+      event.currentTarget.elements.reason.value = "";
       await loadAtlas(true);
     } catch (error) { handleError(error); }
     finally { button.disabled = false; }

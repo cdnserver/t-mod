@@ -1089,6 +1089,107 @@ class AtlasRepositoryTests(unittest.TestCase):
         )
 
 
+class AtlasAdminTokenWebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_administrator_can_grant_tokens_and_retry_is_idempotent(self) -> None:
+        old_data_dir = storage.DATA_DIR
+        old_database_file = storage.DATABASE_FILE
+        temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        storage.DATA_DIR = Path(temp_dir.name)
+        storage.DATABASE_FILE = storage.DATA_DIR / "atlas-admin-token-web.db"
+        storage.init_db()
+        viewer = {
+            "principal": ConsensusWebPrincipal(
+                user_id=42,
+                guild_id=77,
+                display_name="Участник",
+                csrf_token="token-csrf",
+                member=SimpleNamespace(
+                    id=42,
+                    display_name="Участник",
+                    guild_permissions=SimpleNamespace(administrator=False),
+                    roles=[],
+                ),
+            )
+        }
+
+        async def authenticate(_request):
+            return viewer["principal"], False
+
+        app = web.Application()
+        register_atlas_web_routes(
+            app,
+            SimpleNamespace(get_guild=lambda guild_id: None),
+            guild_id=77,
+            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas",
+            authenticate=authenticate,
+        )
+        payload = {
+            "action": "grant",
+            "user_id": "825331775857360906",
+            "amount_tokens": 250_000,
+            "reason": "Проверочное начисление администратора",
+        }
+        try:
+            async with TestClient(TestServer(app)) as client:
+                forbidden = await client.post(
+                    "/api/admin/atlas/tokens",
+                    json=payload,
+                    headers={
+                        "X-CSRF-Token": "token-csrf",
+                        "X-Idempotency-Key": "grant-web-test-1",
+                    },
+                )
+                viewer["principal"] = ConsensusWebPrincipal(
+                    user_id=902235631952998410,
+                    guild_id=77,
+                    display_name="Администратор",
+                    csrf_token="admin-csrf",
+                    member=SimpleNamespace(
+                        id=902235631952998410,
+                        display_name="Администратор",
+                        guild_permissions=SimpleNamespace(administrator=True),
+                        roles=[],
+                    ),
+                )
+                headers = {
+                    "X-CSRF-Token": "admin-csrf",
+                    "X-Idempotency-Key": "grant-web-test-1",
+                }
+                granted = await client.post(
+                    "/api/admin/atlas/tokens",
+                    json=payload,
+                    headers=headers,
+                )
+                repeated = await client.post(
+                    "/api/admin/atlas/tokens",
+                    json=payload,
+                    headers=headers,
+                )
+                lookup = await client.get(
+                    "/api/admin/atlas/tokens?user_id=825331775857360906"
+                )
+                granted_body = await granted.json()
+                repeated_body = await repeated.json()
+                lookup_body = await lookup.json()
+
+            self.assertEqual(forbidden.status, 403)
+            self.assertEqual(granted.status, 201)
+            self.assertEqual(repeated.status, 201)
+            self.assertEqual(granted_body["entry"]["id"], repeated_body["entry"]["id"])
+            self.assertEqual(lookup_body["summary"]["payg_balance_tokens"], 250_000)
+            with connect() as con:
+                self.assertEqual(
+                    con.execute(
+                        "SELECT COUNT(*) FROM bot_actions WHERE module = 'atlas_billing'"
+                    ).fetchone()[0],
+                        1,
+                )
+        finally:
+            storage.DATA_DIR = old_data_dir
+            storage.DATABASE_FILE = old_database_file
+            temp_dir.cleanup()
+
+
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _project_rules_source() -> dict[str, object]:
