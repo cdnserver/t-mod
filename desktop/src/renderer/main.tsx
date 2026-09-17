@@ -11,6 +11,7 @@ import { desktopProduct } from "../shared/product";
 import "./styles.css";
 import "./cinematics.css";
 import "./lumen.css";
+import "./blackbird.css";
 
 document.title = desktopProduct.fullName;
 

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BLACKBIRD · Brand System</title>
+  <style>
+    :root{color-scheme:dark;--void:#020407;--ink:#05070a;--graphite:#11161d;--steel:#697785;--silver:#dde8f0;--frost:#f5fafd;--signal:#bcebff;--line:rgba(221,232,240,.12)}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 77% -10%,rgba(188,235,255,.11),transparent 31%),var(--void);color:var(--frost);font-family:Manrope,Arial,sans-serif}.page{max-width:1480px;margin:auto;padding:42px}.top{display:grid;grid-template-columns:1.25fr .75fr;min-height:620px;border:1px solid var(--line);overflow:hidden}.intro{position:relative;padding:62px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(145deg,rgba(17,22,29,.78),rgba(2,4,7,.96))}.intro:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent 67%,var(--line) 67%,transparent calc(67% + 1px));pointer-events:none}.kicker,.label{color:var(--steel);font-size:11px;letter-spacing:.22em;text-transform:uppercase}.intro h1{position:relative;z-index:1;margin:0;max-width:850px;font-family:Unbounded,Arial,sans-serif;font-size:clamp(58px,8vw,120px);line-height:.86;letter-spacing:-.075em}.intro h1 span{display:block;color:transparent;-webkit-text-stroke:1px var(--silver)}.intro p{max-width:590px;color:#8c98a3;font-size:15px;line-height:1.8}.master{position:relative;display:grid;place-items:center;background:linear-gradient(145deg,#080c11,#020305)}.master img{width:min(92%,660px);filter:drop-shadow(0 30px 80px #000)}.master b{position:absolute;right:26px;bottom:24px;color:var(--steel);font-size:10px;letter-spacing:.18em;text-transform:uppercase}.section{margin-top:72px}.section-head{display:flex;align-items:end;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:18px}.section h2{margin:0;font:500 32px Unbounded,Arial,sans-serif;letter-spacing:-.05em}.section-head p{margin:0;color:var(--steel);font-size:12px}.marks{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:1px;background:var(--line)}.mark{min-height:300px;padding:26px;background:linear-gradient(145deg,#0b0f14,#040609);display:flex;flex-direction:column;justify-content:space-between}.mark img{width:180px;height:180px;align-self:center;object-fit:contain;filter:drop-shadow(0 15px 35px #000)}.mark strong{font-size:14px}.mark small{display:block;margin-top:4px;color:var(--steel);font-size:10px}.palette{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;margin-top:1px;background:var(--line)}.swatch{min-height:160px;padding:20px;display:flex;flex-direction:column;justify-content:flex-end}.swatch strong,.swatch code{mix-blend-mode:difference}.swatch code{margin-top:5px;font-size:10px}.variants{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:1px;background:var(--line)}.variant{min-height:280px;display:grid;place-items:center;background:#080b0f}.variant:nth-child(3),.variant:nth-child(4){background:#eef4f7}.variant img{width:190px}.footer{margin-top:70px;padding:24px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;color:var(--steel);font-size:10px;letter-spacing:.12em;text-transform:uppercase}@media(max-width:900px){.page{padding:18px}.top{grid-template-columns:1fr}.intro{min-height:500px;padding:34px}.master{min-height:420px}.marks,.palette,.variants{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+<main class="page">
+  <section class="top">
+    <div class="intro"><span class="kicker">Технологии Товарищества · Private system</span><h1>BLACK<span>BIRD</span></h1><p>Точная закрытая цифровая система. Один мастер-знак, одна монохромная архитектура и понятные сервисные символы.</p></div>
+    <div class="master"><img src="blackbird-master.png" alt="Blackbird"><b>Master mark · 2026</b></div>
+  </section>
+  <section class="section"><div class="section-head"><h2>Сервисная семья</h2><p>Без планет и орбит. Один символ — одна функция.</p></div><div class="marks">
+    <article class="mark"><img src="services/atlas.png" alt="Atlas"><div><strong>Atlas</strong><small>Direction intelligence</small></div></article>
+    <article class="mark"><img src="services/consensus.png" alt="Consensus"><div><strong>Consensus</strong><small>Quorum & decisions</small></div></article>
+    <article class="mark"><img src="services/sgl.png" alt="SGL"><div><strong>SGL</strong><small>Legal system</small></div></article>
+    <article class="mark"><img src="services/reactor.png" alt="Reactor"><div><strong>Reactor</strong><small>Personal contour</small></div></article>
+    <article class="mark"><img src="services/ovr.png" alt="ОВР"><div><strong>ОВР</strong><small>Intelligence bureau</small></div></article>
+    <article class="mark"><img src="services/games.png" alt="Games"><div><strong>Games</strong><small>Strategy hall</small></div></article>
+    <article class="mark"><img src="services/tasks.png" alt="Tasks"><div><strong>Задачи</strong><small>Shared progress</small></div></article>
+    <article class="mark"><img src="services/admin.png" alt="Admin"><div><strong>Ядерный Reactor</strong><small>System command</small></div></article>
+  </div></section>
+  <section class="section"><div class="section-head"><h2>Палитра</h2><p>Цвет — состояние, не украшение.</p></div><div class="palette">
+    <div class="swatch" style="background:#020407"><strong>Void</strong><code>#020407</code></div><div class="swatch" style="background:#11161d"><strong>Graphite</strong><code>#11161D</code></div><div class="swatch" style="background:#697785"><strong>Steel</strong><code>#697785</code></div><div class="swatch" style="background:#dde8f0;color:#020407"><strong>Silver</strong><code>#DDE8F0</code></div><div class="swatch" style="background:#bcebff;color:#020407"><strong>Signal</strong><code>#BCEBFF</code></div>
+  </div></section>
+  <section class="section"><div class="section-head"><h2>Режимы знака</h2><p>Полноцветный, white, black и ice.</p></div><div class="variants">
+    <div class="variant"><img src="exports/fullcolor/blackbird/blackbird-512.png" alt="Fullcolor"></div><div class="variant"><img src="exports/white/blackbird/blackbird-512.png" alt="White"></div><div class="variant"><img src="exports/black/blackbird/blackbird-512.png" alt="Black"></div><div class="variant"><img src="exports/ice/blackbird/blackbird-512.png" alt="Ice"></div>
+  </div></section>
+  <footer class="footer"><span>BLACKBIRD · Brand system</span><span>Технологии Товарищества</span></footer>
+</main>
+</body>
+</html>

@@ -191,6 +191,31 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_blackbird_private_edition_uses_new_owner_allowlist(self) -> None:
+        principal = self.principal(administrator=True)
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch.dict(os.environ, {"TMOD_BLACKBIRD_OWNER_IDS": "42"}),
+            ):
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={"X-TMod-Desktop-Edition": "blackbird"},
+                )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["client"]["edition"], "blackbird")
+            self.assertEqual(
+                payload["client"]["title"],
+                "BLACKBIRD — Технологии Товарищества",
+            )
+            self.assertTrue(payload["client"]["private"])
+        finally:
+            await client.close()
+
     async def test_zero_account_keeps_public_services_but_locks_reactor(self) -> None:
         identity = TModAccountIdentity(id=99, display_name="Внешний пользователь")
         principal = ConsensusWebPrincipal(

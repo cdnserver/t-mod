@@ -373,7 +373,7 @@ function configureAutoUpdater(): void {
   if (desktopProduct.privateEdition) {
     setUpdateState({
       phase: "current",
-      message: "LUMEN подключён к закрытому каналу выпусков.",
+      message: "BLACKBIRD подключён к закрытому каналу выпусков.",
       checkedAt: new Date().toISOString(),
     });
     return;

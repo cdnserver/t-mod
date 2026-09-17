@@ -2,7 +2,9 @@ import { defineConfig } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 
-const edition = process.env.TMOD_DESKTOP_EDITION === "lumen" ? "lumen" : "tmod";
+const edition = ["blackbird", "lumen"].includes(process.env.TMOD_DESKTOP_EDITION || "")
+  ? "blackbird"
+  : "tmod";
 const productDefines = {
   __TMOD_DESKTOP_EDITION__: JSON.stringify(edition),
 };

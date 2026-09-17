@@ -17,4 +17,5 @@ build/
 desktop/out/
 desktop/release/
 desktop/release-lumen/
+desktop/release-blackbird/
 desktop/.vite/

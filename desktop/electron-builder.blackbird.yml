@@ -1,0 +1,59 @@
+appId: lat.tvr.technology.blackbird
+productName: BLACKBIRD
+artifactName: BLACKBIRD-Private-${version}-${os}-${arch}.${ext}
+directories:
+  output: release-blackbird
+  buildResources: resources
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: resources/atlas-overlay-hotkey.ps1
+    to: atlas-overlay-hotkey.ps1
+asar: true
+compression: maximum
+icon: resources/blackbird/icon.png
+win:
+  icon: resources/blackbird/icon.ico
+  target: nsis
+  artifactName: BLACKBIRD-Private-Setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: BLACKBIRD
+  uninstallDisplayName: BLACKBIRD — Технологии Товарищества
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  include: resources/blackbird/installer.nsh
+mac:
+  icon: resources/blackbird/icon.icns
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+  artifactName: BLACKBIRD-Private-mac-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+dmg:
+  background: resources/dmg-background.png
+  iconSize: 112
+  window:
+    width: 600
+    height: 420
+  contents:
+    - x: 170
+      y: 220
+      type: file
+    - x: 430
+      y: 220
+      type: link
+      path: /Applications
+linux:
+  target: AppImage
+  category: Utility
+  artifactName: BLACKBIRD-Private-Linux-${arch}.${ext}

@@ -43,10 +43,31 @@ import {
   playIgnitionSound,
   playVaultSound,
 } from "./cinematics";
+import blackbirdMaster from "./assets/blackbird/master.png";
+import blackbirdReactor from "./assets/blackbird/reactor.png";
+import blackbirdConsensus from "./assets/blackbird/consensus.png";
+import blackbirdAtlas from "./assets/blackbird/atlas.png";
+import blackbirdSgl from "./assets/blackbird/sgl.png";
+import blackbirdOvr from "./assets/blackbird/ovr.png";
+import blackbirdGames from "./assets/blackbird/games.png";
+import blackbirdTasks from "./assets/blackbird/tasks.png";
+import blackbirdAdmin from "./assets/blackbird/admin.png";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
   "maximize" | "close" | "settings" | "menu" | "link" | "external";
+
+const blackbirdServiceMarks: Record<ServiceId, string> = {
+  home: blackbirdMaster,
+  reactor: blackbirdReactor,
+  consensus: blackbirdConsensus,
+  atlas: blackbirdAtlas,
+  sgl: blackbirdSgl,
+  ovr: blackbirdOvr,
+  games: blackbirdGames,
+  tasks: blackbirdTasks,
+  admin: blackbirdAdmin,
+};
 
 const PREFERENCES_KEY = desktopProduct.preferencesKey;
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
@@ -86,6 +107,9 @@ function loadPreferences(): DesktopShellPreferences {
 }
 
 function Icon({ name }: { name: IconName }) {
+  if (desktopProduct.edition === "blackbird" && name in blackbirdServiceMarks) {
+    return <img className="icon service-mark" src={blackbirdServiceMarks[name as ServiceId]} alt="" aria-hidden="true"/>;
+  }
   const paths: Record<string, ReactNode> = {
     home: <><rect x="8" y="3.5" width="8" height="17" rx="2.5"/><path d="M9.5 8h5M12 8v8.5"/></>,
     reactor: <><path d="M7 6v12M12 3.5v17M17 6v12M4.5 8.5h15M4.5 15.5h15"/><rect x="9.5" y="8" width="5" height="8" rx="1.5"/></>,
@@ -782,7 +806,7 @@ export function App() {
           title={preferences.sidebarCollapsed ? "Развернуть меню" : "Свернуть меню"}
         ><Icon name="menu"/></button>
         <button className="brand" onClick={() => void selectService("home")} aria-label={`${desktopProduct.name} — домой`}>
-          <span className="brand-mark"><span>{desktopProduct.mark}</span></span>
+          <span className="brand-mark">{desktopProduct.edition === "blackbird" ? <img src={blackbirdMaster} alt=""/> : <span>{desktopProduct.mark}</span>}</span>
           <span><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "technologies · private" : "desktop system"}</small></span>
         </button>
 
@@ -1065,7 +1089,7 @@ function Home({
       reset_required: "PIN заблокирован. Напишите T-Mod команду /reset в Discord.",
       character_required: "Сначала добавьте персонажа через /account в Discord.",
       atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
-      private_access_required: "LUMEN — личная редакция владельца. Этот аккаунт не включён в закрытый список доступа.",
+      private_access_required: "BLACKBIRD — личная редакция владельца. Этот аккаунт не включён в закрытый список доступа.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
       network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
       login_failed: "Вход принят, но подтверждение сессии задержалось. Повторите нажатие — PIN вводить заново не потребуется.",
@@ -1093,7 +1117,7 @@ function Home({
           <div className="login-assurances"><span><Icon name="shield"/><b>HttpOnly-сессия</b></span><span><i/>Все домены tvr.lat</span></div>
         </div>
         <form className="desktop-login-form" onSubmit={(event) => void submit(event)}>
-          <header><p>{desktopProduct.privateEdition ? "LUMEN · OWNER" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
+          <header><p>{desktopProduct.privateEdition ? "BLACKBIRD · PRIVATE" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
           <label><span>Логин</span><input value={loginValue} onChange={(event) => setLoginValue(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="ваш.логин" disabled={loginBusy}/></label>
           <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
           {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
@@ -1212,7 +1236,7 @@ function SettingsDrawer({
       </section>
       <section><p className="settings-label">Обновления</p>
         {desktopProduct.privateEdition
-          ? <div className="update-channel-setting"><div><button className="active"><strong>Owner</strong><small>Закрытые персональные сборки</small></button></div><p>Публичные Beta и Dev выпуски отключены. LUMEN получает только сборки, опубликованные владельцу.</p></div>
+          ? <div className="update-channel-setting"><div><button className="active"><strong>Blackbird</strong><small>Закрытые персональные сборки</small></button></div><p>Публичные Beta и Dev выпуски отключены. BLACKBIRD получает только сборки, опубликованные владельцу.</p></div>
           : <div className="update-channel-setting"><div><button className={preferences.updateChannel === "beta" ? "active" : ""} onClick={() => onChange({ ...preferences, updateChannel: "beta" })}><strong>Beta</strong><small>Проверенные версии</small></button><button className={preferences.updateChannel === "dev" ? "active dev" : "dev"} onClick={() => onChange({ ...preferences, updateChannel: "dev" })}><strong>Dev</strong><small>Самые новые функции</small></button></div><p>{preferences.updateChannel === "dev" ? "Экспериментальные сборки могут меняться чаще. Вернуться в Beta можно в любой момент." : "Основной канал. Обновления выходят реже и проходят полный цикл проверки."}</p></div>}
       </section>
       <section><p className="settings-label">Диагностика</p><div className="diagnostic-card"><div><i className={online ? "online" : ""}/><span><strong>{online ? `${desktopProduct.name} на связи` : "Восстанавливаем соединение"}</strong><small>{lastSuccessfulAt ? `Последняя синхронизация: ${formatTime(lastSuccessfulAt)}` : "Ожидаем первую синхронизацию"}</small></span></div><button onClick={() => void onReconnect()}><Icon name="refresh"/> Проверить</button></div><div className="diagnostic-line"><span>Версия приложения</span><b>{updateState.currentVersion}</b></div><div className="diagnostic-line"><span>Канал обновлений</span><b className={`channel-text ${preferences.updateChannel}`}>{preferences.updateChannel.toUpperCase()}</b></div></section>

@@ -1,0 +1,218 @@
+/* BLACKBIRD is an isolated product edition. Its visual language is intentionally
+   monochrome and editorial; service colours are reduced to status accents. */
+.desktop.edition-blackbird {
+  --bb-ink: #020407;
+  --bb-panel: rgba(8, 11, 16, .88);
+  --bb-line: rgba(221, 235, 255, .095);
+  --bb-line-strong: rgba(222, 237, 255, .17);
+  --bb-text: #f4f7fb;
+  --bb-muted: #707985;
+  --bb-signal: #bcecff;
+  --active-accent: #bcecff;
+  color: var(--bb-text);
+  background:
+    radial-gradient(ellipse at 72% -18%, rgba(184, 225, 255, .1), transparent 40%),
+    radial-gradient(ellipse at 10% 116%, rgba(104, 131, 158, .08), transparent 44%),
+    linear-gradient(138deg, #020407 0%, #06090d 48%, #010204 100%);
+}
+
+.desktop.edition-blackbird::before {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(90deg, transparent 0 67%, rgba(225, 240, 255, .055) 67%, transparent calc(67% + 1px)),
+    linear-gradient(transparent 0 73%, rgba(225, 240, 255, .045) 73%, transparent calc(73% + 1px));
+  mask-image: linear-gradient(135deg, transparent 8%, #000 45%, transparent 94%);
+}
+
+.edition-blackbird .aurora { opacity: .24; filter: grayscale(1) contrast(1.25); }
+.edition-blackbird .aurora i:first-child { background: #badfff; }
+.edition-blackbird .aurora i:nth-child(2),
+.edition-blackbird .aurora i:nth-child(3) { background: #65798b; }
+
+.edition-blackbird .sidebar {
+  background: linear-gradient(180deg, rgba(2, 4, 7, .97), rgba(6, 8, 12, .94));
+  border-right-color: var(--bb-line);
+  box-shadow: 22px 0 70px rgba(0, 0, 0, .24);
+}
+
+.edition-blackbird .topbar {
+  background: rgba(3, 5, 8, .82);
+  border-bottom-color: var(--bb-line);
+  backdrop-filter: blur(34px) saturate(90%);
+}
+
+.edition-blackbird .brand { min-height: 56px; }
+.edition-blackbird .brand-mark {
+  width: 45px;
+  height: 45px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.edition-blackbird .brand-mark::before { display: none; }
+.edition-blackbird .brand-mark img {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 14px rgba(190, 232, 255, .14));
+}
+.edition-blackbird .brand strong {
+  font-size: 12px;
+  letter-spacing: .18em;
+}
+.edition-blackbird .brand small {
+  color: #69727d;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+
+.edition-blackbird .quick-search,
+.edition-blackbird .identity,
+.edition-blackbird .logout-button {
+  border-color: var(--bb-line);
+  background: rgba(255, 255, 255, .018);
+}
+
+.edition-blackbird .nav-item { border-radius: 2px; }
+.edition-blackbird .nav-item:hover {
+  transform: none;
+  background: linear-gradient(90deg, rgba(225, 240, 255, .055), transparent);
+}
+.edition-blackbird .nav-item.active {
+  background: linear-gradient(90deg, rgba(210, 236, 255, .085), rgba(255, 255, 255, .012) 72%, transparent);
+}
+.edition-blackbird .nav-icon {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.edition-blackbird .nav-item.active .nav-icon {
+  color: var(--bb-signal);
+  border: 0;
+  background: transparent;
+}
+.edition-blackbird .nav-icon .service-mark {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  opacity: .68;
+  filter: grayscale(1) brightness(.9) drop-shadow(0 0 0 transparent);
+  transition: opacity .22s ease, filter .22s ease, transform .22s ease;
+}
+.edition-blackbird .nav-item:hover .service-mark,
+.edition-blackbird .nav-item.active .service-mark {
+  opacity: 1;
+  filter: grayscale(1) brightness(1.16) drop-shadow(0 0 8px rgba(191, 232, 255, .18));
+  transform: scale(1.06);
+}
+.edition-blackbird .active-line {
+  width: 1px;
+  height: 32px;
+  border-radius: 0;
+  background: #e9f7ff;
+  box-shadow: 0 0 18px rgba(183, 231, 255, .7);
+}
+
+.edition-blackbird .nav-copy strong { color: #dfe5eb; letter-spacing: .01em; }
+.edition-blackbird .nav-copy small,
+.edition-blackbird .nav-item.active small { color: #626b76; }
+.edition-blackbird .connection.online .connection-dot {
+  background: var(--bb-signal);
+  box-shadow: 0 0 12px rgba(188, 236, 255, .76);
+}
+
+.edition-blackbird .space-grid { gap: 1px; background: var(--bb-line); }
+.edition-blackbird .space-card {
+  min-height: 168px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(145deg, rgba(10, 14, 20, .97), rgba(4, 6, 9, .98));
+}
+.edition-blackbird .space-card::before {
+  left: auto;
+  right: -70px;
+  top: -75px;
+  background: #d9efff;
+  opacity: .025;
+}
+.edition-blackbird .space-card:hover {
+  z-index: 1;
+  transform: translateY(-2px);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, .4);
+  background: linear-gradient(145deg, rgba(17, 23, 31, .98), rgba(5, 7, 10, .99));
+}
+.edition-blackbird .space-icon {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.edition-blackbird .space-icon .service-mark {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  filter: grayscale(1) brightness(1.05);
+}
+.edition-blackbird .space-meta small {
+  color: #626d78;
+  letter-spacing: .18em;
+}
+.edition-blackbird .space-meta strong { font-size: 14px; }
+.edition-blackbird .space-meta p { color: #69737e; }
+
+.edition-blackbird .hero-copy .kicker,
+.edition-blackbird .section-title button,
+.edition-blackbird .surface-title > span { color: var(--bb-signal); }
+.edition-blackbird .hero-copy h1,
+.edition-blackbird .section-title h2 { color: #f6f8fb; }
+
+.edition-blackbird .notification-drawer,
+.edition-blackbird .palette,
+.edition-blackbird .settings-drawer {
+  border-color: var(--bb-line-strong);
+  border-radius: 4px;
+  background: rgba(5, 8, 12, .97);
+  box-shadow: 0 38px 130px rgba(0, 0, 0, .68);
+}
+
+.edition-blackbird .desktop-login-form {
+  border-color: var(--bb-line-strong);
+  border-radius: 4px;
+  background: linear-gradient(145deg, rgba(12, 17, 23, .97), rgba(3, 5, 8, .99));
+  box-shadow: 0 42px 150px rgba(0, 0, 0, .62), inset 0 1px rgba(255, 255, 255, .045);
+}
+.edition-blackbird .desktop-login-form header p { color: var(--bb-signal); }
+.edition-blackbird .desktop-login-form input { border-radius: 2px; }
+.edition-blackbird .desktop-login-form input:focus {
+  border-color: rgba(188, 236, 255, .36);
+  box-shadow: 0 0 0 3px rgba(188, 236, 255, .045);
+}
+.edition-blackbird .desktop-login-form .primary {
+  color: #05080b;
+  border-radius: 2px;
+  background: linear-gradient(105deg, #f8fbff, #b9ccda);
+}
+
+.cinema-launch.edition-blackbird,
+.cosmic-lock.edition-blackbird {
+  background:
+    radial-gradient(ellipse at 62% 42%, rgba(168, 216, 245, .11), transparent 34%),
+    linear-gradient(145deg, #010204, #05080c 61%, #010203);
+}
+.cinema-launch.edition-blackbird .cinema-focus { filter: grayscale(1) contrast(1.18); }
+.cinema-launch.edition-blackbird .cinema-tmod strong,
+.cinema-launch.edition-blackbird .cinema-tvrs strong,
+.cosmic-lock.edition-blackbird .lock-collab strong { color: #eef6fb; letter-spacing: .18em; }
+
+@media (max-width: 980px) {
+  .edition-blackbird .space-grid { grid-template-columns: repeat(2, 1fr); }
+}

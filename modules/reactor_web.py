@@ -97,21 +97,30 @@ AuthenticatedRequest = Callable[
 logger = logging.getLogger(__name__)
 
 
-_LUMEN_PRIVATE_EDITION = "lumen"
-_LUMEN_DEFAULT_OWNER_ID = 902235631952998410
+_BLACKBIRD_PRIVATE_EDITION = "blackbird"
+_LEGACY_LUMEN_PRIVATE_EDITION = "lumen"
+_PRIVATE_DESKTOP_EDITIONS = {
+    _BLACKBIRD_PRIVATE_EDITION,
+    _LEGACY_LUMEN_PRIVATE_EDITION,
+}
+_BLACKBIRD_DEFAULT_OWNER_ID = 902235631952998410
 
 
 def _desktop_edition(request: web.Request) -> str:
     value = str(request.headers.get("X-TMod-Desktop-Edition") or "tmod").strip().lower()
-    return _LUMEN_PRIVATE_EDITION if value == _LUMEN_PRIVATE_EDITION else "tmod"
+    return value if value in _PRIVATE_DESKTOP_EDITIONS else "tmod"
 
 
-def _lumen_owner_ids() -> set[int]:
+def _private_desktop_owner_ids() -> set[int]:
     """Return the fail-closed allowlist for the private successor client."""
 
-    configured = str(os.getenv("TMOD_LUMEN_OWNER_IDS") or "").strip()
+    configured = str(
+        os.getenv("TMOD_BLACKBIRD_OWNER_IDS")
+        or os.getenv("TMOD_LUMEN_OWNER_IDS")
+        or ""
+    ).strip()
     if not configured:
-        return {_LUMEN_DEFAULT_OWNER_ID}
+        return {_BLACKBIRD_DEFAULT_OWNER_ID}
     return {
         int(value)
         for value in re.split(r"[\s,;]+", configured)
@@ -1765,12 +1774,12 @@ def register_reactor_web_routes(
 
         desktop_edition = _desktop_edition(request)
         if (
-            desktop_edition == _LUMEN_PRIVATE_EDITION
-            and int(principal.user_id) not in _lumen_owner_ids()
+            desktop_edition in _PRIVATE_DESKTOP_EDITIONS
+            and int(principal.user_id) not in _private_desktop_owner_ids()
         ):
             return web.json_response(
                 {
-                    "error": "lumen_private_access_required",
+                    "error": f"{desktop_edition}_private_access_required",
                     "message": "Эта редакция доступна только владельцу.",
                 },
                 status=403,
@@ -1865,10 +1874,12 @@ def register_reactor_web_routes(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "client": {
                 "edition": desktop_edition,
-                "private": desktop_edition == _LUMEN_PRIVATE_EDITION,
+                "private": desktop_edition in _PRIVATE_DESKTOP_EDITIONS,
                 "title": (
-                    "LUMEN — Технологии Товарищества"
-                    if desktop_edition == _LUMEN_PRIVATE_EDITION
+                    "BLACKBIRD — Технологии Товарищества"
+                    if desktop_edition == _BLACKBIRD_PRIVATE_EDITION
+                    else "LUMEN — Технологии Товарищества"
+                    if desktop_edition == _LEGACY_LUMEN_PRIVATE_EDITION
                     else "T-Mod Desktop"
                 ),
             },

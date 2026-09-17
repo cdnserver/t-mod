@@ -37,7 +37,7 @@ export interface DesktopBootstrap {
   protocol_version: 1;
   generated_at: string;
   client?: {
-    edition: "tmod" | "lumen";
+    edition: "tmod" | "blackbird" | "lumen";
     private: boolean;
     title: string;
   };

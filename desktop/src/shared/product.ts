@@ -1,29 +1,30 @@
-declare const __TMOD_DESKTOP_EDITION__: "tmod" | "lumen";
+declare const __TMOD_DESKTOP_EDITION__: "tmod" | "blackbird";
 
-export type DesktopEdition = "tmod" | "lumen";
+export type DesktopEdition = "tmod" | "blackbird";
 
-const edition: DesktopEdition = __TMOD_DESKTOP_EDITION__ === "lumen" ? "lumen" : "tmod";
+const edition: DesktopEdition = __TMOD_DESKTOP_EDITION__ === "blackbird" ? "blackbird" : "tmod";
+const blackbird = edition === "blackbird";
 
 export const desktopProduct = Object.freeze({
   edition,
-  privateEdition: edition === "lumen",
-  name: edition === "lumen" ? "LUMEN" : "T-Mod",
-  fullName: edition === "lumen"
-    ? "LUMEN — Технологии Товарищества"
+  privateEdition: blackbird,
+  name: blackbird ? "BLACKBIRD" : "T-Mod",
+  fullName: blackbird
+    ? "BLACKBIRD — Технологии Товарищества"
     : "T-Mod Desktop",
-  organization: edition === "lumen" ? "Технологии Товарищества" : "T-Mod",
-  mark: edition === "lumen" ? "L" : "T",
-  appId: edition === "lumen" ? "lat.tvr.technology.lumen" : "lat.tvr.tmod.desktop",
-  protocol: edition === "lumen" ? "lumen" : "tmod",
-  partition: edition === "lumen" ? "persist:tt-lumen-private-v1" : "persist:tmod-desktop-v1",
-  installationFile: edition === "lumen"
-    ? "lumen-private-installation.json"
+  organization: blackbird ? "Технологии Товарищества" : "T-Mod",
+  mark: blackbird ? "B" : "T",
+  appId: blackbird ? "lat.tvr.technology.blackbird" : "lat.tvr.tmod.desktop",
+  protocol: blackbird ? "blackbird" : "tmod",
+  partition: blackbird ? "persist:tt-blackbird-private-v1" : "persist:tmod-desktop-v1",
+  installationFile: blackbird
+    ? "blackbird-private-installation.json"
     : "desktop-installation.json",
-  preferencesKey: edition === "lumen"
-    ? "tt-lumen-preferences-v1"
+  preferencesKey: blackbird
+    ? "tt-blackbird-preferences-v1"
     : "tmod-desktop-preferences-v1",
-  updateChannel: edition === "lumen" ? "private" : "beta",
-  releaseUrl: edition === "lumen"
+  updateChannel: blackbird ? "private" : "beta",
+  releaseUrl: blackbird
     ? "https://github.com/cdnserver/t-mod/releases"
     : "https://github.com/cdnserver/t-mod-releases/releases/latest",
 } as const);
