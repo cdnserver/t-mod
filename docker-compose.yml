@@ -60,7 +60,10 @@ services:
       DATA_DIR: "/app/persistent/data"
     volumes:
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
+      - default
       - tmod-data
     depends_on:
       tmod-postgres:
@@ -93,6 +96,8 @@ services:
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/data:/app/data"
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-rcon-password.txt:/run/secrets/minecraft_rcon_password:ro"
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/secrets/minecraft-supervisor-token.txt:/run/secrets/minecraft_supervisor_token:ro"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - default
       - tmod-data
@@ -156,7 +161,10 @@ services:
       TMOD_DB_BACKUP_DIR: "/app/persistent/backups/database"
     volumes:
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
+      - default
       - tmod-data
     expose:
       - "8792"

@@ -182,6 +182,10 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn('TMOD_DATABASE_BACKEND: "postgresql"', compose)
         self.assertIn('POSTGRES_HOST: "${TMOD_POSTGRES_HOST:-tmod-postgres}"', compose)
         self.assertIn('POSTGRES_SSLMODE: "${TMOD_POSTGRES_SSLMODE:-prefer}"', compose)
+        self.assertGreaterEqual(
+            compose.count('"host.docker.internal:host-gateway"'),
+            3,
+        )
         self.assertIn('condition: service_completed_successfully', compose)
         self.assertIn('TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"', compose)
         self.assertIn("http://127.0.0.1:8787/gateway-health", compose)
