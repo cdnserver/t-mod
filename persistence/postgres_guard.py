@@ -61,6 +61,18 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 def _command(binary: str, *arguments: str) -> tuple[list[str], dict[str, str]]:
     settings = postgres_settings()
     environment = dict(os.environ)
+    libpq_environment = {
+        "sslmode": "PGSSLMODE",
+        "sslrootcert": "PGSSLROOTCERT",
+        "sslcert": "PGSSLCERT",
+        "sslkey": "PGSSLKEY",
+        "target_session_attrs": "PGTARGETSESSIONATTRS",
+        "connect_timeout": "PGCONNECT_TIMEOUT",
+        "options": "PGOPTIONS",
+    }
+    for setting, environment_name in libpq_environment.items():
+        if settings.get(setting) not in (None, ""):
+            environment[environment_name] = str(settings[setting])
     if "conninfo" in settings:
         return [binary, "--dbname", str(settings["conninfo"]), *arguments], environment
     environment["PGPASSWORD"] = str(settings.get("password") or "")

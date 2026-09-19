@@ -76,6 +76,7 @@ def _target_settings() -> tuple[str, dict[str, Any]]:
     conninfo = str(settings.pop("conninfo", "") or "")
     if conninfo:
         parsed = psycopg.conninfo.conninfo_to_dict(conninfo)
+        parsed.update(settings)
         parsed["dbname"] = global_log_database_name()
         return psycopg.conninfo.make_conninfo(**parsed), {}
     settings["dbname"] = global_log_database_name()
@@ -89,6 +90,7 @@ def _ensure_database() -> None:
     conninfo = str(settings.pop("conninfo", "") or "")
     if conninfo:
         admin = psycopg.conninfo.conninfo_to_dict(conninfo)
+        admin.update(settings)
         admin.setdefault("dbname", "postgres")
         connection = psycopg.connect(psycopg.conninfo.make_conninfo(**admin), autocommit=True)
     else:
@@ -225,6 +227,30 @@ def initialize_global_log() -> None:
                     ' ' || coalesce(target_id, '') || ' ' || coalesce(event_type, '') ||
                     ' ' || coalesce(request_id, '') || ' ' || coalesce(details::text, ''))
             )
+        """)
+        # v2 covers every field from the original search index. Keeping both
+        # doubled write amplification and wasted hundreds of MB on real data.
+        cursor.execute("DROP INDEX IF EXISTS global_log_events_search_idx")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS global_log_sql_rollups (
+                bucket_at TIMESTAMPTZ NOT NULL,
+                fingerprint CHAR(64) NOT NULL,
+                outcome TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                tables_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                statement_sample TEXT NOT NULL DEFAULT '',
+                event_count BIGINT NOT NULL DEFAULT 0,
+                duration_total_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+                duration_max_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+                rowcount_total BIGINT NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (bucket_at, fingerprint, outcome)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS global_log_sql_rollups_time_idx
+            ON global_log_sql_rollups (bucket_at DESC)
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS global_log_login_codes (
@@ -419,6 +445,49 @@ def append_events(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 def append_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
     inserted = append_events([event])
     return inserted[0] if inserted else None
+
+
+def upsert_sql_rollups(values: list[Mapping[str, Any]]) -> int:
+    if not values or not global_log_enabled():
+        return 0
+    initialize_global_log()
+    pool = _connection_pool()
+    with pool.connection() as connection, connection.cursor() as cursor:
+        for value in values:
+            cursor.execute(
+                """
+                INSERT INTO global_log_sql_rollups (
+                    bucket_at, fingerprint, outcome, operation, tables_json,
+                    statement_sample, event_count, duration_total_ms,
+                    duration_max_ms, rowcount_total, last_error
+                ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (bucket_at, fingerprint, outcome) DO UPDATE SET
+                    event_count = global_log_sql_rollups.event_count + EXCLUDED.event_count,
+                    duration_total_ms = global_log_sql_rollups.duration_total_ms + EXCLUDED.duration_total_ms,
+                    duration_max_ms = GREATEST(
+                        global_log_sql_rollups.duration_max_ms,
+                        EXCLUDED.duration_max_ms
+                    ),
+                    rowcount_total = global_log_sql_rollups.rowcount_total + EXCLUDED.rowcount_total,
+                    last_error = COALESCE(EXCLUDED.last_error, global_log_sql_rollups.last_error),
+                    updated_at = NOW()
+                """,
+                (
+                    value.get("bucket_at"),
+                    str(value.get("fingerprint") or "")[:64],
+                    str(value.get("outcome") or "success")[:16],
+                    str(value.get("operation") or "SQL")[:32],
+                    json.dumps(value.get("tables") or [], ensure_ascii=False),
+                    str(value.get("statement_sample") or "")[:4000],
+                    max(0, int(value.get("count") or 0)),
+                    max(0.0, float(value.get("duration_total_ms") or 0)),
+                    max(0.0, float(value.get("duration_max_ms") or 0)),
+                    max(0, int(value.get("rowcount_total") or 0)),
+                    str(value.get("last_error") or "")[:1000] or None,
+                ),
+            )
+        connection.commit()
+    return len(values)
 
 
 def issue_login_code(user_id: int, *, requested_from: str = "discord") -> str:
@@ -828,5 +897,5 @@ __all__ = [
     "allowed_user_ids", "append_event", "append_events", "canonical_event_payload", "consume_login_code",
     "facets", "global_log_database_name", "global_log_enabled", "initialize_global_log",
     "issue_login_code", "personal_data_events", "prepare_event", "related_events", "resolve_session", "revoke_session", "search_events",
-    "user_is_allowed", "verify_chain",
+    "upsert_sql_rollups", "user_is_allowed", "verify_chain",
 ]

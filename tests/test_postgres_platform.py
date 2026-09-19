@@ -10,6 +10,7 @@ from unittest.mock import patch
 from persistence.postgres_compat import (
     PostgresCompatConnection,
     postgres_enabled,
+    postgres_settings,
     split_sql_script,
     translate_sql,
 )
@@ -97,6 +98,28 @@ class PostgresCompatibilityTests(unittest.TestCase):
                     _secret("POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"),
                     "safe-password",
                 )
+
+    def test_remote_postgres_transport_settings_are_explicit(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "POSTGRES_PASSWORD": "safe-password",
+                "POSTGRES_HOST": "host.docker.internal",
+                "POSTGRES_PORT": "55432",
+                "POSTGRES_SSLMODE": "require",
+                "POSTGRES_CONNECT_TIMEOUT": "7",
+                "POSTGRES_STATEMENT_TIMEOUT_MS": "24000",
+                "POSTGRES_KEEPALIVES_IDLE": "20",
+            },
+            clear=True,
+        ):
+            settings = postgres_settings()
+        self.assertEqual(settings["host"], "host.docker.internal")
+        self.assertEqual(settings["port"], 55432)
+        self.assertEqual(settings["sslmode"], "require")
+        self.assertEqual(settings["connect_timeout"], 7)
+        self.assertEqual(settings["keepalives_idle"], 20)
+        self.assertEqual(settings["options"], "-c statement_timeout=24000")
     def test_sqlite_repository_dialect_translates_without_changing_aggregates(self) -> None:
         translated = translate_sql(
             """
@@ -157,6 +180,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('image: postgres:17-alpine', compose)
         self.assertIn('TMOD_DATABASE_BACKEND: "postgresql"', compose)
+        self.assertIn('POSTGRES_HOST: "${TMOD_POSTGRES_HOST:-tmod-postgres}"', compose)
+        self.assertIn('POSTGRES_SSLMODE: "${TMOD_POSTGRES_SSLMODE:-prefer}"', compose)
         self.assertIn('condition: service_completed_successfully', compose)
         self.assertIn('TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"', compose)
         self.assertIn("http://127.0.0.1:8787/gateway-health", compose)
@@ -214,6 +239,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         active_path = updater[postgres_gate:legacy_gate]
 
         self.assertIn("Could not verify the active PostgreSQL database", active_path)
+        self.assertIn("$activePostgresHost -ne \"tmod-postgres\"", updater)
+        self.assertIn("refusing to use the stale local database", updater)
         self.assertIn('"exec", "tmod-postgres", "pg_dump"', active_path)
         self.assertIn('"exec", "tmod-postgres", "pg_restore", "--list"', active_path)
         self.assertIn('"cp", "tmod-postgres:$containerPath", $hostPath', active_path)

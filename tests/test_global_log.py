@@ -175,3 +175,24 @@ def test_global_log_spool_has_hard_ceiling_and_reports_overflow(monkeypatch, tmp
     assert spool.stat().st_size <= 256
     assert runtime._spool_overflow_dropped > before
     assert runtime.runtime_health()["spool_max_bytes"] == 256
+
+
+def test_sql_audit_rollups_compress_repeated_queries() -> None:
+    with runtime._sql_rollup_lock:
+        runtime._sql_rollups.clear()
+    payload = {
+        "fingerprint": "a" * 64,
+        "operation": "SELECT",
+        "outcome": "success",
+        "tables": ["members"],
+        "statement": "SELECT name FROM members WHERE user_id = ?",
+        "duration_ms": 12.5,
+        "rowcount": 1,
+    }
+    runtime._record_sql_rollup(payload)
+    runtime._record_sql_rollup(payload)
+    values = runtime._drain_sql_rollups()
+    assert len(values) == 1
+    assert values[0]["count"] == 2
+    assert values[0]["duration_total_ms"] == 25.0
+    assert values[0]["rowcount_total"] == 2

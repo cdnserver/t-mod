@@ -45,6 +45,8 @@ _last_error: str | None = None
 _spool_lock = threading.Lock()
 _last_spool_replay = 0.0
 _trace_context: ContextVar[dict[str, Any]] = ContextVar("tmod_global_log_trace", default={})
+_sql_rollup_lock = threading.Lock()
+_sql_rollups: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
 @contextmanager
@@ -282,6 +284,88 @@ def _replay_spool() -> int:
         return len(events)
 
 
+def _record_sql_rollup(payload: Mapping[str, Any]) -> None:
+    """Aggregate internal SQL telemetry instead of duplicating every action.
+
+    Business, HTTP, Discord and security events remain immutable event rows.
+    Successful internal SQL calls are implementation detail and used to make
+    up almost the entire audit database, so they are preserved as per-minute
+    counters by query fingerprint. SQL errors and slow statements are still
+    emitted individually by ``database_audit`` below.
+    """
+    occurred = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    fingerprint = str(payload.get("fingerprint") or "")[:64]
+    outcome = str(payload.get("outcome") or "success")[:16]
+    operation = str(payload.get("operation") or "SQL")[:32]
+    key = (occurred.isoformat(), fingerprint, outcome)
+    duration = max(0.0, float(payload.get("duration_ms") or 0.0))
+    with _sql_rollup_lock:
+        value = _sql_rollups.get(key)
+        if value is None:
+            value = {
+                "bucket_at": occurred.isoformat(),
+                "fingerprint": fingerprint,
+                "operation": operation,
+                "outcome": outcome,
+                "tables": list(payload.get("tables") or [])[:20],
+                "statement_sample": str(payload.get("statement") or "")[:4000],
+                "count": 0,
+                "duration_total_ms": 0.0,
+                "duration_max_ms": 0.0,
+                "rowcount_total": 0,
+                "last_error": None,
+            }
+            _sql_rollups[key] = value
+        value["count"] += 1
+        value["duration_total_ms"] += duration
+        value["duration_max_ms"] = max(value["duration_max_ms"], duration)
+        rowcount = payload.get("rowcount")
+        if isinstance(rowcount, int) and rowcount > 0:
+            value["rowcount_total"] += rowcount
+        if payload.get("error"):
+            value["last_error"] = str(payload["error"])[:1000]
+
+
+def _drain_sql_rollups() -> list[dict[str, Any]]:
+    with _sql_rollup_lock:
+        values = list(_sql_rollups.values())
+        _sql_rollups.clear()
+    return values
+
+
+def _flush_sql_rollups() -> int:
+    values = _drain_sql_rollups()
+    if not values:
+        return 0
+    try:
+        repository.upsert_sql_rollups(values)
+    except Exception:
+        # Merge the counters back so a temporary database outage does not turn
+        # telemetry compression into telemetry loss.
+        with _sql_rollup_lock:
+            for value in values:
+                key = (
+                    str(value["bucket_at"]),
+                    str(value["fingerprint"]),
+                    str(value["outcome"]),
+                )
+                current = _sql_rollups.get(key)
+                if current is None:
+                    _sql_rollups[key] = value
+                    continue
+                current["count"] += int(value.get("count") or 0)
+                current["duration_total_ms"] += float(value.get("duration_total_ms") or 0)
+                current["duration_max_ms"] = max(
+                    float(current.get("duration_max_ms") or 0),
+                    float(value.get("duration_max_ms") or 0),
+                )
+                current["rowcount_total"] += int(value.get("rowcount_total") or 0)
+                if value.get("last_error"):
+                    current["last_error"] = value["last_error"]
+        raise
+    return len(values)
+
+
 async def _writer() -> None:
     global _written, _failed, _last_error, _last_spool_replay
     assert _queue is not None
@@ -304,6 +388,7 @@ async def _writer() -> None:
         try:
             await asyncio.to_thread(repository.append_events, batch)
             _written += len(batch)
+            await asyncio.to_thread(_flush_sql_rollups)
             _last_error = None
             now = time.monotonic()
             if now - _last_spool_replay >= 60:
@@ -343,10 +428,18 @@ async def start_global_log_runtime(loop: asyncio.AbstractEventLoop | None = None
     def database_audit(payload: Mapping[str, Any]) -> None:
         duration = float(payload.get("duration_ms") or 0)
         outcome = str(payload.get("outcome") or "success")
+        _record_sql_rollup(payload)
+        # Errors and slow calls deserve an individual immutable event. Normal
+        # successful calls remain fully countable in compact SQL rollups.
+        if outcome != "error" and duration < max(
+            250.0,
+            float(os.getenv("GLOBAL_LOG_SQL_SLOW_MS", "1000") or 1000),
+        ):
+            return
         emit_global_event({
             "source_service": "postgresql",
             "source_type": "database",
-            "event_type": "sql_error" if outcome == "error" else "sql_statement",
+            "event_type": "sql_error" if outcome == "error" else "sql_slow_statement",
             "severity": "error" if outcome == "error" else "warning" if duration >= 500 else "info",
             "summary": f"SQL {payload.get('operation') or 'operation'} · {duration:.1f} ms",
             "target_type": "database_table",
@@ -398,6 +491,11 @@ async def stop_global_log_runtime(*, timeout: float = 8.0) -> None:
         await asyncio.gather(worker, return_exceptions=True)
     _worker = None
     _loop = None
+    if repository.global_log_enabled():
+        try:
+            await asyncio.to_thread(_flush_sql_rollups)
+        except Exception:
+            traceback.print_exc()
 
 
 def runtime_health() -> dict[str, Any]:
@@ -415,6 +513,7 @@ def runtime_health() -> dict[str, Any]:
         "spool_overflow_dropped": _spool_overflow_dropped,
         "spool_bytes": spool_bytes,
         "spool_max_bytes": _spool_max_bytes(),
+        "sql_rollups_pending": len(_sql_rollups),
         "last_error": _last_error,
     }
 

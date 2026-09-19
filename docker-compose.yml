@@ -39,10 +39,18 @@ services:
     command: ["python", "/app/scripts/migrate_sqlite_to_postgres.py"]
     environment: &tmod_database_environment
       TMOD_DATABASE_BACKEND: "postgresql"
-      POSTGRES_HOST: "tmod-postgres"
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: "tmod"
-      POSTGRES_USER: "tmod"
+      POSTGRES_HOST: "${TMOD_POSTGRES_HOST:-tmod-postgres}"
+      POSTGRES_PORT: "${TMOD_POSTGRES_PORT:-5432}"
+      POSTGRES_DB: "${TMOD_POSTGRES_DB:-tmod}"
+      POSTGRES_USER: "${TMOD_POSTGRES_USER:-tmod}"
+      POSTGRES_SSLMODE: "${TMOD_POSTGRES_SSLMODE:-prefer}"
+      POSTGRES_CONNECT_TIMEOUT: "${TMOD_POSTGRES_CONNECT_TIMEOUT:-10}"
+      POSTGRES_STATEMENT_TIMEOUT_MS: "${TMOD_POSTGRES_STATEMENT_TIMEOUT_MS:-30000}"
+      POSTGRES_KEEPALIVES_IDLE: "${TMOD_POSTGRES_KEEPALIVES_IDLE:-30}"
+      POSTGRES_KEEPALIVES_INTERVAL: "${TMOD_POSTGRES_KEEPALIVES_INTERVAL:-10}"
+      POSTGRES_KEEPALIVES_COUNT: "${TMOD_POSTGRES_KEEPALIVES_COUNT:-3}"
+      POSTGRES_POOL_MIN: "${TMOD_POSTGRES_POOL_MIN:-2}"
+      POSTGRES_POOL_MAX: "${TMOD_POSTGRES_POOL_MAX:-20}"
       # Every application container already receives the persistent root. Read
       # the password through that stable mount instead of a second file bind,
       # which Docker Desktop can omit when restoring an older container.

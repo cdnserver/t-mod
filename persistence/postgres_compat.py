@@ -104,22 +104,53 @@ def _secret(name: str, file_name: str, default: str = "") -> str:
 
 def postgres_settings() -> dict[str, Any]:
     url = os.getenv("DATABASE_URL", "").strip()
+    settings: dict[str, Any]
     if url:
-        return {"conninfo": url}
-    password = _secret("POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE")
-    if not password:
-        raise RuntimeError("postgres_password_not_configured")
-    return {
-        "host": os.getenv("POSTGRES_HOST", "tmod-postgres").strip(),
-        "port": int(os.getenv("POSTGRES_PORT", "5432") or 5432),
-        "dbname": os.getenv("POSTGRES_DB", "tmod").strip(),
-        "user": os.getenv("POSTGRES_USER", "tmod").strip(),
-        "password": password,
+        settings = {"conninfo": url}
+    else:
+        password = _secret("POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE")
+        if not password:
+            raise RuntimeError("postgres_password_not_configured")
+        settings = {
+            "host": os.getenv("POSTGRES_HOST", "tmod-postgres").strip(),
+            "port": int(os.getenv("POSTGRES_PORT", "5432") or 5432),
+            "dbname": os.getenv("POSTGRES_DB", "tmod").strip(),
+            "user": os.getenv("POSTGRES_USER", "tmod").strip(),
+            "password": password,
+        }
+
+    settings.update({
         "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "10") or 10),
         "application_name": os.getenv(
             "POSTGRES_APPLICATION_NAME", "tmod"
         ).strip(),
-    }
+        "keepalives": 1,
+        "keepalives_idle": max(
+            10, int(os.getenv("POSTGRES_KEEPALIVES_IDLE", "30") or 30)
+        ),
+        "keepalives_interval": max(
+            5, int(os.getenv("POSTGRES_KEEPALIVES_INTERVAL", "10") or 10)
+        ),
+        "keepalives_count": max(
+            2, int(os.getenv("POSTGRES_KEEPALIVES_COUNT", "3") or 3)
+        ),
+    })
+    for environment_name, setting_name in (
+        ("POSTGRES_SSLMODE", "sslmode"),
+        ("POSTGRES_SSLROOTCERT", "sslrootcert"),
+        ("POSTGRES_SSLCERT", "sslcert"),
+        ("POSTGRES_SSLKEY", "sslkey"),
+        ("POSTGRES_TARGET_SESSION_ATTRS", "target_session_attrs"),
+    ):
+        value = os.getenv(environment_name, "").strip()
+        if value:
+            settings[setting_name] = value
+    statement_timeout_ms = max(
+        0, int(os.getenv("POSTGRES_STATEMENT_TIMEOUT_MS", "30000") or 0)
+    )
+    if statement_timeout_ms:
+        settings["options"] = f"-c statement_timeout={statement_timeout_ms}"
+    return settings
 
 
 def postgres_safe_target() -> str:
@@ -153,10 +184,14 @@ def _connection_pool() -> Any:
         settings = postgres_settings()
         conninfo = settings.pop("conninfo", "")
         max_size = max(4, min(50, int(os.getenv("POSTGRES_POOL_MAX", "20") or 20)))
+        min_size = max(
+            0,
+            min(max_size, int(os.getenv("POSTGRES_POOL_MIN", "2") or 0)),
+        )
         _pool = pool_type(
             conninfo=conninfo,
             kwargs=settings,
-            min_size=0,
+            min_size=min_size,
             max_size=max_size,
             timeout=15,
             open=True,
