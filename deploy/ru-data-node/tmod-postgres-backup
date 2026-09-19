@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+backup_dir=/var/backups/tmod-postgres
+passphrase=/root/.tmod/backup-passphrase
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+plain=""
+encrypted=""
+trap 'rm -f "${plain}" "${encrypted}"' EXIT
+
+backup_database() {
+  local database="$1"
+  local prefix="$2"
+  local plain_sha decrypted_sha target
+
+  plain="${backup_dir}/.${prefix}-${stamp}.dump.tmp"
+  encrypted="${backup_dir}/.${prefix}-${stamp}.dump.gpg.tmp"
+  target="${backup_dir}/${prefix}-${stamp}.dump.gpg"
+
+  # Avoid a direct pg_dump -> gpg stream: a transient consumer failure could
+  # otherwise leave an apparently encrypted but incomplete recovery point.
+  runuser -u postgres -- pg_dump --format=custom --compress=6 \
+    --dbname="${database}" --file="${plain}"
+  pg_restore --list "${plain}" >/dev/null
+  plain_sha="$(sha256sum "${plain}" | awk '{print $1}')"
+
+  gpg --batch --yes --pinentry-mode loopback --passphrase-file "${passphrase}" \
+    --symmetric --cipher-algo AES256 --output "${encrypted}" "${plain}"
+  decrypted_sha="$(gpg --batch --quiet --pinentry-mode loopback \
+    --passphrase-file "${passphrase}" --decrypt "${encrypted}" | sha256sum | awk '{print $1}')"
+  test "${plain_sha}" = "${decrypted_sha}"
+
+  chown postgres:postgres "${encrypted}"
+  chmod 0600 "${encrypted}"
+  mv "${encrypted}" "${target}"
+  sha256sum "${target}" > "${target}.sha256"
+  chown postgres:postgres "${target}.sha256"
+  rm -f "${plain}"
+  plain=""
+  encrypted=""
+}
+
+backup_database tmod tmod
+if runuser -u postgres -- psql --dbname=postgres --tuples-only --no-align \
+  --command="SELECT 1 FROM pg_database WHERE datname='tmod_global_log'" | grep -qx 1; then
+  backup_database tmod_global_log tmod-global-log
+fi
+
+find "${backup_dir}" -type f \
+  \( -name 'tmod-*.dump.gpg' -o -name 'tmod-global-log-*.dump.gpg' \) \
+  -mtime +14 -delete
+find "${backup_dir}" -type f \
+  \( -name 'tmod-*.dump.gpg.sha256' -o -name 'tmod-global-log-*.dump.gpg.sha256' \) \
+  -mtime +14 -delete

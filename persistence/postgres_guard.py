@@ -223,6 +223,7 @@ def create_database_backup(
         "created_at": created.isoformat(),
         "size_bytes": final.stat().st_size,
         "source_size_bytes": source_size,
+        "database_target": postgres_safe_target(),
         "integrity": {"ok": True, "result": "pg_restore_list_ok"},
         "note": str(note or "").strip()[:500] or None,
     }
@@ -288,8 +289,14 @@ def ensure_startup_recovery_point(
 ) -> dict[str, Any]:
     current = (now or _now()).astimezone(timezone.utc)
     reuse = int(os.getenv("TMOD_DB_STARTUP_REUSE_MINUTES", "720"))
+    current_target = postgres_safe_target()
     for item in list_database_backups(limit=20):
         if item.get("backend") != "postgresql" or not (item.get("integrity") or {}).get("ok"):
+            continue
+        # Never reuse a recovery point created for another PostgreSQL node.
+        # This matters during localization/failover where the backup directory
+        # survives but POSTGRES_HOST changes underneath it.
+        if item.get("database_target") != current_target:
             continue
         try:
             created = datetime.fromisoformat(str(item["created_at"]))
