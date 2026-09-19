@@ -25,7 +25,6 @@ from modules.technical_log import log_technical_event as _log_technical_event
 
 _setup_lock = asyncio.Lock()
 _persistent_views_registered = False
-_startup_logged_guilds: set[int] = set()
 _TRANSIENT_DISCORD_STATUSES = frozenset({500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 
@@ -685,15 +684,6 @@ async def ensure_control_center(
                 "tech_log",
                 embed=tech_health_embed(bot, guild),
             )
-            if guild.id not in _startup_logged_guilds:
-                _startup_logged_guilds.add(guild.id)
-                embed = discord.Embed(
-                    title="🟢 T-Mod запущен",
-                    description="Структура операционного центра проверена, постоянные панели восстановлены.",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now(timezone.utc),
-                )
-                await tech_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
         return channels
 

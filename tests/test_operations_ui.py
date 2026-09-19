@@ -160,6 +160,15 @@ class OperationsCenterTests(unittest.TestCase):
 
         asyncio.run(inspect_views())
 
+    def test_startup_uses_persistent_health_panel_without_chat_notice(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "modules" / "control_center.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"tech_log",\n                embed=tech_health_embed', source)
+        self.assertNotIn('title="🟢 T-Mod запущен"', source)
+        self.assertNotIn("_startup_logged_guilds", source)
+
     def test_public_tvrs_panel_contains_private_market_entry(self) -> None:
         async def inspect_view() -> None:
             view = TVRSPublicPanelView()
