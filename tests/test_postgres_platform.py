@@ -197,6 +197,19 @@ class PostgresCompatibilityTests(unittest.TestCase):
             compose,
         )
         self.assertGreaterEqual(
+            compose.count(
+                'ATLAS_QDRANT_URL: "${ATLAS_QDRANT_URL:-http://atlas-qdrant:6333}"'
+            ),
+            2,
+        )
+        tunnel = (
+            ROOT / "deploy" / "ru-data-node" / "tmod-postgres-tunnel.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "127.0.0.1:${QdrantLocalPort}:127.0.0.1:6333",
+            tunnel,
+        )
+        self.assertGreaterEqual(
             compose.count(r'''\"ready\"[[:space:]]*:[[:space:]]*true'''),
             2,
         )

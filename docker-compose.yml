@@ -86,7 +86,7 @@ services:
       POSTGRES_APPLICATION_NAME: "tmod-discord"
       CONSENSUS_WEB_PORT: "8788"
       TMOD_DB_PROTECTION_OWNER: "worker"
-      ATLAS_QDRANT_URL: "http://atlas-qdrant:6333"
+      ATLAS_QDRANT_URL: "${ATLAS_QDRANT_URL:-http://atlas-qdrant:6333}"
       ATLAS_FORUM_SELENIUM_URL: "http://atlas-forum-browser:4444/wd/hub"
       ATLAS_FORUM_ENGINE_SELENIUM_URL: "http://atlas-forum-eye-browser:4444/wd/hub"
     expose:
@@ -159,6 +159,7 @@ services:
       <<: *tmod_database_environment
       POSTGRES_APPLICATION_NAME: "tmod-worker"
       TMOD_DB_BACKUP_DIR: "/app/persistent/backups/database"
+      ATLAS_QDRANT_URL: "${ATLAS_QDRANT_URL:-http://atlas-qdrant:6333}"
     volumes:
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     extra_hosts:

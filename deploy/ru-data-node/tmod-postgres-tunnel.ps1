@@ -3,7 +3,8 @@ param(
     [int]$RemotePort = 22,
     [string]$RemoteUser = "root",
     [string]$IdentityFile = "$env:USERPROFILE\.ssh\sigma",
-    [int]$LocalPort = 55432
+    [int]$LocalPort = 55432,
+    [int]$QdrantLocalPort = 56333
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +22,7 @@ while ($true) {
         "-i", $IdentityFile,
         "-p", [string]$RemotePort,
         "-L", "127.0.0.1:${LocalPort}:127.0.0.1:5432",
+        "-L", "127.0.0.1:${QdrantLocalPort}:127.0.0.1:6333",
         "-o", "BatchMode=yes",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ServerAliveInterval=15",
