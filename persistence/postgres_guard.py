@@ -22,6 +22,15 @@ from persistence.postgres_compat import (
 VALID_KINDS = {"hourly", "daily", "manual", "pre-update", "startup"}
 
 
+def _external_protection_enabled() -> bool:
+    return os.getenv("TMOD_DB_EXTERNAL_PROTECTION", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -287,6 +296,20 @@ def prune_database_backups() -> dict[str, int]:
 def ensure_startup_recovery_point(
     *, note: str | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
+    if _external_protection_enabled():
+        integrity = check_live_database(full=False)
+        if not integrity.get("ok"):
+            raise RuntimeError(f"external_database_integrity_failed:{integrity.get('result')}")
+        return {
+            "name": "localized-data-node",
+            "kind": "external",
+            "backend": "postgresql",
+            "database_target": postgres_safe_target(),
+            "created_at": integrity.get("checked_at"),
+            "integrity": integrity,
+            "reused": True,
+            "reuse_reason": "external_encrypted_recovery_policy",
+        }
     current = (now or _now()).astimezone(timezone.utc)
     reuse = int(os.getenv("TMOD_DB_STARTUP_REUSE_MINUTES", "720"))
     current_target = postgres_safe_target()
@@ -317,6 +340,14 @@ def ensure_startup_recovery_point(
 
 def run_scheduled_database_protection(*, now: datetime | None = None) -> dict[str, Any]:
     current = (now or _now()).astimezone(timezone.utc)
+    if _external_protection_enabled():
+        integrity = check_live_database(full=False)
+        return {
+            "created": [],
+            "integrity": integrity,
+            "external": True,
+            "protection": database_protection_snapshot(),
+        }
     backups = [item for item in list_database_backups(limit=200) if item.get("backend") == "postgresql"]
 
     def latest(kind: str) -> datetime | None:
@@ -363,17 +394,22 @@ def database_protection_snapshot() -> dict[str, Any]:
     status = "ok"
     if integrity and not integrity.get("ok"):
         status = "critical"
-    elif latest is None:
+    elif latest is None and not _external_protection_enabled():
         status = "warning"
     return {
         "status": status,
-        "backend": "postgresql",
+        "backend": (
+            "postgresql-external-protection"
+            if _external_protection_enabled()
+            else "postgresql"
+        ),
         "database_path": postgres_safe_target(),
         "database_size_bytes": _database_size(),
         "backup_dir": str(directory),
         "backup_count": len(postgres_backups),
         "legacy_sqlite_backup_count": len(backups) - len(postgres_backups),
         "latest": latest,
+        "external_protection": _external_protection_enabled(),
         "last_integrity": integrity or None,
         "free_bytes": free,
         "total_bytes": total,
