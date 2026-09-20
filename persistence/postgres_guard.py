@@ -22,15 +22,6 @@ from persistence.postgres_compat import (
 VALID_KINDS = {"hourly", "daily", "manual", "pre-update", "startup"}
 
 
-def _external_protection_enabled() -> bool:
-    return os.getenv("TMOD_DB_EXTERNAL_PROTECTION", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -296,20 +287,6 @@ def prune_database_backups() -> dict[str, int]:
 def ensure_startup_recovery_point(
     *, note: str | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
-    if _external_protection_enabled():
-        integrity = check_live_database(full=False)
-        if not integrity.get("ok"):
-            raise RuntimeError(f"external_database_integrity_failed:{integrity.get('result')}")
-        return {
-            "name": "localized-data-node",
-            "kind": "external",
-            "backend": "postgresql",
-            "database_target": postgres_safe_target(),
-            "created_at": integrity.get("checked_at"),
-            "integrity": integrity,
-            "reused": True,
-            "reuse_reason": "external_encrypted_recovery_policy",
-        }
     current = (now or _now()).astimezone(timezone.utc)
     reuse = int(os.getenv("TMOD_DB_STARTUP_REUSE_MINUTES", "720"))
     current_target = postgres_safe_target()
@@ -329,25 +306,43 @@ def ensure_startup_recovery_point(
             continue
         if timedelta(0) <= current - created <= timedelta(minutes=reuse):
             return {**item, "reused": True, "reuse_reason": "fresh_validated_backup"}
-    result = create_database_backup(
-        "startup",
-        note=note,
-        now=current,
-        timeout_seconds=float(os.getenv("TMOD_DB_STARTUP_BACKUP_TIMEOUT_SECONDS", "300")),
-    )
+    try:
+        result = create_database_backup(
+            "startup",
+            note=note,
+            now=current,
+            timeout_seconds=float(
+                os.getenv("TMOD_DB_STARTUP_BACKUP_TIMEOUT_SECONDS", "300")
+            ),
+        )
+    except RuntimeError as exc:
+        if str(exc) != "database_backup_already_running":
+            raise
+        # The worker and the Discord process may start together after a host
+        # restart.  A pg_dump owned by the worker must not put the bot into a
+        # restart loop.  PostgreSQL backups are online and consistent, so a
+        # successful live integrity probe is enough to let startup continue;
+        # the worker will publish and validate the in-flight dump.
+        integrity = check_live_database(full=False)
+        if not integrity.get("ok"):
+            raise RuntimeError(
+                f"concurrent_database_backup_integrity_failed:{integrity.get('result')}"
+            ) from exc
+        return {
+            "name": "concurrent-postgresql-backup",
+            "kind": "startup",
+            "backend": "postgresql",
+            "database_target": current_target,
+            "created_at": integrity.get("checked_at"),
+            "integrity": integrity,
+            "reused": True,
+            "reuse_reason": "validated_concurrent_backup",
+        }
     return {**result, "reused": False}
 
 
 def run_scheduled_database_protection(*, now: datetime | None = None) -> dict[str, Any]:
     current = (now or _now()).astimezone(timezone.utc)
-    if _external_protection_enabled():
-        integrity = check_live_database(full=False)
-        return {
-            "created": [],
-            "integrity": integrity,
-            "external": True,
-            "protection": database_protection_snapshot(),
-        }
     backups = [item for item in list_database_backups(limit=200) if item.get("backend") == "postgresql"]
 
     def latest(kind: str) -> datetime | None:

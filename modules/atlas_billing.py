@@ -1,20 +1,16 @@
-"""Commercial configuration and payment primitives for Atlas.
+"""Atlas Token metering and non-commercial access catalogue.
 
-The module deliberately contains no database or HTTP side effects.  Prices are
-real catalogue values, while checkout remains disabled until the merchant has
-provided both Robokassa passwords and explicitly enabled payments.
+Atlas keeps measuring AI usage in AT, but no money checkout is exposed.  Paid
+plan definitions stay in the data model only so historical accounts and ledger
+entries remain readable after the payment subsystem was retired.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
 import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
-from typing import Any, Mapping
-from urllib.parse import quote
+from typing import Any
 
 
 ATLAS_TOKEN_COST_USD = Decimal("0.00001")
@@ -85,11 +81,13 @@ def atlas_billing_catalog() -> dict[str, Any]:
                 "поддерживаемая операционная система и актуальная версия приложения",
             ],
         },
-        "seller": {
-            "name": "ИП Саниев Муртазали Бухариевич",
-            "inn": "370266611106",
-            "ogrnip": "322370000004857",
-            "email": "tvr@ultra---industries.com",
+        "availability": {
+            "commercial_sales": False,
+            "message": (
+                "Платные подключения и пополнение Atlas Token временно "
+                "недоступны. Бесплатный доступ и ранее начисленный резерв "
+                "продолжают работать."
+            ),
         },
     }
 
@@ -134,124 +132,8 @@ def _env_bool(name: str, *, default: bool = False) -> bool:
     raise RuntimeError(f"{name.lower()}_invalid")
 
 
-def robokassa_config() -> dict[str, Any]:
-    test_mode = _env_bool("ROBOKASSA_TEST_MODE", default=True)
-    hash_algorithm = os.getenv("ROBOKASSA_HASH_ALGORITHM", "md5").strip().lower()
-    if hash_algorithm not in {"md5", "sha256", "sha512"}:
-        raise RuntimeError("robokassa_hash_algorithm_invalid")
-    receipt_tax = os.getenv("ROBOKASSA_RECEIPT_TAX", "none").strip().lower()
-    if receipt_tax not in {"none", "vat0", "vat5", "vat7", "vat10", "vat20", "vat105", "vat107", "vat110", "vat120"}:
-        raise RuntimeError("robokassa_receipt_tax_invalid")
-    receipt_sno = os.getenv("ROBOKASSA_RECEIPT_SNO", "").strip().lower()
-    if receipt_sno and receipt_sno not in {
-        "osn", "usn_income", "usn_income_outcome", "esn", "patent",
-    }:
-        raise RuntimeError("robokassa_receipt_sno_invalid")
-    return {
-        "merchant_login": os.getenv("ROBOKASSA_MERCHANT_LOGIN", "tvr.lat").strip(),
-        "password1": os.getenv("ROBOKASSA_PASSWORD1", "").strip(),
-        "password2": os.getenv("ROBOKASSA_PASSWORD2", "").strip(),
-        "test_mode": test_mode,
-        "enabled": _env_bool("ATLAS_BILLING_PAYMENTS_ENABLED", default=False),
-        # Robokassa's current public payment form.  The similarly named
-        # /Merchant/Payment/Index endpoint returns a branded 404 in browsers.
-        "payment_url": "https://auth.robokassa.ru/Merchant/Index.aspx",
-        "hash_algorithm": hash_algorithm,
-        "receipt_tax": receipt_tax,
-        "receipt_sno": receipt_sno,
-        "personal_data_localization_ready": _env_bool(
-            "ATLAS_PD_LOCALIZATION_READY", default=False
-        ),
-        "personal_data_primary_region": os.getenv(
-            "ATLAS_PD_PRIMARY_REGION", ""
-        ).strip().upper(),
-    }
-
-
 def atlas_billing_enforcement_enabled() -> bool:
     return _env_bool("ATLAS_BILLING_ENFORCEMENT_ENABLED", default=True)
-
-
-def _signature(parts: list[object], *, algorithm: str | None = None) -> str:
-    value = ":".join(str(item) for item in parts)
-    selected = str(algorithm or robokassa_config()["hash_algorithm"])
-    return hashlib.new(selected, value.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
-
-
-def _robokassa_receipt(*, amount: str, description: str) -> str:
-    config = robokassa_config()
-    receipt: dict[str, Any] = {
-        "items": [
-            {
-                "name": str(description).strip()[:128] or "Цифровая услуга Atlas",
-                "quantity": 1,
-                "sum": float(amount),
-                "payment_method": "full_payment",
-                "payment_object": "service",
-                "tax": str(config["receipt_tax"]),
-            }
-        ]
-    }
-    if config["receipt_sno"]:
-        receipt["sno"] = str(config["receipt_sno"])
-    compact = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
-    # Robokassa requires the URL-encoded Receipt value both in the request and
-    # in the signature base.  The surrounding POST form encodes '%' once more
-    # on the wire and Robokassa receives the intended encoded JSON value.
-    return quote(compact, safe="")
-
-
-def robokassa_payment_fields(
-    *,
-    invoice_id: int,
-    amount_kopecks: int,
-    description: str,
-    user_id: int,
-    receipt_email: str = "",
-) -> dict[str, str]:
-    config = robokassa_config()
-    if not config["enabled"] or not config["password1"] or not config["password2"]:
-        raise RuntimeError("atlas_billing_payments_not_configured")
-    amount = f"{max(0, int(amount_kopecks)) / 100:.2f}"
-    if amount == "0.00":
-        raise ValueError("atlas_billing_amount_invalid")
-    custom = {"Shp_user": str(int(user_id))}
-    receipt = _robokassa_receipt(amount=amount, description=description)
-    signature = _signature([
-        config["merchant_login"], amount, int(invoice_id), receipt, config["password1"],
-        f"Shp_user={custom['Shp_user']}",
-    ], algorithm=str(config["hash_algorithm"]))
-    fields = {
-        "MerchantLogin": str(config["merchant_login"]),
-        "OutSum": amount,
-        "InvId": str(int(invoice_id)),
-        "Description": str(description)[:100],
-        "SignatureValue": signature,
-        "Receipt": receipt,
-        "IsTest": "1" if config["test_mode"] else "0",
-        "Culture": "ru",
-        "Encoding": "utf-8",
-        **custom,
-    }
-    clean_email = str(receipt_email or "").strip().lower()
-    if clean_email:
-        fields["Email"] = clean_email[:254]
-    return fields
-
-
-def robokassa_result_is_valid(values: Mapping[str, object]) -> bool:
-    config = robokassa_config()
-    supplied = str(values.get("SignatureValue") or "").strip().upper()
-    amount = str(values.get("OutSum") or "").strip()
-    invoice = str(values.get("InvId") or values.get("InvoiceID") or "").strip()
-    user_id = str(values.get("Shp_user") or "").strip()
-    if not supplied or not amount or not invoice or not user_id or not config["password2"]:
-        return False
-    expected = _signature(
-        [amount, invoice, config["password2"], f"Shp_user={user_id}"],
-        algorithm=str(config["hash_algorithm"]),
-    )
-    return hmac.compare_digest(supplied, expected)
 
 
 __all__ = [
@@ -261,7 +143,4 @@ __all__ = [
     "atlas_plan",
     "atlas_token_pack",
     "atlas_tokens_for_cost",
-    "robokassa_config",
-    "robokassa_payment_fields",
-    "robokassa_result_is_valid",
 ]

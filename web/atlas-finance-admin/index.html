@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#071018"><meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Atlas Administration Plane</title>
+  <link rel="icon" href="/atlas-finance-admin/assets/favicon.svg"><link rel="stylesheet" href="/assets/fonts.css"><link rel="stylesheet" href="/atlas-finance-admin/assets/style.css?v=1">
+  <script src="/atlas-finance-admin/assets/app.js?v=1" defer></script>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"><i></i><i></i><i></i></div>
+  <aside class="rail">
+    <a class="brand" href="/"><span>A</span><div><b>ATLAS</b><small>ADMINISTRATION PLANE</small></div></a>
+    <nav>
+      <button class="active" data-view="overview"><i>01</i><span>Обзор</span></button>
+      <button data-view="orders"><i>02</i><span>Архив</span></button>
+      <button data-view="accounts"><i>03</i><span>Аккаунты</span></button>
+      <button data-view="legal"><i>04</i><span>Правовой центр</span></button>
+      <button data-view="content"><i>05</i><span>Публикация</span></button>
+    </nav>
+    <div class="rail-state"><i></i><div><span>ЗАКРЫТЫЙ КОНТУР</span><b>только администраторы</b></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><small id="view-kicker">ФИНАНСОВЫЙ КОНТУР</small><h1 id="view-title">Пульс Atlas</h1></div><div class="top-actions"><label>Период<select id="days"><option value="7">7 дней</option><option value="30" selected>30 дней</option><option value="90">90 дней</option><option value="365">Год</option></select></label><label>USD / RUB<input id="usd-rate" inputmode="decimal" value="95"></label><button id="refresh">Обновить <span>↻</span></button><div class="viewer"><span id="viewer-mark">A</span><div><b id="viewer-name">Авторизация…</b><small>PLATFORM ADMIN</small></div></div></div></header>
+
+    <section id="overview" class="view active">
+      <div class="signal-line"><span>Сводка в реальном времени</span><i></i><small id="updated-at">загрузка данных</small></div>
+      <div id="metrics" class="metrics"></div>
+      <div class="grid two">
+        <article class="panel chart-panel"><header><div><small>ДИНАМИКА</small><h2>Оплаченная выручка</h2></div><span id="chart-total">—</span></header><div id="revenue-chart" class="revenue-chart"></div></article>
+        <article class="panel provider-panel"><header><div><small>OPENROUTER</small><h2>Внешний вычислительный резерв</h2></div><button id="provider-refresh">Сверить</button></header><div id="provider-state" class="provider-state"><div class="skeleton"></div></div></article>
+      </div>
+      <div class="grid two wide-left">
+        <article class="panel"><header><div><small>ЭКОНОМИКА МОДЕЛЕЙ</small><h2>Куда уходит вычислительный бюджет</h2></div></header><div id="models" class="table-wrap"></div></article>
+        <article class="panel"><header><div><small>ОПЕРАЦИОННЫЕ РАСХОДЫ</small><h2>Добавить расход</h2></div></header><form id="cost-form" class="form-stack"><label>Статья<input name="title" required maxlength="160" placeholder="Например, инфраструктура"></label><div class="form-row"><label>Категория<select name="category"><option value="infrastructure">Инфраструктура</option><option value="software">ПО</option><option value="marketing">Маркетинг</option><option value="tax">Налоги и комиссии</option><option value="other">Другое</option></select></label><label>Сумма, ₽<input name="amount" required inputmode="decimal" placeholder="0,00"></label></div><label>Дата<input name="occurred_at" type="date" required></label><label>Комментарий<textarea name="note" rows="3" maxlength="1000"></textarea></label><button class="primary">Записать расход <span>→</span></button><output></output></form></article>
+      </div>
+    </section>
+
+    <section id="orders" class="view">
+      <div class="section-head"><div><small>АРХИВНЫЙ ЛЕДЖЕР</small><h2>Ранее созданные операции</h2><p>Денежные операции отключены. Архив сохранён только для аудита и поддержки существующих балансов.</p></div><div class="filters"><input id="order-query" placeholder="№ операции, Discord ID"><select id="order-status"><option value="">Все статусы</option><option value="paid">Завершено</option><option value="pending">Ожидало</option><option value="failed">Ошибка</option><option value="refunded">Возвращено</option><option value="cancelled">Отменено</option></select><button id="order-search">Найти</button></div></div>
+      <article class="panel"><div id="orders-table" class="table-wrap"></div></article>
+    </section>
+
+    <section id="accounts" class="view">
+      <div class="section-head"><div><small>ATLAS ENTITLEMENTS</small><h2>Баланс и подписки</h2><p>Начисления идемпотентны и остаются в неизменяемом финансовом журнале с основанием и автором.</p></div></div>
+      <div class="grid two">
+        <article class="panel"><header><div><small>ПОЛЬЗОВАТЕЛЬ</small><h2>Найти Atlas‑аккаунт</h2></div></header><form id="account-search" class="inline-form"><input name="user_id" inputmode="numeric" placeholder="Discord ID" required><button>Открыть</button></form><div id="account-result" class="account-result empty">Введите Discord ID</div></article>
+        <article class="panel"><header><div><small>РУЧНАЯ ОПЕРАЦИЯ</small><h2>Предоставить доступ</h2></div></header><form id="grant-form" class="form-stack"><label>Discord ID<input name="user_id" inputmode="numeric" required></label><label>Тип<select name="kind"><option value="tokens">Atlas Token</option><option value="subscription">Подписка</option></select></label><div data-grant="tokens"><label>Количество AT<input name="amount_tokens" inputmode="numeric" value="100000" required></label></div><div data-grant="subscription" hidden><div class="form-row"><label>План<select name="plan_code"><option value="start">Atlas Start</option><option value="pro">Atlas Pro</option><option value="sovereign">Atlas Sovereign</option></select></label><label>Дней<input name="days" inputmode="numeric" value="30"></label></div></div><label>Основание<textarea name="reason" rows="3" required minlength="5" maxlength="240"></textarea></label><button class="primary">Подтвердить операцию <span>→</span></button><output></output></form></article>
+      </div>
+    </section>
+
+    <section id="legal" class="view">
+      <div class="section-head"><div><small>VERSIONED LEGAL PUBLISHING</small><h2>Редакции документов</h2><p>Один набор блоков создаёт веб‑редакцию и неизменяемый PDF. Старые редакции остаются доступны пользователю по постоянной ссылке.</p></div><button id="new-legal" class="primary">Новая редакция <span>＋</span></button></div>
+      <div class="grid legal-layout"><article class="panel"><header><div><small>АРХИВ</small><h2>История публикаций</h2></div><select id="legal-filter"><option value="">Все документы</option><option value="privacy">Персональные данные</option><option value="terms">Правила сервиса</option><option value="contacts">Контакты</option></select></header><div id="legal-history" class="legal-history"></div></article><article class="panel legal-editor"><header><div><small>БЛОЧНЫЙ РЕДАКТОР</small><h2 id="legal-editor-title">Новая редакция</h2></div><span id="legal-dirty">ЧЕРНОВИК</span></header><form id="legal-form" class="form-stack"><div class="form-row"><label>Документ<select name="document_key"><option value="privacy">Политика данных</option><option value="terms">Правила Atlas</option><option value="contacts">Контакты</option></select></label><label>Обозначение версии<input name="version_label" required placeholder="Редакция от 01.10.2026"></label></div><label>Заголовок<input name="title" required maxlength="220"></label><label>Краткое описание<textarea name="summary" rows="2" maxlength="2000"></textarea></label><label>Вступает в силу<input name="effective_from" type="datetime-local" required></label><div class="block-toolbar"><span>Структура документа</span><button type="button" data-add-block="section">+ раздел</button><button type="button" data-add-block="paragraph">+ текст</button><button type="button" data-add-block="list">+ список</button><button type="button" data-add-block="notice">+ примечание</button></div><div id="legal-blocks" class="legal-blocks"></div><button class="primary">Сохранить черновик <span>→</span></button><output></output></form></article></div>
+    </section>
+
+    <section id="content" class="view">
+      <div class="section-head"><div><small>CONTROLLED CONTENT</small><h2>Тексты сайта</h2><p>Безопасные текстовые слоты: никакого произвольного HTML и риска сломать магазин. Каждая публикация сохраняет автора и предыдущую редакцию.</p></div></div>
+      <div id="content-slots" class="content-grid"></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body></html>

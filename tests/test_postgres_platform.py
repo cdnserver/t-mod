@@ -202,13 +202,6 @@ class PostgresCompatibilityTests(unittest.TestCase):
             ),
             2,
         )
-        tunnel = (
-            ROOT / "deploy" / "ru-data-node" / "tmod-postgres-tunnel.ps1"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "127.0.0.1:${QdrantLocalPort}:127.0.0.1:6333",
-            tunnel,
-        )
         self.assertGreaterEqual(
             compose.count(r'''\"ready\"[[:space:]]*:[[:space:]]*true'''),
             2,

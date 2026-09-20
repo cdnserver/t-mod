@@ -144,11 +144,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn(
-            "form-action 'self' https://auth.robokassa.ru",
+            "form-action 'self'",
             atlas_response.headers["Content-Security-Policy"],
         )
-        self.assertNotIn(
-            "auth.robokassa.ru",
+        self.assertEqual(
+            atlas_response.headers["Content-Security-Policy"],
             consensus_response.headers["Content-Security-Policy"],
         )
 
@@ -1028,8 +1028,8 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             "https://home.tvr.lat/reactor",
         )
         self.assertEqual(atlas_store.status, 200)
-        self.assertIn("ВЫЧИСЛИТЕЛЬНЫЙ РЕЗЕРВ ATLAS", atlas_store_text)
-        self.assertIn("Вы платите", atlas_store_text)
+        self.assertIn("ИНТЕЛЛЕКТУАЛЬНЫЙ КОНТУР T‑MOD", atlas_store_text)
+        self.assertIn("Некоммерческий режим", atlas_store_text)
 
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)

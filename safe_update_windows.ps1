@@ -209,10 +209,9 @@ function New-PreUpdateBackup {
     param([string]$Note)
     $output = $null
     Write-Host "[SAFE UPDATE] Creating a consistent database backup (limit ${BackupTimeoutSeconds}s) ..."
-    # When the primary database is localized on the RU data node, the local
-    # PostgreSQL container is only a rollback relic. Never certify a stale
-    # local dump as the pre-update backup. Ask the running application image,
-    # whose environment names the actual database, to create and validate it.
+    # If an operator explicitly points the application at another PostgreSQL
+    # host, ask the running image to back up that active database rather than
+    # certifying a stale local container.
     & docker inspect tmod-discord-bot *> $null
     if ($LASTEXITCODE -eq 0) {
         $activePostgresHost = (& docker exec tmod-discord-bot python -c "import os; print(os.getenv('POSTGRES_HOST', ''))" 2>$null | Out-String).Trim()
@@ -222,7 +221,7 @@ function New-PreUpdateBackup {
                 $output = & docker exec tmod-discord-bot python /app/scripts/tmod_db_guard.py backup --kind pre-update --note $Note 2>&1
             }
             if ($LASTEXITCODE -ne 0) {
-                throw "Active RU PostgreSQL pre-update backup failed; refusing to use the stale local database"
+                throw "Active PostgreSQL pre-update backup failed; refusing to use the stale local database"
             }
             try { return (($output | Out-String | ConvertFrom-Json).result.path) }
             catch { throw "Active RU PostgreSQL backup returned invalid metadata" }

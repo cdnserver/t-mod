@@ -53,6 +53,7 @@ from modules.web_snapshot_cache import AsyncSnapshotCache
 from modules.reactor_web import register_reactor_web_routes
 from modules.atlas_web import register_atlas_web_routes
 from modules.atlas_billing_web import register_atlas_billing_web_routes
+from modules.atlas_finance_admin_web import register_atlas_finance_admin_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
@@ -1175,12 +1176,6 @@ def _apply_security_headers(
     response.headers["Permissions-Policy"] = (
         "camera=(), geolocation=(), payment=(), usb=()"
     )
-    form_action = "'self'"
-    if host == "atlas.tvr.lat" and path.rstrip("/") in {"", "/atlas-billing"}:
-        # Checkout is prepared on our server, then posted directly to the
-        # official Robokassa payment origin. No other T-Mod surface receives
-        # this exception to the default same-origin form policy.
-        form_action += " https://auth.robokassa.ru"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; "
         "style-src 'self' "
@@ -1188,7 +1183,7 @@ def _apply_security_headers(
         "'sha256-kivcxaEPD+v/Ecc3Z+TNAW/Uf1rs+0/EwVf6c/m1dKc='; "
         "img-src 'self' data:; connect-src 'self' https://api.open-meteo.com; "
         "frame-ancestors 'none'; "
-        f"base-uri 'none'; object-src 'none'; form-action {form_action}"
+        "base-uri 'none'; object-src 'none'; form-action 'self'"
     )
 
 
@@ -2227,6 +2222,12 @@ def create_consensus_web_app(
         asset_dir=_ATLAS_BILLING_ASSET_DIR,
         authenticate=authenticated_request,
         ecosystem_asset_dir=_ASSET_DIR,
+    )
+    register_atlas_finance_admin_routes(
+        app,
+        guild_id=int(guild_id),
+        asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-finance-admin",
+        authenticate=authenticated_request,
     )
     register_sgl_web_routes(
         app,

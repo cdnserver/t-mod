@@ -1068,7 +1068,7 @@ def init_db() -> None:
                 plan_code TEXT,
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending', 'paid', 'failed', 'cancelled', 'refunded')),
-                provider TEXT NOT NULL DEFAULT 'robokassa',
+                provider TEXT NOT NULL DEFAULT 'legacy_payment',
                 provider_operation_id TEXT,
                 created_at TEXT NOT NULL,
                 paid_at TEXT,
@@ -1077,6 +1077,67 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_atlas_payment_orders_user
             ON atlas_payment_orders(user_id, created_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_finance_costs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                amount_kopecks INTEGER NOT NULL CHECK(amount_kopecks > 0),
+                occurred_at TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                actor_user_id INTEGER NOT NULL,
+                request_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_finance_costs_date
+            ON atlas_finance_costs(occurred_at DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_content_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_key TEXT NOT NULL,
+                content_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK(status IN ('draft', 'published', 'archived')),
+                actor_user_id INTEGER NOT NULL,
+                request_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                published_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_content_revisions_slot
+            ON atlas_content_revisions(slot_key, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_legal_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_key TEXT NOT NULL,
+                version_number INTEGER NOT NULL,
+                version_label TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                effective_from TEXT NOT NULL,
+                blocks_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK(status IN ('draft', 'published', 'archived')),
+                actor_user_id INTEGER NOT NULL,
+                request_key TEXT NOT NULL UNIQUE,
+                pdf_sha256 TEXT,
+                created_at TEXT NOT NULL,
+                published_at TEXT,
+                UNIQUE(document_key, version_number)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atlas_legal_revisions_document
+            ON atlas_legal_revisions(document_key, status, effective_from DESC, id DESC);
+
+            CREATE TABLE IF NOT EXISTS atlas_external_snapshots (
+                provider TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'unknown',
+                error_text TEXT NOT NULL DEFAULT '',
+                checked_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS atlas_discord_threads (
                 discord_thread_id INTEGER PRIMARY KEY,

@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 import tempfile
 import unittest
@@ -7,7 +5,6 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from urllib.parse import quote
 
 import storage
 from aiohttp import web
@@ -21,9 +18,6 @@ from modules.atlas_ai import (
 from modules.atlas_billing import (
     atlas_billing_catalog,
     atlas_tokens_for_cost,
-    robokassa_config,
-    robokassa_payment_fields,
-    robokassa_result_is_valid,
 )
 from modules.atlas_billing_web import (
     register_atlas_billing_web_routes,
@@ -58,8 +52,7 @@ class AtlasBillingRepositoryTests(unittest.TestCase):
         ])
         self.assertEqual(catalog["plans"][-1]["monthly_price_rub"], 29_990)
         self.assertTrue(all(item["manual_features"] == "unlimited" for item in catalog["plans"]))
-        self.assertEqual(catalog["seller"]["name"], "ИП Саниев Муртазали Бухариевич")
-        self.assertEqual(catalog["seller"]["inn"], "370266611106")
+        self.assertFalse(catalog["availability"]["commercial_sales"])
         self.assertEqual(catalog["service"]["software_price_rub"], 0)
         self.assertIn("T-Mod Desktop", catalog["service"]["required_software"])
 
@@ -294,85 +287,6 @@ class AtlasProviderUsageTests(unittest.TestCase):
         self.assertEqual(_current_usage_summary()["provider_cost_microusd"], 1)
 
 
-class RobokassaSignatureTests(unittest.TestCase):
-    def test_human_readable_boolean_environment_values_are_honored(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "ATLAS_BILLING_PAYMENTS_ENABLED": "true",
-                "ROBOKASSA_TEST_MODE": "false",
-                "ATLAS_PD_LOCALIZATION_READY": "yes",
-                "ATLAS_PD_PRIMARY_REGION": "ru",
-                "ROBOKASSA_RECEIPT_TAX": "none",
-            },
-            clear=False,
-        ):
-            config = robokassa_config()
-
-        self.assertTrue(config["enabled"])
-        self.assertFalse(config["test_mode"])
-        self.assertTrue(config["personal_data_localization_ready"])
-        self.assertEqual(config["personal_data_primary_region"], "RU")
-
-    @patch.dict(
-        os.environ,
-        {
-            "ATLAS_BILLING_PAYMENTS_ENABLED": "1",
-            "ROBOKASSA_MERCHANT_LOGIN": "tvr.lat",
-            "ROBOKASSA_PASSWORD1": "password-one",
-            "ROBOKASSA_PASSWORD2": "password-two",
-            "ROBOKASSA_TEST_MODE": "1",
-            "ROBOKASSA_HASH_ALGORITHM": "md5",
-            "ROBOKASSA_RECEIPT_TAX": "none",
-        },
-        clear=False,
-    )
-    def test_checkout_and_result_signatures_follow_robokassa_order(self) -> None:
-        fields = robokassa_payment_fields(
-            invoice_id=17,
-            amount_kopecks=99_000,
-            description="Atlas Start",
-            user_id=42,
-            receipt_email="buyer@example.test",
-        )
-        receipt = quote(
-            json.dumps(
-                {
-                    "items": [{
-                        "name": "Atlas Start",
-                        "quantity": 1,
-                        "sum": 990.0,
-                        "payment_method": "full_payment",
-                        "payment_object": "service",
-                        "tax": "none",
-                    }]
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            safe="",
-        )
-        expected = hashlib.md5(
-            f"tvr.lat:990.00:17:{receipt}:password-one:Shp_user=42".encode()
-        ).hexdigest().upper()
-        self.assertEqual(fields["SignatureValue"], expected)
-        self.assertEqual(fields["Receipt"], receipt)
-        self.assertEqual(fields["Encoding"], "utf-8")
-        self.assertEqual(fields["IsTest"], "1")
-        self.assertEqual(fields["Email"], "buyer@example.test")
-
-        result = {
-            "OutSum": "990.00",
-            "InvId": "17",
-            "Shp_user": "42",
-            "SignatureValue": hashlib.md5(
-                b"990.00:17:password-two:Shp_user=42"
-            ).hexdigest().upper(),
-        }
-        self.assertTrue(robokassa_result_is_valid(result))
-        self.assertFalse(robokassa_result_is_valid({**result, "OutSum": "991.00"}))
-
-
 class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.old_data_dir = storage.DATA_DIR
@@ -401,7 +315,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-billing",
             authenticate=authenticate,
         )
-        with patch.dict(os.environ, {"ATLAS_BILLING_PAYMENTS_ENABLED": "0"}, clear=False):
+        with patch.dict(os.environ, {"ATLAS_BILLING_ENFORCEMENT_ENABLED": "1"}, clear=False):
             async with TestClient(TestServer(app)) as client:
                 page = await client.get("/atlas-billing")
                 account = await client.get("/account")
@@ -412,7 +326,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
                 refunds = await client.get("/refunds")
                 contacts = await client.get("/contacts")
                 data_request = await client.get("/data-request")
-                offer_pdf = await client.get("/documents/atlas-public-offer.pdf")
+                retired_document = await client.get("/documents/retired.pdf")
                 catalog = await client.get("/api/atlas/billing/catalog")
                 summary = await client.get("/api/atlas/billing/summary")
                 metrics = await client.get("/api/atlas/billing/admin/metrics")
@@ -424,27 +338,25 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(page.status, 200)
                 self.assertIn("Atlas Token", await page.text())
-                self.assertIn("Покупка и использование", await legal.text())
-                self.assertIn("Личный кабинет", await account.text())
-                self.assertIn("Публичная оферта", await offer.text())
+                self.assertIn("Понятные правила", await legal.text())
+                self.assertIn("ЛИЧНЫЙ КАБИНЕТ", await account.text())
+                self.assertIn("Платные услуги", await offer.text())
                 offer_text = await (await client.get("/offer")).text()
-                self.assertIn("T-Mod Desktop", offer_text)
-                self.assertIn("Что именно покупает Пользователь", offer_text)
-                self.assertNotIn("Robokassa", offer_text)
+                self.assertIn("не принимает денежную оплату", offer_text)
                 self.assertIn("ПРАВИЛА ATLAS", await terms.text())
-                self.assertIn("Политика обработки", await privacy.text())
-                self.assertIn("Оплата и возврат", await refunds.text())
-                self.assertIn("ИП Саниев", await contacts.text())
+                self.assertIn("Политика обработки персональных данных", await privacy.text())
+                self.assertIn("Новые заказы", await refunds.text())
+                self.assertIn("ТЕХНИЧЕСКАЯ ПОДДЕРЖКА", await contacts.text())
                 self.assertIn("privacy-request-form", await data_request.text())
-                self.assertEqual(offer_pdf.status, 200)
-                self.assertEqual(offer_pdf.content_type, "application/pdf")
+                self.assertEqual(retired_document.status, 404)
                 self.assertEqual(catalog.status, 200)
                 self.assertFalse((await catalog.json())["payments"]["enabled"])
                 self.assertEqual(summary.status, 200)
                 self.assertEqual(metrics.status, 200)
                 self.assertEqual((await metrics.json())["window_days"], 30)
                 self.assertEqual((await summary.json())["balance_tokens"], 50_000)
-                self.assertEqual(checkout.status, 503)
+                self.assertEqual(checkout.status, 410)
+                self.assertEqual((await checkout.json())["error"], "atlas_payments_disabled")
 
                 require_atlas_billing_host(
                     SimpleNamespace(
@@ -494,20 +406,7 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["usage_by_model"][0]["atlas_tokens"], 2581)
         self.assertEqual(body["diagnostic_ratio"], "1.25")
 
-    @patch.dict(
-        os.environ,
-        {
-            "ATLAS_BILLING_PAYMENTS_ENABLED": "1",
-            "ROBOKASSA_MERCHANT_LOGIN": "tvr.lat",
-            "ROBOKASSA_PASSWORD1": "password-one",
-            "ROBOKASSA_PASSWORD2": "password-two",
-            "ROBOKASSA_TEST_MODE": "1",
-            "ROBOKASSA_HASH_ALGORITHM": "md5",
-            "ROBOKASSA_RECEIPT_TAX": "none",
-        },
-        clear=False,
-    )
-    async def test_checkout_and_result_callback_are_idempotent(self) -> None:
+    async def test_checkout_is_permanently_disabled(self) -> None:
         principal = SimpleNamespace(user_id=42, display_name="Иван", csrf_token="csrf")
 
         async def authenticate(_request):
@@ -519,73 +418,21 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
             asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-billing",
             authenticate=authenticate,
         )
-        payload = {
-            "product_kind": "token_pack",
-            "product_code": "at-100k",
-            "checkout_key": "checkout-test-00000001",
-            "receipt_email": "buyer@example.test",
-        }
         async with TestClient(TestServer(app)) as client:
-            first = await client.post(
+            response = await client.post(
                 "/api/atlas/billing/checkout",
                 headers={"X-CSRF-Token": "csrf"},
-                json=payload,
+                json={"product_kind": "token_pack", "product_code": "at-100k"},
             )
-            second = await client.post(
-                "/api/atlas/billing/checkout",
-                headers={"X-CSRF-Token": "csrf"},
-                json=payload,
-            )
-            first_body = await first.json()
-            second_body = await second.json()
-            order_id = int(first_body["order"]["id"])
-            self.assertEqual(first.status, 201)
-            self.assertEqual(second.status, 201)
-            self.assertEqual(order_id, int(second_body["order"]["id"]))
-            self.assertEqual(
-                first_body["payment"]["url"],
-                "https://auth.robokassa.ru/Merchant/Index.aspx",
-            )
-            self.assertEqual(
-                first_body["payment"]["fields"]["Email"],
-                "buyer@example.test",
-            )
-            signature = hashlib.md5(
-                f"99.00:{order_id}:password-two:Shp_user=42".encode()
-            ).hexdigest().upper()
-            result_params = {
-                "OutSum": "99.00",
-                "InvId": str(order_id),
-                "Shp_user": "42",
-                "SignatureValue": signature,
-            }
-            result = await client.post(
-                "/api/atlas/billing/robokassa/result",
-                data=result_params,
-            )
-            duplicate = await client.post(
-                "/api/atlas/billing/robokassa/result",
-                data=result_params,
-            )
-            summary = await client.get("/api/atlas/billing/summary")
-            order_status = await client.get(f"/api/atlas/billing/orders/{order_id}")
+            body = await response.json()
 
-            self.assertEqual(await result.text(), f"OK{order_id}")
-            self.assertEqual(await duplicate.text(), f"OK{order_id}")
-            self.assertEqual((await summary.json())["payg_balance_tokens"], 100_000)
-            self.assertEqual((await order_status.json())["status"], "paid")
-            with connect() as con:
-                self.assertEqual(
-                    con.execute("SELECT COUNT(*) FROM atlas_payment_orders").fetchone()[0],
-                    1,
-                )
-                self.assertEqual(
-                    con.execute(
-                        "SELECT COUNT(*) FROM atlas_token_ledger WHERE reference_key = ?",
-                        (f"payment:{order_id}",),
-                    ).fetchone()[0],
-                    1,
-                )
+        self.assertEqual(response.status, 410)
+        self.assertEqual(body["error"], "atlas_payments_disabled")
+        with connect() as con:
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM atlas_payment_orders").fetchone()[0],
+                0,
+            )
 
     async def test_admin_metrics_are_forbidden_for_regular_account(self) -> None:
         principal = SimpleNamespace(
@@ -606,51 +453,6 @@ class AtlasBillingWebTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 403)
 
-    @patch.dict(
-        os.environ,
-        {
-            "ATLAS_BILLING_PAYMENTS_ENABLED": "1",
-            "ROBOKASSA_MERCHANT_LOGIN": "tvr.lat",
-            "ROBOKASSA_PASSWORD1": "password-one",
-            "ROBOKASSA_PASSWORD2": "password-two",
-            "ROBOKASSA_TEST_MODE": "0",
-            "ATLAS_PD_LOCALIZATION_READY": "false",
-            "ATLAS_PD_PRIMARY_REGION": "",
-        },
-        clear=False,
-    )
-    async def test_live_checkout_fails_closed_without_russian_primary_database(self) -> None:
-        principal = SimpleNamespace(user_id=42, display_name="Иван", csrf_token="csrf")
-
-        async def authenticate(_request):
-            return principal, False
-
-        app = web.Application()
-        register_atlas_billing_web_routes(
-            app,
-            asset_dir=Path(__file__).resolve().parents[1] / "web" / "atlas-billing",
-            authenticate=authenticate,
-        )
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post(
-                "/api/atlas/billing/checkout",
-                headers={"X-CSRF-Token": "csrf"},
-                json={
-                    "product_kind": "token_pack",
-                    "product_code": "at-100k",
-                    "checkout_key": "live-gate-checkout-00001",
-                    "receipt_email": "buyer@example.test",
-                },
-            )
-            body = await response.json()
-
-        self.assertEqual(response.status, 503)
-        self.assertEqual(
-            body["error"],
-            "atlas_personal_data_localization_required",
-        )
-
-
 class AtlasBillingDeploymentTests(unittest.TestCase):
     def test_atlas_is_the_direct_store_and_examples_keep_secrets_empty(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -661,11 +463,9 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
         self.assertIn("rewrite * /atlas-billing", caddy)
         self.assertIn("dash.tvr.lat {", caddy)
         self.assertIn("rewrite * /atlas", caddy)
-        self.assertIn("ROBOKASSA_PASSWORD1=\n", persistent)
-        self.assertIn("ROBOKASSA_PASSWORD2=\n", persistent)
-        self.assertIn("ROBOKASSA_RECEIPT_TAX=none", persistent)
-        self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-public-offer.pdf").is_file())
-        self.assertTrue((root / "web" / "atlas-billing" / "documents" / "atlas-privacy-policy.pdf").is_file())
+        self.assertIn("ATLAS_BILLING_ENFORCEMENT_ENABLED=true", persistent)
+        self.assertFalse((root / "web" / "atlas-billing" / "documents" / "atlas-public-offer.pdf").is_file())
+        self.assertFalse((root / "web" / "atlas-billing" / "documents" / "atlas-privacy-policy.pdf").is_file())
 
     def test_public_legal_documents_are_complete_and_name_required_client(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -678,32 +478,26 @@ class AtlasBillingDeploymentTests(unittest.TestCase):
 
         self.assertNotIn("discord", combined)
         self.assertNotIn("дискорд", combined)
-        self.assertNotIn("robokassa", combined)
-        self.assertNotIn("робокасс", combined)
-        self.assertIn("t-mod desktop", combined)
-        self.assertNotIn("tvr × sgl", combined)
-        self.assertIn("фактически понесённых", combined)
-        self.assertIn("федеральным законом от 27.07.2006 № 152-фз", combined)
-        self.assertIn("трансграничная передача", combined)
+        self.assertIn("платные услуги", combined)
+        self.assertIn("денежную оплату", combined)
+        self.assertIn("технологии товарищества", combined)
+        self.assertIn("управление персональными данными", combined)
 
     def test_store_distinguishes_promotional_copy_from_contract_terms(self) -> None:
         root = Path(__file__).resolve().parents[1]
         html = (root / "web" / "atlas-billing" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("* Не является публичной офертой.", html)
-        self.assertIn("Рекламные слоганы и образные описания", html)
-        self.assertIn("Вы оплачиваете дистанционную ИИ‑обработку запросов", html)
-        self.assertIn("Клиент T‑Mod Desktop предоставляется бесплатно", html)
-        self.assertIn('href="/offer"', html)
+        self.assertIn("Некоммерческий режим.", html)
+        self.assertIn("Денежная оплата, подписки", html)
+        self.assertIn("Скачать T‑Mod Desktop", html)
+        self.assertNotIn("checkout-dialog", html)
 
-    def test_login_returns_to_account_and_resumes_selected_purchase(self) -> None:
+    def test_login_returns_to_account_without_purchase_resume(self) -> None:
         root = Path(__file__).resolve().parents[1]
         login = (root / "web" / "consensus" / "login.js").read_text(encoding="utf-8")
         store = (root / "web" / "atlas-billing" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('"/account"', login)
         self.assertIn('form.action = `/auth/login?next=${encodeURIComponent(next)}`', login)
-        self.assertIn("atlas.pending-purchase.v1", store)
-        self.assertIn("rememberPendingPurchase(value)", store)
-        self.assertIn("takePendingPurchase()", store)
-        self.assertIn("requestAnimationFrame(()=>openCheckout(pending))", store)
+        self.assertIn("Подключение закрыто", store)
+        self.assertNotIn("pending-purchase", store)

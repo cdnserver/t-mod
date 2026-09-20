@@ -51,7 +51,6 @@ services:
       POSTGRES_KEEPALIVES_COUNT: "${TMOD_POSTGRES_KEEPALIVES_COUNT:-3}"
       POSTGRES_POOL_MIN: "${TMOD_POSTGRES_POOL_MIN:-2}"
       POSTGRES_POOL_MAX: "${TMOD_POSTGRES_POOL_MAX:-20}"
-      TMOD_DB_EXTERNAL_PROTECTION: "${TMOD_DB_EXTERNAL_PROTECTION:-false}"
       # Every application container already receives the persistent root. Read
       # the password through that stable mount instead of a second file bind,
       # which Docker Desktop can omit when restoring an older container.

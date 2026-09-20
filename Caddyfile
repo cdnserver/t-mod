@@ -107,6 +107,16 @@ atlas.tvr.lat {
 	}
 }
 
+ap.finance.tvr.lat {
+	handle / {
+		rewrite * /atlas-finance-admin
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 dash.tvr.lat {
 	handle / {
 		rewrite * /atlas
