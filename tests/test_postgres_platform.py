@@ -29,6 +29,16 @@ class PostgresCompatibilityTests(unittest.TestCase):
             doraise=True,
         )
 
+    def test_platform_migration_is_serialized_before_schema_initialization(self) -> None:
+        source = (ROOT / "scripts/migrate_sqlite_to_postgres.py").read_text(
+            encoding="utf-8"
+        )
+        lock = source.index("pg_advisory_lock")
+        initialization = source.index("storage.init_db()", lock)
+        unlock = source.index("pg_advisory_unlock", initialization)
+        self.assertLess(lock, initialization)
+        self.assertLess(initialization, unlock)
+
     def test_begin_immediate_relies_on_psycopg_implicit_transaction(self) -> None:
         class Connection:
             def __init__(self) -> None:

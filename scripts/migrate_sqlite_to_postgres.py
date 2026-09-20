@@ -147,11 +147,27 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
     if not postgres_enabled():
         raise RuntimeError("postgres_backend_not_enabled")
 
-    # Build the current schema before importing legacy rows. A second init after
-    # import applies data migrations that were still pending in SQLite.
-    storage.init_db()
     pg = raw_postgres_connection()
+    migration_lock_acquired = False
     try:
+        # Compose, the interactive launcher and the update watcher can all ask
+        # for the idempotent migration job.  PostgreSQL DDL is transactional,
+        # but two simultaneous schema initializers can still deadlock while
+        # acquiring relation locks in a different order.  A session-scoped
+        # advisory lock makes the complete migration a single-writer job.  It
+        # is released automatically even if this process is killed.
+        with pg.cursor() as cursor:
+            cursor.execute("SET statement_timeout = 0")
+            cursor.execute(
+                "SELECT pg_advisory_lock(hashtext(%s))",
+                ("tmod-platform-migration-v1",),
+            )
+        pg.commit()
+        migration_lock_acquired = True
+
+        # Build the current schema before importing legacy rows. A second init
+        # after import applies data migrations still pending in SQLite.
+        storage.init_db()
         with pg.cursor() as cursor:
             cursor.execute(
                 """
@@ -387,28 +403,43 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
                     )
         finally:
             sqlite_connection.close()
+
+        # Keep the migration advisory lock through the post-import schema
+        # upgrades and validation. Otherwise a second migration job could
+        # acquire the lock and enter its first init while this job is still in
+        # its final init, recreating the same DDL deadlock at a later stage.
+        storage.init_db()
+        with storage.connect_readonly() as connection:
+            connection.execute("SELECT 1").fetchone()
+        if os.getenv("TMOD_MIGRATION_BACKUP_REQUIRED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            from persistence.database_guard import create_database_backup
+
+            details["recovery_point"] = create_database_backup(
+                "startup",
+                note="Validated PostgreSQL recovery point after SQLite import",
+                timeout_seconds=900,
+            )["path"]
+        return details
     finally:
+        if migration_lock_acquired:
+            try:
+                pg.rollback()
+                with pg.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        ("tmod-platform-migration-v1",),
+                    )
+                pg.commit()
+            except Exception:
+                # Closing the PostgreSQL session below always releases a
+                # session-scoped advisory lock.
+                pass
         pg.close()
-
-    # Apply data migrations against the newly imported rows and validate access
-    # through the same adapter used by every runtime process.
-    storage.init_db()
-    with storage.connect_readonly() as connection:
-        connection.execute("SELECT 1").fetchone()
-    if os.getenv("TMOD_MIGRATION_BACKUP_REQUIRED", "true").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        from persistence.database_guard import create_database_backup
-
-        details["recovery_point"] = create_database_backup(
-            "startup",
-            note="Validated PostgreSQL recovery point after SQLite import",
-            timeout_seconds=900,
-        )["path"]
-    return details
 
 
 def main() -> int:

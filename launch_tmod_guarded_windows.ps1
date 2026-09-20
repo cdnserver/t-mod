@@ -40,18 +40,50 @@ function Invoke-BoundedProcess {
     $process.StartInfo.Arguments = $Arguments
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.CreateNoWindow = $false
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
     try {
         if (-not $process.Start()) {
-            return @{ exit_code = 125; timed_out = $false }
+            return @{ exit_code = 125; timed_out = $false; stdout = ""; stderr = "process_start_failed" }
         }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             & taskkill.exe /PID $process.Id /T /F *> $null
             $process.WaitForExit(5000) | Out-Null
-            return @{ exit_code = 124; timed_out = $true }
+            return @{ exit_code = 124; timed_out = $true; stdout = $stdout.Result; stderr = $stderr.Result }
         }
-        return @{ exit_code = $process.ExitCode; timed_out = $false }
+        return @{
+            exit_code = $process.ExitCode
+            timed_out = $false
+            stdout = $stdout.Result
+            stderr = $stderr.Result
+        }
     }
     finally { $process.Dispose() }
+}
+
+function Test-InstalledRuntimeHealthy {
+    # The guard is allowed to start the installed release only when there is
+    # no healthy runtime to preserve.  This prevents a transient Git/GitHub
+    # outage from rebuilding containers and racing the migration job.
+    $containers = @(
+        "tmod-postgres",
+        "tmod-discord-bot",
+        "tmod-web",
+        "tmod-worker",
+        "tmod-caddy"
+    )
+    foreach ($container in $containers) {
+        $probe = Invoke-BoundedProcess `
+            -File "docker.exe" `
+            -Arguments ('inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" "{0}"' -f $container) `
+            -TimeoutSeconds 20
+        if ($probe.timed_out -or $probe.exit_code -ne 0) { return $false }
+        $state = ([string]$probe.stdout).Trim().ToLowerInvariant()
+        if ($state -notin @("healthy", "running")) { return $false }
+    }
+    return $true
 }
 
 function Start-InstalledRuntime {
@@ -114,8 +146,12 @@ try {
     }
 
     $busy = (-not $update.timed_out -and $update.exit_code -eq 75)
+    $offline = (-not $update.timed_out -and $update.exit_code -eq 69)
     $reason = if ($busy) {
-        "Другой запуск уже выполняет обновление; запускаю установленную версию параллельно."
+        "Другой запуск уже выполняет обновление."
+    }
+    elseif ($offline) {
+        "Источник обновлений временно недоступен."
     }
     elseif ($update.timed_out) {
         "Обновление превысило ${UpdateTimeoutSeconds} секунд и было остановлено."
@@ -123,8 +159,21 @@ try {
     else {
         "Безопасное обновление завершилось с кодом $($update.exit_code)."
     }
-    Write-Host "[LAUNCH GUARD] $reason Starting the installed release." -ForegroundColor Yellow
-    Write-GuardState "fallback" $reason
+    if ($busy) {
+        # The lock owner is responsible for the eventual switch or rollback.
+        # Starting Compose in parallel here is precisely the race the mutex is
+        # meant to prevent.
+        Write-GuardState "update_in_progress" "$reason Параллельный запуск не выполнялся."
+        exit 0
+    }
+
+    if (Test-InstalledRuntimeHealthy) {
+        Write-GuardState "healthy_unchanged" "$reason Работающая версия оставлена без перезапуска."
+        exit 0
+    }
+
+    Write-Host "[LAUNCH GUARD] $reason Runtime is not healthy; starting the installed release." -ForegroundColor Yellow
+    Write-GuardState "fallback" "$reason Рабочий контур требует восстановления."
     $fallback = Start-InstalledRuntime
     if ($fallback.timed_out) {
         Write-GuardState "fallback_timeout" "Запуск установленной версии превысил ${FallbackTimeoutSeconds} секунд."

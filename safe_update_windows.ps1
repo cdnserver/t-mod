@@ -433,9 +433,12 @@ try {
     }
     finally { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
     if ($fetchExitCode -ne 0) {
-        Write-UpdateStatus -State "offline" -Message "GitHub недоступен; запущена установленная версия."
-        $runtimeCode = Invoke-CurrentRuntime -Directory $ProjectDir -SkipBuild $false
-        exit $runtimeCode
+        # Fetch failure is not a deployment failure and must never restart a
+        # healthy runtime.  The guarded launcher decides whether the installed
+        # release actually needs to be started (for example after a reboot).
+        # EX_UNAVAILABLE keeps this state distinct from updater contention.
+        Write-UpdateStatus -State "offline" -Message "GitHub недоступен; работающая версия не изменена."
+        exit 69
     }
     $TargetCommit = (& git -C $ProjectDir rev-parse "$Remote/$Branch").Trim()
 
