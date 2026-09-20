@@ -158,6 +158,34 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_newer_dotted_dev_revision_does_not_lock_services(self) -> None:
+        principal = self.principal(administrator=True)
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch.dict(
+                    os.environ,
+                    {
+                        "TMOD_DESKTOP_MIN_VERSION": "1.3.5-p4",
+                        "TMOD_DESKTOP_LATEST_VERSION": "1.3.5-p4",
+                    },
+                ),
+            ):
+                response = await client.get(
+                    "/api/desktop/v1/bootstrap",
+                    headers={
+                        "X-TMod-Desktop-Version": "1.3.6-dev.2",
+                    },
+                )
+            payload = await response.json()
+            self.assertFalse(payload["client_update"]["required"])
+            self.assertTrue(all(service["enabled"] for service in payload["services"]))
+        finally:
+            await client.close()
+
     async def test_lumen_private_edition_allows_only_configured_owner(self) -> None:
         principal = self.principal(administrator=True)
         app = create_consensus_web_app(self.bot, guild_id=77)

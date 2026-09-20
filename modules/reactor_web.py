@@ -132,7 +132,11 @@ def _desktop_version_key(value: str) -> tuple[int, int, int, int, str, int]:
     """Compare deployed Desktop versions without adding a packaging dependency."""
 
     match = re.fullmatch(
-        r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?([a-zA-Z]+)(\d+)?)?",
+        # Desktop prereleases have historically used both ``-p4`` and
+        # SemVer-like ``-dev.2`` spellings.  Treating the latter as invalid
+        # produced the minimum key and made a newer development build look
+        # older than every supported release, locking every service tile.
+        r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?([a-zA-Z]+)(?:[.-]?(\d+))?)?",
         str(value or "").strip(),
     )
     if not match:
