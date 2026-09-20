@@ -6,6 +6,26 @@ from persistence import postgres_guard
 
 
 class PostgresGuardStartupTests(unittest.TestCase):
+    def test_snapshot_is_local_postgres_without_retired_external_mode(self) -> None:
+        with (
+            patch.object(postgres_guard, "list_database_backups", return_value=[]),
+            patch.object(postgres_guard, "_read_json", return_value={}),
+            patch.object(postgres_guard, "_database_size", return_value=123),
+            patch.object(
+                postgres_guard,
+                "postgres_safe_target",
+                return_value="postgresql://tmod-postgres:5432/tmod",
+            ),
+            patch.object(postgres_guard.shutil, "disk_usage") as disk_usage,
+        ):
+            disk_usage.return_value.free = 1000
+            disk_usage.return_value.total = 2000
+            result = postgres_guard.database_protection_snapshot()
+
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["backend"], "postgresql")
+        self.assertFalse(result["external_protection"])
+
     def test_concurrent_worker_backup_does_not_restart_the_bot(self) -> None:
         integrity = {
             "ok": True,

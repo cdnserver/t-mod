@@ -389,22 +389,18 @@ def database_protection_snapshot() -> dict[str, Any]:
     status = "ok"
     if integrity and not integrity.get("ok"):
         status = "critical"
-    elif latest is None and not _external_protection_enabled():
+    elif latest is None:
         status = "warning"
     return {
         "status": status,
-        "backend": (
-            "postgresql-external-protection"
-            if _external_protection_enabled()
-            else "postgresql"
-        ),
+        "backend": "postgresql",
         "database_path": postgres_safe_target(),
         "database_size_bytes": _database_size(),
         "backup_dir": str(directory),
         "backup_count": len(postgres_backups),
         "legacy_sqlite_backup_count": len(backups) - len(postgres_backups),
         "latest": latest,
-        "external_protection": _external_protection_enabled(),
+        "external_protection": False,
         "last_integrity": integrity or None,
         "free_bytes": free,
         "total_bytes": total,
