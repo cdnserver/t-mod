@@ -143,14 +143,28 @@ class AtlasFinanceWebTests(unittest.IsolatedAsyncioTestCase):
         client = await self._client(True)
         try:
             page = await client.get("/atlas-finance-admin", headers={"Host": "ap.finance.tvr.lat"})
+            enhancements = await client.get(
+                "/atlas-finance-admin/assets/enhancements.css",
+                headers={"Host": "ap.finance.tvr.lat"},
+            )
             overview = await client.get("/api/admin/atlas-finance/bootstrap", headers={"Host": "ap.finance.tvr.lat"})
+            obsolete_reconcile = await client.post(
+                "/api/admin/atlas-finance/orders/1/reconcile",
+                headers={"Host": "ap.finance.tvr.lat", "X-CSRF-Token": "csrf"},
+                json={},
+            )
             rejected = await client.post(
                 "/api/admin/atlas-finance/costs", headers={"Host": "ap.finance.tvr.lat"}, json={},
             )
             self.assertEqual(page.status, 200)
+            self.assertEqual(enhancements.status, 200)
             self.assertIn("ADMINISTRATION PLANE", await page.text())
             self.assertEqual(overview.status, 200)
-            self.assertIn("dashboard", await overview.json())
+            payload = await overview.json()
+            self.assertIn("dashboard", payload)
+            self.assertEqual(payload["commerce"]["mode"], "disabled")
+            self.assertFalse(payload["commerce"]["enabled"])
+            self.assertEqual(obsolete_reconcile.status, 404)
             self.assertEqual(rejected.status, 403)
         finally:
             await client.close()

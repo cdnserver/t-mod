@@ -105,7 +105,7 @@ def register_atlas_finance_admin_routes(
     async def asset(request: web.Request) -> web.FileResponse:
         _require_host(request)
         name = str(request.match_info.get("name") or "")
-        if name not in {"app.js", "style.css", "favicon.svg"}:
+        if name not in {"app.js", "style.css", "enhancements.css", "favicon.svg"}:
             raise web.HTTPNotFound()
         response = web.FileResponse(asset_dir / name)
         response.headers["Cache-Control"] = "no-cache"
@@ -125,6 +125,11 @@ def register_atlas_finance_admin_routes(
         )
         return web.json_response(_json_ready({
             "dashboard": dashboard, "content": content, "legal": legal,
+            "commerce": {
+                "enabled": False,
+                "mode": "disabled",
+                "message": "Денежные операции Atlas отключены. Доступы выдаются администраторами.",
+            },
             "viewer": {"id": int(selected.user_id), "name": str(selected.display_name), "csrf_token": str(selected.csrf_token)},
         }), headers={"Cache-Control": "no-store"})
 
@@ -147,16 +152,6 @@ def register_atlas_finance_admin_routes(
         except (ValueError, TypeError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(_json_ready({"orders": result}), headers={"Cache-Control": "no-store"})
-
-    async def reconcile_order(request: web.Request) -> web.Response:
-        await principal(request, mutate=True)
-        return web.json_response(
-            {
-                "error": "atlas_payments_disabled",
-                "message": "Внешняя сверка отключена вместе с денежными операциями.",
-            },
-            status=410,
-        )
 
     async def account(request: web.Request) -> web.Response:
         await principal(request)
@@ -290,7 +285,6 @@ def register_atlas_finance_admin_routes(
     app.router.add_get("/api/admin/atlas-finance/bootstrap", bootstrap)
     app.router.add_get("/api/admin/atlas-finance/external", external_status)
     app.router.add_get("/api/admin/atlas-finance/orders", orders)
-    app.router.add_post("/api/admin/atlas-finance/orders/{order_id}/reconcile", reconcile_order)
     app.router.add_get("/api/admin/atlas-finance/account", account)
     app.router.add_post("/api/admin/atlas-finance/grants", grant)
     app.router.add_post("/api/admin/atlas-finance/costs", cost)
