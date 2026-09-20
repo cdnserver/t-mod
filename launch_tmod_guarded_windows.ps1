@@ -4,7 +4,8 @@
     [string]$Branch = "main",
     [string]$Remote = "origin",
     [ValidateRange(300, 7200)][int]$UpdateTimeoutSeconds = 1800,
-    [ValidateRange(120, 3600)][int]$FallbackTimeoutSeconds = 1200
+    [ValidateRange(120, 3600)][int]$FallbackTimeoutSeconds = 1200,
+    [switch]$HealthProbeOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,9 +76,11 @@ function Test-InstalledRuntimeHealthy {
         "tmod-caddy"
     )
     foreach ($container in $containers) {
+        # Do not use PowerShell's ``-f`` operator for this argument: it
+        # collapses the doubled Go-template braces before Docker receives them.
         $probe = Invoke-BoundedProcess `
             -File "docker.exe" `
-            -Arguments ('inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" "{0}"' -f $container) `
+            -Arguments ('inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" "' + $container + '"') `
             -TimeoutSeconds 20
         if ($probe.timed_out -or $probe.exit_code -ne 0) { return $false }
         $state = ([string]$probe.stdout).Trim().ToLowerInvariant()
@@ -118,6 +121,15 @@ function Start-InstalledRuntime {
         $env:TMOD_TRANSACTIONAL_UPDATE = $previousTransactional
         $env:TMOD_PERSISTENT_DIR = $previousPersistentDir
     }
+}
+
+if ($HealthProbeOnly) {
+    if (Test-InstalledRuntimeHealthy) {
+        Write-Host "[LAUNCH GUARD] Installed runtime is healthy."
+        exit 0
+    }
+    Write-Host "[LAUNCH GUARD] Installed runtime is not healthy." -ForegroundColor Red
+    exit 1
 }
 
 try {
