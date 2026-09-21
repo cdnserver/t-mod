@@ -32,9 +32,12 @@ DESKTOP_BOOTSTRAP_PATH: Final = "/api/desktop/v1/bootstrap"
 DESKTOP_BOOTSTRAP_API_PATH: Final = "/internal/desktop/v1/bootstrap"
 REACTOR_NOTIFICATIONS_PATH: Final = "/api/reactor/notifications"
 REACTOR_NOTIFICATIONS_API_PATH: Final = "/internal/reactor/notifications"
+REACTOR_PREPARATION_PATH: Final = "/api/reactor/preparation"
+REACTOR_PREPARATION_API_PATH: Final = "/internal/reactor/preparation"
 API_ROUTE_MAP: Final = {
     ("GET", DESKTOP_BOOTSTRAP_PATH): DESKTOP_BOOTSTRAP_API_PATH,
     ("GET", REACTOR_NOTIFICATIONS_PATH): REACTOR_NOTIFICATIONS_API_PATH,
+    ("GET", REACTOR_PREPARATION_PATH): REACTOR_PREPARATION_API_PATH,
 }
 HOST: Final = os.getenv("TMOD_WEB_GATEWAY_HOST", "0.0.0.0")
 PORT: Final = int(os.getenv("TMOD_WEB_GATEWAY_PORT", "8787") or 8787)
