@@ -190,18 +190,28 @@ function Invoke-CurrentRuntime {
         # root selected by the operator; never silently fall back to another
         # Windows account's Documents folder.
         $env:TMOD_PERSISTENT_DIR = $PersistentDir
-        Push-Location $Directory
+        $runtimeProcess = $null
         try {
             # Native stdout is success-pipeline output in Windows PowerShell.
             # Returning it together with the exit code makes the caller receive
             # an Object[]; ``$runtimeCode -ne 0`` then evaluates truthy even
-            # when run_windows.bat finished successfully. Render diagnostics
-            # to the host while keeping this function's result strictly scalar.
-            & cmd.exe /d /c "call run_windows.bat" 2>&1 | Out-Host
-            $runtimeExitCode = $LASTEXITCODE
-            return [int]$runtimeExitCode
+            # when run_windows.bat finished successfully. Redirecting stderr
+            # into that pipeline is unsafe as well: Docker Compose emits normal
+            # progress there and ErrorActionPreference=Stop turns it into a
+            # terminating RemoteException. Start-Process inherits the console,
+            # keeps both streams visible and returns only the real exit code.
+            $runtimeProcess = Start-Process `
+                -FilePath (Join-Path $env:SystemRoot "System32\cmd.exe") `
+                -ArgumentList @("/d", "/c", "call run_windows.bat") `
+                -WorkingDirectory $Directory `
+                -NoNewWindow `
+                -Wait `
+                -PassThru
+            return [int]$runtimeProcess.ExitCode
         }
-        finally { Pop-Location }
+        finally {
+            if ($null -ne $runtimeProcess) { $runtimeProcess.Dispose() }
+        }
     }
     finally {
         $env:TMOD_SKIP_BUILD = $previousSkip
