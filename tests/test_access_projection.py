@@ -225,6 +225,71 @@ class ProjectedPrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_shadow_api_serves_member_notifications_without_discord(self) -> None:
+        credential = storage.configure_web_credential(77, 42, "soul", "12345678")
+        storage.upsert_web_access_projection(
+            77,
+            42,
+            "Soul",
+            administrator=True,
+            role_ids=[100],
+        )
+        storage.reactor_put_notification(
+            guild_id=77,
+            user_id=42,
+            severity="warning",
+            kind="attention",
+            title="Нужна проверка",
+            body="Очередь ожидает администратора.",
+            route="#/system",
+            dedupe_key="projection-test",
+        )
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=42,
+            session_version=credential.session_version,
+        )
+        app = await create_api_app(guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/internal/reactor/notifications?unread=1",
+                headers={"Cookie": f"{SESSION_COOKIE}={token}"},
+            )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["unread"], 1)
+            self.assertEqual(payload["items"][0]["title"], "Нужна проверка")
+            self.assertTrue(payload["viewer"]["administrator"])
+            self.assertEqual(payload["viewer"]["account_tier"], "administrator")
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+        finally:
+            await client.close()
+
+    async def test_shadow_notification_api_rejects_zero_account(self) -> None:
+        credential = storage.configure_web_credential(77, 42, "soul", "12345678")
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=42,
+            session_version=credential.session_version,
+        )
+        app = await create_api_app(guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/internal/reactor/notifications",
+                headers={"Cookie": f"{SESSION_COOKIE}={token}"},
+            )
+            self.assertEqual(response.status, 403)
+            self.assertEqual(
+                (await response.json())["error"],
+                "zero_account_reactor_forbidden",
+            )
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

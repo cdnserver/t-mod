@@ -13,6 +13,7 @@ from typing import Any
 from aiohttp import web
 
 from modules.consensus_web_auth import (
+    ConsensusWebPrincipal,
     resolve_projected_principal,
     signed_session_identity,
 )
@@ -21,6 +22,7 @@ from modules.desktop_bootstrap_service import (
     build_desktop_bootstrap_payload,
 )
 from persistence import global_ban_repository as global_ban_storage
+from persistence import reactor_repository as reactor_storage
 from persistence.core import connect_readonly
 
 
@@ -46,6 +48,80 @@ def _database_ready() -> bool:
         return True
     except Exception:
         return False
+
+
+def _ban_response(ban: dict[str, Any]) -> web.Response:
+    return web.json_response(
+        {
+            "error": "globally_banned",
+            "message": "Доступ к экосистеме T-Mod заблокирован.",
+            "reason": str(ban.get("reason") or "Причина не указана."),
+            "reference": f"GB-{int(ban.get('revision') or 1):03d}",
+        },
+        status=423,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+async def _authenticate_projected_request(
+    request: web.Request,
+    *,
+    guild_id: int,
+    require_member: bool = False,
+    include_desktop_installation: bool = False,
+) -> tuple[ConsensusWebPrincipal | None, web.Response | None]:
+    """Authorize a standalone API request without a live Discord dependency."""
+
+    identity = signed_session_identity(request, expected_guild_id=guild_id)
+    ban: dict[str, Any] | None = None
+    if include_desktop_installation:
+        desktop_token = str(request.headers.get("X-TMod-Install-Token") or "").strip()
+        fingerprint = str(
+            request.headers.get("X-TMod-Device-Fingerprint") or ""
+        ).strip()
+        if desktop_token:
+            ban = await asyncio.to_thread(
+                global_ban_storage.get_desktop_installation_ban,
+                guild_id,
+                desktop_token,
+                fingerprint,
+            )
+    if identity is not None:
+        ban = ban or await asyncio.to_thread(
+            global_ban_storage.get_global_ban,
+            guild_id,
+            int(identity[1]),
+        )
+    if ban is not None:
+        return None, _ban_response(ban)
+
+    principal = await resolve_projected_principal(request, guild_id=guild_id)
+    if principal is None:
+        return None, web.json_response(
+            {"error": "personal_login_required"},
+            status=401,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    if require_member and not principal.guild_member:
+        return None, web.json_response(
+            {
+                "error": "zero_account_reactor_forbidden",
+                "message": "Нулевой аккаунт не имеет доступа к данным Товарищества.",
+            },
+            status=403,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    return principal, None
+
+
+def _viewer_payload(principal: ConsensusWebPrincipal) -> dict[str, Any]:
+    return {
+        "id": int(principal.user_id),
+        "name": str(principal.display_name),
+        "administrator": bool(principal.administrator),
+        "account_tier": str(principal.account_tier),
+        "csrf_token": str(principal.csrf_token),
+    }
 
 
 async def create_app(*, guild_id: int | None = None) -> web.Application:
@@ -77,42 +153,23 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
         )
 
     async def desktop_bootstrap(request: web.Request) -> web.Response:
-        desktop_token = str(request.headers.get("X-TMod-Install-Token") or "").strip()
-        fingerprint = str(request.headers.get("X-TMod-Device-Fingerprint") or "").strip()
-        identity = signed_session_identity(
-            request,
-            expected_guild_id=selected_guild_id,
-        )
-        ban: dict[str, Any] | None = None
-        if desktop_token:
-            ban = await asyncio.to_thread(
-                global_ban_storage.get_desktop_installation_ban,
-                selected_guild_id,
-                desktop_token,
-                fingerprint,
-            )
-        if identity is not None:
-            ban = ban or await asyncio.to_thread(
-                global_ban_storage.get_global_ban,
-                selected_guild_id,
-                int(identity[1]),
-            )
-        if ban is not None:
-            return web.json_response(
-                {
-                    "error": "globally_banned",
-                    "message": "Доступ к экосистеме T-Mod заблокирован.",
-                    "reason": str(ban.get("reason") or "Причина не указана."),
-                    "reference": f"GB-{int(ban.get('revision') or 1):03d}",
-                },
-                status=423,
-                headers={"Cache-Control": "private, no-store"},
-            )
-        principal = await resolve_projected_principal(
+        principal, auth_error = await _authenticate_projected_request(
             request,
             guild_id=selected_guild_id,
+            include_desktop_installation=True,
         )
-        if principal is None:
+        if auth_error is not None:
+            if auth_error.status == 401:
+                return web.json_response(
+                    {
+                        "error": "desktop_login_required",
+                        "login_url": "https://tvr.lat/login?next=/reactor",
+                    },
+                    status=401,
+                    headers={"Cache-Control": "private, no-store"},
+                )
+            return auth_error
+        if principal is None:  # pragma: no cover - guarded by auth_error
             return web.json_response(
                 {
                     "error": "desktop_login_required",
@@ -138,9 +195,32 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
             headers={"Cache-Control": "private, no-store"},
         )
 
+    async def reactor_notifications(request: web.Request) -> web.Response:
+        principal, auth_error = await _authenticate_projected_request(
+            request,
+            guild_id=selected_guild_id,
+            require_member=True,
+        )
+        if auth_error is not None:
+            return auth_error
+        if principal is None:  # pragma: no cover - guarded by auth_error
+            raise web.HTTPUnauthorized()
+        payload = await asyncio.to_thread(
+            reactor_storage.reactor_list_notifications,
+            selected_guild_id,
+            int(principal.user_id),
+            unread_only=request.query.get("unread") == "1",
+            limit=100,
+        )
+        return web.json_response(
+            {"viewer": _viewer_payload(principal), **payload},
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_get("/internal/desktop/v1/bootstrap", desktop_bootstrap)
+    app.router.add_get("/internal/reactor/notifications", reactor_notifications)
     return app
 
 
