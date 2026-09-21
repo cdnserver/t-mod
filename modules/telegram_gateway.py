@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from collections import defaultdict
+from dataclasses import asdict
 from typing import Any
 
 import aiohttp
@@ -25,6 +26,7 @@ from persistence import atlas_billing_repository as billing_storage
 from persistence import atlas_repository as atlas_storage
 from persistence import global_ban_repository as ban_storage
 from persistence import profile_repository as profile_storage
+from persistence import reactor_repository as reactor_storage
 from persistence import telegram_repository as telegram_storage
 from persistence import web_auth_repository as auth_storage
 from persistence.access_projection_repository import get_web_access_projection
@@ -43,6 +45,16 @@ _POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "true").lower() in {
 _COMMAND_RE = re.compile(r"^\s*/(?P<name>[a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\s+(?P<args>.*))?$", re.DOTALL)
 _ATLAS_RE = re.compile(r"^\s*атлас\s*2?\s*[,;:—–-]\s*(?P<question>.+)$", re.IGNORECASE | re.DOTALL)
 _MAX_TELEGRAM_TEXT = 3900
+_MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": "🤖 Atlas"}, {"text": "👤 Профиль"}],
+        [{"text": "🔔 Уведомления"}, {"text": "⚙ Настройки"}],
+        [{"text": "❌ Выйти из Atlas"}],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+    "input_field_placeholder": "Выберите раздел или напишите вопрос…",
+}
 
 
 def _chunks(value: str, limit: int = _MAX_TELEGRAM_TEXT) -> list[str]:
@@ -105,19 +117,108 @@ class _TelegramApi:
                 raise RuntimeError(f"telegram_api_{method}:{description}")
             return body.get("result") or {}
 
-    async def send(self, chat_id: int, text: str) -> None:
+    async def send(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
         for part in _chunks(text):
+            payload: dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": part,
+                "disable_web_page_preview": True,
+            }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
             await self.call(
                 "sendMessage",
-                {
-                    "chat_id": int(chat_id),
-                    "text": part,
-                    "disable_web_page_preview": True,
-                },
+                payload,
             )
 
     async def typing(self, chat_id: int) -> None:
         await self.call("sendChatAction", {"chat_id": int(chat_id), "action": "typing"})
+
+
+async def _handle_profile(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(
+            chat_id,
+            "Профиль ещё не подключён. Откройте личный Реактор → Подключения → Telegram · Atlas.",
+            reply_markup=_MAIN_KEYBOARD,
+        )
+        return
+    profile, characters = await asyncio.to_thread(
+        profile_storage.get_profile_snapshot,
+        _GUILD_ID,
+        int(link["discord_user_id"]),
+    )
+    preferred = str(getattr(profile, "preferred_name", "") or "").strip()
+    character_lines = [
+        f"• {character.nickname} · статик {character.static_id}"
+        for character in characters[:5]
+    ] or ["• Персонажи ещё не добавлены"]
+    access = await _access_allowed(_GUILD_ID, int(link["discord_user_id"]))
+    await api.send(
+        chat_id,
+        "👤 Профиль T‑Mod\n\n"
+        f"Как обращаться: {preferred or 'не указано'}\n"
+        f"Discord ID: {link['discord_user_id']}\n"
+        f"Atlas AI: {'доступен' if access else 'доступ ожидает выдачи'}\n\n"
+        "Персонажи:\n" + "\n".join(character_lines),
+        reply_markup=_MAIN_KEYBOARD,
+    )
+
+
+async def _handle_notifications(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    inbox = await asyncio.to_thread(
+        reactor_storage.reactor_list_notifications,
+        _GUILD_ID,
+        int(link["discord_user_id"]),
+        limit=8,
+    )
+    items = list(inbox.get("items") or [])
+    if not items:
+        text = "🔔 Уведомления\n\nНовых событий нет."
+    else:
+        lines = [f"🔔 Уведомления · новых: {int(inbox.get('unread') or 0)}", ""]
+        for item in items:
+            marker = "●" if not item.get("read_at") else "○"
+            lines.append(f"{marker} {item.get('title') or 'Событие'}\n  {item.get('body') or ''}")
+        text = "\n".join(lines)
+    await api.send(chat_id, text, reply_markup=_MAIN_KEYBOARD)
+
+
+async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    status = "подключён" if link else "не подключён"
+    await api.send(
+        chat_id,
+        "⚙ Настройки\n\n"
+        f"Telegram ↔ T‑Mod: {status}\n"
+        "Изменить подключение можно в личном Реакторе → Подключения.\n\n"
+        "Atlas отвечает в режиме диалога после кнопки «🤖 Atlas».\n"
+        "Для выхода используйте /stop.",
+        reply_markup=_MAIN_KEYBOARD,
+    )
 
 
 async def _handle_atlas(
@@ -295,6 +396,7 @@ async def _handle_atlas(
 async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
     offset = 0
     locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+    active_modes: dict[int, str] = {}
     while not stop.is_set():
         try:
             updates = await api.call(
@@ -327,17 +429,20 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         )
                         await api.send(
                             chat_id,
-                            "Telegram подключён к вашему T-Mod аккаунту. Теперь можно пользоваться `/atlas` в этом чате."
+                            "Telegram подключён к вашему T-Mod аккаунту. Теперь можно пользоваться кнопкой «🤖 Atlas»."
                             if result.get("ok")
                             else "Ссылка устарела или уже использована. Создайте новую в настройках Реактора.",
+                            reply_markup=_MAIN_KEYBOARD,
                         )
                         continue
                     if command in {"start", "help"}:
                         await api.send(
                             chat_id,
                             "T-Mod · Atlas\n\n"
-                            "Привязка: в Discord выполните `/telegram-link`, затем `/link КОД`.\n"
-                            "Вопрос: `/atlas ваш вопрос`. Для текстового режима — `/atlas2 ваш вопрос`.",
+                            "Подключите аккаунт в личном Реакторе → Подключения.\n"
+                            "Затем нажмите «🤖 Atlas», чтобы войти в режим диалога.\n"
+                            "Вне режима можно использовать `/atlas ваш вопрос`.",
+                            reply_markup=_MAIN_KEYBOARD,
                         )
                         continue
                     if command == "link":
@@ -360,9 +465,22 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                             "Telegram привязан к T-Mod аккаунту. Теперь доступен `/atlas ваш вопрос`."
                             if result.get("ok")
                             else messages.get(str(result.get("error")), "Не удалось привязать аккаунт."),
+                            reply_markup=_MAIN_KEYBOARD,
                         )
                         continue
                     if command in {"atlas", "atlas2"}:
+                        if not args:
+                            active_modes[chat_id] = "atlas2" if command == "atlas2" else "atlas"
+                            await api.send(
+                                chat_id,
+                                "Режим Atlas 2 включён. Напишите вопрос одним или несколькими сообщениями.\n"
+                                "Для выхода нажмите «Выйти из Atlas» или отправьте `/stop`."
+                                if command == "atlas2"
+                                else "Режим Atlas включён. Напишите вопрос одним или несколькими сообщениями.\n"
+                                "Для выхода нажмите «Выйти из Atlas» или отправьте `/stop`.",
+                                reply_markup=_MAIN_KEYBOARD,
+                            )
+                            continue
                         await _handle_atlas(
                             api,
                             chat_id=chat_id,
@@ -372,7 +490,56 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                             locks=locks,
                         )
                         continue
+                    if command in {"profile", "account"}:
+                        await _handle_profile(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"notifications", "notify"}:
+                        await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"settings", "connect"}:
+                        await _handle_settings(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"menu", "stop", "exit", "cancel"}:
+                        active_modes.pop(chat_id, None)
+                        await api.send(
+                            chat_id,
+                            "Режим Atlas выключен. Выберите следующий раздел в меню.",
+                            reply_markup=_MAIN_KEYBOARD,
+                        )
+                        continue
                     await api.send(chat_id, "Неизвестная команда. Используйте `/help`.")
+                    continue
+                normalized = text.casefold()
+                if normalized in {"🤖 atlas", "atlas", "атлас"}:
+                    active_modes[chat_id] = "atlas"
+                    await api.send(
+                        chat_id,
+                        "Режим Atlas включён. Напишите вопрос — я сохраню контекст этого диалога.",
+                        reply_markup=_MAIN_KEYBOARD,
+                    )
+                    continue
+                if normalized in {"👤 профиль", "профиль", "мой профиль"}:
+                    await _handle_profile(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"🔔 уведомления", "уведомления"}:
+                    await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"⚙ настройки", "настройки", "подключения"}:
+                    await _handle_settings(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"❌ выйти из atlas", "выйти из atlas", "выйти"}:
+                    active_modes.pop(chat_id, None)
+                    await api.send(chat_id, "Режим Atlas выключен.", reply_markup=_MAIN_KEYBOARD)
+                    continue
+                if chat_id in active_modes:
+                    await _handle_atlas(
+                        api,
+                        chat_id=chat_id,
+                        telegram_user=user,
+                        question=text,
+                        direct_mode=active_modes[chat_id] == "atlas2",
+                        locks=locks,
+                    )
                     continue
                 match = _ATLAS_RE.match(text)
                 if match:
@@ -384,6 +551,12 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         direct_mode=text.casefold().startswith("атлас 2"),
                         locks=locks,
                     )
+                    continue
+                await api.send(
+                    chat_id,
+                    "Выберите «🤖 Atlas», чтобы начать диалог, или откройте профиль и уведомления в меню.",
+                    reply_markup=_MAIN_KEYBOARD,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -449,6 +622,22 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
                 await api.call("deleteWebhook", {"drop_pending_updates": False})
             except Exception as exc:
                 print(f"Telegram webhook cleanup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            try:
+                await api.call(
+                    "setMyCommands",
+                    {
+                        "commands": [
+                            {"command": "start", "description": "Открыть меню T-Mod"},
+                            {"command": "atlas", "description": "Войти в режим общения с Atlas"},
+                            {"command": "profile", "description": "Показать профиль T-Mod"},
+                            {"command": "notifications", "description": "Показать уведомления"},
+                            {"command": "settings", "description": "Открыть настройки"},
+                            {"command": "stop", "description": "Выйти из режима Atlas"},
+                        ]
+                    },
+                )
+            except Exception as exc:
+                print(f"Telegram command menu setup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             print("Telegram gateway: polling enabled", flush=True)
             await _poll(api, stop=stop)
 
