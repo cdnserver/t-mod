@@ -66,6 +66,9 @@ class TelegramRepositoryTests(unittest.TestCase):
             {key: stored[key] for key in saved},
             saved,
         )
+        self.assertTrue(telegram.reset_atlas_thread(77, 42, 901))
+        self.assertIsNone(telegram.get_atlas_thread(77, 42, 901))
+        self.assertFalse(telegram.reset_atlas_thread(77, 42, 901))
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ import os
 import re
 import sys
 from collections import defaultdict
-from dataclasses import asdict
 from typing import Any
 
 import aiohttp
@@ -48,7 +47,9 @@ _MAX_TELEGRAM_TEXT = 3900
 _MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": "🤖 Atlas"}, {"text": "👤 Профиль"}],
+        [{"text": "🧩 Персонажи"}, {"text": "💳 Atlas Token"}],
         [{"text": "🔔 Уведомления"}, {"text": "⚙ Настройки"}],
+        [{"text": "🆕 Новый диалог"}],
         [{"text": "❌ Выйти из Atlas"}],
     ],
     "resize_keyboard": True,
@@ -77,6 +78,13 @@ def _telegram_display_name(user: dict[str, Any]) -> str:
     last = str(user.get("last_name") or "").strip()
     username = str(user.get("username") or "").strip()
     return " ".join(item for item in (first, last) if item) or username or "Telegram пользователь"
+
+
+def _format_count(value: Any) -> str:
+    try:
+        return f"{int(value or 0):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0"
 
 
 def _parse_command(text: str) -> tuple[str, str] | None:
@@ -217,6 +225,108 @@ async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: di
         "Изменить подключение можно в личном Реакторе → Подключения.\n\n"
         "Atlas отвечает в режиме диалога после кнопки «🤖 Atlas».\n"
         "Для выхода используйте /stop.",
+        reply_markup=_MAIN_KEYBOARD,
+    )
+
+
+async def _handle_usage(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    """Show the user's Atlas plan and token balance without exposing billing data."""
+
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    summary = await asyncio.to_thread(
+        billing_storage.atlas_billing_summary,
+        int(link["discord_user_id"]),
+    )
+    plan = dict(summary.get("plan") or {})
+    usage = dict(summary.get("period_usage") or {})
+    await api.send(
+        chat_id,
+        "💳 Atlas Token\n\n"
+        f"Тариф: {plan.get('name') or summary.get('account', {}).get('plan_code') or 'Free'}\n"
+        f"Доступно: {_format_count(summary.get('balance_tokens'))} токенов\n"
+        f"Из них месячных: {_format_count(summary.get('monthly_balance_tokens'))}\n"
+        f"Куплено отдельно: {_format_count(summary.get('payg_balance_tokens'))}\n\n"
+        f"Использовано в периоде: {_format_count(usage.get('atlas_tokens'))}\n"
+        f"Запросов: {int(usage.get('requests') or 0)}",
+        reply_markup=_MAIN_KEYBOARD,
+    )
+
+
+async def _handle_characters(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    """List all linked characters in a compact, readable view."""
+
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    _profile, characters = await asyncio.to_thread(
+        profile_storage.get_profile_snapshot,
+        _GUILD_ID,
+        int(link["discord_user_id"]),
+    )
+    if not characters:
+        text = "🧩 Персонажи\n\nПерсонажи ещё не добавлены. Добавьте их в личном Реакторе."
+    else:
+        lines = ["🧩 Персонажи T‑Mod", ""]
+        for index, character in enumerate(characters, start=1):
+            lines.append(f"{index}. {character.nickname}\n   Статик: {character.static_id}")
+        text = "\n".join(lines)
+    await api.send(chat_id, text, reply_markup=_MAIN_KEYBOARD)
+
+
+async def _handle_read_notifications(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    changed = await asyncio.to_thread(
+        reactor_storage.reactor_mark_notifications_read,
+        _GUILD_ID,
+        int(link["discord_user_id"]),
+    )
+    await api.send(
+        chat_id,
+        f"✅ Уведомления отмечены прочитанными: {int(changed)}.",
+        reply_markup=_MAIN_KEYBOARD,
+    )
+
+
+async def _handle_new_chat(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
+    """Start a new Atlas thread without deleting the previous conversation."""
+
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    await asyncio.to_thread(
+        telegram_storage.reset_atlas_thread,
+        _GUILD_ID,
+        int(link["discord_user_id"]),
+        int(chat_id),
+    )
+    await api.send(
+        chat_id,
+        "🆕 Новый диалог создан. Старый диалог сохранён в истории Atlas.\n"
+        "Нажмите «🤖 Atlas» и отправьте первый вопрос.",
         reply_markup=_MAIN_KEYBOARD,
     )
 
@@ -456,13 +566,13 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                             telegram_display_name=_telegram_display_name(user),
                         )
                         messages = {
-                            "invalid_code": "Код выглядит неверно. Возьмите новый код командой `/telegram-link` в Discord.",
-                            "invalid_or_expired_code": "Код недействителен или уже использован. Запросите новый в Discord.",
+                            "invalid_code": "Код выглядит неверно. Возьмите новый код командой `/tg-link` в личных сообщениях T‑Mod.",
+                            "invalid_or_expired_code": "Код недействителен или уже использован. Запросите новый командой `/tg-link` в личных сообщениях T‑Mod.",
                             "telegram_already_linked": "Этот Telegram-профиль уже привязан к другому T-Mod аккаунту.",
                         }
                         await api.send(
                             chat_id,
-                            "Telegram привязан к T-Mod аккаунту. Теперь доступен `/atlas ваш вопрос`."
+                            "Telegram привязан к T-Mod аккаунту. Теперь доступны меню профиля и `/atlas ваш вопрос`."
                             if result.get("ok")
                             else messages.get(str(result.get("error")), "Не удалось привязать аккаунт."),
                             reply_markup=_MAIN_KEYBOARD,
@@ -493,8 +603,21 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     if command in {"profile", "account"}:
                         await _handle_profile(api, chat_id=chat_id, telegram_user=user)
                         continue
+                    if command in {"characters", "character", "chars"}:
+                        await _handle_characters(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"usage", "tokens", "balance"}:
+                        await _handle_usage(api, chat_id=chat_id, telegram_user=user)
+                        continue
                     if command in {"notifications", "notify"}:
                         await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"read", "read_notifications"}:
+                        await _handle_read_notifications(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"newchat", "new_chat", "clear"}:
+                        active_modes.pop(chat_id, None)
+                        await _handle_new_chat(api, chat_id=chat_id, telegram_user=user)
                         continue
                     if command in {"settings", "connect"}:
                         await _handle_settings(api, chat_id=chat_id, telegram_user=user)
@@ -521,6 +644,12 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                 if normalized in {"👤 профиль", "профиль", "мой профиль"}:
                     await _handle_profile(api, chat_id=chat_id, telegram_user=user)
                     continue
+                if normalized in {"🧩 персонажи", "персонажи", "мои персонажи"}:
+                    await _handle_characters(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"💳 atlas token", "atlas token", "токены", "баланс"}:
+                    await _handle_usage(api, chat_id=chat_id, telegram_user=user)
+                    continue
                 if normalized in {"🔔 уведомления", "уведомления"}:
                     await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
                     continue
@@ -530,6 +659,10 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                 if normalized in {"❌ выйти из atlas", "выйти из atlas", "выйти"}:
                     active_modes.pop(chat_id, None)
                     await api.send(chat_id, "Режим Atlas выключен.", reply_markup=_MAIN_KEYBOARD)
+                    continue
+                if normalized in {"🆕 новый диалог", "новый диалог", "новый чат"}:
+                    active_modes.pop(chat_id, None)
+                    await _handle_new_chat(api, chat_id=chat_id, telegram_user=user)
                     continue
                 if chat_id in active_modes:
                     await _handle_atlas(
@@ -592,6 +725,38 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
             ephemeral=True,
         )
 
+    @bot.tree.command(name="tg-link", description="Подключить Telegram к T-Mod в личных сообщениях")
+    async def tg_link(interaction: discord.Interaction) -> None:
+        """Create a Telegram link from a DM, including for non-senators."""
+
+        if interaction.guild_id is not None:
+            await interaction.response.send_message(
+                "Откройте личные сообщения с T‑Mod и выполните `/tg-link` там.",
+                ephemeral=True,
+            )
+            return
+        if _GUILD_ID <= 0:
+            await interaction.response.send_message(
+                "Подключение временно недоступно: сервер T‑Mod ещё не настроен."
+            )
+            return
+        challenge = await asyncio.to_thread(
+            telegram_storage.create_link_challenge,
+            _GUILD_ID,
+            int(interaction.user.id),
+        )
+        code = str(challenge["code"])
+        deep_link = f"https://t.me/{_BOT_USERNAME}?start=link_{code}" if _BOT_USERNAME else ""
+        link_line = f"\n\nГотовая ссылка: {deep_link}" if deep_link else ""
+        await interaction.response.send_message(
+            "🔗 Подключение Telegram к T‑Mod\n\n"
+            "Откройте ссылку ниже или найдите бота вручную, затем отправьте ему код.\n\n"
+            f"Код: `{code}`"
+            f"{link_line}\n\n"
+            "Код одноразовый и действует 10 минут. Подключение не выдаёт"
+            " дополнительных ролей или доступа к закрытым разделам."
+        )
+
     @bot.tree.command(name="telegram-unlink", description="Отвязать свой Telegram-профиль от T-Mod")
     @app_commands.guild_only()
     async def telegram_unlink(interaction: discord.Interaction) -> None:
@@ -630,8 +795,12 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
                             {"command": "start", "description": "Открыть меню T-Mod"},
                             {"command": "atlas", "description": "Войти в режим общения с Atlas"},
                             {"command": "profile", "description": "Показать профиль T-Mod"},
+                            {"command": "characters", "description": "Показать персонажей"},
                             {"command": "notifications", "description": "Показать уведомления"},
+                            {"command": "read", "description": "Отметить уведомления прочитанными"},
+                            {"command": "usage", "description": "Показать Atlas Token"},
                             {"command": "settings", "description": "Открыть настройки"},
+                            {"command": "newchat", "description": "Начать новый диалог"},
                             {"command": "stop", "description": "Выйти из режима Atlas"},
                         ]
                     },

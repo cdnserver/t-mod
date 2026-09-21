@@ -219,6 +219,30 @@ def save_atlas_thread(
     }
 
 
+def reset_atlas_thread(
+    guild_id: int,
+    discord_user_id: int,
+    telegram_chat_id: int,
+) -> bool:
+    """Forget the active Telegram conversation while keeping its history.
+
+    The Atlas thread itself is intentionally retained for audit and continuity
+    in the web/Discord clients.  Removing only the Telegram pointer makes the
+    next message start a clean conversation without deleting user data.
+    """
+
+    with _db_lock, connect() as con:
+        cursor = con.execute(
+            """
+            DELETE FROM telegram_atlas_threads
+            WHERE guild_id = ? AND discord_user_id = ? AND telegram_chat_id = ?
+            """,
+            (int(guild_id), int(discord_user_id), int(telegram_chat_id)),
+        )
+        con.commit()
+        return cursor.rowcount > 0
+
+
 __all__ = [
     "create_link_challenge",
     "consume_link_challenge",
@@ -227,4 +251,5 @@ __all__ = [
     "unlink_by_discord",
     "get_atlas_thread",
     "save_atlas_thread",
+    "reset_atlas_thread",
 ]
