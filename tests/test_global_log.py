@@ -74,6 +74,18 @@ def test_database_name_rejects_sql_identifiers(monkeypatch) -> None:
         raise AssertionError("unsafe database identifier accepted")
 
 
+def test_schema_initialization_is_serialized_and_non_destructive() -> None:
+    source = Path(repository.__file__).read_text(encoding="utf-8")
+    initializer = source.split("def initialize_global_log()", 1)[1].split(
+        "\ndef _pepper()", 1
+    )[0]
+    assert "pg_advisory_xact_lock" in initializer
+    assert "_SCHEMA_LOCK_ID" in initializer
+    assert "CREATE INDEX IF NOT EXISTS global_log_events_search_v2_idx" in initializer
+    assert "CREATE INDEX IF NOT EXISTS global_log_events_search_idx" not in initializer
+    assert "DROP INDEX" not in initializer
+
+
 def test_event_projection_is_json_serializable() -> None:
     names = ["id", "event_uuid", "occurred_at", "ingested_at", "details"]
     now = datetime.now(timezone.utc)

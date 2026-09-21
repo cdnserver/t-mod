@@ -24,6 +24,7 @@ from persistence.postgres_compat import _load_driver, postgres_enabled, postgres
 _pool: Any = None
 _pool_lock = threading.Lock()
 _schema_ready = False
+_SCHEMA_LOCK_ID = 845_103_900
 _CHAIN_LOCK_ID = 845_103_901
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
 _facet_cache_lock = threading.Lock()
@@ -145,6 +146,10 @@ def initialize_global_log() -> None:
             return
     pool = _connection_pool()
     with pool.connection() as connection, connection.cursor() as cursor:
+        # Bot, API, web and worker may all initialize the audit store at the
+        # same time after a deployment.  Serialize DDL across processes so two
+        # runtimes cannot race while creating the same tables and indexes.
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS global_log_events (
                 id BIGSERIAL PRIMARY KEY,
@@ -212,14 +217,6 @@ def initialize_global_log() -> None:
             ON global_log_events (status_code, id DESC) WHERE status_code >= 400
         """)
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS global_log_events_search_idx
-            ON global_log_events USING GIN (
-                to_tsvector('simple', coalesce(summary, '') || ' ' ||
-                    coalesce(content_text, '') || ' ' || coalesce(actor_display, '') ||
-                    ' ' || coalesce(target_id, ''))
-            )
-        """)
-        cursor.execute("""
             CREATE INDEX IF NOT EXISTS global_log_events_search_v2_idx
             ON global_log_events USING GIN (
                 to_tsvector('simple', coalesce(summary, '') || ' ' ||
@@ -228,9 +225,10 @@ def initialize_global_log() -> None:
                     ' ' || coalesce(request_id, '') || ' ' || coalesce(details::text, ''))
             )
         """)
-        # v2 covers every field from the original search index. Keeping both
-        # doubled write amplification and wasted hundreds of MB on real data.
-        cursor.execute("DROP INDEX IF EXISTS global_log_events_search_idx")
+        # Never drop obsolete indexes from a live application startup.  DROP
+        # INDEX takes an AccessExclusiveLock and used to deadlock with audit
+        # writers during multi-service boot.  Legacy-index cleanup belongs to
+        # a controlled maintenance migration, not this hot runtime path.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS global_log_sql_rollups (
                 bucket_at TIMESTAMPTZ NOT NULL,
