@@ -11,11 +11,11 @@
       name="description"
       content="Казна и законодательное пространство участника Товарищества."
     >
-    <link rel="stylesheet" href="/assets/portal.css?v=6">
+    <link rel="stylesheet" href="/assets/portal.css?v=7">
     <link rel="stylesheet" href="/assets/portal-theme.css?v=3">
     <link rel="stylesheet" href="/assets/portal-focus.css?v=1">
     <script src="/assets/tab-signal.js" defer></script>
-    <script src="/assets/portal.js?v=6" defer></script>
+    <script src="/assets/portal.js?v=7" defer></script>
   </head>
   <body>
     <div class="portal-atmosphere" aria-hidden="true">
@@ -49,6 +49,7 @@
           >
             Настроить
           </button>
+          <button id="portal-connections" type="button">Подключения</button>
           <a class="portal-logout" href="/auth/logout">Выйти</a>
         </nav>
       </header>
@@ -602,6 +603,37 @@
       <button id="portal-layout-save" class="portal-primary" type="button">
         Сохранить экран
       </button>
+    </dialog>
+
+    <dialog id="portal-connections-dialog" class="portal-dialog connections-dialog">
+      <form method="dialog">
+        <span><small>ЛИЧНЫЙ REACTOR</small><strong>Подключения</strong></span>
+        <button value="cancel" aria-label="Закрыть">×</button>
+      </form>
+      <div class="connections-intro">
+        <span class="connections-orb" aria-hidden="true">✦</span>
+        <div><h2>Ваши сервисы — в одном месте</h2><p>Подключайте внешние каналы без передачи пароля. Доступ остаётся связан с вашим T‑Mod аккаунтом.</p></div>
+      </div>
+      <article id="telegram-connection-card" class="connection-card" data-state="loading">
+        <div class="connection-card-icon telegram-icon" aria-hidden="true">✈</div>
+        <div class="connection-card-copy">
+          <small>TELEGRAM · ATLAS</small>
+          <h3>Atlas в личном чате</h3>
+          <p id="telegram-connection-status">Проверяем состояние подключения…</p>
+          <div id="telegram-connection-user" class="connection-user" hidden></div>
+        </div>
+        <div class="connection-card-actions">
+          <button id="telegram-connect" class="portal-primary" type="button">Подключить</button>
+          <button id="telegram-unlink" class="connection-secondary" type="button" hidden>Отключить</button>
+        </div>
+      </article>
+      <section id="telegram-link-step" class="telegram-link-step" hidden>
+        <div class="telegram-step-number">01</div>
+        <div><strong>Откройте Telegram одной кнопкой</strong><p>Ссылка уже содержит короткий одноразовый ключ. Ничего копировать и вводить вручную не нужно.</p></div>
+        <a id="telegram-open-link" class="portal-primary telegram-open-link" href="#" target="_blank" rel="noopener">Открыть Telegram <span>↗</span></a>
+        <small id="telegram-link-code" class="telegram-link-code"></small>
+      </section>
+      <p id="telegram-connection-feedback" class="connection-feedback" role="status" aria-live="polite"></p>
     </dialog>
 
     <dialog id="member-onboarding-dialog" class="member-onboarding-dialog">

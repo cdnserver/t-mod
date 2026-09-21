@@ -1640,8 +1640,122 @@
     openDialog(byId("portal-layout-dialog"));
   }
 
+  let telegramConnectionPoll = null;
+
+  function renderTelegramConnection(payload = {}) {
+    const card = byId("telegram-connection-card");
+    const status = byId("telegram-connection-status");
+    const user = byId("telegram-connection-user");
+    const connect = byId("telegram-connect");
+    const unlink = byId("telegram-unlink");
+    const step = byId("telegram-link-step");
+    const configured = Boolean(payload.configured);
+    const linked = Boolean(payload.linked);
+    card.dataset.state = configured ? (linked ? "linked" : "ready") : "error";
+    connect.hidden = linked;
+    unlink.hidden = !linked;
+    connect.disabled = !configured;
+    if (!configured) {
+      status.textContent = "Telegram пока не подключён администратором.";
+      user.hidden = true;
+      step.hidden = true;
+      return;
+    }
+    if (linked) {
+      status.textContent = "Подключён безопасно. Atlas доступен в личном чате Telegram.";
+      user.hidden = false;
+      user.textContent = payload.telegram_display_name
+        ? `${payload.telegram_display_name}${payload.telegram_username ? ` · @${payload.telegram_username}` : ""}`
+        : "Telegram-профиль подтверждён";
+      step.hidden = true;
+      return;
+    }
+    status.textContent = "Не подключён. Пароль T-Mod не передаётся Telegram-боту.";
+    user.hidden = true;
+    step.hidden = true;
+  }
+
+  async function loadTelegramConnection(silent = true) {
+    try {
+      const payload = await request("/api/reactor/telegram");
+      renderTelegramConnection(payload);
+      if (payload.linked && telegramConnectionPoll) {
+        clearInterval(telegramConnectionPoll);
+        telegramConnectionPoll = null;
+        toast("Telegram подключён к вашему T-Mod аккаунту.");
+      }
+      return payload;
+    } catch (error) {
+      if (!silent) {
+        byId("telegram-connection-card").dataset.state = "error";
+        byId("telegram-connection-status").textContent = error.message || "Не удалось проверить подключение.";
+      }
+      return null;
+    }
+  }
+
+  async function openConnections() {
+    openDialog(byId("portal-connections-dialog"));
+    byId("telegram-connection-feedback").textContent = "";
+    renderTelegramConnection({ configured: false, linked: false });
+    await loadTelegramConnection(false);
+  }
+
+  async function createTelegramConnection() {
+    const button = byId("telegram-connect");
+    const feedback = byId("telegram-connection-feedback");
+    button.disabled = true;
+    button.textContent = "Готовим…";
+    feedback.textContent = "Создаём одноразовый защищённый переход…";
+    feedback.dataset.kind = "";
+    try {
+      const payload = await request("/api/reactor/telegram", {
+        method: "POST",
+        body: JSON.stringify({ action: "create" }),
+      });
+      if (payload.deep_link) {
+        byId("telegram-open-link").href = payload.deep_link;
+        byId("telegram-link-code").textContent = `Код действует до ${formatMoment(payload.expires_at)} · запасной код: ${payload.code}`;
+        byId("telegram-link-step").hidden = false;
+        feedback.textContent = "Готово. Нажмите кнопку — Telegram откроет бота и завершит привязку автоматически.";
+        feedback.dataset.kind = "success";
+        if (telegramConnectionPoll) clearInterval(telegramConnectionPoll);
+        telegramConnectionPoll = setInterval(() => void loadTelegramConnection(), 2500);
+      }
+    } catch (error) {
+      feedback.textContent = error.message || "Не удалось создать подключение.";
+      feedback.dataset.kind = "error";
+    } finally {
+      button.disabled = false;
+      button.textContent = "Подключить";
+    }
+  }
+
+  async function unlinkTelegramConnection() {
+    if (!await confirmAction({
+      title: "Отключить Telegram?",
+      message: "История Atlas останется в T-Mod, но новый Telegram-запрос больше не будет проходить от вашего аккаунта.",
+      label: "Отключить",
+    })) return;
+    try {
+      await request("/api/reactor/telegram", {
+        method: "POST",
+        body: JSON.stringify({ action: "unlink" }),
+      });
+      renderTelegramConnection({ configured: true, linked: false });
+      byId("telegram-connection-feedback").textContent = "Telegram отключён.";
+      byId("telegram-connection-feedback").dataset.kind = "success";
+    } catch (error) {
+      byId("telegram-connection-feedback").textContent = error.message || "Не удалось отключить Telegram.";
+      byId("telegram-connection-feedback").dataset.kind = "error";
+    }
+  }
+
   byId("portal-customize").addEventListener("click", openLayout);
   byId("portal-sidebar-customize").addEventListener("click", openLayout);
+  byId("portal-connections").addEventListener("click", () => void openConnections());
+  byId("telegram-connect").addEventListener("click", () => void createTelegramConnection());
+  byId("telegram-unlink").addEventListener("click", () => void unlinkTelegramConnection());
   document.querySelectorAll("[data-portal-target]").forEach((control) => {
     control.addEventListener("click", () => activateView(control.dataset.portalTarget));
   });

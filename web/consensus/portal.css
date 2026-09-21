@@ -318,6 +318,33 @@ button { cursor: pointer; }
 #portal-layout-list label { align-items: center; background: rgba(255,255,255,.03); border-radius: 10px; display: flex; gap: 10px; padding: 11px; }
 #portal-layout-list input { accent-color: var(--mint); }
 .portal-dialog > .portal-primary { margin: 7px 17px 17px; width: calc(100% - 34px); }
+.connections-dialog { max-width: 690px; }
+.connections-intro { align-items: center; display: flex; gap: 14px; padding: 20px 20px 15px; }
+.connections-intro h2 { font: 730 23px/1.05 var(--display); letter-spacing: -.03em; margin: 0 0 7px; }
+.connections-intro p { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0; }
+.connections-orb { align-items: center; background: radial-gradient(circle at 32% 25%, #ecfff7, var(--mint) 35%, #224d3c); border: 1px solid rgba(119,229,181,.35); border-radius: 17px; box-shadow: 0 0 34px rgba(119,229,181,.16); color: #07140e; display: flex; flex: 0 0 52px; font-size: 22px; height: 52px; justify-content: center; }
+.connection-card { align-items: center; background: linear-gradient(130deg, rgba(119,229,181,.08), rgba(123,168,255,.04)); border: 1px solid rgba(119,229,181,.19); border-radius: 17px; display: grid; gap: 14px; grid-template-columns: auto minmax(0,1fr) auto; margin: 4px 20px 15px; padding: 17px; }
+.connection-card[data-state="linked"] { border-color: rgba(119,229,181,.42); }
+.connection-card[data-state="error"] { border-color: rgba(242,126,137,.45); }
+.connection-card-icon { align-items: center; background: rgba(123,168,255,.14); border: 1px solid rgba(123,168,255,.25); border-radius: 14px; color: #a9c7ff; display: flex; font-size: 23px; height: 49px; justify-content: center; width: 49px; }
+.connection-card-copy { min-width: 0; }
+.connection-card-copy > small { color: var(--blue); font-size: 9px; font-weight: 850; letter-spacing: .14em; }
+.connection-card-copy h3 { font-size: 16px; margin: 5px 0 4px; }
+.connection-card-copy p { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 0; }
+.connection-user { color: var(--mint); font-size: 11px; margin-top: 7px; }
+.connection-card-actions { align-items: end; display: flex; flex-direction: column; gap: 7px; }
+.connection-card-actions button { white-space: nowrap; }
+.connection-secondary { background: transparent; border: 0; color: var(--muted); font-size: 10px; padding: 4px 0; }
+.telegram-link-step { align-items: center; background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 12px; grid-template-columns: auto minmax(0,1fr) auto; margin: 0 20px 13px; padding: 14px; }
+.telegram-step-number { align-items: center; border: 1px solid rgba(119,229,181,.33); border-radius: 10px; color: var(--mint); display: flex; font-size: 11px; font-weight: 850; height: 35px; justify-content: center; width: 35px; }
+.telegram-link-step strong { display: block; font-size: 12px; }
+.telegram-link-step p { color: var(--muted); font-size: 10px; line-height: 1.45; margin: 4px 0 0; }
+.telegram-open-link { font-size: 11px; text-decoration: none; white-space: nowrap; }
+.telegram-open-link span { margin-left: 10px; }
+.telegram-link-code { color: var(--muted); font-family: ui-monospace, monospace; font-size: 10px; grid-column: 2 / -1; }
+.connection-feedback { color: var(--muted); font-size: 11px; min-height: 16px; padding: 0 20px 17px; }
+.connection-feedback[data-kind="error"] { color: var(--red); }
+.connection-feedback[data-kind="success"] { color: var(--mint); }
 .bill-dialog { max-width: 720px; }
 .bill-dialog-meta { align-items: center; display: flex; justify-content: space-between; padding: 15px 20px 0; }
 .bill-dialog-meta span { color: var(--muted); font-size: 11px; }
@@ -357,7 +384,7 @@ button { cursor: pointer; }
   .portal-header { align-items: flex-start; gap: 12px; padding: 14px 0; }
   .portal-brand small { display: none; }
   .portal-header nav { flex-wrap: wrap; justify-content: flex-end; }
-  .portal-header nav a[href="#treasury"], .portal-header nav a[href="#legislation"], .portal-header nav button { display: none; }
+  .portal-header nav a[href="#treasury"], .portal-header nav a[href="#legislation"], .portal-header nav button:not(#portal-connections) { display: none; }
   .portal-header nav a { font-size: 10px; padding: 8px 7px; }
   .portal-hero { display: block; min-height: 340px; padding: 48px 0; }
   .portal-hero h1 { font-size: 47px; }
@@ -394,6 +421,12 @@ button { cursor: pointer; }
   .preparation-dialog-footer { align-items: stretch; flex-direction: column; }
   .preparation-dialog-footer > div { display: grid; grid-template-columns: 1fr 1fr; }
   .preparation-dialog-footer button { width: 100%; }
+  .connection-card { align-items: start; grid-template-columns: auto minmax(0,1fr); }
+  .connection-card-actions { align-items: stretch; grid-column: 1 / -1; flex-direction: row; }
+  .connection-card-actions button { flex: 1; }
+  .telegram-link-step { align-items: start; grid-template-columns: auto minmax(0,1fr); }
+  .telegram-open-link { grid-column: 1 / -1; text-align: center; }
+  .telegram-link-code { grid-column: 1 / -1; }
 }
 
 @media (max-width: 430px) {

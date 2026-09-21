@@ -315,6 +315,23 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                 parsed = _parse_command(text)
                 if parsed is not None:
                     command, args = parsed
+                    if command == "start" and args.lower().startswith("link_"):
+                        result = await asyncio.to_thread(
+                            telegram_storage.consume_link_challenge,
+                            args[5:],
+                            guild_id=_GUILD_ID,
+                            telegram_user_id=int(user.get("id") or 0),
+                            telegram_chat_id=chat_id,
+                            telegram_username=str(user.get("username") or ""),
+                            telegram_display_name=_telegram_display_name(user),
+                        )
+                        await api.send(
+                            chat_id,
+                            "Telegram подключён к вашему T-Mod аккаунту. Теперь можно пользоваться `/atlas` в этом чате."
+                            if result.get("ok")
+                            else "Ссылка устарела или уже использована. Создайте новую в настройках Реактора.",
+                        )
+                        continue
                     if command in {"start", "help"}:
                         await api.send(
                             chat_id,

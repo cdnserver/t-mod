@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -85,6 +86,7 @@ from persistence import outbox_repository as outbox_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import tvrs_repository as tvrs_storage
+from persistence import telegram_repository as telegram_storage
 from persistence import web_auth_repository as web_auth_storage
 
 
@@ -1633,6 +1635,69 @@ def register_reactor_web_routes(
         member_home_cache.invalidate()
         return web.json_response({"ok": True, "layout": layout})
 
+    async def telegram_connection(request: web.Request) -> web.Response:
+        """Return or change the member's Telegram connection from the Reactor."""
+
+        principal = await personal_request(request)
+        if request.method == "GET":
+            link = await asyncio.to_thread(
+                telegram_storage.get_link_by_discord,
+                int(guild_id),
+                int(principal.user_id),
+            )
+            username = str(os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+            return web.json_response(
+                {
+                    "configured": bool(username),
+                    "linked": link is not None,
+                    "username": username or None,
+                    "telegram_username": link.get("telegram_username") if link else None,
+                    "telegram_display_name": link.get("telegram_display_name") if link else None,
+                    "linked_at": link.get("created_at") if link else None,
+                },
+                headers={"Cache-Control": "private, no-store"},
+            )
+
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "create").strip().lower()
+        if action == "unlink":
+            changed = await asyncio.to_thread(
+                telegram_storage.unlink_by_discord,
+                int(guild_id),
+                int(principal.user_id),
+            )
+            return web.json_response({"ok": True, "linked": False, "changed": changed})
+        if action != "create":
+            return web.json_response(
+                {"error": "telegram_connection_action_invalid", "message": "Неизвестное действие."},
+                status=400,
+            )
+        username = str(os.getenv("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        if not username:
+            return web.json_response(
+                {
+                    "error": "telegram_not_configured",
+                    "message": "Telegram-бот ещё не подключён администратором.",
+                },
+                status=503,
+            )
+        challenge = await asyncio.to_thread(
+            telegram_storage.create_link_challenge,
+            int(guild_id),
+            int(principal.user_id),
+        )
+        code = str(challenge["code"])
+        return web.json_response(
+            {
+                "ok": True,
+                "linked": False,
+                "code": code,
+                "expires_at": challenge["expires_at"],
+                "deep_link": f"https://t.me/{username}?start=link_{code}",
+            },
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     async def notifications(request: web.Request) -> web.Response:
         principal = await personal_request(request)
         payload = await asyncio.to_thread(
@@ -2231,6 +2296,8 @@ def register_reactor_web_routes(
     app.router.add_post("/api/ovr", ovr_command)
     app.router.add_post("/api/ovr/{case_id}/report.pdf", ovr_report)
     app.router.add_post("/api/reactor/preferences", preferences)
+    app.router.add_get("/api/reactor/telegram", telegram_connection)
+    app.router.add_post("/api/reactor/telegram", telegram_connection)
     app.router.add_get("/api/reactor/notifications", notifications)
     app.router.add_get("/api/desktop/v1/bootstrap", desktop_bootstrap)
     app.router.add_post("/api/reactor/notifications/read", read_notifications)
