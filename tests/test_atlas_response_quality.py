@@ -171,6 +171,28 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[1]", fallback)
         self.assertLessEqual(len(fallback.split()), 100)
         self.assertNotIn("библиотек", fallback.casefold())
+        self.assertNotIn("по найденному материалу", fallback.casefold())
+
+    def test_vehicle_overlay_uses_human_source_name_with_article(self) -> None:
+        prepared = SimpleNamespace(
+            latency_mode="overlay",
+            intent="procedural_advice",
+            sources=[
+                {
+                    "structured": True,
+                    "title": "Дорожный Кодекс Штата San Andreas",
+                    "reference": "article:17.3",
+                    "text": "17.3 основания для эвакуации",
+                    "pinpoints": ["статья 17.3"],
+                }
+            ],
+            payload={
+                "messages": [{"role": "user", "content": "машину эвакуировали"}]
+            },
+        )
+        answer = atlas_ai._deterministic_overlay_vehicle_reply(prepared)
+        self.assertIn("ДК — Дорожный кодекс", answer)
+        self.assertIn("статья 17.3", answer)
 
     def test_provider_refusal_rescues_summary_material_not_only_legal_sources(self) -> None:
         prepared = SimpleNamespace(

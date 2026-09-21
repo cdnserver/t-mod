@@ -4344,7 +4344,10 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
             (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
             reference.replace(":", " ", 1) or "точная норма",
         )
-        return f"По найденной норме:\n\n{text}\n\n[{index}, {label}]"
+        # The answer itself is the useful part.  Do not expose internal RAG
+        # narration such as “по найденной норме”; keep the provenance as a
+        # compact source marker instead.
+        return f"{text}\n\n[{index}, {label}]"
 
     # Forum and handbook imports are not always split into numbered clauses.
     # They can still contain the answer, and returning only a clarification
@@ -4407,7 +4410,7 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
                 source_index = -negative_index
                 excerpt = _compact_overlay_answer(text, max_words=90, max_chars=900)
                 if excerpt and not _atlas_answer_is_retrieval_refusal(excerpt):
-                    return f"По найденному материалу:\n\n{excerpt}\n\n[{source_index}]"
+                    return f"{excerpt}\n\n[{source_index}]"
     return ""
 
 
@@ -5086,10 +5089,12 @@ def _deterministic_overlay_vehicle_reply(prepared: _AtlasAnswerRequest) -> str:
             reference = str(source.get("reference") or "")
             if reference != "article:17.3":
                 continue
+            source_title = str(source.get("title") or "Дорожный кодекс").strip()
+            source_label = _atlas_source_label(source_title)
             return (
                 "Эвакуация возможна за нарушение парковки/остановки, отсутствие или повреждение "
                 "номера или VIN, угон, более 10 неоплаченных штрафов либо розыск/тюрьму владельца "
-                f"[Источник {index}, статья 17.3]."
+                f"({source_label}, статья 17.3)."
             )
     if re.search(r"\b(?:меня\s+)?останов\w*\b|\bтрафик[-\s]?стоп\b", question):
         return (
@@ -5097,6 +5102,24 @@ def _deterministic_overlay_vehicle_reply(prepared: _AtlasAnswerRequest) -> str:
             "следуйте законным требованиям сотрудника."
         )
     return ""
+
+
+def _atlas_source_label(title: str) -> str:
+    """Return a short, human-readable provenance label for Atlas answers."""
+
+    clean = re.sub(r"\s+", " ", str(title or "Источник")).strip(" .—–-:")
+    lowered = clean.casefold()
+    aliases = (
+        (("дорожн", "кодекс"), "ДК", "Дорожный кодекс"),
+        (("уголовн", "кодекс"), "УК", "Уголовный кодекс"),
+        (("судебн", "кодекс"), "СК", "Судебный кодекс"),
+        (("гражданск", "кодекс"), "ГК", "Гражданский кодекс"),
+        (("правил", "сервер"), "ПС", "Правила сервера"),
+    )
+    for needles, abbreviation, canonical in aliases:
+        if all(needle in lowered for needle in needles):
+            return f"{abbreviation} — {canonical}"
+    return clean[:100] or "Источник"
 
 
 def _deterministic_overlay_low_evidence_reply(prepared: _AtlasAnswerRequest) -> str:

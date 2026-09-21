@@ -997,6 +997,55 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_atlas_ai_messages_thread
             ON atlas_ai_messages(thread_id, id);
 
+            -- Telegram never receives a T-Mod password or a raw binding
+            -- secret.  Discord creates a short-lived challenge; Telegram
+            -- consumes it once and the durable link below is then used for
+            -- Atlas access and conversation continuity.
+            CREATE TABLE IF NOT EXISTS telegram_link_challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash TEXT NOT NULL UNIQUE,
+                guild_id INTEGER NOT NULL,
+                discord_user_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_telegram_link_challenges_owner
+            ON telegram_link_challenges(guild_id, discord_user_id, expires_at);
+
+            CREATE TABLE IF NOT EXISTS telegram_account_links (
+                guild_id INTEGER NOT NULL,
+                discord_user_id INTEGER NOT NULL,
+                telegram_user_id INTEGER NOT NULL,
+                telegram_chat_id INTEGER NOT NULL,
+                telegram_username TEXT NOT NULL DEFAULT '',
+                telegram_display_name TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, discord_user_id),
+                UNIQUE (guild_id, telegram_user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_telegram_account_links_telegram
+            ON telegram_account_links(guild_id, telegram_user_id);
+
+            CREATE TABLE IF NOT EXISTS telegram_atlas_threads (
+                guild_id INTEGER NOT NULL,
+                discord_user_id INTEGER NOT NULL,
+                telegram_chat_id INTEGER NOT NULL,
+                organization_id INTEGER NOT NULL,
+                atlas_thread_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, discord_user_id, telegram_chat_id),
+                FOREIGN KEY(atlas_thread_id) REFERENCES atlas_ai_threads(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_telegram_atlas_threads_owner
+            ON telegram_atlas_threads(guild_id, discord_user_id, updated_at);
+
             CREATE TABLE IF NOT EXISTS atlas_ai_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL,

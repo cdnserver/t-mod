@@ -33,6 +33,7 @@ from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
+from modules.telegram_gateway import setup_telegram_gateway, start_telegram_gateway
 from modules.games_discord import setup_games_discord
 from modules.admission import setup_admission
 from modules.global_log_discord import setup_global_log_discord
@@ -534,6 +535,7 @@ class TModBot(commands.Bot):
     async def setup_hook(self) -> None:
         global _activity_queue
         setup_error_inbox_runtime(self.loop)
+        await start_telegram_gateway(self)
         try:
             health = await start_global_log_runtime(self.loop)
             print(f"Global log runtime: {health}", flush=True)
@@ -1176,6 +1178,8 @@ boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")
 setup_atlas_discord(bot)
+boot_module("Telegram Gateway")
+setup_telegram_gateway(bot)
 boot_module("T-Mod Music")
 setup_music(bot, remember_command_activity)
 boot_module("SGL Bureau")
