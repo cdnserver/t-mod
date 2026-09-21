@@ -122,6 +122,16 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn("condition: service_completed_successfully", compose)
         self.assertIn("start_period: 90s", compose)
         self.assertIn("freezing the SQLite writer", launcher)
+        self.assertIn(
+            "SELECT count(*) FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'",
+            launcher,
+        )
+        self.assertIn("Could not read the PostgreSQL migration marker", launcher)
+        self.assertIn("Unexpected PostgreSQL migration marker", launcher)
+        self.assertNotIn(
+            "SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'",
+            launcher,
+        )
         self.assertNotIn("cloudflare", caddyfile.lower())
         self.assertIn(
             "CONSENSUS_WEB_PUBLIC_URL=https://consensus.tvr.lat",

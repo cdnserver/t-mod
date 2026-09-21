@@ -250,9 +250,21 @@ if errorlevel 1 (
   exit /b 1
 )
 call :ok "PostgreSQL secret mount verified inside Docker"
-set POSTGRES_MIGRATION_REQUIRED=1
-docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT 1 FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'" 2>nul | findstr /X /C:"1" >nul
-if not errorlevel 1 set POSTGRES_MIGRATION_REQUIRED=0
+set "POSTGRES_MIGRATION_MARKER="
+for /f "usebackq delims=" %%M in (`docker exec tmod-postgres psql -v ON_ERROR_STOP=1 -U tmod -d tmod -tAc "SELECT count(*) FROM tmod_platform_migrations WHERE key='sqlite-to-postgresql-v1'" 2^>nul`) do if not defined POSTGRES_MIGRATION_MARKER set "POSTGRES_MIGRATION_MARKER=%%M"
+if not defined POSTGRES_MIGRATION_MARKER (
+  call :fail "Could not read the PostgreSQL migration marker"
+  call :postgres_diagnostics
+  call :pause_if_interactive
+  exit /b 1
+)
+if not "%POSTGRES_MIGRATION_MARKER%"=="0" if not "%POSTGRES_MIGRATION_MARKER%"=="1" (
+  call :fail "Unexpected PostgreSQL migration marker: %POSTGRES_MIGRATION_MARKER%"
+  call :pause_if_interactive
+  exit /b 1
+)
+set "POSTGRES_MIGRATION_REQUIRED=1"
+if "%POSTGRES_MIGRATION_MARKER%"=="1" set "POSTGRES_MIGRATION_REQUIRED=0"
 if "%POSTGRES_MIGRATION_REQUIRED%"=="1" (
   call :warn "First PostgreSQL import detected; freezing the SQLite writer"
   docker stop tmod-discord-bot tmod-web tmod-api tmod-worker >nul 2>nul
