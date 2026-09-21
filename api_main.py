@@ -1,8 +1,7 @@
 """Standalone database-backed API introduced beside the Discord web runtime.
 
-No public route points here yet.  Production first validates this service and
-its Desktop bootstrap projection in shadow mode; the gateway cutover is a
-separate, reversible release.
+Routes move here one at a time after parity verification.  The public gateway
+keeps the established runtime as an automatic fallback during each rollout.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from persistence.core import connect_readonly
 
 
 PORT = int(os.getenv("TMOD_API_PORT", "8793") or 8793)
+MODE = str(os.getenv("TMOD_API_MODE") or "shadow").strip() or "shadow"
 
 
 def configured_guild_id() -> int:
@@ -57,7 +57,7 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
             {
                 "status": "ok",
                 "service": "tmod-api",
-                "mode": "shadow",
+                "mode": MODE,
             }
         )
 
@@ -69,7 +69,7 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
             {
                 "status": "ready" if is_ready else "starting",
                 "service": "tmod-api",
-                "mode": "shadow",
+                "mode": MODE,
                 "database": database_ready,
                 "guild_configured": configured,
             },

@@ -25,6 +25,11 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector, web
 UPSTREAM: Final = os.getenv(
     "TMOD_INTERNAL_WEB_UPSTREAM", "http://tmod-discord-bot:8788"
 ).rstrip("/")
+API_UPSTREAM: Final = os.getenv(
+    "TMOD_INTERNAL_API_UPSTREAM", "http://tmod-api:8793"
+).rstrip("/")
+DESKTOP_BOOTSTRAP_PATH: Final = "/api/desktop/v1/bootstrap"
+DESKTOP_BOOTSTRAP_API_PATH: Final = "/internal/desktop/v1/bootstrap"
 HOST: Final = os.getenv("TMOD_WEB_GATEWAY_HOST", "0.0.0.0")
 PORT: Final = int(os.getenv("TMOD_WEB_GATEWAY_PORT", "8787") or 8787)
 HOP_HEADERS: Final = {
@@ -194,6 +199,8 @@ async def gateway_health(_: web.Request) -> web.Response:
             "status": "ok",
             "service": "tmod-web",
             "upstream": UPSTREAM,
+            "api_upstream": API_UPSTREAM,
+            "desktop_bootstrap_route": "api-with-legacy-fallback",
         }
     )
 
@@ -234,20 +241,112 @@ async def gateway_ready(request: web.Request) -> web.Response:
     return web.json_response({"status": "ready", "service": "tmod-web"})
 
 
+def _route_targets(request: web.Request) -> tuple[str, str | None, str]:
+    """Return the primary target, optional fallback, and route label.
+
+    Only an idempotent GET with a proven parity contract is moved to the
+    standalone API.  Mutating routes remain on the established runtime until
+    they receive their own migration and rollback proof.
+    """
+
+    legacy_target = f"{UPSTREAM}{request.rel_url}"
+    if request.method == "GET" and request.path == DESKTOP_BOOTSTRAP_PATH:
+        query = f"?{request.query_string}" if request.query_string else ""
+        return (
+            f"{API_UPSTREAM}{DESKTOP_BOOTSTRAP_API_PATH}{query}",
+            legacy_target,
+            "tmod-api",
+        )
+    return legacy_target, None, "legacy"
+
+
+async def _discard_response(response: object) -> None:
+    try:
+        await asyncio.wait_for(response.read(), timeout=2)  # type: ignore[attr-defined]
+    except (ClientError, asyncio.TimeoutError, ConnectionError):
+        pass
+    finally:
+        response.release()  # type: ignore[attr-defined]
+
+
+async def _request_with_fallback(
+    request: web.Request,
+    *,
+    session: ClientSession,
+    target: str,
+    fallback_target: str | None,
+    route_label: str,
+    upstream_headers: dict[str, str],
+    request_id: str,
+    started_at: float,
+) -> tuple[object, str]:
+    async def open_target(url: str) -> object:
+        return await session.request(
+            request.method,
+            url,
+            headers=upstream_headers,
+            data=request.content if request.can_read_body else None,
+            allow_redirects=False,
+        )
+
+    try:
+        upstream = await open_target(target)
+    except (ClientError, asyncio.TimeoutError):
+        if fallback_target is None:
+            raise
+        _queue_edge(request.app, {
+            "event_type": "gateway_route_fallback",
+            "severity": "warning",
+            "summary": f"Gateway switched {request.path} to the legacy fallback",
+            "status_code": 0,
+            "request_id": request_id,
+            "duration_ms": (time.perf_counter() - started_at) * 1000,
+            "target_id": request.path,
+            "details": {
+                "route": route_label,
+                "reason": "transport_error",
+            },
+        })
+        return await open_target(fallback_target), "legacy-fallback"
+
+    if fallback_target is not None and int(upstream.status) >= 500:  # type: ignore[attr-defined]
+        primary_status = int(upstream.status)  # type: ignore[attr-defined]
+        await _discard_response(upstream)
+        _queue_edge(request.app, {
+            "event_type": "gateway_route_fallback",
+            "severity": "warning",
+            "summary": f"Gateway switched {request.path} to the legacy fallback",
+            "status_code": primary_status,
+            "request_id": request_id,
+            "duration_ms": (time.perf_counter() - started_at) * 1000,
+            "target_id": request.path,
+            "details": {
+                "route": route_label,
+                "reason": "upstream_5xx",
+                "upstream_status": primary_status,
+            },
+        })
+        return await open_target(fallback_target), "legacy-fallback"
+    return upstream, route_label
+
+
 async def proxy(request: web.Request) -> web.StreamResponse:
     session = request.app[UPSTREAM_SESSION]
-    target = f"{UPSTREAM}{request.rel_url}"
+    target, fallback_target, route_label = _route_targets(request)
     started_at = time.perf_counter()
     request_id = request.headers.get("X-Request-ID", "").strip()[:120] or str(uuid4())
     upstream_headers = _headers(request)
     upstream_headers["X-Request-ID"] = request_id
     try:
-        upstream = await session.request(
-            request.method,
-            target,
-            headers=upstream_headers,
-            data=request.content if request.can_read_body else None,
-            allow_redirects=False,
+        upstream, selected_backend = await _request_with_fallback(
+            request,
+            session=session,
+            target=target,
+            fallback_target=fallback_target,
+            route_label=route_label,
+            upstream_headers=upstream_headers,
+            request_id=request_id,
+            started_at=started_at,
         )
     except (ClientError, asyncio.TimeoutError) as exc:
         _queue_edge(request.app, {
@@ -295,6 +394,8 @@ async def proxy(request: web.Request) -> web.StreamResponse:
 
     response_headers = _headers(upstream)
     response_headers["X-Request-ID"] = request_id
+    if request.path == DESKTOP_BOOTSTRAP_PATH:
+        response_headers["X-TMod-Backend"] = selected_backend
     response = web.StreamResponse(
         status=upstream.status,
         reason=upstream.reason,
@@ -326,6 +427,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 "path": request.path,
                 "query": dict(request.query),
                 "forwarded_for": request.headers.get("X-Forwarded-For"),
+                "backend": selected_backend,
             },
         })
     return response

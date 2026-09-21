@@ -202,6 +202,8 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertIn("  tmod-api:", compose)
         self.assertIn('POSTGRES_APPLICATION_NAME: "tmod-api"', compose)
         self.assertIn("http://127.0.0.1:8793/ready", compose)
+        self.assertIn('TMOD_INTERNAL_API_UPSTREAM: "http://tmod-api:8793"', compose)
+        self.assertIn('TMOD_API_MODE: "active-fallback"', compose)
         self.assertIn('tmod-data:\n    internal: true', compose)
         self.assertNotIn('"5432:5432"', compose)
         self.assertIn("  atlas-forum-eye-browser:", compose)

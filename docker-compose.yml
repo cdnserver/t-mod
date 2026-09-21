@@ -123,6 +123,7 @@ services:
     command: ["python", "/app/web_gateway.py"]
     environment:
       TMOD_INTERNAL_WEB_UPSTREAM: "http://tmod-discord-bot:8788"
+      TMOD_INTERNAL_API_UPSTREAM: "http://tmod-api:8793"
       TMOD_WEB_GATEWAY_PORT: "8787"
     ports:
       - "127.0.0.1:8787:8787"
@@ -161,6 +162,7 @@ services:
       <<: *tmod_database_environment
       POSTGRES_APPLICATION_NAME: "tmod-api"
       TMOD_API_PORT: "8793"
+      TMOD_API_MODE: "active-fallback"
     volumes:
       - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
     networks:

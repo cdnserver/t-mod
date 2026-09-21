@@ -39,18 +39,44 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"status": "ok"})
 
         backend.router.add_get("/api/health", health)
+
+        async def legacy_bootstrap(_: web.Request) -> web.Response:
+            return web.json_response({"backend": "legacy"})
+
+        backend.router.add_get("/api/desktop/v1/bootstrap", legacy_bootstrap)
         self.backend = TestServer(backend)
         await self.backend.start_server()
+
+        api_backend = web.Application()
+
+        async def api_bootstrap(request: web.Request) -> web.Response:
+            status = int(request.query.get("status") or 200)
+            return web.json_response({"backend": "api"}, status=status)
+
+        api_backend.router.add_get(
+            "/internal/desktop/v1/bootstrap",
+            api_bootstrap,
+        )
+        self.api_backend = TestServer(api_backend)
+        await self.api_backend.start_server()
         self.upstream_patch = patch.object(
             web_gateway, "UPSTREAM", str(self.backend.make_url("")).rstrip("/")
         )
+        self.api_upstream_patch = patch.object(
+            web_gateway,
+            "API_UPSTREAM",
+            str(self.api_backend.make_url("")).rstrip("/"),
+        )
         self.upstream_patch.start()
+        self.api_upstream_patch.start()
         self.gateway = TestClient(TestServer(await web_gateway.create_app()))
         await self.gateway.start_server()
 
     async def asyncTearDown(self) -> None:
         await self.gateway.close()
+        await self.api_backend.close()
         await self.backend.close()
+        self.api_upstream_patch.stop()
         self.upstream_patch.stop()
 
     async def test_gateway_has_independent_health_and_proxies_body_and_headers(self) -> None:
@@ -125,6 +151,35 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "tmod_runtime_temporarily_unavailable")
         self.assertEqual(payload["detail"], "TimeoutError")
         timed_out.assert_awaited_once()
+
+    async def test_desktop_bootstrap_uses_standalone_api(self) -> None:
+        response = await self.gateway.get("/api/desktop/v1/bootstrap")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["backend"], "api")
+        self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
+
+    async def test_desktop_bootstrap_falls_back_on_api_5xx(self) -> None:
+        response = await self.gateway.get(
+            "/api/desktop/v1/bootstrap?status=503"
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["backend"], "legacy")
+        self.assertEqual(response.headers["X-TMod-Backend"], "legacy-fallback")
+
+    async def test_desktop_bootstrap_falls_back_on_api_transport_error(self) -> None:
+        await self.api_backend.close()
+        response = await self.gateway.get("/api/desktop/v1/bootstrap")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["backend"], "legacy")
+        self.assertEqual(response.headers["X-TMod-Backend"], "legacy-fallback")
+
+    async def test_desktop_bootstrap_does_not_bypass_api_auth_failure(self) -> None:
+        response = await self.gateway.get(
+            "/api/desktop/v1/bootstrap?status=401"
+        )
+        self.assertEqual(response.status, 401)
+        self.assertEqual((await response.json())["backend"], "api")
+        self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
 
     async def test_edge_reporter_requeues_batch_after_delivery_error(self) -> None:
         queued = deque(
