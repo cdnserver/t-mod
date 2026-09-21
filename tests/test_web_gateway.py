@@ -44,6 +44,11 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"backend": "legacy"})
 
         backend.router.add_get("/api/desktop/v1/bootstrap", legacy_bootstrap)
+
+        async def legacy_notifications(_: web.Request) -> web.Response:
+            return web.json_response({"backend": "legacy", "unread": 9})
+
+        backend.router.add_get("/api/reactor/notifications", legacy_notifications)
         self.backend = TestServer(backend)
         await self.backend.start_server()
 
@@ -56,6 +61,19 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         api_backend.router.add_get(
             "/internal/desktop/v1/bootstrap",
             api_bootstrap,
+        )
+
+        async def api_notifications(request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "backend": "api",
+                    "unread_only": request.query.get("unread") == "1",
+                }
+            )
+
+        api_backend.router.add_get(
+            "/internal/reactor/notifications",
+            api_notifications,
         )
         self.api_backend = TestServer(api_backend)
         await self.api_backend.start_server()
@@ -179,6 +197,14 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status, 401)
         self.assertEqual((await response.json())["backend"], "api")
+        self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
+
+    async def test_reactor_notifications_use_api_and_preserve_query(self) -> None:
+        response = await self.gateway.get("/api/reactor/notifications?unread=1")
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["backend"], "api")
+        self.assertTrue(payload["unread_only"])
         self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
 
     async def test_edge_reporter_requeues_batch_after_delivery_error(self) -> None:

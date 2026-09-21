@@ -30,6 +30,12 @@ API_UPSTREAM: Final = os.getenv(
 ).rstrip("/")
 DESKTOP_BOOTSTRAP_PATH: Final = "/api/desktop/v1/bootstrap"
 DESKTOP_BOOTSTRAP_API_PATH: Final = "/internal/desktop/v1/bootstrap"
+REACTOR_NOTIFICATIONS_PATH: Final = "/api/reactor/notifications"
+REACTOR_NOTIFICATIONS_API_PATH: Final = "/internal/reactor/notifications"
+API_ROUTE_MAP: Final = {
+    ("GET", DESKTOP_BOOTSTRAP_PATH): DESKTOP_BOOTSTRAP_API_PATH,
+    ("GET", REACTOR_NOTIFICATIONS_PATH): REACTOR_NOTIFICATIONS_API_PATH,
+}
 HOST: Final = os.getenv("TMOD_WEB_GATEWAY_HOST", "0.0.0.0")
 PORT: Final = int(os.getenv("TMOD_WEB_GATEWAY_PORT", "8787") or 8787)
 HOP_HEADERS: Final = {
@@ -200,7 +206,8 @@ async def gateway_health(_: web.Request) -> web.Response:
             "service": "tmod-web",
             "upstream": UPSTREAM,
             "api_upstream": API_UPSTREAM,
-            "desktop_bootstrap_route": "api-with-legacy-fallback",
+            "api_routes": sorted(path for _, path in API_ROUTE_MAP),
+            "api_route_mode": "api-with-legacy-fallback",
         }
     )
 
@@ -250,10 +257,11 @@ def _route_targets(request: web.Request) -> tuple[str, str | None, str]:
     """
 
     legacy_target = f"{UPSTREAM}{request.rel_url}"
-    if request.method == "GET" and request.path == DESKTOP_BOOTSTRAP_PATH:
+    internal_path = API_ROUTE_MAP.get((request.method, request.path))
+    if internal_path is not None:
         query = f"?{request.query_string}" if request.query_string else ""
         return (
-            f"{API_UPSTREAM}{DESKTOP_BOOTSTRAP_API_PATH}{query}",
+            f"{API_UPSTREAM}{internal_path}{query}",
             legacy_target,
             "tmod-api",
         )
@@ -394,7 +402,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
 
     response_headers = _headers(upstream)
     response_headers["X-Request-ID"] = request_id
-    if request.path == DESKTOP_BOOTSTRAP_PATH:
+    if fallback_target is not None:
         response_headers["X-TMod-Backend"] = selected_backend
     response = web.StreamResponse(
         status=upstream.status,
