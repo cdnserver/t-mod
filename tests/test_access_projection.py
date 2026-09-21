@@ -290,6 +290,64 @@ class ProjectedPrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_shadow_api_serves_private_preparation_projection(self) -> None:
+        credential = storage.configure_web_credential(77, 42, "soul", "12345678")
+        storage.upsert_web_access_projection(
+            77,
+            42,
+            "Soul",
+            administrator=True,
+            role_ids=[100],
+        )
+        bill = storage.tvrs_create_bill(
+            guild_id=77,
+            channel_id=88,
+            author_id=5,
+            author_display="Автор",
+            title="О подготовке API",
+            summary="Проверка независимого контура.",
+            materials="https://example.com/material",
+        )
+        storage.save_preparation_sheet(
+            77,
+            bill.id,
+            42,
+            user_display="Soul",
+            expected_revision=0,
+            questions=[],
+            notes="Секретная личная заметка.",
+            preliminary_vote="yes",
+            preliminary_vote_reason="Секретная причина.",
+            review_flags={"read_text": True},
+            source_bill_updated_at=bill.updated_at,
+        )
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=42,
+            session_version=credential.session_version,
+        )
+        app = await create_api_app(guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/internal/reactor/preparation",
+                headers={"Cookie": f"{SESSION_COOKIE}={token}"},
+            )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["prepared"], 1)
+            self.assertEqual(
+                payload["items"][0]["preparation"]["preliminary_vote"],
+                "yes",
+            )
+            self.assertNotIn("notes", payload["items"][0])
+            self.assertNotIn("preliminary_vote_reason", payload["items"][0])
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

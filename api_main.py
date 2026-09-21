@@ -21,6 +21,7 @@ from modules.desktop_bootstrap_service import (
     DesktopBootstrapError,
     build_desktop_bootstrap_payload,
 )
+from modules.reactor_preparation_service import build_reactor_preparation_payload
 from persistence import global_ban_repository as global_ban_storage
 from persistence import reactor_repository as reactor_storage
 from persistence.core import connect_readonly
@@ -217,10 +218,31 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
             headers={"Cache-Control": "private, no-store"},
         )
 
+    async def reactor_preparation(request: web.Request) -> web.Response:
+        principal, auth_error = await _authenticate_projected_request(
+            request,
+            guild_id=selected_guild_id,
+            require_member=True,
+        )
+        if auth_error is not None:
+            return auth_error
+        if principal is None:  # pragma: no cover - guarded by auth_error
+            raise web.HTTPUnauthorized()
+        payload = await asyncio.to_thread(
+            build_reactor_preparation_payload,
+            selected_guild_id,
+            int(principal.user_id),
+        )
+        return web.json_response(
+            payload,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_get("/internal/desktop/v1/bootstrap", desktop_bootstrap)
     app.router.add_get("/internal/reactor/notifications", reactor_notifications)
+    app.router.add_get("/internal/reactor/preparation", reactor_preparation)
     return app
 
 

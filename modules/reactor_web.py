@@ -66,6 +66,7 @@ from modules.reactor_legislation import (
     publish_workspace,
     save_workspace,
 )
+from modules.reactor_preparation_service import build_reactor_preparation_payload
 from modules.tvrs_bill_editor import refresh_bill_workspace_panel
 from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
@@ -81,7 +82,6 @@ from persistence import market_repository as market_storage
 from persistence import ovr_repository as ovr_storage
 from persistence import admission_repository as admission_storage
 from persistence import outbox_repository as outbox_storage
-from persistence import consensus_preparation_repository as preparation_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import tvrs_repository as tvrs_storage
@@ -938,55 +938,13 @@ def register_reactor_web_routes(
         """
 
         principal = await personal_request(request)
-        bills = await asyncio.to_thread(
-            tvrs_storage.tvrs_queue_bills,
-            int(guild_id),
-            24,
-        )
-        bill_ids = [int(bill.get("id") or 0) for bill in bills]
-        statuses = await asyncio.to_thread(
-            preparation_storage.preparation_statuses,
+        payload = await asyncio.to_thread(
+            build_reactor_preparation_payload,
             int(guild_id),
             int(principal.user_id),
-            bill_ids,
-        )
-        items: list[dict[str, Any]] = []
-        for bill in bills:
-            bill_id = int(bill.get("id") or 0)
-            if bill_id <= 0:
-                continue
-            marker = statuses.get(bill_id) or {}
-            items.append(
-                {
-                    "id": bill_id,
-                    "number": int(bill.get("bill_number") or 0),
-                    "title": str(bill.get("title") or "Без названия"),
-                    "summary": str(bill.get("summary") or ""),
-                    "author": str(bill.get("author_display") or "Автор не указан"),
-                    "status": str(bill.get("status") or "queued"),
-                    "updated_at": str(bill.get("updated_at") or "") or None,
-                    "preparation": {
-                        "prepared": bool(marker.get("prepared")),
-                        "preliminary_vote": marker.get("preliminary_vote"),
-                        "updated_at": marker.get("updated_at"),
-                    },
-                }
-            )
-        prepared = sum(
-            1
-            for item in items
-            if bool((item.get("preparation") or {}).get("prepared"))
         )
         response = web.json_response(
-            {
-                "items": items,
-                "total": len(items),
-                "prepared": prepared,
-                "notice": (
-                    "Листы подготовки личные: заметки и предварительная позиция "
-                    "не являются голосом и никому не видны."
-                ),
-            }
+            payload
         )
         response.headers["Cache-Control"] = "private, no-store"
         return response
