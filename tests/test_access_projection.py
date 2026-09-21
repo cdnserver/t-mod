@@ -348,6 +348,67 @@ class ProjectedPrincipalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_shadow_api_serves_durable_admin_section_access(self) -> None:
+        credential = storage.configure_web_credential(77, 42, "soul", "12345678")
+        storage.upsert_web_access_projection(
+            77,
+            42,
+            "Soul",
+            administrator=True,
+            role_ids=[100],
+        )
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=42,
+            session_version=credential.session_version,
+        )
+        app = await create_api_app(guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/internal/admin/access/self",
+                headers={"Cookie": f"{SESSION_COOKIE}={token}"},
+            )
+            payload = await response.json()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(payload["administrator"])
+            self.assertIn("security", payload["sections"])
+            self.assertIn("minecraft", payload["sections"])
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+        finally:
+            await client.close()
+
+    async def test_shadow_api_rejects_account_without_admin_sections(self) -> None:
+        credential = storage.configure_web_credential(77, 43, "member", "12345678")
+        storage.upsert_web_access_projection(
+            77,
+            43,
+            "Member",
+            administrator=False,
+            role_ids=[200],
+        )
+        token, _ = create_session_token(
+            guild_id=77,
+            user_id=43,
+            session_version=credential.session_version,
+        )
+        app = await create_api_app(guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/internal/admin/access/self",
+                headers={"Cookie": f"{SESSION_COOKIE}={token}"},
+            )
+            self.assertEqual(response.status, 403)
+            self.assertEqual(
+                (await response.json())["error"],
+                "administrator_required",
+            )
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

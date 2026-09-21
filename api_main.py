@@ -17,6 +17,7 @@ from modules.consensus_web_auth import (
     resolve_projected_principal,
     signed_session_identity,
 )
+from modules.admin_access_service import build_admin_access_payload
 from modules.desktop_bootstrap_service import (
     DesktopBootstrapError,
     build_desktop_bootstrap_payload,
@@ -238,11 +239,37 @@ async def create_app(*, guild_id: int | None = None) -> web.Application:
             headers={"Cache-Control": "private, no-store"},
         )
 
+    async def admin_access_self(request: web.Request) -> web.Response:
+        principal, auth_error = await _authenticate_projected_request(
+            request,
+            guild_id=selected_guild_id,
+        )
+        if auth_error is not None:
+            return auth_error
+        if principal is None:  # pragma: no cover - guarded by auth_error
+            raise web.HTTPUnauthorized()
+        payload = await asyncio.to_thread(
+            build_admin_access_payload,
+            selected_guild_id,
+            principal,
+        )
+        if not payload["sections"]:
+            return web.json_response(
+                {"error": "administrator_required"},
+                status=403,
+                headers={"Cache-Control": "private, no-store"},
+            )
+        return web.json_response(
+            payload,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_get("/internal/desktop/v1/bootstrap", desktop_bootstrap)
     app.router.add_get("/internal/reactor/notifications", reactor_notifications)
     app.router.add_get("/internal/reactor/preparation", reactor_preparation)
+    app.router.add_get("/internal/admin/access/self", admin_access_self)
     return app
 
 

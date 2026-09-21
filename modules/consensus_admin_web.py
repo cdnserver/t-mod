@@ -23,6 +23,10 @@ from modules.admin_domain_commands import (
     execute_craft_command,
     execute_finance_command,
 )
+from modules.admin_access_service import (
+    ADMIN_ONLY_WEB_SECTIONS,
+    build_admin_access_payload,
+)
 from modules.consensus_web_auth import ConsensusWebPrincipal, csrf_matches
 from modules.consensus_schedule import (
     cancel_schedule_discord_event,
@@ -82,9 +86,6 @@ ADMIN_SECTION_LABELS = {
     "minecraft": "Minecraft",
     "ovr": "Отдел внешней разведки",
 }
-
-ADMIN_ONLY_WEB_SECTIONS = frozenset({"security"})
-
 
 def _global_ban_guilds(bot: discord.Client, primary_guild_id: int) -> list[Any]:
     """All Discord guilds currently governed by this T-Mod instance."""
@@ -1141,20 +1142,19 @@ def register_admin_web_routes(
         principal, legacy = await authenticate(request)
         if legacy or principal is None:
             raise web.HTTPForbidden(text='{"error":"personal_login_required"}', content_type="application/json")
-        sections = (
-            sorted(web_auth_storage.WEB_GRANTABLE_SECTIONS | ADMIN_ONLY_WEB_SECTIONS)
-            if principal.administrator
-            else [row["section"] for row in await asyncio.to_thread(
-                web_auth_storage.web_section_grants, int(guild_id), int(principal.user_id)
-            ) if row["section"] != "atlas_ai"]
+        guild = bot.get_guild(int(guild_id))
+        payload = await asyncio.to_thread(
+            build_admin_access_payload,
+            int(guild_id),
+            principal,
+            guild_name=str(getattr(guild, "name", "") or "Товарищество"),
         )
-        if not sections:
+        if not payload["sections"]:
             raise web.HTTPForbidden(text='{"error":"administrator_required"}', content_type="application/json")
-        return web.json_response({
-            **context(principal),
-            "sections": sections,
-            "administrator": bool(principal.administrator),
-        })
+        return web.json_response(
+            payload,
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     def context(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         guild = bot.get_guild(int(guild_id))
