@@ -53,6 +53,23 @@ describe("desktop release contract", () => {
     expect(existsSync(resolve(root, "resources/blackbird/icon.png"))).toBe(true);
   });
 
+  it("ships the Blackbird command hub, dual notifications, and branded installer", () => {
+    const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
+    const hub = readFileSync(resolve(root, "src/renderer/BlackbirdHub.tsx"), "utf8");
+    const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
+    const builder = readFileSync(resolve(root, "electron-builder.blackbird.yml"), "utf8");
+    expect(hub).toContain("Войти в контур Сената");
+    expect(hub).toContain("Открыть Atlas");
+    expect(renderer).toContain("desktop-notification-stack");
+    expect(renderer).toContain("notificationDelivery");
+    expect(main).toContain("syncNativeNotifications");
+    expect(main).toContain("Notification.isSupported()");
+    expect(builder).toContain("installerSidebar: resources/blackbird/installer-sidebar.bmp");
+    expect(builder).toContain("installerHeader: resources/blackbird/installer-header.bmp");
+    expect(existsSync(resolve(root, "resources/blackbird/installer-sidebar.bmp"))).toBe(true);
+    expect(existsSync(resolve(root, "resources/blackbird/installer-header.bmp"))).toBe(true);
+  });
+
   it("enforces a server-required Desktop update without a later action", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");

@@ -52,6 +52,7 @@ import blackbirdOvr from "./assets/blackbird/ovr.png";
 import blackbirdGames from "./assets/blackbird/games.png";
 import blackbirdTasks from "./assets/blackbird/tasks.png";
 import blackbirdAdmin from "./assets/blackbird/admin.png";
+import { BlackbirdHub } from "./BlackbirdHub";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
@@ -79,6 +80,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   serviceZoom: 1,
   idleLockMinutes: 10,
   lockSound: true,
+  notificationDelivery: "both",
+  notificationSound: true,
   updateChannel: desktopProduct.updateChannel,
 };
 
@@ -97,6 +100,10 @@ function loadPreferences(): DesktopShellPreferences {
         ? Number(stored.idleLockMinutes)
         : 10,
       lockSound: stored.lockSound !== false,
+      notificationDelivery: ["both", "in-app", "system", "off"].includes(String(stored.notificationDelivery))
+        ? stored.notificationDelivery as DesktopShellPreferences["notificationDelivery"]
+        : "both",
+      notificationSound: stored.notificationSound !== false,
       updateChannel: desktopProduct.privateEdition
         ? "private"
         : stored.updateChannel === "dev" ? "dev" : "beta",
@@ -162,6 +169,30 @@ function browserApi() {
 
 function overlayApi() {
   return window.tmodAtlasOverlay;
+}
+
+function hubPreviewBootstrap(): BootstrapResult {
+  const now = new Date().toISOString();
+  return {
+    authenticated: true,
+    online: true,
+    lastSuccessfulAt: now,
+    data: {
+      protocol_version: 1,
+      generated_at: now,
+      viewer: { id: 1, name: "Роберт", display_name: "Роберт", account_tier: "administrator", guild_member: true, administrator: true, sections: ["all"] },
+      services: services.filter((service) => service.id !== "home").map((service) => ({ id: service.id as Exclude<ServiceId, "home">, title: service.title, url: service.url || "https://tvr.lat/", enabled: true, reason: null })),
+      notifications: {
+        unread: 2,
+        items: [
+          { id: 3, severity: "success", kind: "consensus", title: "Протокол подготовлен", body: "Итоги последнего заседания доступны в контуре Сената.", route: "/consensus", read_at: null, created_at: now },
+          { id: 2, severity: "info", kind: "atlas", title: "Atlas синхронизирован", body: "Библиотека источников и полевой контекст обновлены.", route: "/atlas", read_at: null, created_at: now },
+          { id: 1, severity: "warning", kind: "ovr", title: "ОВР ожидает решения", body: "В закрытом контуре появился новый материал проверки.", route: "/ovr", read_at: null, created_at: now },
+        ],
+      },
+      atlas_overlay: { allowed: true, characters: [], selected_character: null, catalog: { servers: [], factions: [] } },
+    },
+  };
 }
 
 function playLaunchSound(): () => void {
@@ -334,6 +365,28 @@ function playLockSound(kind: "lock" | "unlock", enabled: boolean): () => void {
   };
 }
 
+function playNotificationSound(severity: DesktopNotification["severity"]): void {
+  if (typeof AudioContext === "undefined") return;
+  const context = new AudioContext();
+  const now = context.currentTime;
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.08, now + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.7);
+  gain.connect(context.destination);
+  const frequencies = severity === "critical" ? [220, 174] : severity === "warning" ? [294, 247] : [392, 523];
+  frequencies.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, now + index * 0.11);
+    oscillator.connect(gain);
+    oscillator.start(now + index * 0.11);
+    oscillator.stop(now + 0.48 + index * 0.11);
+  });
+  void context.resume().catch(() => undefined);
+  window.setTimeout(() => void context.close(), 900);
+}
+
 function LockScreen({
   name,
   reason,
@@ -382,17 +435,18 @@ export function App() {
   const cinematicParams = new URLSearchParams(globalThis.location.search);
   const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
   const atlasSettingsQa = cinematicQaEnabled && cinematicParams.get("settings-preview") === "atlas";
+  const hubQa = cinematicQaEnabled && cinematicParams.get("hub-preview") === "1";
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const cinematicPreviewName = cinematicQaEnabled
     ? String(cinematicParams.get("name") || "").trim()
     : "";
   const bridgeAvailable = Boolean(browserApi());
-  const [bootstrap, setBootstrap] = useState<BootstrapResult>({
+  const [bootstrap, setBootstrap] = useState<BootstrapResult>(() => hubQa ? hubPreviewBootstrap() : ({
     authenticated: false,
     online: bridgeAvailable,
     error: bridgeAvailable ? "loading" : "desktop_bridge_unavailable",
-  });
-  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable);
+  }));
+  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable && !hubQa);
   const [desktopState, setDesktopState] = useState<DesktopState>({
     activeService: atlasSettingsQa ? "atlas" : "home",
     loading: false,
@@ -423,6 +477,7 @@ export function App() {
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayError, setOverlayError] = useState<string>();
   const [toast, setToast] = useState<string>();
+  const [notificationToasts, setNotificationToasts] = useState<DesktopNotification[]>([]);
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
     phase: "development",
     currentVersion: "—",
@@ -440,6 +495,8 @@ export function App() {
   const hasLoadedBootstrap = useRef(false);
   const unlockInFlight = useRef(false);
   const unlockTimer = useRef<number | undefined>(undefined);
+  const notificationFeedReady = useRef(false);
+  const knownNotificationIds = useRef(new Set<number>());
 
   useEffect(() => {
     const stopSound = playIgnitionSound();
@@ -458,6 +515,7 @@ export function App() {
   }, []);
 
   const loadBootstrap = useCallback(async () => {
+    if (hubQa) return;
     if (bootstrapInFlight.current) {
       // Cookie, resume and service-navigation events can arrive while an older
       // projection is in flight. Never lose the newest refresh request.
@@ -488,7 +546,7 @@ export function App() {
       bootstrapInFlight.current = false;
       setBootstrapLoading(false);
     }
-  }, []);
+  }, [hubQa]);
 
   const loadOverlay = useCallback(async () => {
     const api = overlayApi();
@@ -504,6 +562,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (hubQa) return;
     void loadBootstrap();
     const api = browserApi();
     if (!api) return;
@@ -532,7 +591,7 @@ export function App() {
       window.clearInterval(refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [loadBootstrap]);
+  }, [hubQa, loadBootstrap]);
 
   useEffect(() => {
     if (bootstrap.authenticated) void loadOverlay();
@@ -687,6 +746,27 @@ export function App() {
 
   const notifications = bootstrap.data?.notifications.items || [];
   const unread = bootstrap.data?.notifications.unread || 0;
+
+  useEffect(() => {
+    if (!bootstrap.authenticated) {
+      if (notificationFeedReady.current || knownNotificationIds.current.size) {
+        notificationFeedReady.current = false;
+        knownNotificationIds.current.clear();
+        setNotificationToasts([]);
+      }
+      return;
+    }
+    if (!notificationFeedReady.current) {
+      notifications.forEach((item) => knownNotificationIds.current.add(item.id));
+      notificationFeedReady.current = true;
+      return;
+    }
+    const fresh = notifications.filter((item) => !knownNotificationIds.current.has(item.id));
+    notifications.forEach((item) => knownNotificationIds.current.add(item.id));
+    if (!fresh.length || !["both", "in-app"].includes(preferences.notificationDelivery)) return;
+    if (preferences.notificationSound) playNotificationSound(fresh[0].severity);
+    setNotificationToasts((current) => [...fresh.reverse(), ...current].slice(0, 4));
+  }, [bootstrap.authenticated, notifications, preferences.notificationDelivery, preferences.notificationSound]);
   const userName = cinematicPreviewName
     || preferences.preferredName.trim()
     || bootstrap.data?.viewer.name
@@ -918,6 +998,7 @@ export function App() {
             overlayConfig={overlayConfig}
             overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
             onOverlaySettings={openAtlasSettings}
+            onOpenNotifications={() => setNotificationsOpen(true)}
           />
         ) : desktopState.error ? (
           <section className="service-error-stage">
@@ -968,6 +1049,16 @@ export function App() {
         </aside>
       )}
       {toast && <div className="desktop-toast" role="status">{toast}</div>}
+      <NotificationToasts
+        items={notificationToasts}
+        onDismiss={(id) => setNotificationToasts((current) => current.filter((item) => item.id !== id))}
+        onOpen={(item) => {
+          setNotificationToasts((current) => current.filter((candidate) => candidate.id !== item.id));
+          const target = resolveNotificationServiceId(item.route);
+          if (target) void selectService(target);
+          else setNotificationsOpen(true);
+        }}
+      />
       {locked && (
         <VaultScreen
           name={userName}
@@ -1036,6 +1127,7 @@ function Home({
   overlayConfig,
   overlayAllowed,
   onOverlaySettings,
+  onOpenNotifications,
 }: {
   name: string;
   bootstrap: BootstrapResult;
@@ -1049,6 +1141,7 @@ function Home({
   overlayConfig: AtlasOverlayConfig;
   overlayAllowed: boolean;
   onOverlaySettings: () => void;
+  onOpenNotifications: () => void;
 }) {
   const [loginValue, setLoginValue] = useState("");
   const [pin, setPin] = useState("");
@@ -1130,6 +1223,22 @@ function Home({
   }
 
   const tier = bootstrap.data?.viewer.administrator ? "Полный контур" : bootstrap.data?.viewer.guild_member ? "Контур Товарищества" : "Базовый контур";
+  if (desktopProduct.privateEdition) {
+    return (
+      <BlackbirdHub
+        name={name}
+        tier={tier}
+        online={bootstrap.online}
+        notifications={notifications}
+        access={access}
+        overlayConfig={overlayConfig}
+        overlayAllowed={overlayAllowed}
+        onOpen={onOpen}
+        onOverlaySettings={onOverlaySettings}
+        onOpenNotifications={onOpenNotifications}
+      />
+    );
+  }
   return (
     <div className="home-scroll">
       <section className="welcome">
@@ -1192,6 +1301,51 @@ function Notifications({ items, unread, onClose, onOpen }: { items: DesktopNotif
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">Поток T-Mod</p><h2>Уведомления</h2></div><span>{unread} новых</span></header><div className="notification-list">{items.map((item) => <button key={item.id} onClick={() => { const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><strong>{item.title}</strong><p>{item.body}</p><small>{formatTime(item.created_at)}</small></span></button>)}{!items.length && <div className="drawer-empty"><Icon name="bell"/><p>В центре уведомлений тихо.</p></div>}</div></aside></>;
 }
 
+function NotificationToasts({
+  items,
+  onDismiss,
+  onOpen,
+}: {
+  items: DesktopNotification[];
+  onDismiss: (id: number) => void;
+  onOpen: (item: DesktopNotification) => void;
+}) {
+  return (
+    <aside className="desktop-notification-stack" aria-live="polite" aria-label="Новые уведомления">
+      {items.map((item) => (
+        <NotificationToast key={item.id} item={item} onDismiss={onDismiss} onOpen={onOpen}/>
+      ))}
+    </aside>
+  );
+}
+
+function NotificationToast({
+  item,
+  onDismiss,
+  onOpen,
+}: {
+  item: DesktopNotification;
+  onDismiss: (id: number) => void;
+  onOpen: (item: DesktopNotification) => void;
+}) {
+  useEffect(() => {
+    const timer = window.setTimeout(() => onDismiss(item.id), item.severity === "critical" ? 12_000 : 7_500);
+    return () => window.clearTimeout(timer);
+  }, [item.id, item.severity, onDismiss]);
+  const target = resolveNotificationServiceId(item.route);
+  return (
+    <article className={`desktop-notification-toast ${item.severity}`}>
+      <button className="desktop-notification-body" onClick={() => onOpen(item)}>
+        <span className="desktop-notification-emblem"><Icon name={target || "bell"}/><i/></span>
+        <span><small>BLACKBIRD · {serviceById[target || "home"].title.toUpperCase()}</small><strong>{item.title}</strong><p>{item.body}</p></span>
+        <time>{formatTime(item.created_at)}</time>
+      </button>
+      <button className="desktop-notification-dismiss" onClick={() => onDismiss(item.id)} aria-label="Скрыть уведомление">×</button>
+      <i className="desktop-notification-progress"/>
+    </article>
+  );
+}
+
 function SettingsDrawer({
   preferences,
   online,
@@ -1211,7 +1365,7 @@ function SettingsDrawer({
   onReconnect: () => Promise<void>;
   onLock: () => void;
 }) {
-  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound">) =>
+  const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound" | "notificationSound">) =>
     onChange({ ...preferences, [key]: !preferences[key] });
 
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
@@ -1233,6 +1387,15 @@ function SettingsDrawer({
         <div className="setting-row lock-delay-setting"><span><strong>Автоблокировка</strong><small>После отсутствия активности</small></span><div>{[0, 5, 10, 15, 30].map((minutes) => <button key={minutes} className={preferences.idleLockMinutes === minutes ? "active" : ""} onClick={() => onChange({ ...preferences, idleLockMinutes: minutes })}>{minutes ? `${minutes}м` : "Выкл"}</button>)}</div></div>
         <SettingToggle label="Звук блокировки" hint="Кинематографичный сигнал входа и выхода" active={preferences.lockSound} onClick={() => toggle("lockSound")}/>
         <button className="lock-now-setting" onClick={onLock}><Icon name="lock"/><span><strong>Заблокировать сейчас</strong><small>Разблокировка — только клавиатурой</small></span><b>›</b></button>
+      </section>
+      <section><p className="settings-label">Уведомления</p>
+        <div className="setting-row notification-delivery-setting"><span><strong>Куда доставлять</strong><small>Blackbird может показать собственную карточку и системное уведомление</small></span><div>{([
+          ["both", "Оба"],
+          ["in-app", "В Blackbird"],
+          ["system", "Системные"],
+          ["off", "Тишина"],
+        ] as const).map(([value, label]) => <button key={value} className={preferences.notificationDelivery === value ? "active" : ""} onClick={() => onChange({ ...preferences, notificationDelivery: value })}>{label}</button>)}</div></div>
+        <SettingToggle label="Звук событий" hint="Короткий сигнал для новых уведомлений" active={preferences.notificationSound} onClick={() => toggle("notificationSound")}/>
       </section>
       <section><p className="settings-label">Обновления</p>
         {desktopProduct.privateEdition

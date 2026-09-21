@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   nativeTheme,
+  Notification,
   powerMonitor,
   safeStorage,
   screen,
@@ -23,6 +24,7 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import {
   isServiceId,
+  resolveNotificationServiceId,
   isTModAuthenticationUrl,
   isTrustedTModUrl,
 } from "../shared/services";
@@ -90,6 +92,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   serviceZoom: 1,
   idleLockMinutes: 10,
   lockSound: true,
+  notificationDelivery: "both",
+  notificationSound: true,
   updateChannel: desktopProduct.updateChannel,
 };
 
@@ -127,6 +131,8 @@ let updateState: DesktopUpdateState = {
   channel: desktopProduct.updateChannel,
 };
 let forceUpdateRequired = false;
+let notificationStreamInitialized = false;
+const knownNotificationIds = new Set<number>();
 
 app.enableSandbox();
 nativeTheme.themeSource = "dark";
@@ -248,6 +254,8 @@ function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {
     bootstrapRevision += 1;
     lastSuccessfulBootstrap = undefined;
     lastSuccessfulBootstrapAt = undefined;
+    notificationStreamInitialized = false;
+    knownNotificationIds.clear();
     clearServiceManifest();
     void applyAtlasOverlayBootstrapSafely(undefined);
     activeService = "home";
@@ -500,10 +508,45 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
     idleLockMinutes: [0, 5, 10, 15, 30].includes(idleLockMinutes) ? idleLockMinutes : 10,
     lockSound: candidate.lockSound !== false,
+    notificationDelivery: ["both", "in-app", "system", "off"].includes(String(candidate.notificationDelivery))
+      ? candidate.notificationDelivery as DesktopShellPreferences["notificationDelivery"]
+      : "both",
+    notificationSound: candidate.notificationSound !== false,
     updateChannel: desktopProduct.privateEdition
       ? "private"
       : candidate.updateChannel === "dev" ? "dev" : "beta",
   };
+}
+
+function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items"]): void {
+  const currentIds = new Set(items.map((item) => item.id));
+  if (!notificationStreamInitialized) {
+    currentIds.forEach((id) => knownNotificationIds.add(id));
+    notificationStreamInitialized = true;
+    return;
+  }
+  const delivery = shellPreferences.notificationDelivery;
+  for (const item of items.slice().reverse()) {
+    if (knownNotificationIds.has(item.id)) continue;
+    knownNotificationIds.add(item.id);
+    if (!["both", "system"].includes(delivery) || !Notification.isSupported()) continue;
+    const notification = new Notification({
+      title: item.title,
+      body: item.body,
+      silent: !shellPreferences.notificationSound,
+      urgency: item.severity === "critical" ? "critical" : "normal",
+    });
+    notification.on("click", () => {
+      const target = resolveNotificationServiceId(item.route);
+      if (target) void navigate(target);
+      mainWindow?.show();
+      mainWindow?.focus();
+    });
+    notification.show();
+  }
+  for (const id of [...knownNotificationIds]) {
+    if (!currentIds.has(id) && knownNotificationIds.size > 500) knownNotificationIds.delete(id);
+  }
 }
 
 function applyPreferences(value: unknown): DesktopShellPreferences {
@@ -863,6 +906,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
         lastSuccessfulBootstrap = data;
         lastSuccessfulBootstrapAt = new Date().toISOString();
+        syncNativeNotifications(data.notifications.items || []);
       }
       return {
         authenticated: true,

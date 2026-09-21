@@ -12,6 +12,7 @@ import "./styles.css";
 import "./cinematics.css";
 import "./lumen.css";
 import "./blackbird.css";
+import "./blackbird-hub.css";
 
 document.title = desktopProduct.fullName;
 

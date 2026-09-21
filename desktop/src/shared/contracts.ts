@@ -93,6 +93,8 @@ export interface DesktopShellPreferences {
   serviceZoom: number;
   idleLockMinutes: number;
   lockSound: boolean;
+  notificationDelivery: "both" | "in-app" | "system" | "off";
+  notificationSound: boolean;
   updateChannel: "beta" | "dev" | "private";
 }
 

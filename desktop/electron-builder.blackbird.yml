@@ -30,6 +30,9 @@ nsis:
   runAfterFinish: true
   deleteAppDataOnUninstall: false
   include: resources/blackbird/installer.nsh
+  installerSidebar: resources/blackbird/installer-sidebar.bmp
+  uninstallerSidebar: resources/blackbird/installer-sidebar.bmp
+  installerHeader: resources/blackbird/installer-header.bmp
 mac:
   icon: resources/blackbird/icon.icns
   target:
