@@ -26,6 +26,7 @@ from persistence import web_auth_repository as _web_auth_repository
 from persistence import reactor_repository as _reactor_repository
 from persistence import error_repository as _error_repository
 from persistence import global_ban_repository as _global_ban_repository
+from persistence import access_projection_repository as _access_projection_repository
 from persistence import schema as _schema
 
 _PERSISTENCE_MODULES = (
@@ -50,6 +51,7 @@ _PERSISTENCE_MODULES = (
     _reactor_repository,
     _error_repository,
     _global_ban_repository,
+    _access_projection_repository,
     _schema,
 )
 

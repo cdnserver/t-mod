@@ -72,6 +72,7 @@ function Test-InstalledRuntimeHealthy {
         "tmod-postgres",
         "tmod-discord-bot",
         "tmod-web",
+        "tmod-api",
         "tmod-worker",
         "tmod-caddy"
     )

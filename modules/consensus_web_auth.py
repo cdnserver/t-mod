@@ -32,6 +32,7 @@ from persistence import web_auth_repository as web_auth_storage
 
 from persistence import activity_repository as meta_storage
 from persistence import web_auth_repository as credential_storage
+from persistence import access_projection_repository as access_projection_storage
 
 
 SESSION_COOKIE = "tmod_account_session"
@@ -130,12 +131,41 @@ class TModAccountIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectedRole:
+    """Small Discord-compatible role reference stored by the access projection."""
+
+    id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedTModMember:
+    """Durable member identity for HTTP services outside the Discord process."""
+
+    id: int
+    display_name: str
+    administrator: bool
+    role_ids: tuple[int, ...] = ()
+
+    @property
+    def guild_permissions(self) -> discord.Permissions:
+        return discord.Permissions(administrator=bool(self.administrator))
+
+    @property
+    def roles(self) -> tuple[ProjectedRole, ...]:
+        return tuple(ProjectedRole(id=role_id) for role_id in self.role_ids)
+
+    @property
+    def mention(self) -> str:
+        return f"<@{int(self.id)}>"
+
+
+@dataclass(frozen=True, slots=True)
 class ConsensusWebPrincipal:
     user_id: int
     guild_id: int
     display_name: str
     csrf_token: str
-    member: discord.Member | TModAccountIdentity
+    member: discord.Member | TModAccountIdentity | ProjectedTModMember
 
     @property
     def administrator(self) -> bool:
@@ -476,6 +506,79 @@ async def resolve_principal(
     )
 
 
+async def resolve_projected_principal(
+    request: web.Request,
+    *,
+    guild_id: int,
+) -> ConsensusWebPrincipal | None:
+    """Resolve a session entirely from durable storage.
+
+    This is intentionally separate from :func:`resolve_principal` while the
+    standalone API is introduced in shadow mode.  The Discord-backed path
+    remains the rollback target until response parity has been verified.
+    """
+
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not token:
+        return None
+    try:
+        payload = _verify(token, purpose="session")
+    except ConsensusWebAuthError:
+        return None
+    if int(payload.get("gid") or 0) != int(guild_id):
+        return None
+    user_id = int(payload.get("uid") or 0)
+    if user_id <= 0:
+        return None
+    session_version = payload.get("sv")
+    if session_version is not None and not await asyncio.to_thread(
+        credential_storage.web_session_version_matches,
+        int(guild_id),
+        user_id,
+        int(session_version),
+    ):
+        return None
+    csrf_token = str(payload.get("csrf") or "")
+    if not csrf_token:
+        return None
+
+    projection = await asyncio.to_thread(
+        access_projection_storage.get_web_access_projection,
+        int(guild_id),
+        user_id,
+    )
+    if projection is not None and projection.guild_member:
+        member: TModAccountIdentity | ProjectedTModMember = ProjectedTModMember(
+            id=user_id,
+            display_name=projection.display_name,
+            administrator=projection.administrator,
+            role_ids=projection.role_ids,
+        )
+    else:
+        # Only a versioned password session may represent a zero-level account.
+        # Discord entry tickets expire instead of becoming external accounts.
+        if session_version is None:
+            return None
+        credential = await asyncio.to_thread(
+            credential_storage.get_web_credential,
+            int(guild_id),
+            user_id,
+        )
+        if credential is None:
+            return None
+        member = TModAccountIdentity(
+            id=user_id,
+            display_name=str(credential.login),
+        )
+    return ConsensusWebPrincipal(
+        user_id=user_id,
+        guild_id=int(guild_id),
+        display_name=str(member.display_name),
+        csrf_token=csrf_token,
+        member=member,
+    )
+
+
 def csrf_matches(request: web.Request, principal: ConsensusWebPrincipal) -> bool:
     supplied = request.headers.get("X-CSRF-Token", "").strip()
     return bool(supplied) and hmac.compare_digest(supplied, principal.csrf_token)
@@ -484,6 +587,8 @@ def csrf_matches(request: web.Request, principal: ConsensusWebPrincipal) -> bool
 __all__ = [
     "ConsensusWebAuthError",
     "ConsensusWebPrincipal",
+    "ProjectedRole",
+    "ProjectedTModMember",
     "TModAccountIdentity",
     "PERSISTENT_SESSION_LIFETIME_SECONDS",
     "LEGACY_SESSION_COOKIE",
@@ -499,6 +604,7 @@ __all__ = [
     "request_public_host",
     "request_public_secure",
     "resolve_principal",
+    "resolve_projected_principal",
     "set_session_cookie",
     "signed_session_identity",
 ]

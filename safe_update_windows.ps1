@@ -370,7 +370,7 @@ function Restore-DatabaseIfCorrupt {
         if ($LASTEXITCODE -eq 0) { return $false }
         Push-Location $ProjectDir
         try {
-            & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null
+            & docker compose stop tmod-web tmod-api tmod-worker tmod-discord-bot *> $null
             & docker compose run --rm --no-deps tmod-worker `
                 python /app/scripts/tmod_db_guard.py restore $containerBackupPath --offline-confirmed
             if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore failed" }
@@ -379,7 +379,7 @@ function Restore-DatabaseIfCorrupt {
         return $true
     }
     Push-Location $ProjectDir
-    try { & docker compose stop tmod-web tmod-worker tmod-discord-bot *> $null }
+    try { & docker compose stop tmod-web tmod-api tmod-worker tmod-discord-bot *> $null }
     finally { Pop-Location }
     & docker run --rm --user 0:0 `
         --env "DATA_DIR=/app/persistent/data" `

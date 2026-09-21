@@ -177,6 +177,22 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS web_access_projection (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL,
+                guild_member INTEGER NOT NULL DEFAULT 1,
+                administrator INTEGER NOT NULL DEFAULT 0,
+                role_ids_json TEXT NOT NULL DEFAULT '[]',
+                observed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_web_access_projection_active
+            ON web_access_projection(guild_id, guild_member, administrator, updated_at);
+
             CREATE TABLE IF NOT EXISTS member_profiles (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,

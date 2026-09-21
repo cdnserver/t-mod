@@ -28,7 +28,7 @@ $script:AllowedActions = @(
 )
 $script:AllowedServices = @(
     "tmod-postgres", "tmod-db-migrate", "tmod-discord-bot", "tmod-web",
-    "tmod-worker", "atlas-qdrant", "atlas-forum-browser", "tmod-caddy",
+    "tmod-api", "tmod-worker", "atlas-qdrant", "atlas-forum-browser", "tmod-caddy",
     "minecraft", "minecraft-supervisor"
 )
 $script:AllowedGroups = @("core", "atlas", "minecraft")

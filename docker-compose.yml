@@ -149,6 +149,44 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  tmod-api:
+    image: tmod-discord-bot:latest
+    container_name: tmod-api
+    restart: unless-stopped
+    command: ["python", "/app/api_main.py"]
+    user: "0:0"
+    env_file:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}/.env"
+    environment:
+      <<: *tmod_database_environment
+      POSTGRES_APPLICATION_NAME: "tmod-api"
+      TMOD_API_PORT: "8793"
+    volumes:
+      - "${TMOD_PERSISTENT_DIR:-C:/Users/Admin/Documents/SGLDiscordBot}:/app/persistent"
+    networks:
+      - default
+      - tmod-data
+    expose:
+      - "8793"
+    depends_on:
+      tmod-db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8793/ready', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
   tmod-worker:
     image: tmod-discord-bot:latest
     container_name: tmod-worker

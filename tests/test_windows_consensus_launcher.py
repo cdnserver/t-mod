@@ -17,7 +17,7 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
             launcher,
         )
         self.assertIn(
-            "docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-worker",
+            "docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-api tmod-worker",
             launcher,
         )
         self.assertNotIn("docker stop minecraft", launcher)
@@ -183,7 +183,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
             launcher,
         )
         self.assertIn(
-            "docker compose up -d --no-deps --force-recreate tmod-web tmod-worker",
+            'docker inspect --format "{{.State.Health.Status}}" tmod-api',
+            launcher,
+        )
+        self.assertIn(
+            "docker compose up -d --no-deps --force-recreate tmod-web tmod-api tmod-worker",
             launcher,
         )
         self.assertIn("The split backend did not become healthy", launcher)

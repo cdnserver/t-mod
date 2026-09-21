@@ -212,7 +212,7 @@ rem named volume is retained; stop dependent writers first for a clean handoff.
 call :postgres_accepts_connections
 if not errorlevel 1 (
   call :warn "PostgreSQL accepts SQL, but Docker health is stale; refreshing its healthcheck once"
-  docker compose stop tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+  docker compose stop tmod-discord-bot tmod-web tmod-api tmod-worker >nul 2>nul
   docker compose up -d --no-deps --force-recreate tmod-postgres
   if errorlevel 1 (
     call :fail "PostgreSQL healthcheck refresh failed"
@@ -255,7 +255,7 @@ docker exec tmod-postgres psql -U tmod -d tmod -tAc "SELECT 1 FROM tmod_platform
 if not errorlevel 1 set POSTGRES_MIGRATION_REQUIRED=0
 if "%POSTGRES_MIGRATION_REQUIRED%"=="1" (
   call :warn "First PostgreSQL import detected; freezing the SQLite writer"
-  docker stop tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+  docker stop tmod-discord-bot tmod-web tmod-api tmod-worker >nul 2>nul
 )
 if "%MINECRAFT_SECRETS_CHANGED%"=="1" (
   call :warn "Minecraft control secret changed; one controlled restart is required"
@@ -270,7 +270,7 @@ rem Always replace the application containers. A failed transactional update
 rem can otherwise leave a stopped bot carrying the previous Compose mounts and
 rem environment even after the repository was updated. Persistent data and the
 rem PostgreSQL volume are not removed.
-docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-worker >nul 2>nul
+docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-api tmod-worker >nul 2>nul
 docker compose up -d --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"
@@ -432,6 +432,7 @@ echo ------------------------------------------------------------
 echo.
 echo Live logs: docker logs -f tmod-discord-bot
 echo Web gateway logs: docker logs -f tmod-web
+echo API logs: docker logs -f tmod-api
 echo Database logs: docker logs -f tmod-postgres
 echo Minecraft logs: docker logs -f minecraft
 echo.
@@ -442,10 +443,12 @@ exit /b 0
 set SPLIT_RUNTIME_READY=0
 for /l %%i in (1,1,30) do (
   set WEB_HEALTH=
+  set API_HEALTH=
   set WORKER_HEALTH=
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-api 2^>nul') do set API_HEALTH=%%H
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
-  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!API_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
     set SPLIT_RUNTIME_READY=1
     goto :split_runtime_ready
   )
@@ -454,15 +457,17 @@ for /l %%i in (1,1,30) do (
 )
 
 echo.
-call :warn "Web or worker health did not converge; performing one controlled repair"
-docker compose up -d --no-deps --force-recreate tmod-web tmod-worker
+call :warn "Web, API, or worker health did not converge; performing one controlled repair"
+docker compose up -d --no-deps --force-recreate tmod-web tmod-api tmod-worker
 if errorlevel 1 goto :split_runtime_failed
 for /l %%i in (1,1,30) do (
   set WEB_HEALTH=
+  set API_HEALTH=
   set WORKER_HEALTH=
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-web 2^>nul') do set WEB_HEALTH=%%H
+  for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-api 2^>nul') do set API_HEALTH=%%H
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-worker 2^>nul') do set WORKER_HEALTH=%%H
-  if /I "!WEB_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
+  if /I "!WEB_HEALTH!"=="healthy" if /I "!API_HEALTH!"=="healthy" if /I "!WORKER_HEALTH!"=="healthy" (
     set SPLIT_RUNTIME_READY=1
     goto :split_runtime_ready
   )
@@ -473,10 +478,13 @@ for /l %%i in (1,1,30) do (
 :split_runtime_failed
 echo.
 call :fail "The split backend did not become healthy after automatic repair"
-docker compose ps -a tmod-web tmod-worker
+docker compose ps -a tmod-web tmod-api tmod-worker
 echo.
 echo --- tmod-web ---
 docker logs --tail 100 tmod-web 2>&1
+echo.
+echo --- tmod-api ---
+docker logs --tail 100 tmod-api 2>&1
 echo.
 echo --- tmod-worker ---
 docker logs --tail 100 tmod-worker 2>&1
@@ -484,7 +492,7 @@ exit /b 1
 
 :split_runtime_ready
 echo.
-call :ok "T-Mod Web and T-Mod Worker are healthy"
+call :ok "T-Mod Web, T-Mod API, and T-Mod Worker are healthy"
 exit /b 0
 
 :ensure_minecraft_runtime
@@ -576,11 +584,13 @@ if not errorlevel 1 (
   exit /b 0
 )
 call :warn "The web runtime did not answer within 240 seconds."
-docker compose ps tmod-discord-bot tmod-web tmod-worker
+docker compose ps tmod-discord-bot tmod-web tmod-api tmod-worker
 echo --- tmod-discord-bot ---
 docker compose logs --no-color --tail 120 tmod-discord-bot
 echo --- tmod-web ---
 docker compose logs --no-color --tail 120 tmod-web
+echo --- tmod-api ---
+docker compose logs --no-color --tail 120 tmod-api
 echo --- tmod-worker ---
 docker compose logs --no-color --tail 120 tmod-worker
 exit /b 1

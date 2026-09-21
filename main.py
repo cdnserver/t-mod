@@ -124,6 +124,74 @@ TVRS_EVENT_TYPES = {
 BOOT_LOG_ENABLED = os.getenv("BOOT_LOG_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 
 
+def _member_access_projection(member: discord.Member) -> dict[str, object]:
+    return {
+        "user_id": int(member.id),
+        "display_name": str(member.display_name),
+        "administrator": bool(member.guild_permissions.administrator),
+        "role_ids": [int(role.id) for role in member.roles],
+    }
+
+
+async def _sync_member_access_projection(member: discord.Member) -> None:
+    """Persist Discord access without making gateway events depend on storage."""
+
+    if member.bot:
+        return
+    payload = _member_access_projection(member)
+    try:
+        await asyncio.to_thread(
+            storage.upsert_web_access_projection,
+            int(member.guild.id),
+            int(member.id),
+            str(member.display_name),
+            administrator=bool(payload["administrator"]),
+            role_ids=payload["role_ids"],
+        )
+    except Exception as exc:
+        print(
+            f"Access projection sync failed for {member.id}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
+async def _sync_guild_access_projection(guild: discord.Guild) -> None:
+    members = [
+        _member_access_projection(member)
+        for member in guild.members
+        if not member.bot
+    ]
+    try:
+        complete_snapshot = bool(getattr(guild, "chunked", False))
+        result = await asyncio.to_thread(
+            storage.replace_web_access_projections,
+            int(guild.id),
+            members,
+            revoke_missing=complete_snapshot,
+        )
+        if complete_snapshot:
+            print(
+                "Access projection ready: "
+                f"guild={guild.id} active={result['active']} revoked={result['revoked']}",
+                flush=True,
+            )
+            return
+        # A partial Discord member cache must never revoke accounts it has not
+        # observed. Event updates keep those rows fresh until a chunked sync.
+        print(
+            f"Access projection partially refreshed: guild={guild.id} "
+            f"members={len(members)}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"Access projection snapshot failed for guild {guild.id}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def boot_line(text: str) -> None:
     if BOOT_LOG_ENABLED:
         print(text, flush=True)
@@ -933,6 +1001,7 @@ async def on_typing(channel: discord.abc.Messageable, user: discord.User | disco
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    await _sync_member_access_projection(after)
     if not TRACK_MEMBER_UPDATES:
         return
     if not has_tracked_role(after):
@@ -973,6 +1042,7 @@ async def on_member_join(member: discord.Member) -> None:
                 file=sys.stderr,
             )
         return
+    await _sync_member_access_projection(member)
     if not TRACK_MEMBER_JOIN_LEAVE:
         return
     if not has_tracked_role(member):
@@ -983,6 +1053,19 @@ async def on_member_join(member: discord.Member) -> None:
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
+    if not member.bot:
+        try:
+            await asyncio.to_thread(
+                storage.mark_web_access_projection_departed,
+                int(member.guild.id),
+                int(member.id),
+            )
+        except Exception as exc:
+            print(
+                f"Access projection departure failed for {member.id}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     if not TRACK_MEMBER_JOIN_LEAVE:
         return
     if member.bot:
@@ -1023,6 +1106,9 @@ async def on_ready() -> None:
     if user is None:
         print(t("console.ready_no_user"))
         return
+
+    for guild in bot.guilds:
+        await _sync_guild_access_projection(guild)
 
     global _SGBUREAU_VIEWS_REGISTERED, _TVRS_VIEWS_REGISTERED
     if not _SGBUREAU_VIEWS_REGISTERED:

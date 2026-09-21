@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import re
 import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -71,12 +69,14 @@ from modules.reactor_legislation import (
 from modules.tvrs_bill_editor import refresh_bill_workspace_panel
 from modules.tvrs_presentation import is_chair
 from modules.web_snapshot_cache import AsyncSnapshotCache
+from modules.desktop_bootstrap_service import (
+    DesktopBootstrapError,
+    build_desktop_bootstrap_payload,
+)
 from persistence import activity_repository as activity_storage
 from persistence import admin_dashboard_repository as dashboard_storage
-from persistence import atlas_repository as atlas_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
-from persistence import global_ban_repository as global_ban_storage
 from persistence import market_repository as market_storage
 from persistence import ovr_repository as ovr_storage
 from persistence import admission_repository as admission_storage
@@ -96,77 +96,6 @@ AuthenticatedRequest = Callable[
 
 logger = logging.getLogger(__name__)
 
-
-_BLACKBIRD_PRIVATE_EDITION = "blackbird"
-_LEGACY_LUMEN_PRIVATE_EDITION = "lumen"
-_PRIVATE_DESKTOP_EDITIONS = {
-    _BLACKBIRD_PRIVATE_EDITION,
-    _LEGACY_LUMEN_PRIVATE_EDITION,
-}
-_BLACKBIRD_DEFAULT_OWNER_ID = 902235631952998410
-
-
-def _desktop_edition(request: web.Request) -> str:
-    value = str(request.headers.get("X-TMod-Desktop-Edition") or "tmod").strip().lower()
-    return value if value in _PRIVATE_DESKTOP_EDITIONS else "tmod"
-
-
-def _private_desktop_owner_ids() -> set[int]:
-    """Return the fail-closed allowlist for the private successor client."""
-
-    configured = str(
-        os.getenv("TMOD_BLACKBIRD_OWNER_IDS")
-        or os.getenv("TMOD_LUMEN_OWNER_IDS")
-        or ""
-    ).strip()
-    if not configured:
-        return {_BLACKBIRD_DEFAULT_OWNER_ID}
-    return {
-        int(value)
-        for value in re.split(r"[\s,;]+", configured)
-        if value.isdigit() and int(value) > 0
-    }
-
-
-def _desktop_version_key(value: str) -> tuple[int, int, int, int, str, int]:
-    """Compare deployed Desktop versions without adding a packaging dependency."""
-
-    match = re.fullmatch(
-        # Desktop prereleases have historically used both ``-p4`` and
-        # SemVer-like ``-dev.2`` spellings.  Treating the latter as invalid
-        # produced the minimum key and made a newer development build look
-        # older than every supported release, locking every service tile.
-        r"v?(\d+)\.(\d+)\.(\d+)(?:[-.]?([a-zA-Z]+)(?:[.-]?(\d+))?)?",
-        str(value or "").strip(),
-    )
-    if not match:
-        return (-1, -1, -1, -1, "", -1)
-    major, minor, patch = (int(match.group(index)) for index in (1, 2, 3))
-    label = str(match.group(4) or "").lower()
-    revision = int(match.group(5) or 0)
-    return (major, minor, patch, 1 if not label else 0, label, revision)
-
-
-def _desktop_update_policy(request: web.Request) -> dict[str, Any]:
-    minimum = str(os.getenv("TMOD_DESKTOP_MIN_VERSION") or "").strip()
-    latest = str(os.getenv("TMOD_DESKTOP_LATEST_VERSION") or minimum).strip()
-    current = str(request.headers.get("X-TMod-Desktop-Version") or "").strip()
-    required = bool(minimum) and _desktop_version_key(current) < _desktop_version_key(minimum)
-    return {
-        "required": required,
-        "minimum_version": minimum or None,
-        "latest_version": latest or None,
-        "current_version": current or None,
-        "release_url": str(
-            os.getenv("TMOD_DESKTOP_RELEASE_URL")
-            or "https://github.com/cdnserver/t-mod-releases/releases/latest"
-        ).strip(),
-        "message": (
-            "Для продолжения установите обязательное обновление T-Mod Desktop."
-            if required
-            else "Установлена поддерживаемая версия T-Mod Desktop."
-        ),
-    }
 
 
 def _member_positions(member: Any) -> list[dict[str, Any]]:
@@ -1776,200 +1705,22 @@ def register_reactor_web_routes(
                 status=401,
             )
 
-        desktop_edition = _desktop_edition(request)
-        if (
-            desktop_edition in _PRIVATE_DESKTOP_EDITIONS
-            and int(principal.user_id) not in _private_desktop_owner_ids()
-        ):
+        try:
+            payload = await build_desktop_bootstrap_payload(
+                headers=request.headers,
+                principal=principal,
+                guild_id=int(guild_id),
+            )
+        except DesktopBootstrapError as exc:
             return web.json_response(
-                {
-                    "error": f"{desktop_edition}_private_access_required",
-                    "message": "Эта редакция доступна только владельцу.",
-                },
-                status=403,
+                {"error": exc.error, "message": exc.message},
+                status=exc.status,
                 headers={"Cache-Control": "private, no-store"},
             )
-
-        installation = await asyncio.to_thread(
-            global_ban_storage.bind_desktop_installation,
-            int(guild_id),
-            int(principal.user_id),
-            str(request.headers.get("X-TMod-Install-Token") or ""),
-            platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
-            app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
-            device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+        return web.json_response(
+            payload,
+            headers={"Cache-Control": "private, no-store"},
         )
-
-        client_update = _desktop_update_policy(request)
-        update_required = bool(client_update["required"])
-        guild_member = bool(principal.guild_member)
-        administrator = bool(principal.administrator)
-        grants: list[dict[str, Any]] = []
-        notification_payload: dict[str, Any] = {"items": [], "unread": 0}
-        preferred_name = ""
-
-        grants, overlay_context = await asyncio.gather(
-            asyncio.to_thread(
-                web_auth_storage.web_section_grants,
-                int(guild_id),
-                int(principal.user_id),
-            ),
-            asyncio.to_thread(
-                atlas_storage.atlas_overlay_context,
-                int(guild_id),
-                int(principal.user_id),
-            ),
-        )
-
-        if guild_member:
-            notification_payload, profile_snapshot = await asyncio.gather(
-                asyncio.to_thread(
-                    reactor_storage.reactor_list_notifications,
-                    int(guild_id),
-                    int(principal.user_id),
-                    limit=12,
-                ),
-                asyncio.to_thread(
-                    profile_storage.get_profile_snapshot,
-                    int(guild_id),
-                    int(principal.user_id),
-                ),
-            )
-            profile, _ = profile_snapshot
-            preferred_name = str(getattr(profile, "preferred_name", "") or "").strip()
-
-        granted_sections = sorted(
-            {
-                str(row.get("section") or "").strip().lower()
-                for row in grants
-                if str(row.get("section") or "").strip()
-            }
-        )
-        # Atlas AI is a product entitlement, not a grant to the Nuclear
-        # Reactor. Only actual administrative section grants expose it.
-        admin_access = administrator or bool(set(granted_sections) - {"atlas_ai"})
-        ovr_access = administrator or "ovr" in granted_sections
-        atlas_access = administrator or "atlas_ai" in granted_sections
-
-        def service(
-            service_id: str,
-            title: str,
-            url: str,
-            *,
-            enabled: bool = True,
-            reason: str | None = None,
-        ) -> dict[str, Any]:
-            service_enabled = bool(enabled) and not update_required
-            return {
-                "id": service_id,
-                "title": title,
-                "url": url,
-                "enabled": service_enabled,
-                "reason": (
-                    "Сначала установите обязательное обновление T-Mod Desktop."
-                    if update_required
-                    else reason if not enabled else None
-                ),
-            }
-
-        member_reason = "Доступ открывается участникам Товарищества."
-        payload = {
-            "protocol_version": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "client": {
-                "edition": desktop_edition,
-                "private": desktop_edition in _PRIVATE_DESKTOP_EDITIONS,
-                "title": (
-                    "BLACKBIRD — Технологии Товарищества"
-                    if desktop_edition == _BLACKBIRD_PRIVATE_EDITION
-                    else "LUMEN — Технологии Товарищества"
-                    if desktop_edition == _LEGACY_LUMEN_PRIVATE_EDITION
-                    else "T-Mod Desktop"
-                ),
-            },
-            "client_update": client_update,
-            "viewer": {
-                "id": int(principal.user_id),
-                "name": preferred_name or str(principal.display_name),
-                "display_name": str(principal.display_name),
-                "account_tier": str(principal.account_tier),
-                "guild_member": guild_member,
-                "administrator": administrator,
-                "sections": granted_sections,
-            },
-            "device": installation or {"trusted": False},
-            "services": [
-                service(
-                    "reactor",
-                    "Мой Reactor",
-                    "https://home.tvr.lat/",
-                    enabled=guild_member,
-                    reason=member_reason,
-                ),
-                service("consensus", "Consensus", "https://consensus.tvr.lat/"),
-                service(
-                    "atlas",
-                    "Atlas",
-                    "https://dash.tvr.lat/",
-                    enabled=atlas_access,
-                    reason="Доступ к Atlas AI выдаётся администраторами.",
-                ),
-                service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
-                service(
-                    "ovr",
-                    "ОВР",
-                    "https://ovr.tvr.lat/ovr",
-                    enabled=ovr_access,
-                    reason="Портал открывается после ручной выдачи доступа.",
-                ),
-                service(
-                    "games",
-                    "T-Mod Games",
-                    "https://home.tvr.lat/games",
-                    enabled=guild_member,
-                    reason=member_reason,
-                ),
-                service(
-                    "tasks",
-                    "Общие задачи",
-                    "https://consensus.tvr.lat/tasks",
-                    enabled=guild_member,
-                    reason=member_reason,
-                ),
-                service(
-                    "admin",
-                    "Ядерный Reactor",
-                    "https://reactor.tvr.lat/admin",
-                    enabled=admin_access,
-                    reason="Нужен административный или секционный доступ.",
-                ),
-            ],
-            "notifications": notification_payload,
-            "atlas_overlay": {
-                "allowed": atlas_access,
-                "characters": overlay_context["characters"],
-                "selected_character": overlay_context["selected_character"],
-                "catalog": overlay_context["catalog"],
-                "default_hotkey": "Ctrl+Shift+Space",
-                "endpoints": {
-                    "context": "https://dash.tvr.lat/api/atlas/overlay/context",
-                    "transcribe": "https://dash.tvr.lat/api/atlas/overlay/transcribe",
-                    "stream": "https://dash.tvr.lat/api/atlas/chat/stream",
-                    "tts_voices": "https://dash.tvr.lat/api/atlas/overlay/tts/voices",
-                    "tts_preview": "https://dash.tvr.lat/api/atlas/overlay/tts/preview",
-                    "tts_synthesize": "https://dash.tvr.lat/api/atlas/overlay/tts/synthesize",
-                },
-                "capabilities": {
-                    "push_to_talk": True,
-                    "spoken_reply": True,
-                    "ai_voice": "system_fallback",
-                    "screen_context": "consent_gated",
-                },
-            },
-        }
-        response = web.json_response(payload)
-        response.headers["Cache-Control"] = "private, no-store"
-        return response
 
     async def read_notifications(request: web.Request) -> web.Response:
         principal = await personal_request(request)
