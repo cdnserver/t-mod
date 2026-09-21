@@ -311,6 +311,11 @@ class WindowsConsensusLauncherTests(unittest.TestCase):
         self.assertIn('TMOD_SKIP_BUILD = "0"', guard)
         self.assertIn("TMOD_SKIP_BUILD", runtime)
         self.assertIn("TMOD_TRANSACTIONAL_UPDATE", runtime)
+        self.assertIn(
+            '& cmd.exe /d /c "call run_windows.bat" 2>&1 | Out-Host',
+            updater,
+        )
+        self.assertIn("return [int]$runtimeExitCode", updater)
         self.assertIn("tmod_db_guard.py backup --kind pre-update", updater)
         self.assertIn("worktree add --detach", updater)
         self.assertIn("unittest discover", updater)

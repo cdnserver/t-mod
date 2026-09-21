@@ -192,8 +192,14 @@ function Invoke-CurrentRuntime {
         $env:TMOD_PERSISTENT_DIR = $PersistentDir
         Push-Location $Directory
         try {
-            & cmd.exe /d /c "call run_windows.bat"
-            return $LASTEXITCODE
+            # Native stdout is success-pipeline output in Windows PowerShell.
+            # Returning it together with the exit code makes the caller receive
+            # an Object[]; ``$runtimeCode -ne 0`` then evaluates truthy even
+            # when run_windows.bat finished successfully. Render diagnostics
+            # to the host while keeping this function's result strictly scalar.
+            & cmd.exe /d /c "call run_windows.bat" 2>&1 | Out-Host
+            $runtimeExitCode = $LASTEXITCODE
+            return [int]$runtimeExitCode
         }
         finally { Pop-Location }
     }
