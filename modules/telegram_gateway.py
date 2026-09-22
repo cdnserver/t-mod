@@ -149,6 +149,21 @@ class _TelegramApi:
         await self.call("sendChatAction", {"chat_id": int(chat_id), "action": "typing"})
 
 
+async def _keep_typing(api: _TelegramApi, chat_id: int, stop: asyncio.Event) -> None:
+    """Keep Telegram's short-lived typing indicator alive during Atlas work."""
+
+    while not stop.is_set():
+        try:
+            await api.typing(chat_id)
+        except Exception:
+            # A transient Bot API failure must never cancel the actual answer.
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=4.0)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _handle_profile(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
     link = await asyncio.to_thread(
         telegram_storage.get_link_by_telegram,
@@ -414,17 +429,23 @@ async def _handle_atlas(
                 atlas_storage.atlas_dashboard, _GUILD_ID, owner_id, display_name, organization_id
             )
             profile = dict(dashboard["membership"].get("profile") or {})
-            await api.typing(chat_id)
-            result = await atlas_answer(
-                organization_id,
-                question if not direct_mode else f"Атлас 2, {question}",
-                history=list(history["messages"]),
-                memory=memory,
-                server_code=str(profile.get("server_code") or "phoenix-15"),
-                faction_code=str(profile.get("faction_code") or "lspd"),
-                model_id="atlas-tvr-a",
-                user_profile=profile,
-            )
+            typing_stop = asyncio.Event()
+            typing_task = asyncio.create_task(_keep_typing(api, chat_id, typing_stop))
+            try:
+                result = await atlas_answer(
+                    organization_id,
+                    question if not direct_mode else f"Атлас 2, {question}",
+                    history=list(history["messages"]),
+                    memory=memory,
+                    server_code=str(profile.get("server_code") or "phoenix-15"),
+                    faction_code=str(profile.get("faction_code") or "lspd"),
+                    model_id="atlas-tvr-a",
+                    user_profile=profile,
+                )
+            finally:
+                typing_stop.set()
+                typing_task.cancel()
+                await asyncio.gather(typing_task, return_exceptions=True)
             await asyncio.to_thread(
                 atlas_storage.atlas_add_message,
                 atlas_thread_id,
@@ -468,7 +489,11 @@ async def _handle_atlas(
                     "guild_id": _GUILD_ID,
                     "details": {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
                 })
-            await api.send(chat_id, str(result.get("answer") or "Ответ не сформирован."))
+            await api.send(
+                chat_id,
+                str(result.get("answer") or "Ответ не сформирован."),
+                reply_markup=_MAIN_KEYBOARD,
+            )
             emit_global_event({
                 "event_type": "atlas.telegram.answer",
                 "summary": "Atlas ответил в Telegram",
@@ -483,7 +508,11 @@ async def _handle_atlas(
                 },
             })
         except AtlasAIError as exc:
-            await api.send(chat_id, "Atlas временно не смог ответить. Повторите запрос через несколько секунд.")
+            await api.send(
+                chat_id,
+                "Atlas временно не смог ответить. Повторите запрос через несколько секунд.",
+                reply_markup=_MAIN_KEYBOARD,
+            )
             emit_global_event({
                 "event_type": "atlas.telegram.error",
                 "summary": "Atlas Telegram request failed",
@@ -492,7 +521,11 @@ async def _handle_atlas(
                 "details": {"code": exc.code, "retryable": bool(exc.retryable)},
             })
         except Exception as exc:  # keep polling alive after a single bad update
-            await api.send(chat_id, "Не удалось обработать запрос. Попробуйте ещё раз.")
+            await api.send(
+                chat_id,
+                "Не удалось обработать запрос. Попробуйте ещё раз.",
+                reply_markup=_MAIN_KEYBOARD,
+            )
             print(f"Telegram Atlas request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             emit_global_event({
                 "event_type": "atlas.telegram.error",
@@ -548,10 +581,10 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     if command in {"start", "help"}:
                         await api.send(
                             chat_id,
-                            "T-Mod · Atlas\n\n"
-                            "Подключите аккаунт в личном Реакторе → Подключения.\n"
-                            "Затем нажмите «🤖 Atlas», чтобы войти в режим диалога.\n"
-                            "Вне режима можно использовать `/atlas ваш вопрос`.",
+                            "✨ Добро пожаловать в T‑Mod\n\n"
+                            "Здесь можно открыть профиль, посмотреть персонажей и уведомления,"
+                            " проверить Atlas Token или поговорить с Atlas в отдельном режиме.\n\n"
+                            "Если аккаунт ещё не подключён, откройте личный Реактор → Подключения → Telegram · Atlas.",
                             reply_markup=_MAIN_KEYBOARD,
                         )
                         continue
@@ -685,11 +718,11 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         locks=locks,
                     )
                     continue
-                await api.send(
-                    chat_id,
-                    "Выберите «🤖 Atlas», чтобы начать диалог, или откройте профиль и уведомления в меню.",
-                    reply_markup=_MAIN_KEYBOARD,
-                )
+                    await api.send(
+                        chat_id,
+                        "Выберите раздел в меню ниже. Для свободного вопроса нажмите «🤖 Atlas».",
+                        reply_markup=_MAIN_KEYBOARD,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
