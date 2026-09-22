@@ -415,6 +415,105 @@ async def _handle_new_chat(api: _TelegramApi, *, chat_id: int, telegram_user: di
     )
 
 
+def _discord_dm_text(message: discord.Message) -> str:
+    """Convert a bot-authored Discord DM into a readable Telegram message."""
+
+    sections = ["📩 T‑Mod · уведомление"]
+    content = str(message.content or "").strip()
+    if content:
+        sections.extend(["", content])
+    for embed in list(message.embeds or [])[:5]:
+        title = str(embed.title or "").strip()
+        description = str(embed.description or "").strip()
+        if title or description:
+            sections.extend(["", title, description])
+        for field in list(embed.fields or [])[:12]:
+            name = str(field.name or "").strip()
+            value = str(field.value or "").strip()
+            if name or value:
+                sections.append(f"{name}: {value}" if name else value)
+        if embed.url:
+            sections.append(str(embed.url))
+    components = list(getattr(message, "components", []) or [])
+    for row in components[:5]:
+        for button in list(getattr(row, "children", []) or [])[:5]:
+            url = str(getattr(button, "url", "") or "").strip()
+            label = str(getattr(button, "label", "") or "Открыть")
+            if url:
+                sections.append(f"{label}: {url}")
+    attachments = list(message.attachments or [])
+    if attachments:
+        names = ", ".join(str(item.filename or "файл") for item in attachments[:8])
+        sections.extend(["", f"В Discord также приложено: {names}"])
+    rendered = "\n".join(part for part in sections if part).strip()
+    return rendered[:20000] or "У вас новое личное сообщение от T‑Mod в Discord."
+
+
+async def _mirror_bot_dm_to_telegram(bot: commands.Bot, message: discord.Message) -> None:
+    """Mirror a T-Mod private Discord message to the linked Telegram chat."""
+
+    if not _TOKEN or _GUILD_ID <= 0 or bot.user is None:
+        return
+    if message.guild is not None or int(message.author.id) != int(bot.user.id):
+        return
+    if not isinstance(message.channel, discord.DMChannel):
+        return
+    recipient = message.channel.recipient
+    if recipient is None:
+        # Gateway-created DMChannel objects can lack recipient metadata.
+        # Resolve the already-cached channel created by the original send.
+        cached_channel = bot.get_channel(int(message.channel.id))
+        if isinstance(cached_channel, discord.DMChannel):
+            recipient = cached_channel.recipient
+    if recipient is None:
+        recipient = next(
+            (
+                channel.recipient
+                for channel in bot.private_channels
+                if isinstance(channel, discord.DMChannel)
+                and int(channel.id) == int(message.channel.id)
+                and channel.recipient is not None
+            ),
+            None,
+        )
+    if recipient is None:
+        return
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_discord,
+        _GUILD_ID,
+        int(recipient.id),
+    )
+    if link is None:
+        return
+    api = getattr(bot, "_tmod_telegram_api", None)
+    if api is None:
+        return
+    try:
+        await api.send(int(link["telegram_chat_id"]), _discord_dm_text(message))
+        emit_global_event({
+            "event_type": "telegram.discord_dm_mirrored",
+            "summary": "T-Mod Discord DM продублировано в Telegram",
+            "guild_id": _GUILD_ID,
+            "actor_user_id": int(recipient.id),
+            "details": {
+                "discord_message_id": int(message.id),
+                "telegram_user_id": int(link["telegram_user_id"]),
+            },
+        })
+    except Exception as exc:
+        print(f"Telegram DM mirror failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        emit_global_event({
+            "event_type": "telegram.discord_dm_mirror_failed",
+            "summary": "Не удалось продублировать DM T-Mod в Telegram",
+            "guild_id": _GUILD_ID,
+            "actor_user_id": int(recipient.id),
+            "details": {
+                "discord_message_id": int(message.id),
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            },
+        })
+
+
 async def _handle_atlas(
     api: _TelegramApi,
     *,
@@ -803,6 +902,10 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
     started = False
     stop = asyncio.Event()
 
+    @bot.listen("on_message")
+    async def mirror_member_dm_to_telegram(message: discord.Message) -> None:
+        await _mirror_bot_dm_to_telegram(bot, message)
+
     @bot.tree.command(name="telegram-link", description="Привязать свой T-Mod аккаунт к Telegram")
     @app_commands.guild_only()
     async def telegram_link(interaction: discord.Interaction) -> None:
@@ -880,6 +983,7 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
         timeout = aiohttp.ClientTimeout(total=50, connect=10, sock_read=45)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             api = _TelegramApi(session)
+            setattr(bot, "_tmod_telegram_api", api)
             try:
                 await api.call("deleteWebhook", {"drop_pending_updates": False})
             except Exception as exc:
