@@ -12,7 +12,9 @@ import os
 import re
 import sys
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
@@ -59,18 +61,6 @@ _MAIN_KEYBOARD = {
 }
 
 
-_MENU_TEXT = (
-    "✨ T‑Mod · личный помощник\n\n"
-    "Выберите нужный раздел ниже:\n"
-    "🤖 Atlas — режим общения с ассистентом\n"
-    "👤 Профиль — аккаунт и доступ\n"
-    "🧩 Персонажи — подключённые игровые личности\n"
-    "🔔 Уведомления — события Реактора\n"
-    "💳 Atlas Token — тариф и баланс\n\n"
-    "Для нового разговора используйте «🆕 Новый диалог»."
-)
-
-
 def _chunks(value: str, limit: int = _MAX_TELEGRAM_TEXT) -> list[str]:
     text = str(value or "").strip()
     result: list[str] = []
@@ -98,6 +88,20 @@ def _format_count(value: Any) -> str:
         return f"{int(value or 0):,}".replace(",", " ")
     except (TypeError, ValueError):
         return "0"
+
+
+def _greeting() -> str:
+    try:
+        hour = datetime.now(ZoneInfo("Europe/Moscow")).hour
+    except Exception:
+        hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Доброе утро"
+    if 12 <= hour < 18:
+        return "Добрый день"
+    if 18 <= hour < 23:
+        return "Добрый вечер"
+    return "Доброй ночи"
 
 
 def _parse_command(text: str) -> tuple[str, str] | None:
@@ -257,8 +261,56 @@ async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: di
     )
 
 
-async def _handle_menu(api: _TelegramApi, *, chat_id: int) -> None:
-    await api.send(chat_id, _MENU_TEXT, reply_markup=_MAIN_KEYBOARD)
+async def _handle_menu(
+    api: _TelegramApi,
+    *,
+    chat_id: int,
+    telegram_user: dict[str, Any],
+) -> None:
+    """Render a small personal dashboard based on the linked T-Mod identity."""
+
+    greeting_name = _telegram_display_name(telegram_user).split()[0]
+    link = None
+    if _GUILD_ID > 0:
+        link = await asyncio.to_thread(
+            telegram_storage.get_link_by_telegram,
+            _GUILD_ID,
+            int(telegram_user.get("id") or 0),
+        )
+    if link is None:
+        body = (
+            f"👋 {_greeting()}, {greeting_name}!\n\n"
+            "Это ваш личный помощник T‑Mod. Здесь доступны профиль, персонажи и диалог с Atlas.\n\n"
+            "Статус аккаунта: ещё не подключён. Чтобы связать T‑Mod и Telegram, отправьте "
+            "`/tg-link` в личных сообщениях Discord-боту T‑Mod."
+        )
+    else:
+        owner_id = int(link["discord_user_id"])
+        profile, characters = await asyncio.to_thread(
+            profile_storage.get_profile_snapshot,
+            _GUILD_ID,
+            owner_id,
+        )
+        preferred = str(getattr(profile, "preferred_name", "") or "").strip()
+        if preferred:
+            greeting_name = preferred
+        access = await _access_allowed(_GUILD_ID, owner_id)
+        character_count = len(characters)
+        inbox = await asyncio.to_thread(
+            reactor_storage.reactor_list_notifications,
+            _GUILD_ID,
+            owner_id,
+            limit=1,
+        )
+        atlas_status = "доступ открыт" if access else "доступ пока не выдан"
+        body = (
+            f"👋 {_greeting()}, {greeting_name}!\n\n"
+            "Ваш T‑Mod аккаунт подключён и готов к работе.\n"
+            f"Atlas AI: {atlas_status}\n"
+            f"Персонажей: {character_count} · непрочитанных уведомлений: {int(inbox.get('unread') or 0)}\n\n"
+            "Куда направимся? Выберите раздел в меню."
+        )
+    await api.send(chat_id, body, reply_markup=_MAIN_KEYBOARD)
 
 
 async def _handle_usage(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
@@ -587,16 +639,17 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                             telegram_username=str(user.get("username") or ""),
                             telegram_display_name=_telegram_display_name(user),
                         )
-                        await api.send(
-                            chat_id,
-                            "Telegram подключён к вашему T-Mod аккаунту. Теперь можно пользоваться кнопкой «🤖 Atlas»."
-                            if result.get("ok")
-                            else "Ссылка устарела или уже использована. Создайте новую в настройках Реактора.",
-                            reply_markup=_MAIN_KEYBOARD,
-                        )
+                        if result.get("ok"):
+                            await _handle_menu(api, chat_id=chat_id, telegram_user=user)
+                        else:
+                            await api.send(
+                                chat_id,
+                                "Ссылка устарела или уже использована. Создайте новую в настройках Реактора.",
+                                reply_markup=_MAIN_KEYBOARD,
+                            )
                         continue
                     if command in {"start", "help"}:
-                        await _handle_menu(api, chat_id=chat_id)
+                        await _handle_menu(api, chat_id=chat_id, telegram_user=user)
                         continue
                     if command == "link":
                         result = await asyncio.to_thread(
@@ -613,13 +666,14 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                             "invalid_or_expired_code": "Код недействителен или уже использован. Запросите новый командой `/tg-link` в личных сообщениях T‑Mod.",
                             "telegram_already_linked": "Этот Telegram-профиль уже привязан к другому T-Mod аккаунту.",
                         }
-                        await api.send(
-                            chat_id,
-                            "Telegram привязан к T-Mod аккаунту. Теперь доступны меню профиля и `/atlas ваш вопрос`."
-                            if result.get("ok")
-                            else messages.get(str(result.get("error")), "Не удалось привязать аккаунт."),
-                            reply_markup=_MAIN_KEYBOARD,
-                        )
+                        if result.get("ok"):
+                            await _handle_menu(api, chat_id=chat_id, telegram_user=user)
+                        else:
+                            await api.send(
+                                chat_id,
+                                messages.get(str(result.get("error")), "Не удалось привязать аккаунт."),
+                                reply_markup=_MAIN_KEYBOARD,
+                            )
                         continue
                     if command in {"atlas", "atlas2"}:
                         if not args:
@@ -667,7 +721,7 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         continue
                     if command in {"menu", "stop", "exit", "cancel"}:
                         active_modes.pop(chat_id, None)
-                        await _handle_menu(api, chat_id=chat_id)
+                        await _handle_menu(api, chat_id=chat_id, telegram_user=user)
                         continue
                     await api.send(chat_id, "Неизвестная команда. Используйте `/help`.")
                     continue
@@ -697,11 +751,11 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     continue
                 if normalized in {"⌂ главное меню", "главное меню", "меню", "назад"}:
                     active_modes.pop(chat_id, None)
-                    await _handle_menu(api, chat_id=chat_id)
+                    await _handle_menu(api, chat_id=chat_id, telegram_user=user)
                     continue
                 if normalized in {"❌ выйти из atlas", "выйти из atlas", "выйти"}:
                     active_modes.pop(chat_id, None)
-                    await _handle_menu(api, chat_id=chat_id)
+                    await _handle_menu(api, chat_id=chat_id, telegram_user=user)
                     continue
                 if normalized in {"🆕 новый диалог", "новый диалог", "новый чат"}:
                     active_modes.pop(chat_id, None)
