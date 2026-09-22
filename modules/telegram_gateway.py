@@ -50,12 +50,25 @@ _MAIN_KEYBOARD = {
         [{"text": "🧩 Персонажи"}, {"text": "💳 Atlas Token"}],
         [{"text": "🔔 Уведомления"}, {"text": "⚙ Настройки"}],
         [{"text": "🆕 Новый диалог"}],
+        [{"text": "⌂ Главное меню"}],
         [{"text": "❌ Выйти из Atlas"}],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
     "input_field_placeholder": "Выберите раздел или напишите вопрос…",
 }
+
+
+_MENU_TEXT = (
+    "✨ T‑Mod · личный помощник\n\n"
+    "Выберите нужный раздел ниже:\n"
+    "🤖 Atlas — режим общения с ассистентом\n"
+    "👤 Профиль — аккаунт и доступ\n"
+    "🧩 Персонажи — подключённые игровые личности\n"
+    "🔔 Уведомления — события Реактора\n"
+    "💳 Atlas Token — тариф и баланс\n\n"
+    "Для нового разговора используйте «🆕 Новый диалог»."
+)
 
 
 def _chunks(value: str, limit: int = _MAX_TELEGRAM_TEXT) -> list[str]:
@@ -242,6 +255,10 @@ async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: di
         "Для выхода используйте /stop.",
         reply_markup=_MAIN_KEYBOARD,
     )
+
+
+async def _handle_menu(api: _TelegramApi, *, chat_id: int) -> None:
+    await api.send(chat_id, _MENU_TEXT, reply_markup=_MAIN_KEYBOARD)
 
 
 async def _handle_usage(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
@@ -579,14 +596,7 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         )
                         continue
                     if command in {"start", "help"}:
-                        await api.send(
-                            chat_id,
-                            "✨ Добро пожаловать в T‑Mod\n\n"
-                            "Здесь можно открыть профиль, посмотреть персонажей и уведомления,"
-                            " проверить Atlas Token или поговорить с Atlas в отдельном режиме.\n\n"
-                            "Если аккаунт ещё не подключён, откройте личный Реактор → Подключения → Telegram · Atlas.",
-                            reply_markup=_MAIN_KEYBOARD,
-                        )
+                        await _handle_menu(api, chat_id=chat_id)
                         continue
                     if command == "link":
                         result = await asyncio.to_thread(
@@ -657,11 +667,7 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         continue
                     if command in {"menu", "stop", "exit", "cancel"}:
                         active_modes.pop(chat_id, None)
-                        await api.send(
-                            chat_id,
-                            "Режим Atlas выключен. Выберите следующий раздел в меню.",
-                            reply_markup=_MAIN_KEYBOARD,
-                        )
+                        await _handle_menu(api, chat_id=chat_id)
                         continue
                     await api.send(chat_id, "Неизвестная команда. Используйте `/help`.")
                     continue
@@ -689,9 +695,13 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                 if normalized in {"⚙ настройки", "настройки", "подключения"}:
                     await _handle_settings(api, chat_id=chat_id, telegram_user=user)
                     continue
+                if normalized in {"⌂ главное меню", "главное меню", "меню", "назад"}:
+                    active_modes.pop(chat_id, None)
+                    await _handle_menu(api, chat_id=chat_id)
+                    continue
                 if normalized in {"❌ выйти из atlas", "выйти из atlas", "выйти"}:
                     active_modes.pop(chat_id, None)
-                    await api.send(chat_id, "Режим Atlas выключен.", reply_markup=_MAIN_KEYBOARD)
+                    await _handle_menu(api, chat_id=chat_id)
                     continue
                 if normalized in {"🆕 новый диалог", "новый диалог", "новый чат"}:
                     active_modes.pop(chat_id, None)
