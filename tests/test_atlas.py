@@ -1354,7 +1354,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(profile.intent, "drafting")
         self.assertEqual(profile.reasoning_effort, "medium")
-        self.assertIn("жёсткий предел — 120 слов", _response_delivery_contract(profile, question))
+        self.assertIn("жёсткий предел — 70 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
@@ -2713,7 +2713,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
         }
-        with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
             "modules.atlas_ai._json_request", AsyncMock(return_value=response)
         ) as request, patch(
             "modules.atlas_ai.atlas_storage.atlas_visible_knowledge_sources_by_id",
@@ -2820,7 +2823,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
 
     async def test_search_applies_server_and_faction_filters(self) -> None:
-        with patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock(return_value=[[0.1, 0.2]])), patch(
             "modules.atlas_ai._json_request", AsyncMock(return_value={"result": {"points": []}})
         ) as request:
             await atlas_search(
@@ -2843,7 +2849,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             embedded.extend(texts)
             return [[0.1, 0.2] for _ in texts]
 
-        with patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
             "modules.atlas_ai._json_request",
             AsyncMock(return_value={"result": {"points": []}}),
         ):
@@ -2872,7 +2881,10 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             "срок процедуры",
             "порядок обжалования",
         ]
-        with patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
+        with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch("modules.atlas_ai.atlas_embed", side_effect=embed), patch(
             "modules.atlas_ai._json_request",
             AsyncMock(return_value={"result": {"points": []}}),
         ):
@@ -3010,6 +3022,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             retryable=True,
         )
         with patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=[],
+        ), patch(
             "modules.atlas_ai.atlas_embed",
             AsyncMock(return_value=[[0.1, 0.2]]),
         ), patch(

@@ -39,6 +39,13 @@ class PostgresCompatibilityTests(unittest.TestCase):
         self.assertLess(lock, initialization)
         self.assertLess(initialization, unlock)
 
+    def test_schema_initialization_is_serialized_across_runtime_processes(self) -> None:
+        source = (ROOT / "persistence/schema.py").read_text(encoding="utf-8")
+        initialization = source.index("def init_db() -> None:")
+        process_lock = source.index("pg_advisory_xact_lock", initialization)
+        schema_start = source.index("con.executescript(", initialization)
+        self.assertLess(process_lock, schema_start)
+
     def test_begin_immediate_relies_on_psycopg_implicit_transaction(self) -> None:
         class Connection:
             def __init__(self) -> None:

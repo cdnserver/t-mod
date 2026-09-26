@@ -129,6 +129,16 @@ def init_db() -> None:
         _backup_before_consensus_reset()
         _backup_before_consensus_result_dedup()
     with _db_lock, connect() as con:
+        if _core.postgres_enabled():
+            # ``_db_lock`` only serializes callers inside one Python process.
+            # During a split-runtime restart the migration job, Discord bot,
+            # API and worker may briefly overlap. PostgreSQL can deadlock when
+            # two of them apply the same ALTER/UPDATE/index sequence together,
+            # so serialize the complete schema transaction across containers.
+            con.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                ("tmod-schema-init-v1",),
+            )
         con.executescript(
             """
             CREATE TABLE IF NOT EXISTS meta (
