@@ -40,6 +40,12 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             profile = atlas_ai._atlas_task_profile(question, mode="balanced")
             self.assertEqual(profile.intent, "social", question)
 
+    def test_empty_planner_catalog_does_not_claim_the_library_is_empty(self) -> None:
+        catalog = atlas_ai._atlas_catalog_text([])
+
+        self.assertIn("не подтверждает", catalog)
+        self.assertNotIn("библиотека пока не содержит", catalog.casefold())
+
     def test_vehicle_questions_add_a_road_code_search_lane(self) -> None:
         variants = atlas_ai._atlas_query_variants("Что делать если машину эвакуировали?")
         self.assertTrue(
@@ -50,6 +56,207 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         terms = atlas_ai._atlas_repository_query_terms("жалоба на игрока со статиком 228392")
 
         self.assertIn("228392", terms)
+
+    def test_repository_terms_reserve_governing_document_for_long_queries(self) -> None:
+        question = (
+            "Машину забрали со стоянки после длинного описания ситуации, "
+            "в котором много второстепенных деталей и обстоятельств. "
+            "Что делать, если машину эвакуировали?"
+        )
+
+        terms = atlas_ai._atlas_repository_query_terms(question)
+
+        self.assertEqual(terms[:2], ("дорожн", "кодекс"))
+
+    async def test_software_check_query_prioritizes_dedicated_rules_over_general_rules(self) -> None:
+        common = {
+            "organization_id": 1,
+            "project_code": "majestic-rp",
+            "server_code": "phoenix-15",
+            "faction_code": "lspd",
+            "visibility_scope": "server",
+            "federation_scope": "project",
+            "source_kind": "forum",
+            "metadata": {"taxonomy": {"domain": "ooc", "corpus_kind": "server_rule"}},
+        }
+        sources = [
+            {
+                **common,
+                "id": 75,
+                "title": "Правила проверки на стороннее ПО.",
+                "content_text": (
+                    "1.1 Проверка на стороннее ПО проводится администрацией.\n"
+                    "1.2 Игрок обязан соблюдать установленный порядок проверки.\n"
+                    "1.3 Отказ от проверки рассматривается по настоящим правилам."
+                ),
+                "source_url": "https://forum.example/rules-check",
+            },
+            {
+                **common,
+                "id": 76,
+                "title": "Основные правила проекта",
+                "content_text": (
+                    "6.16 Использование постороннего ПО для получения игрового преимущества.\n"
+                    "Примечание: администрация вправе провести проверку ПК; отказ от проверки "
+                    "или выход во время неё приравнивается к обнаружению ПО.\n"
+                    "Наказание — PermBan.\n"
+                    "6.19 Реклама посторонних ресурсов. Наказание — HardBan.\n"
+                    "5.14 Запрещены сделки с передачей посторонних IC/OOC договоров."
+                ),
+                "source_url": "https://forum.example/general-rules",
+            },
+        ]
+        for query in (
+            "Можно ли использовать стороннее ПО и как проходит проверка?",
+            "Как проходит проверка на стороннее программное обеспечение?",
+            "Что делать, если администрация проверяет софт?",
+            "Можно ли отказаться от проверки на читы?",
+        ):
+            self.assertEqual(
+                atlas_ai._atlas_document_route_hints(query),
+                ("Правила проверки на стороннее ПО",),
+            )
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            return_value=sources,
+        ), patch("modules.atlas_ai.atlas_embed", AsyncMock()) as embed, patch(
+            "modules.atlas_ai._json_request", AsyncMock()
+        ) as request:
+            for query in (
+                "Можно ли использовать стороннее ПО и как проходит проверка?",
+                "Как проходит проверка на стороннее программное обеспечение?",
+                "Что делать, если администрация проверяет софт?",
+                "Можно ли отказаться от проверки на читы?",
+            ):
+                result = await atlas_ai.atlas_search(
+                    77,
+                    query,
+                    limit=6,
+                    expanded=True,
+                )
+                self.assertTrue(result, query)
+                self.assertIn("проверки на стороннее по", result[0]["title"].casefold(), query)
+                self.assertIn("Основные правила проекта", [item["title"] for item in result])
+                unrelated_general_rules = [
+                    item
+                    for item in result
+                    if item["title"] == "Основные правила проекта"
+                    and item.get("structured")
+                    and item.get("reference") in {"clause:6.19", "clause:5.14"}
+                ]
+                self.assertEqual(unrelated_general_rules, [], query)
+
+        embed.assert_not_awaited()
+        request.assert_not_awaited()
+
+    def test_followup_repository_terms_prioritize_the_current_clarification(self) -> None:
+        terms = atlas_ai._atlas_repository_query_terms(
+            "Контекст предыдущего запроса: дорожный кодекс штраф парковка\n"
+            "Уточнение: как обжаловать штраф"
+        )
+
+        self.assertNotIn("дорожн", terms[:4])
+        self.assertIn("обжалов", terms[:6])
+        self.assertIn("штраф", terms[:6])
+
+    async def test_followup_search_gets_the_current_turn_as_a_separate_query(self) -> None:
+        current_question = "А если срок уже прошёл?"
+        history = [
+            {"role": "user", "content": "Как обжаловать штраф за парковку?"},
+            {"role": "assistant", "content": "Нужно подать жалобу в установленный срок."},
+        ]
+        search = AsyncMock(return_value=[])
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai._should_build_intelligence_brief", return_value=False), patch(
+            "modules.atlas_ai.atlas_search", search
+        ):
+            prepared = await atlas_ai._prepare_atlas_answer(
+                77,
+                current_question,
+                history=history,
+            )
+
+        self.assertIn(current_question, search.await_args.kwargs["query_variants"])
+        prompt = "\n".join(message["content"] for message in prepared.payload["messages"])
+        self.assertIn("Как обжаловать штраф за парковку?", prompt)
+
+    async def test_empty_first_search_retries_with_user_wording_and_governing_title(self) -> None:
+        question = "Какая статья за кражу?"
+        recovered_source = {
+            "source_id": 81,
+            "title": "Уголовный Кодекс штата San Andreas",
+            "url": "https://forum.example/uk",
+            "text": "10.1 Кража — тайное хищение чужого имущества.",
+            "score": 8.7,
+            "structured": True,
+            "reference": "article:10.1",
+            "pinpoints": ["статья 10.1"],
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "authority_scope": "server",
+        }
+        search = AsyncMock(side_effect=[[], [recovered_source]])
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai._should_build_intelligence_brief", return_value=False), patch(
+            "modules.atlas_ai.atlas_search", search
+        ):
+            prepared = await atlas_ai._prepare_atlas_answer(77, question)
+
+        self.assertEqual(search.await_count, 2)
+        retry = search.await_args_list[1].kwargs
+        self.assertEqual(search.await_args_list[1].args[1], question)
+        self.assertTrue(retry["include_content_search"])
+        self.assertTrue(retry["expanded"])
+        self.assertTrue(
+            any("Уголовный Кодекс" in item for item in retry["query_variants"])
+        )
+        self.assertTrue(
+            any("Уголовный Кодекс" in item["title"] for item in prepared.sources)
+        )
+
+    async def test_first_search_with_wrong_routed_document_gets_a_rescue_pass(self) -> None:
+        question = "Что делать при ДТП?"
+        unrelated = {
+            "source_id": 80,
+            "title": "Основные правила проекта",
+            "url": "https://forum.example/general",
+            "text": "Общие правила поведения на сервере.",
+            "score": 9.0,
+            "structured": False,
+            "knowledge_domain": "ooc",
+            "corpus_kind": "server_rule",
+            "authority_scope": "project",
+        }
+        road_code = {
+            **unrelated,
+            "source_id": 81,
+            "title": "Дорожный Кодекс штата San Andreas",
+            "url": "https://forum.example/road",
+            "text": "Статья 9. При ДТП водитель обязан остановиться.",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+            "authority_scope": "server",
+        }
+        search = AsyncMock(side_effect=[[unrelated], [road_code]])
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai._should_build_intelligence_brief", return_value=False), patch(
+            "modules.atlas_ai.atlas_search", search
+        ):
+            prepared = await atlas_ai._prepare_atlas_answer(77, question)
+
+        self.assertEqual(search.await_count, 2)
+        self.assertTrue(
+            any("Дорожный Кодекс" in item["title"] for item in prepared.sources)
+        )
 
     def test_overlay_content_search_is_reserved_for_precise_identifiers(self) -> None:
         self.assertTrue(atlas_ai._atlas_overlay_content_search_needed("жалоба, статик 228392"))
@@ -92,6 +299,8 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
     def test_provider_refusal_variants_are_filtered_without_matching_real_negation(self) -> None:
         for answer in (
             "Я не смог найти ответ по этому вопросу.",
+            "Я не обнаружил соответствующую статью в источниках.",
+            "Не обнаружено точного пункта в предоставленных материалах.",
             "Мне не удалось обнаружить применимую норму.",
             "В библиотеке Atlas\nнет точной статьи.",
             "Не нашёл нужную статью в материалах.",
@@ -103,6 +312,9 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
             "Не удалось установить ответ по имеющимся материалам.",
             "Информации недостаточно для точного вывода.",
             "У меня нет доступа к источникам для ответа.",
+            "Предоставленные документы не содержат ответа.",
+            "Источники не позволяют установить точный срок.",
+            "По доступным источникам нельзя определить статью.",
             "I was unable to determine the answer from the provided context.",
             "The provided context doesn't include the relevant article text.",
         ):
@@ -120,6 +332,35 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
                 "По статье 6.2 я не нашёл нарушений в описанном поведении."
             )
         )
+
+    def test_stream_guard_holds_common_refusal_openings_but_not_normal_answers(self) -> None:
+        for opening in (
+            "В этом контексте нет информации",
+            "По запросу ничего не найдено",
+            "Атлас не знает ответа",
+            "В релевантных источниках отсутствуют данные",
+            "Не могу подтвердить точную статью",
+            "Предоставленные документы",
+            "Источники не позволяют",
+            "По доступным источникам",
+            "К сожалению, в Atlas",
+            "Я не вижу в источниках",
+            "В Atlas не удалось",
+            "В материалах отсутствует",
+        ):
+            self.assertTrue(
+                atlas_ai._atlas_answer_may_be_retrieval_refusal_prefix(opening),
+                opening,
+            )
+        for opening in (
+            "В этом кодексе установлено правило",
+            "По этому вопросу отвечу кратко",
+            "Атлас может помочь составить заявление",
+        ):
+            self.assertFalse(
+                atlas_ai._atlas_answer_may_be_retrieval_refusal_prefix(opening),
+                opening,
+            )
 
     def test_provider_failure_has_local_legal_fallback(self) -> None:
         prepared = SimpleNamespace(
@@ -495,7 +736,53 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         answer = atlas_ai._deterministic_term_reply(prepared)
 
         self.assertTrue(answer.startswith("УК — Уголовный кодекс"))
+        self.assertIn("штата San Andreas", answer)
+        self.assertNotIn("библиотек", answer.casefold())
         self.assertLess(len(answer.split()), 30)
+
+    async def test_core_term_lookup_uses_the_canonical_code_source_and_cites_it(self) -> None:
+        source = {
+            "source_id": 9,
+            "title": "Уголовный Кодекс штата San Andreas",
+            "url": "https://example.test/uk",
+            "score": 9.0,
+            "text": "Уголовный Кодекс штата San Andreas. Статья 1.1...",
+            "knowledge_domain": "ic",
+            "corpus_kind": "law",
+        }
+        search = AsyncMock(return_value=[source])
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch("modules.atlas_ai._should_build_intelligence_brief", return_value=False), patch(
+            "modules.atlas_ai.atlas_search", search
+        ):
+            prepared = await atlas_ai._prepare_atlas_answer(77, "Что такое УК?")
+
+        answer = atlas_ai._deterministic_term_reply(prepared)
+        self.assertEqual(search.await_count, 1)
+        self.assertIn("Уголовный Кодекс штата San Andreas", answer)
+        self.assertIn("[Источник 1, Уголовный Кодекс штата San Andreas]", answer)
+        self.assertLessEqual(len(answer.split()), 32)
+
+    def test_unrelated_nonempty_hits_trigger_a_rescue_search(self) -> None:
+        unrelated = [
+            {
+                "title": "Дорожный Кодекс",
+                "text": "Статья 16. Запрещено управлять транспортом без регистрации.",
+            }
+        ]
+
+        self.assertTrue(
+            atlas_ai._atlas_needs_retrieval_rescue(
+                "Как подать иск из-за невыплаты заработной платы?",
+                unrelated,
+                intent="legal_analysis",
+            )
+        )
+
+    def test_uk_abbreviation_routes_to_the_criminal_code(self) -> None:
+        self.assertIn("Уголовный Кодекс", atlas_ai._atlas_document_route_hints("Что такое УК?"))
 
     def test_explicit_missing_article_gets_a_fast_specific_clarification(self) -> None:
         prepared = SimpleNamespace(
@@ -518,6 +805,36 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("16.2", answer)
         self.assertNotIn("библиотек", answer.casefold())
 
+    def test_explicit_full_chapter_is_returned_without_truncation(self) -> None:
+        provisions = [
+            f"16.{number} Норма {number}: полный текст положения и предусмотренное условие."
+            for number in range(1, 20)
+        ]
+        source_text = "Глава 16. Преступления против правосудия.\n" + "\n".join(provisions)
+        prepared = SimpleNamespace(
+            intent="exact_lookup",
+            latency_mode="standard",
+            model_route=SimpleNamespace(provider="tmod"),
+            sources=[
+                {
+                    "structured": True,
+                    "reference": "chapter:16",
+                    "pinpoints": ["глава 16"],
+                    "text": source_text,
+                }
+            ],
+            payload={"messages": [{"role": "user", "content": "Напиши полностью главу 16 УК"}]},
+        )
+
+        answer = atlas_ai._deterministic_exact_lookup(prepared)
+        delivered = atlas_ai._compact_answer_for_delivery(prepared, answer)
+
+        self.assertEqual(delivered, answer)
+        self.assertIn("16.1 Норма 1", delivered)
+        self.assertIn("16.10 Норма 10", delivered)
+        self.assertIn("16.19 Норма 19", delivered)
+        self.assertTrue(delivered.endswith("[1, глава 16]"))
+
     def test_visual_router_is_separate_from_legal_retrieval(self) -> None:
         profile = atlas_ai._atlas_task_profile(
             "Что за растение спереди меня?",
@@ -534,6 +851,39 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(compact.split()), 180)
         self.assertTrue(compact.startswith("Прямой вывод."))
         self.assertTrue(compact.endswith("."))
+
+    def test_deep_research_defaults_to_a_concise_answer(self) -> None:
+        question = "Проанализируй спор и назови применимое правило."
+        profile = atlas_ai._atlas_task_profile(question, mode="balanced")
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="legal_analysis",
+            depth="deep",
+            payload={"messages": [{"role": "user", "content": question}]},
+        )
+        long_answer = "Краткий вывод. " + "Повторное пояснение без новой пользы. " * 80
+
+        contract = atlas_ai._response_delivery_contract(profile, question)
+        compact = atlas_ai._compact_answer_for_delivery(prepared, long_answer)
+
+        self.assertIn("30–65 слов", contract)
+        self.assertLessEqual(len(compact.split()), 80)
+        self.assertTrue(compact.startswith("Краткий вывод."))
+        self.assertTrue(compact.endswith("."))
+
+    def test_explicitly_detailed_deep_research_keeps_the_long_answer_budget(self) -> None:
+        question = "Подробно проанализируй спор и все исключения."
+        profile = atlas_ai._atlas_task_profile(question, mode="balanced")
+        prepared = SimpleNamespace(
+            latency_mode="standard",
+            intent="legal_analysis",
+            depth="deep",
+            payload={"messages": [{"role": "user", "content": question}]},
+        )
+        answer = "Подробный вывод. " + "Содержательное пояснение. " * 90
+
+        self.assertIn("350–650 слов", atlas_ai._response_delivery_contract(profile, question))
+        self.assertEqual(atlas_ai._compact_answer_for_delivery(prepared, answer), answer.strip())
 
     def test_quick_answer_is_tighter_than_standard_delivery(self) -> None:
         prepared = SimpleNamespace(latency_mode="standard", intent="procedural_advice", depth="quick")
@@ -827,6 +1177,78 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("библиотек", answer.casefold())
         self.assertIn("опиши ситуацию", answer.casefold())
 
+    async def test_invalid_legal_citation_is_repaired_against_available_sources(self) -> None:
+        source = {
+            "source_id": 7,
+            "title": "Уголовный кодекс",
+            "text": "Статья 10.1 — тайное хищение имущества.",
+            "structured": True,
+            "reference": "article:10.1",
+            "pinpoints": ["статья 10.1"],
+            "score": 9.0,
+        }
+        route = SimpleNamespace(provider="openrouter", model="test", endpoint="https://example.test")
+        retry_route = SimpleNamespace(provider="openrouter", model="test", endpoint="https://example.test")
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            latency_mode="standard",
+            sources=[source],
+            payload={"messages": [{"role": "user", "content": "Какая ответственность за кражу?"}]},
+        )
+        retry = AsyncMock(
+            return_value=(
+                {"choices": [{"message": {"content": "Кража — тайное хищение имущества [Источник 1]."}}]},
+                retry_route,
+            )
+        )
+        with patch("modules.atlas_ai._completion_with_fallback", retry):
+            answer, _used_route = await atlas_ai._repair_retrieval_refusal(
+                prepared,
+                "Кража — тайное хищение имущества [Источник 4].",
+                route,
+            )
+
+        self.assertIn("[Источник 1]", answer)
+        self.assertEqual(retry.await_count, 1)
+        retry_payload = retry.await_args.args[1]
+        self.assertIn("ссылки на источники", retry_payload["messages"][-1]["content"])
+
+    async def test_repeated_invalid_citation_falls_back_to_canonical_clause(self) -> None:
+        source = {
+            "source_id": 7,
+            "title": "Уголовный кодекс",
+            "text": "Статья 10.1 — тайное хищение имущества.",
+            "structured": True,
+            "reference": "article:10.1",
+            "pinpoints": ["статья 10.1"],
+            "score": 9.0,
+        }
+        route = SimpleNamespace(provider="openrouter", model="test", endpoint="https://example.test")
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            latency_mode="standard",
+            sources=[source],
+            payload={"messages": [{"role": "user", "content": "Какая ответственность за кражу?"}]},
+        )
+        with patch(
+            "modules.atlas_ai._completion_with_fallback",
+            AsyncMock(
+                return_value=(
+                    {"choices": [{"message": {"content": "Кража карается по статье 10.1 [Источник 99]."}}]},
+                    route,
+                )
+            ),
+        ):
+            answer, _used_route = await atlas_ai._repair_retrieval_refusal(
+                prepared,
+                "Кража карается по статье 10.1 [Источник 99].",
+                route,
+            )
+
+        self.assertIn("Статья 10.1 — тайное хищение имущества.", answer)
+        self.assertIn("[1, статья 10.1]", answer)
+        self.assertNotIn("Источник 99", answer)
+
     async def test_repeated_retrieval_refusal_is_replaced_even_without_matching_excerpt(self) -> None:
         prepared = SimpleNamespace(
             intent="summary",
@@ -959,6 +1381,21 @@ class AtlasResponseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["reference"], "article:10.5")
         embed.assert_not_awaited()
         request.assert_not_awaited()
+
+    async def test_canonical_store_failure_is_not_reported_as_an_empty_library(self) -> None:
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=self._config()), patch(
+            "modules.atlas_ai.atlas_storage.atlas_resolve_federation_scope",
+            return_value=self._scope(),
+        ), patch(
+            "modules.atlas_ai.atlas_storage.atlas_searchable_knowledge_sources",
+            side_effect=TimeoutError("postgres timeout"),
+        ):
+            with self.assertRaises(atlas_ai.AtlasAIError) as raised:
+                await atlas_ai.atlas_search(77, "Что написано в статье 16 УК?")
+
+        self.assertEqual(raised.exception.code, "atlas_corpus_unavailable")
+        self.assertTrue(raised.exception.retryable)
+        self.assertNotIn("библиотек", str(raised.exception).casefold())
 
     async def test_document_route_ranks_governing_source_above_neighbouring_articles(self) -> None:
         sources = [

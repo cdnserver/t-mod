@@ -37,6 +37,7 @@ class LiveCase:
     forbidden_terms: tuple[str, ...] = ()
     forbidden_patterns: tuple[str, ...] = ()
     max_words: int = 0
+    retrieval_required: bool = True
 
 
 CASES = (
@@ -44,8 +45,17 @@ CASES = (
         "uk-chapter-16",
         "Напиши полностью главу 16 Уголовного кодекса штата.",
         "Уголовный Кодекс",
-        required_terms=("16.1", "16.19", "против правосудия"),
+        required_terms=("16.1", "16.10", "16.19", "против правосудия"),
+        forbidden_terms=("в библиотеке atlas нет", "информация отсутствует"),
         max_words=2_500,
+    ),
+    LiveCase(
+        "uk-definition",
+        "Что такое УК?",
+        "Уголовный Кодекс",
+        required_terms=("уголовный кодекс", "штата san andreas"),
+        forbidden_terms=("в библиотеке", "информация отсутствует"),
+        max_words=40,
     ),
     LiveCase(
         "road-article-16",
@@ -59,14 +69,21 @@ CASES = (
         "Что такое DM и какое наказание предусмотрено правилами проекта?",
         "Основные правила проекта",
         required_terms=("DM",),
-        max_words=220,
+        max_words=90,
     ),
     LiveCase(
         "ooc-software",
         "Можно ли использовать стороннее ПО и как проходит проверка?",
         "Правила проверки на стороннее ПО",
-        required_terms=("ПО",),
-        max_words=360,
+        required_terms=("ПО", "провер", "PermBan"),
+        max_words=80,
+    ),
+    LiveCase(
+        "ooc-software-paraphrase",
+        "Как проходит проверка на стороннее программное обеспечение?",
+        "Правила проверки на стороннее ПО",
+        required_terms=("провер", "PermBan"),
+        max_words=80,
     ),
     LiveCase(
         "ooc-bank",
@@ -106,7 +123,7 @@ CASES = (
             "статья не найдена",
             "не могу назвать",
         ),
-        max_words=150,
+        max_words=80,
     ),
     LiveCase(
         "ic-theft-article",
@@ -119,7 +136,7 @@ CASES = (
             "статья не найдена",
             "не могу назвать",
         ),
-        max_words=150,
+        max_words=80,
     ),
     LiveCase(
         "ic-bribe-giving",
@@ -202,6 +219,7 @@ CASES = (
         required_terms=("привет",),
         forbidden_terms=("интерфейс", "библиотек", "режим работы", "LSPD", "phoenix"),
         max_words=30,
+        retrieval_required=False,
     ),
 )
 
@@ -221,6 +239,36 @@ def _organization_id(project_code: str, explicit: int) -> int:
 
 def _source_titles(items: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("title") or "") for item in items]
+
+
+def _expected_source_cited(expected_title: str, cited_titles: list[str]) -> bool:
+    """Require a grounded final citation, not just a good retrieval preview."""
+
+    return not expected_title or any(
+        _contains(title, expected_title) for title in cited_titles
+    )
+
+
+def _answer_cites_expected_source(
+    answer: str,
+    expected_title: str,
+    cited_titles: list[str],
+) -> bool:
+    """Check that an inline citation number points at the governing source."""
+
+    if not expected_title:
+        return True
+    for match in re.finditer(
+        r"\[\s*(?:источник\s*)?(\d+)\s*[,：:]",
+        str(answer or ""),
+        re.IGNORECASE,
+    ):
+        citation_index = int(match.group(1)) - 1
+        if 0 <= citation_index < len(cited_titles) and _contains(
+            cited_titles[citation_index], expected_title
+        ):
+            return True
+    return False
 
 
 def _contains(value: str, expected: str) -> bool:
@@ -257,20 +305,24 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "checks": {},
         }
         try:
-            hits = await atlas_search(
-                organization_id,
-                case.question,
-                server_code=args.server,
-                faction_code=args.faction,
-                limit=6,
-                expanded=True,
-            )
-            titles = _source_titles(hits)
+            titles: list[str] = []
+            if case.retrieval_required:
+                hits = await atlas_search(
+                    organization_id,
+                    case.question,
+                    server_code=args.server,
+                    faction_code=args.faction,
+                    limit=6,
+                    expanded=True,
+                )
+                titles = _source_titles(hits)
+                report["checks"]["retrieval"] = (
+                    bool(case.expected_title)
+                    and any(_contains(title, case.expected_title) for title in titles[:3])
+                )
+            else:
+                report["checks"]["retrieval"] = True
             report["top_sources"] = titles[:6]
-            report["checks"]["retrieval"] = (
-                not case.expected_title
-                or any(_contains(title, case.expected_title) for title in titles[:3])
-            )
             if args.include_model:
                 result = await atlas_answer(
                     organization_id,
@@ -311,6 +363,18 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             str(result.get("project_code") or "") == args.project
                             and str(result.get("server_code") or "") == args.server
                             and str(result.get("faction_code") or "") == args.faction
+                        ),
+                        # A retrieval hit shown in diagnostics is not enough:
+                        # the generated answer must cite the governing source
+                        # that the case is explicitly testing.
+                        "expected_source_cited": _expected_source_cited(
+                            case.expected_title,
+                            cited_titles,
+                        ),
+                        "answer_uses_expected_source": _answer_cites_expected_source(
+                            answer,
+                            case.expected_title,
+                            cited_titles,
                         ),
                         "agent": str((result.get("agent") or {}).get("id") or "") == case.agent_id,
                     }

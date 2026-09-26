@@ -1036,6 +1036,16 @@ def _atlas_source_domain(source: dict[str, Any]) -> str:
     return str(taxonomy.get("domain") or "mixed").strip().lower()
 
 
+_ATLAS_SOFTWARE_CHECK_QUERY_RE = re.compile(
+    r"\b(?:"
+    r"провер\w*\s+(?:на\s+)?(?:сторонн\w*\s+(?:по|программн\w*\s+обеспечен\w*)|"
+    r"чит\w*|софт\w*|программ\w*)"
+    r"|сторонн\w*\s+(?:по|программн\w*\s+обеспечен\w*)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _atlas_query_variants(
     query: str,
     abbreviations: dict[str, str] | None = None,
@@ -1105,11 +1115,7 @@ def _atlas_query_variants(
         variants.append(
             f"{clean}\nПравила государственных структур: точный пункт и полное условие"
         )
-    if re.search(
-        r"\b(?:сторонн\w*\s+по|провер\w*\s+(?:на\s+)?сторонн\w*\s+по)\b",
-        lowered,
-        re.IGNORECASE,
-    ):
+    if _ATLAS_SOFTWARE_CHECK_QUERY_RE.search(lowered):
         variants.append(
             f"{clean}\nПравила проверки на стороннее ПО: порядок проверки, права и последствия"
         )
@@ -1135,7 +1141,31 @@ def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
 
     identifiers: list[str] = []
     terms: list[str] = []
-    for token in re.findall(r"[a-zа-яё0-9-]{3,}", str(query or "").casefold()):
+    clean_query = str(query or "")
+    # Follow-up retrieval queries carry the earlier turn for context. Keep the
+    # user's current clarification first: otherwise the 12-term repository
+    # budget can be consumed by the old question before it reaches the new
+    # subject (for example, "а какой срок?" after discussing a specific rule).
+    current_clarifications = re.findall(
+        r"(?im)^\s*уточнение\s*:\s*(.+?)\s*$", clean_query
+    )
+    if current_clarifications:
+        clean_query = "\n".join([*current_clarifications, clean_query])
+    # Add the governing document's title words before generic query wording.
+    # The canonical repository uses a bounded 12-term LIKE search; without
+    # this reserve, a long natural-language question can spend all slots on
+    # incidental details and never fetch the matching codex for exact clause
+    # extraction, even though the router already identified it.
+    routed_terms: list[str] = []
+    current_question = "\n".join(current_clarifications)
+    routed_titles = _atlas_document_route_hints(current_question) if current_question else ()
+    if not routed_titles:
+        routed_titles = _atlas_document_route_hints(clean_query)
+    for title in routed_titles:
+        for token in re.findall(r"[a-zа-яё0-9-]{3,}", title.casefold()):
+            if token not in _ATLAS_SEARCH_STOP_WORDS:
+                routed_terms.append(token[:7] if len(token) >= 9 else token[:6])
+    for token in re.findall(r"[a-zа-яё0-9-]{3,}", clean_query.casefold()):
         if token.isdigit():
             # Static IDs, case numbers and forum topic IDs are often the only
             # precise key in a user's question. Dropping every numeric token
@@ -1149,7 +1179,7 @@ def _atlas_repository_query_terms(query: str) -> tuple[str, ...]:
         # Six characters preserve useful distinctions while matching common
         # Russian endings: ``уголовный`` / ``уголовного`` and similar forms.
         terms.append(token[:7] if len(token) >= 9 else token[:6])
-    return _ordered_distinct([*identifiers, *terms], limit=12)
+    return _ordered_distinct([*identifiers, *routed_terms, *terms], limit=12)
 
 
 def _atlas_overlay_content_search_needed(question: str) -> bool:
@@ -1212,6 +1242,14 @@ def _atlas_lexical_query_terms(
             or _atlas_ooc_question_signal(expanded)
         ):
             raw_terms.append("dm")
+    # Many players describe this as a "software check", "check for cheats"
+    # or simply "admin checking my software". The special forum regulation
+    # uses a stable title ("Правила проверки на стороннее ПО"), while general
+    # rules also mention prohibited software. Add title/body anchors so a
+    # natural paraphrase retrieves the dedicated procedure instead of only
+    # the general prohibition.
+    if _ATLAS_SOFTWARE_CHECK_QUERY_RE.search(expanded):
+        raw_terms.extend(("провер", "сторонн", "программн", "обеспечен"))
     # The Road Code uses the formal word ``авария`` while players normally
     # type ``ДТП`` or ``столкнулись``.  Add the canonical stems so the
     # complete accident clause (usually article 9) wins over introductory
@@ -1320,6 +1358,10 @@ def _atlas_numbered_rule_candidates(
         if not _atlas_is_numbered_rule_source(source):
             continue
         title_folded = str(source.get("title") or "").casefold()
+        software_check_query = bool(_ATLAS_SOFTWARE_CHECK_QUERY_RE.search(query))
+        dedicated_software_rules = (
+            "правила проверки на стороннее по" in title_folded
+        )
         metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
         taxonomy = metadata.get("taxonomy") if isinstance(metadata.get("taxonomy"), dict) else {}
         ranked: list[tuple[float, int, str, str]] = []
@@ -1328,6 +1370,16 @@ def _atlas_numbered_rule_candidates(
         ):
             number = re.sub(r"\s+", "", number)
             folded = section.casefold()
+            if software_check_query and not dedicated_software_rules and not re.search(
+                r"\b(?:провер\w*|пк|по|программ\w*|софт\w*|чит\w*)\b",
+                folded,
+                re.IGNORECASE,
+            ):
+                # ``стороннее ПО`` also textually matches clauses about
+                # advertising third-party resources or third-party deals.
+                # For a check/procedure question, require the clause itself
+                # to discuss software or the check, not just ``посторонний``.
+                continue
             matched_terms = [term for term in terms if term in folded]
             meaningful_hits = [
                 term for term in matched_terms if term not in _ATLAS_RULE_GENERIC_TERMS
@@ -2132,8 +2184,18 @@ async def atlas_search(
             query_terms=repository_terms,
             include_content_search=include_content_search,
         )
-    except Exception:
-        canonical_sources = []
+    except Exception as exc:
+        # An unavailable canonical store is not evidence that a document is
+        # missing.  Collapsing storage outages into an empty corpus made the
+        # generator produce misleading "not found" answers (and hide DB
+        # regressions from operators).  Fail distinctly so the client can
+        # offer a retry while normal, successful empty searches keep their
+        # existing clarification behaviour.
+        raise AtlasAIError(
+            "atlas_corpus_unavailable",
+            "Не удалось получить материалы Atlas. Попробуйте повторить запрос через несколько секунд.",
+            retryable=True,
+        ) from exc
     if permitted_domains:
         canonical_sources = [
             source
@@ -2223,11 +2285,15 @@ async def atlas_search(
             or re.search(r"\b(?:задерж|арест|обыск|допрос)\w*", primary_query, re.IGNORECASE)
         )
     )
+    deterministic_software_check = bool(
+        lexical_candidates and _ATLAS_SOFTWARE_CHECK_QUERY_RE.search(primary_query)
+    )
     deterministic_legal = bool(
         structured_candidates
         or rule_candidates
         or thematic_candidates
         or procedural_legal_query
+        or deterministic_software_check
     )
     if deterministic_legal:
         bodies = []
@@ -2408,6 +2474,7 @@ async def atlas_search(
                 r"цех|дилер|семейн|лидер)\w*",
                 query_folded,
             )
+            and not _ATLAS_SOFTWARE_CHECK_QUERY_RE.search(query_folded)
             and "основные правил" in title_folded
         ):
             score += 1.15
@@ -2537,6 +2604,10 @@ _ATLAS_DOCUMENT_ROUTE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("Уголовный Кодекс",),
     ),
     (
+        r"\b(?:ук|уголовн\w*\s+кодекс)\b",
+        ("Уголовный Кодекс",),
+    ),
+    (
         r"(?:лицензи\w*|изъят\w*|изъять|боеприпас\w*|огнестрел\w*|спецсредств\w*)",
         ("обороте оружия", "Уголовный Кодекс"),
     ),
@@ -2552,6 +2623,12 @@ _ATLAS_DOCUMENT_ROUTE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         r"(?:конституц\w*|основн\w*\s+прав\w*\s+штат\w*)",
         ("Конституция",),
+    ),
+    (
+        r"\b(?:провер\w*\s+(?:на\s+)?(?:сторонн\w*\s+"
+        r"(?:по|программн\w*\s+обеспечен\w*)|чит\w*|софт\w*|программ\w*)|"
+        r"сторонн\w*\s+(?:по|программн\w*\s+обеспечен\w*))\b",
+        ("Правила проверки на стороннее ПО", "Основные правила проекта"),
     ),
     (
         r"(?:иск\w*|судебн\w*|подсудн\w*|суд\w*|обжал\w*)",
@@ -2583,7 +2660,89 @@ def _atlas_document_route_hints(query: str) -> tuple[str, ...]:
             for hint in hints
             if "уголовн" not in str(hint).casefold()
         ]
+    if _ATLAS_SOFTWARE_CHECK_QUERY_RE.search(lowered):
+        # This question has a dedicated primary rulebook. The broad OOC
+        # route also matches it, but should not give generic project rules
+        # equal title authority and crowd the actual procedure out.
+        hints = [
+            hint
+            for hint in hints
+            if "правила проверки на стороннее по" in str(hint).casefold()
+        ]
     return _ordered_distinct(hints, limit=8)
+
+
+def _atlas_retrieval_rescue_queries(
+    question: str,
+    *,
+    retrieval_query: str = "",
+    planned_queries: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Build a second-pass query set led by the user's actual latest wording.
+
+    The normal pass may be led by resolved history or planner-generated
+    wording. On an empty/incorrect-document result, retry with the untouched
+    user turn first, then deterministic aliases and identified document titles
+    so one poor planner paraphrase cannot strand an indexed source.
+    """
+
+    clean = " ".join(str(question or "").split())[:8_000]
+    contextual = " ".join(str(retrieval_query or "").split())[:1_200]
+    if contextual.casefold().startswith("контекст предыдущего запроса:"):
+        candidates = [contextual, clean]
+    else:
+        candidates = [clean]
+    candidates.extend(_atlas_query_variants(clean))
+    candidates.extend(
+        f"{title}: {clean}" for title in _atlas_document_route_hints(clean)
+    )
+    candidates.extend(str(item or "").strip()[:1_200] for item in planned_queries)
+    if contextual and contextual != clean and contextual not in candidates:
+        candidates.append(contextual)
+    return list(dict.fromkeys(item for item in candidates if item))[:10]
+
+
+def _atlas_needs_retrieval_rescue(
+    question: str,
+    sources: list[dict[str, Any]],
+    *,
+    intent: str,
+) -> bool:
+    """Retry when retrieval is empty, off-route, or lacks lexical evidence."""
+
+    if intent in {"social", "visual"}:
+        return False
+    if not sources:
+        return True
+    hints = _atlas_document_route_hints(question)
+    if hints and not any(
+        any(hint.casefold() in str(source.get("title") or "").casefold() for hint in hints)
+        for source in sources
+    ):
+        return True
+    meaningful_terms, _phrases = _atlas_lexical_query_terms(question, sources)
+    meaningful_terms = [
+        term
+        for term in meaningful_terms
+        if len(term) >= 3 and term not in _ATLAS_RULE_GENERIC_TERMS
+    ]
+    if not meaningful_terms:
+        # A terse follow-up ("and what term?", "which article?") carries too
+        # little standalone text to establish that the current hits answer it.
+        # The retry builder includes dialog context and the latest user turn.
+        return True
+    best_overlap = 0
+    for source in sources:
+        searchable = (
+            f"{str(source.get('title') or '')}\n"
+            f"{str(source.get('text') or source.get('content_text') or '')}"
+        ).casefold()
+        best_overlap = max(
+            best_overlap,
+            sum(1 for term in meaningful_terms if term.casefold() in searchable),
+        )
+    minimum_overlap = 1 if len(meaningful_terms) <= 2 else 2
+    return best_overlap < minimum_overlap
 
 
 _ATLAS_PROCEDURE_RE = re.compile(
@@ -2848,6 +3007,20 @@ def _atlas_task_profile(
     )
 
 
+def _atlas_explicitly_requests_long_answer(question: str) -> bool:
+    """Separate deep research from a request for a long user-facing answer."""
+
+    return bool(
+        re.search(
+            r"\b(?:подробн\w*|полност\w*|развернут\w*|длинн\w*|максимальн\w*|"
+            r"исчерпывающ\w*|не\s+сокращ\w*|без\s+сокращ\w*|"
+            r"полный\s+разбор|во\s+всех\s+деталях|\d{3,4}\s*слов)\b",
+            " ".join(str(question or "").split()),
+            re.IGNORECASE,
+        )
+    )
+
+
 def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
     """Give the model a per-request editorial contract instead of one universal answer shell."""
 
@@ -2863,11 +3036,15 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
         clean,
         re.IGNORECASE,
     ):
-        length = "Цель — 45–90 слов, жёсткий предел — 120 слов; обязательно закончи последнюю фразу."
+        length = "Цель — 25–55 слов, жёсткий предел — 70 слов; обязательно закончи последнюю фразу."
     elif task.depth == "quick":
-        length = "Цель — 35–80 слов, жёсткий предел — 110 слов; обязательно закончи последнюю фразу."
-    elif task.depth == "deep":
+        length = "Цель — 20–45 слов, жёсткий предел — 60 слов; обязательно закончи последнюю фразу."
+    elif task.depth == "deep" and _atlas_explicitly_requests_long_answer(clean):
         length = "Ориентир — 350–650 слов, только если каждая часть добавляет новую пользу."
+    elif task.depth == "deep":
+        # Deep describes how carefully Atlas researches, not how much the user
+        # wants to read. Keep the synthesis short unless length was requested.
+        length = "Сделай глубокую проверку, но изложи вывод за 30–65 слов; жёсткий предел — 80 слов."
     elif task.intent == "drafting":
         length = (
             "Готовый текст важнее комментариев; без явного требования уложись примерно в "
@@ -2876,7 +3053,7 @@ def _response_delivery_contract(task: _AtlasTaskProfile, question: str) -> str:
             "полями [укажите ...], а неизвестное поведение не утверждай вовсе."
         )
     else:
-        length = "Ориентир — 50–110 слов; жёсткий предел — 140 слов, если пользователь явно не просил подробный разбор."
+        length = "Ориентир — 30–65 слов; жёсткий предел — 80 слов, если пользователь явно не просил подробный разбор."
 
     layouts = {
         "exact_lookup": (
@@ -3065,7 +3242,11 @@ def _atlas_catalog_text(sources: list[dict[str, Any]]) -> str:
         seen.add(title.casefold())
         if len(rows) >= 80:
             break
-    return "\n".join(rows)[:12_000] or "- библиотека пока не содержит доступных названий"
+    return "\n".join(rows)[:12_000] or (
+        "- Каталог названий не передан исследовательскому планировщику. Это не подтверждает "
+        "наличие или отсутствие документов: сформируй поисковые запросы из вопроса пользователя "
+        "и опирай итог только на материалы, реально найденные основным поиском."
+    )
 
 
 def _brief_string_list(value: Any, *, limit: int, item_limit: int) -> tuple[str, ...]:
@@ -3588,6 +3769,13 @@ async def _prepare_atlas_answer(
             f"{intelligence_brief.resolved_question}. Проверить: {check}"
             for check in intelligence_brief.verification_points[:remaining]
         )
+    if task_profile.is_followup:
+        # Keep conversation history in the answer prompt, but always embed the
+        # latest user turn as its own retrieval lane. A vector built from
+        # ``previous topic + short clarification`` can otherwise be pulled
+        # toward the old topic and miss the document the user is asking about
+        # now; the canonical lexical path already prioritizes this clarification.
+        research_queries = [clean_question, *research_queries]
     await _atlas_progress(
         on_progress,
         {"phase": "retrieval", "status": "running", "latency_mode": selected_latency},
@@ -3595,7 +3783,7 @@ async def _prepare_atlas_answer(
     overlay_legal = task_profile.intent in {
         "exact_lookup", "legal_analysis", "procedural_advice"
     }
-    sources = [] if task_profile.intent in {"social", "visual"} or _is_core_term_definition(clean_question) else await atlas_search(
+    sources = [] if task_profile.intent in {"social", "visual"} else await atlas_search(
         organization_id,
         task_profile.retrieval_query,
         server_code=server_code,
@@ -3619,6 +3807,46 @@ async def _prepare_atlas_answer(
         ),
     )
     sources = _atlas_merge_source_fragments(sources)
+    if _atlas_needs_retrieval_rescue(
+        clean_question,
+        sources,
+        intent=task_profile.intent,
+    ):
+        await _atlas_progress(
+            on_progress,
+            {
+                "phase": "retrieval_retry",
+                "status": "running",
+                "reason": "empty_or_wrong_document",
+            },
+        )
+        rescue_sources = await atlas_search(
+            organization_id,
+            task_profile.retrieval_query,
+            server_code=server_code,
+            faction_code=faction_code,
+            limit=16 if selected_latency != "overlay" else 12,
+            expanded=True,
+            query_variants=_atlas_retrieval_rescue_queries(
+                clean_question,
+                retrieval_query=task_profile.retrieval_query,
+                planned_queries=research_queries,
+            ),
+            allowed_domains=selected_agent.knowledge_domains,
+            # This path runs only after the fast/normal retrieval missed. The
+            # retry is allowed to scan canonical body text (including older
+            # forum material) before the answer model is asked to conclude.
+            include_content_search=True,
+        )
+        sources = _atlas_merge_source_fragments([*sources, *rescue_sources])
+        await _atlas_progress(
+            on_progress,
+            {
+                "phase": "retrieval_retry",
+                "status": "complete",
+                "source_count": len(sources),
+            },
+        )
     if selected_latency == "overlay":
         # The field path needs one decisive fragment per source, not an entire
         # legal library in the completion prompt. Exact/lexical extraction has
@@ -4113,6 +4341,9 @@ def _truncated_output_retry_payload(
 _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"(?:"
     r"(?:не\s+(?:могу|удалось)\s+(?:найти|обнаружить|назвать|определить|подтвердить))"
+    r"|(?:\bне\s+обнаруж(?:ил|ила|или|ено)\b[^.\n]{0,100}"
+    r"\b(?:стать\w*|норм\w*|пункт\w*|источник\w*|документ\w*|"
+    r"фрагмент\w*|информац\w*|данн\w*)\b)"
     r"|(?:\b(?:не\s+смог(?:ла|ли)?|не\s+наш(?:е?л|ё?л|ла|ло|ли|лось|лись))\b"
     r"[^.\n]{0,100}\b(?:найти|обнаружить|назвать|определить|подтвердить|ответ|"
     r"информац\w*|данн\w*|норм\w*|источник\w*)\b)"
@@ -4147,6 +4378,17 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
     r"|(?:\b(?:доступн\w*|предоставленн\w*|имеющ\w*)\s+"
     r"(?:материал\w*|контекст\w*|сведен\w*|данн\w*)[^.\n]{0,100}"
     r"(?:не\s+позволя\w*|недостаточн\w*|не\s+хвата\w*))"
+    r"|(?:\b(?:предоставленн\w*|доступн\w*|имеющ\w*)\s+"
+    r"(?:документ\w*|источник\w*|материал\w*)[^.\n]{0,100}"
+    r"\bне\s+содерж\w*[^.\n]{0,80}"
+    r"\b(?:ответ\w*|информац\w*|данн\w*|стать\w*|норм\w*))"
+    r"|(?:\b(?:источник\w*|документ\w*|материал\w*)[^.\n]{0,80}"
+    r"\bне\s+позволя\w*[^.\n]{0,80}"
+    r"\b(?:определить|установить|найти|подтвердить|назвать)\b)"
+    r"|(?:\bпо\s+(?:доступн\w*|предоставленн\w*|имеющ\w*)\s+"
+    r"(?:источник\w*|документ\w*|материал\w*)[^.\n]{0,80}"
+    r"\b(?:нельзя|невозможн\w*|затрудн\w*)\b[^.\n]{0,80}"
+    r"\b(?:определить|установить|найти|подтвердить|назвать)\b)"
     r"|(?:\b(?:нет|не\s+имею|не\s+располагаю)\b[^.\n]{0,80}"
     r"(?:достаточн\w*\s+)?(?:сведен\w*|информац\w*|данн\w*))"
     r"|(?:\b(?:баз[аеы]\s+знан\w*|контекст\w*|источник\w*)\b[^.\n]{0,120}"
@@ -4217,7 +4459,24 @@ _ATLAS_RETRIEVAL_REFUSAL_RE = re.compile(
 _ATLAS_RETRIEVAL_REFUSAL_PREFIX_RE = re.compile(
     r"^\s*(?:"
     r"в\s+(?:текущей\s+)?библиотек\w*"
-    r"|не\s+(?:мог\w*|удал\w*|смог\w*|наш\w*|располага\w*)"
+    r"|в\s+(?:этом|предоставленном|доступном)\s+"
+    r"(?:контекст\w*|фрагмент\w*|материал\w*|текст\w*)"
+    r"|в\s+(?:atlas|атлас)\b"
+    r"|в\s+(?:доступн\w*\s+)?(?:материал\w*|источник\w*|документ\w*)"
+    r"|в\s+релевантн\w*\s+(?:источник\w*|материал\w*)"
+    r"|по\s+(?:этому\s+)?(?:вопросу|запросу)\s+"
+    r"(?:ничего|нет|не\s+(?:найден\w*|обнаружен\w*))"
+    r"|к\s+сожалени\w*[,!—-]?\s+(?:в\s+)?(?:atlas|атлас)"
+    r"|(?:atlas|атлас)\s+(?:не\s+(?:зна\w*|располага\w*|виж\w*|найден\w*|обнаружен\w*)"
+    r"|нет\s+(?:данн\w*|информац\w*))"
+    r"|(?:релевантн\w*|подходящ\w*|нужн\w*)\s+"
+    r"(?:информац\w*|данн\w*|источник\w*|фрагмент\w*|норм\w*|стать\w*)"
+    r"|(?:предоставленн\w*|доступн\w*|имеющ\w*)\s+"
+    r"(?:документ\w*|источник\w*|материал\w*)"
+    r"|(?:источник\w*|документ\w*|материал\w*)"
+    r"|по\s+(?:доступн\w*|предоставленн\w*|имеющ\w*)\s+"
+    r"(?:источник\w*|документ\w*|материал\w*)"
+    r"|(?:я\s+)?не\s+(?:вижу|мог\w*|удал\w*|смог\w*|наш\w*|располага\w*)"
     r"|информац\w*\s+(?:недостаточн\w*|нет)"
     r"|у\s+меня\s+нет\s+(?:доступ\w*|данн\w*|информац\w*)"
     r"|(?:the|i)\s+(?:provided|available|couldn['’]?t|was\s+unable\s+to|"
@@ -4270,9 +4529,18 @@ def _atlas_answer_is_retrieval_refusal(answer: str) -> bool:
     return bool(_ATLAS_RETRIEVAL_REFUSAL_RE.search(normalized))
 
 
+def _atlas_answer_may_be_retrieval_refusal_prefix(answer: str) -> bool:
+    """Hold likely refusal openings until the sentence can be classified."""
+
+    normalized = re.sub(r"\s+", " ", str(answer or "")).strip()
+    return bool(_ATLAS_RETRIEVAL_REFUSAL_PREFIX_RE.match(normalized))
+
+
 def _retrieval_refusal_retry_payload(
     prepared: _AtlasAnswerRequest,
     previous_answer: str,
+    *,
+    repair_citations: bool = False,
 ) -> dict[str, Any]:
     """Force one grounded reread when a provider overlooks retrieved evidence."""
 
@@ -4288,14 +4556,24 @@ def _retrieval_refusal_retry_payload(
     )
     messages = list(payload.get("messages") or [])
     if prepared.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}:
-        retry_instruction = (
-            "Предыдущий вариант ошибочно описал состояние поиска вместо ответа. Перечитай все уже "
-            "приложенные первичные источники и ответь заново по существу. Выбери регулирующий документ "
-            "по смыслу вопроса, найди точную формулировку внутри его фрагментов, назови статью или пункт "
-            "и условие применения. Если возможны две квалификации, дай обе и чётко разведи их условия. "
-            "Не пиши, что информации, нормы, статьи, текста или источника нет; не обсуждай библиотеку, "
-            "индекс и поиск. Ничего не выдумывай и ставь ссылку [N] рядом с каждым правовым выводом."
-        )
+        if repair_citations:
+            retry_instruction = (
+                "Предыдущий вариант содержит ссылки на источники, которых нет в приложенном списке, "
+                "или оставил правовой вывод без ссылки. Перечитай источники и заново ответь по существу. "
+                "Ссылайся только на существующие номера [Источник 1], [Источник 2] и т. д.; номер N "
+                "обязан соответствовать источнику N в приложенном списке. Не выдумывай номера статей, "
+                "документов и источников; правовые выводы подтверждай рядом с тезисом. Не упоминай поиск "
+                "или библиотеку."
+            )
+        else:
+            retry_instruction = (
+                "Предыдущий вариант ошибочно описал состояние поиска вместо ответа. Перечитай все уже "
+                "приложенные первичные источники и ответь заново по существу. Выбери регулирующий документ "
+                "по смыслу вопроса, найди точную формулировку внутри его фрагментов, назови статью или пункт "
+                "и условие применения. Если возможны две квалификации, дай обе и чётко разведи их условия. "
+                "Не пиши, что информации, нормы, статьи, текста или источника нет; не обсуждай библиотеку, "
+                "индекс и поиск. Ничего не выдумывай и ставь ссылку [N] рядом с каждым правовым выводом."
+            )
     else:
         retry_instruction = (
             "Предыдущий вариант ошибочно описал состояние поиска вместо ответа. Перечитай приложенные "
@@ -4445,19 +4723,32 @@ async def _repair_retrieval_refusal(
     answer: str,
     used_route: AtlasModelRoute,
 ) -> tuple[str, AtlasModelRoute]:
-    """Do not expose a false 'nothing found' after evidence was retrieved."""
+    """Repair false retrieval refusals and broken legal citations before delivery."""
 
     clean = str(answer or "").strip()
+    citation_health = _citation_health(clean, len(prepared.sources))
+    repair_citations = (
+        prepared.intent in {"exact_lookup", "legal_analysis", "procedural_advice"}
+        and bool(prepared.sources)
+        and citation_health["status"] != "ok"
+    )
     if (
         prepared.intent in {"social", "visual"}
         or not prepared.sources
-        or not _atlas_answer_is_retrieval_refusal(clean)
+        or (
+            not repair_citations
+            and not _atlas_answer_is_retrieval_refusal(clean)
+        )
     ):
         return clean, used_route
     try:
         retry_body, retry_route = await _completion_with_fallback(
             prepared,
-            _retrieval_refusal_retry_payload(prepared, clean),
+            _retrieval_refusal_retry_payload(
+                prepared,
+                clean,
+                repair_citations=repair_citations,
+            ),
             timeout=120,
             initial_route=used_route,
         )
@@ -4476,7 +4767,15 @@ async def _repair_retrieval_refusal(
             )
         return fallback, _local_exact_route()
     repaired = _answer_text(retry_body).strip()
-    if repaired and not _atlas_answer_is_retrieval_refusal(repaired):
+    repaired_citations_ok = (
+        not repair_citations
+        or _citation_health(repaired, len(prepared.sources))["status"] == "ok"
+    )
+    if (
+        repaired
+        and not _atlas_answer_is_retrieval_refusal(repaired)
+        and repaired_citations_ok
+    ):
         return repaired, retry_route
     # If the second model pass repeats the diagnostic (or returns an empty
     # payload), never return that diagnostic just because no excerpt happened
@@ -4750,14 +5049,7 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         messages = payload.get("messages", []) if isinstance(payload, dict) else []
         last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
         question = " ".join(str(last_message.get("content") or "").split())
-        expanded_request = bool(
-            re.search(
-                r"\b(?:полн\w*|подробн\w*|развернут\w*|длинн\w*|"
-                r"максимальн\w*|не\s+сокращ\w*|\d{3,4}\s*слов)\b",
-                question,
-                re.IGNORECASE,
-            )
-        )
+        expanded_request = _atlas_explicitly_requests_long_answer(question)
         if not expanded_request:
             if prepared.intent == "drafting":
                 return _finish_bounded_answer(
@@ -4768,6 +5060,14 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
             )
         return str(value or "").strip()
     if prepared.depth == "deep":
+        payload = getattr(prepared, "payload", {})
+        messages = payload.get("messages", []) if isinstance(payload, dict) else []
+        last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+        question = str(last_message.get("content") or "")
+        if not _atlas_explicitly_requests_long_answer(question):
+            return _finish_bounded_answer(
+                _compact_overlay_answer(value, max_words=80, max_chars=900)
+            )
         return _finish_bounded_answer(
             _compact_overlay_answer(value, max_words=650, max_chars=6_000)
         )
@@ -4776,10 +5076,10 @@ def _compact_answer_for_delivery(prepared: _AtlasAnswerRequest, value: str) -> s
         # keep one useful paragraph and never let a provider turn a short
         # request into a multi-screen explanation.
         return _finish_bounded_answer(
-            _compact_overlay_answer(value, max_words=110, max_chars=1_100)
+            _compact_overlay_answer(value, max_words=60, max_chars=700)
         )
     return _finish_bounded_answer(
-        _compact_overlay_answer(value, max_words=140, max_chars=1_400)
+        _compact_overlay_answer(value, max_words=80, max_chars=900)
     )
 
 
@@ -5040,18 +5340,33 @@ def _deterministic_term_reply(prepared: _AtlasAnswerRequest) -> str:
     if not _is_core_term_definition(question):
         return ""
     lowered = question.casefold()
+    sources = list(getattr(prepared, "sources", []) or [])
+
+    def source_marker(*needles: str) -> str:
+        for index, source in enumerate(sources, 1):
+            title = str(source.get("title") or "").strip()
+            folded_title = title.casefold()
+            if title and any(needle in folded_title for needle in needles):
+                return f" [Источник {index}, {title}]"
+        return ""
+
     if re.search(r"(?<!\w)(?:ук|уголовн\w*\s+кодекс)(?!\w)", lowered):
         return (
-            "УК — Уголовный кодекс штата San Andreas. В нём описаны составы преступлений, "
-            "их признаки и предусмотренные наказания."
+            "УК — Уголовный кодекс штата San Andreas: в нём определены составы преступлений, "
+            "их признаки и наказания."
+            + source_marker("уголовный кодекс")
         )
     if re.search(r"(?<!\w)(?:ooc|оос)(?!\w)", lowered):
         return (
             "ООС (OOC) — правила поведения игрока вне роли: честная игра, взаимодействие с "
             "администрацией, баги и другие серверные требования."
+            + source_marker("основные правила проекта", "правила проекта")
         )
     if re.search(r"(?<!\w)(?:ic|ис)(?!\w)", lowered):
-        return "IC — всё, что происходит внутри игровой роли и относится к миру персонажа."
+        return (
+            "IC — события и действия внутри роли персонажа."
+            + source_marker("уголовный кодекс", "процессуальный кодекс", "дорожный кодекс")
+        )
     return ""
 
 
@@ -5904,7 +6219,7 @@ async def atlas_answer_stream(
             return
         stream_guard_buffer.append(piece)
         probe = "".join(stream_guard_buffer)
-        suspicious_prefix = _ATLAS_RETRIEVAL_REFUSAL_PREFIX_RE.match(probe)
+        suspicious_prefix = _atlas_answer_may_be_retrieval_refusal_prefix(probe)
         if _atlas_answer_is_retrieval_refusal(probe) and re.search(
             r"[.!?](?:\s|$)", probe
         ):
