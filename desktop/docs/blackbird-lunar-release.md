@@ -5,6 +5,9 @@ The preview retains the shared core version for compatibility with the existing
 server minimum-version policy; its releases are separate from T-Mod Desktop.
 
 - Large, side-lit lunar sphere from the NASA LRO mosaic; a custom quiet starfield, no video.
+- The surface rotates once in twelve minutes while lighting stays fixed. Hidden windows
+  pause the rotation; reduced-motion preferences disable it. Unsupported graphics
+  devices retain the high-resolution static software projection.
 - The startup screen remains until a keyboard key is pressed; pointer movement does not dismiss it.
 - Existing Blackbird wordmark, bird emblem and startup sound are preserved.
 - Native account/PIN entry and the Atlas/Senate hub, notifications and overlay settings.
