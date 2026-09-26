@@ -375,6 +375,7 @@ class ProjectedPrincipalTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["administrator"])
             self.assertIn("security", payload["sections"])
             self.assertIn("minecraft", payload["sections"])
+            self.assertNotIn("roles", payload["viewer"])
             self.assertEqual(response.headers["Cache-Control"], "private, no-store")
         finally:
             await client.close()

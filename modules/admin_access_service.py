@@ -55,14 +55,6 @@ def build_admin_access_payload(
             "name": str(principal.display_name),
             "administrator": bool(principal.administrator),
             "csrf_token": str(principal.csrf_token),
-            "roles": [
-                {
-                    "id": int(getattr(role, "id", 0) or 0),
-                    "name": str(getattr(role, "name", "") or ""),
-                }
-                for role in getattr(principal.member, "roles", ())
-                if int(getattr(role, "id", 0) or 0) > 0
-            ],
         },
         "guild": {
             "id": int(guild_id),
