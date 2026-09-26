@@ -25,6 +25,6 @@ export const desktopProduct = Object.freeze({
     : "tmod-desktop-preferences-v1",
   updateChannel: blackbird ? "private" : "beta",
   releaseUrl: blackbird
-    ? "https://github.com/cdnserver/t-mod/releases"
+    ? "https://github.com/cdnserver/blackbird-releases/releases"
     : "https://github.com/cdnserver/t-mod-releases/releases/latest",
 } as const);

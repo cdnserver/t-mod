@@ -50,16 +50,39 @@ describe("desktop release contract", () => {
     expect(builder).toContain("output: release-blackbird");
     expect(builder).not.toContain("t-mod-releases");
     expect(script).toContain('TMOD_DESKTOP_EDITION: "blackbird"');
+    expect(script).toContain('process.env.ComSpec || "cmd.exe"');
     expect(existsSync(resolve(root, "resources/blackbird/icon.png"))).toBe(true);
   });
 
-  it("ships the Blackbird command hub, dual notifications, and branded installer", () => {
+  it("ships the Blackbird two-contour hub, native identity gate, notifications, and branded installer", () => {
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
     const hub = readFileSync(resolve(root, "src/renderer/BlackbirdHub.tsx"), "utf8");
+    const login = readFileSync(resolve(root, "src/renderer/BlackbirdLogin.tsx"), "utf8");
+    const cinematic = readFileSync(resolve(root, "src/renderer/cinematics.tsx"), "utf8");
+    const wordmark = readFileSync(resolve(root, "src/renderer/BlackbirdWordmark.tsx"), "utf8");
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const builder = readFileSync(resolve(root, "electron-builder.blackbird.yml"), "utf8");
-    expect(hub).toContain("Войти в контур Сената");
-    expect(hub).toContain("Открыть Atlas");
+    expect(hub).toContain("Добро пожаловать в Blackbird");
+    expect(hub).toContain("ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА");
+    expect(hub).toContain("МАНДАТ · РЕШЕНИЯ · СИСТЕМЫ");
+    expect(login).toContain("Подтвердите");
+    expect(login).toContain("Имя аккаунта");
+    expect(cinematic).toContain("<BlackbirdWordmark/>");
+    expect(cinematic).toContain('<BlackbirdMoon/>');
+    expect(cinematic).toContain('className="bbc-moon-shade"');
+    expect(cinematic).toContain('Нажмите любую клавишу, чтобы продолжить');
+    expect(cinematic).toContain('window.addEventListener("keydown", continueOnKey, true)');
+    expect(cinematic).toContain('className="bbc-final-lockup"');
+    expect(cinematic).toContain('assets/blackbird/master-hd.png');
+    expect(cinematic).not.toContain('launch-space-4k60.mp4');
+    expect(wordmark).toContain('assets/blackbird/wordmark.svg');
+    expect(existsSync(resolve(root, "src/renderer/assets/blackbird/wordmark.svg"))).toBe(true);
+    expect(existsSync(resolve(root, "src/renderer/assets/blackbird/master-hd.png"))).toBe(true);
+    expect(hub).toContain('className="bb3-rail"');
+    expect(hub).toContain("onClick={onOpenNotifications}");
+    expect(hub).toContain("onClick={onOverlaySettings}");
+    expect(renderer).toContain("cinematicHold || desktopProduct.privateEdition");
+    expect(cinematic).toContain("ТЕХНОЛОГИИ");
     expect(renderer).toContain("desktop-notification-stack");
     expect(renderer).toContain("notificationDelivery");
     expect(main).toContain("syncNativeNotifications");

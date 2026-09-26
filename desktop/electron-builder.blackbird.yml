@@ -1,6 +1,8 @@
 appId: lat.tvr.technology.blackbird
 productName: BLACKBIRD
 artifactName: BLACKBIRD-Private-${version}-${os}-${arch}.${ext}
+extraMetadata:
+  name: blackbird-client
 directories:
   output: release-blackbird
   buildResources: resources
@@ -17,7 +19,7 @@ icon: resources/blackbird/icon.png
 win:
   icon: resources/blackbird/icon.ico
   target: nsis
-  artifactName: BLACKBIRD-Private-Setup.${ext}
+  artifactName: BLACKBIRD-Private-Setup-${version}.${ext}
 nsis:
   oneClick: false
   perMachine: false

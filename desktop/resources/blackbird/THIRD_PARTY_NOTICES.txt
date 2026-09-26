@@ -1,0 +1,8 @@
+Lunar surface source: NASA's Scientific Visualization Studio, CGI Moon Kit.
+https://svs.gsfc.nasa.gov/4720/
+LROC WAC color mosaic (NASA/GSFC/Arizona State University).
+The application includes an 8192 x 4096 optimized copy of the 2019 map,
+prepared from the original 16384 x 8192 TIFF. No artificial upscaling.
+The sphere lighting/projection and animated space background are original application code.
+NASA does not sponsor or endorse BLACKBIRD or Technologies of the Fellowship.
+Media usage guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/

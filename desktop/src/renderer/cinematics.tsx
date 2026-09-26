@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { desktopProduct } from "../shared/product";
 import type { DesktopLockReason } from "../shared/contracts";
+import { BlackbirdWordmark } from "./BlackbirdWordmark";
+import blackbirdMaster from "./assets/blackbird/master-hd.png";
+import { BlackbirdMoon } from "./BlackbirdMoon";
 
 type StopSound = () => void;
 
@@ -348,7 +351,43 @@ function StarClock({ hour, minute, date }: { hour: string; minute: string; date:
   );
 }
 
-export function CinematicLaunch({ name, reduced }: { name: string; reduced: boolean }) {
+export function CinematicLaunch({ name, reduced, hold = false, onContinue }: { name: string; reduced: boolean; hold?: boolean; onContinue?: () => void }) {
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (!desktopProduct.privateEdition || !onContinue || leaving) return;
+    const continueOnKey = (event: KeyboardEvent) => {
+      if (event.repeat || event.isComposing || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setLeaving(true);
+    };
+    window.addEventListener("keydown", continueOnKey, true);
+    return () => window.removeEventListener("keydown", continueOnKey, true);
+  }, [leaving, onContinue]);
+  useEffect(() => {
+    if (!leaving || !onContinue) return;
+    const timer = window.setTimeout(onContinue, reduced ? 40 : 650);
+    return () => window.clearTimeout(timer);
+  }, [leaving, onContinue, reduced]);
+  if (desktopProduct.privateEdition) {
+    return (
+      <section className={`blackbird-launch ${reduced ? "reduced" : ""} ${hold ? "hold" : ""} ${leaving ? "leaving" : ""}`} aria-label="Blackbird Client — нажмите любую клавишу, чтобы продолжить" aria-live="polite">
+        <div className="bbc-deep-space" aria-hidden="true"><Starfield/></div>
+        <div className="bbc-moon"><BlackbirdMoon/></div>
+        <div className="bbc-moon-shade" aria-hidden="true"/>
+        <div className="bbc-final-lockup">
+          <img className="bbc-approved-mark" src={blackbirdMaster} alt=""/>
+          <div className="bbc-final-title">
+            <small>ТЕХНОЛОГИИ ТОВАРИЩЕСТВА <i/> DEVELOPER MODE</small>
+            <h1><BlackbirdWordmark/><em>Client</em></h1>
+            <div className="bbc-launch-baseline"><span>Личный доступ ко всей системе.</span><b>EST. 2026</b></div>
+          </div>
+        </div>
+        <div className="bbc-continue">Нажмите любую клавишу, чтобы продолжить <span>↵</span></div>
+        <footer className="bbc-launch-footer"><span>BLACKBIRD / 01</span><span>{name ? `ДОБРО ПОЖАЛОВАТЬ, ${name.toUpperCase()}` : "СИСТЕМА ГОТОВА"}</span></footer>
+      </section>
+    );
+  }
   return (
     <section className={`cinema-launch edition-${desktopProduct.edition} ${reduced ? "reduced" : ""}`} aria-label={`${desktopProduct.name} запускается`} aria-live="polite">
       <div className="cinema-space" aria-hidden="true"><i/><b/><em/></div>

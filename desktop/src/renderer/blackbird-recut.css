@@ -1,0 +1,84 @@
+/* Quiet lunar entrance. The scene is vector, independent of display resolution. */
+.blackbird-launch {
+  background: #010204;
+  animation: none;
+}
+.blackbird-launch::before,
+.blackbird-launch::after { content: none; }
+.bbc-deep-space {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 18% 18%, rgba(94,111,133,.08), transparent 48%);
+}
+.bbc-deep-space .cosmic-stars { opacity: .38; animation: bbc-space-drift 110s ease-in-out infinite alternate; }
+.bbc-moon {
+  position: absolute;
+  top: -26%;
+  left: -38%;
+  width: max(106vh, 96vw);
+  aspect-ratio: 1;
+  opacity: 0;
+  animation: bbc-moon-in 2.6s ease-out .1s both, bbc-moon-drift 90s ease-in-out 2.7s infinite alternate;
+  pointer-events: none;
+  will-change: transform;
+}
+.bbc-moon-art { display: block; width: 100%; height: 100%; opacity: .12; }
+.bbc-lunar-texture { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 1.2s ease; }
+.bbc-lunar-texture.ready { opacity: 1; }
+.bbc-moon:has(.bbc-lunar-texture.ready) .bbc-moon-art { visibility: hidden; }
+.bbc-moon-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(0deg, #010204 0%, rgba(1,2,4,.82) 15%, transparent 57%), linear-gradient(90deg, transparent 31%, rgba(1,2,4,.34) 67%, #010204 100%);
+  pointer-events: none;
+}
+.bbc-final-lockup {
+  position: absolute;
+  z-index: 5;
+  right: 7vw;
+  bottom: clamp(72px,11.5vh,125px);
+  left: 7vw;
+  display: flex;
+  align-items: center;
+  gap: clamp(20px,3vw,50px);
+  opacity: 0;
+  transform: translate3d(0,24px,0);
+  animation: bbc-lockup-in 1.15s cubic-bezier(.17,.74,.17,1) 1.6s both;
+}
+.bbc-approved-mark { display: block; width: clamp(120px,17vw,260px); height: auto; flex: none; filter: drop-shadow(0 0 33px rgba(175,217,244,.13)); }
+.bbc-final-title { width: min(60vw,860px); }
+.bbc-final-title > small { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; color: #bac8d0; font-size: 10px; letter-spacing: .19em; }
+.bbc-final-title > small i { width: 30px; height: 1px; background: rgba(232,245,253,.43); }
+.bbc-final-title h1 { display: flex; align-items: flex-end; gap: 21px; margin: 0; }
+.bbc-final-title .bb-wordmark { display: block; width: min(49vw,720px); }
+.bbc-final-title h1 em { margin-bottom: .3em; color: #cad4d9; font-size: clamp(11px,1.1vw,15px); font-style: normal; font-weight: 500; letter-spacing: .23em; text-transform: uppercase; }
+.bbc-launch-baseline { display: flex; justify-content: space-between; gap: 20px; margin-top: 17px; padding-top: 13px; border-top: 1px solid rgba(220,239,250,.24); color: #b1bec6; font-size: 11px; }
+.bbc-launch-baseline b { font-size: 9px; font-weight: 500; letter-spacing: .17em; }
+.bbc-launch-footer { position: absolute; z-index: 5; right: 4vw; bottom: 21px; left: 4vw; display: flex; justify-content: space-between; color: #abb8bf; font-size: 9px; font-weight: 500; letter-spacing: .16em; opacity: 0; animation: bbc-footer-in .7s ease 2.5s both; }
+.blackbird-launch > .bbc-launch-footer { display: flex; }
+.bbc-continue { position: absolute; z-index: 6; bottom: 58px; right: 7vw; display: flex; align-items: center; gap: 18px; color: #98a0a8; font-size: 12px; letter-spacing: .035em; opacity: 0; animation: bbc-footer-in 1s ease 3s both; }
+.bbc-continue span { display: grid; place-items: center; width: 28px; height: 24px; border: 1px solid #343b42; border-radius: 4px; color: #d0d5d9; font-size: 15px; }
+@keyframes bbc-moon-in { from { opacity: 0; transform: translate3d(-1%,0,0) scale(.99); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
+@keyframes bbc-moon-drift { from { transform: translate3d(0,0,0) rotate(0); } to { transform: translate3d(1%,-.6%,0) rotate(.8deg); } }
+@keyframes bbc-space-drift { from { transform: translate3d(0,0,0); } to { transform: translate3d(-1%,1%,0); } }
+@keyframes bbc-lockup-in { to { opacity: 1; transform: translate3d(0,0,0); } }
+@keyframes bbc-footer-in { to { opacity: 1; } }
+@keyframes bbc-out { to { opacity: 0; transform: scale(1.025); visibility: hidden; } }
+.blackbird-launch.hold { animation: none; }
+.blackbird-launch.leaving { animation: bbc-out .65s cubic-bezier(.72,0,.9,.3) both; }
+.blackbird-launch.reduced, .blackbird-launch.reduced * { animation-duration: .01ms !important; animation-delay: .01ms !important; }
+.blackbird-launch.reduced .bbc-moon { opacity: 1; animation: none; }
+.blackbird-launch.reduced .bbc-deep-space .cosmic-stars { animation: none; }
+@media (max-width: 700px) {
+  .bbc-moon { top: -9%; left: -85%; width: 170vw; }
+  .bbc-continue { right: 7vw; bottom: 55px; font-size: 10px; }
+  .bbc-final-lockup { right: 7vw; bottom: 15vh; left: 7vw; display: block; }
+  .bbc-approved-mark { width: 125px; margin-bottom: 10px; }
+  .bbc-final-title { width: 100%; }
+  .bbc-final-title .bb-wordmark { width: 78vw; }
+  .bbc-final-title h1 { display: block; }
+  .bbc-final-title h1 em { display: block; margin: 8px 0 0; }
+  .bbc-final-title > small { font-size: 8px; }
+}

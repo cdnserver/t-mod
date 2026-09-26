@@ -10,11 +10,17 @@
   --bb-signal: #bcecff;
   --active-accent: #bcecff;
   color: var(--bb-text);
+  font-family: "Geologica", sans-serif;
   background:
     radial-gradient(ellipse at 72% -18%, rgba(184, 225, 255, .1), transparent 40%),
     radial-gradient(ellipse at 10% 116%, rgba(104, 131, 158, .08), transparent 44%),
     linear-gradient(138deg, #020407 0%, #06090d 48%, #010204 100%);
 }
+
+.desktop.edition-blackbird button,
+.desktop.edition-blackbird input,
+.desktop.edition-blackbird textarea,
+.desktop.edition-blackbird select { font-family: "Geologica", sans-serif; }
 
 .desktop.edition-blackbird::before {
   position: fixed;

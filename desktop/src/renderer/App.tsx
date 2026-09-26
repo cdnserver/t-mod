@@ -53,6 +53,7 @@ import blackbirdGames from "./assets/blackbird/games.png";
 import blackbirdTasks from "./assets/blackbird/tasks.png";
 import blackbirdAdmin from "./assets/blackbird/admin.png";
 import { BlackbirdHub } from "./BlackbirdHub";
+import { BlackbirdLogin } from "./BlackbirdLogin";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
@@ -436,17 +437,23 @@ export function App() {
   const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
   const atlasSettingsQa = cinematicQaEnabled && cinematicParams.get("settings-preview") === "atlas";
   const hubQa = cinematicQaEnabled && cinematicParams.get("hub-preview") === "1";
+  const loginQa = cinematicQaEnabled && cinematicParams.get("login-preview") === "1";
+  const skipLaunchQa = cinematicQaEnabled && cinematicParams.get("skip-launch") === "1";
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const cinematicPreviewName = cinematicQaEnabled
     ? String(cinematicParams.get("name") || "").trim()
     : "";
   const bridgeAvailable = Boolean(browserApi());
-  const [bootstrap, setBootstrap] = useState<BootstrapResult>(() => hubQa ? hubPreviewBootstrap() : ({
-    authenticated: false,
-    online: bridgeAvailable,
-    error: bridgeAvailable ? "loading" : "desktop_bridge_unavailable",
-  }));
-  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable && !hubQa);
+  const [bootstrap, setBootstrap] = useState<BootstrapResult>(() => hubQa
+    ? hubPreviewBootstrap()
+    : loginQa
+      ? { authenticated: false, online: true, error: "login_required" }
+      : {
+          authenticated: false,
+          online: bridgeAvailable,
+          error: bridgeAvailable ? "loading" : "desktop_bridge_unavailable",
+        });
+  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable && !hubQa && !loginQa);
   const [desktopState, setDesktopState] = useState<DesktopState>({
     activeService: atlasSettingsQa ? "atlas" : "home",
     loading: false,
@@ -484,7 +491,8 @@ export function App() {
     channel: "beta",
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
-  const [launchVisible, setLaunchVisible] = useState(!atlasSettingsQa && cinematicQa !== "lock");
+  const [launchVisible, setLaunchVisible] = useState(!atlasSettingsQa && !skipLaunchQa && cinematicQa !== "lock");
+  const dismissLaunch = useCallback(() => setLaunchVisible(false), []);
   const [locked, setLocked] = useState(cinematicQa === "lock");
   const [unlocking, setUnlocking] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
@@ -500,7 +508,7 @@ export function App() {
 
   useEffect(() => {
     const stopSound = playIgnitionSound();
-    if (cinematicHold) return stopSound;
+    if (cinematicHold || desktopProduct.privateEdition) return stopSound;
     const timer = window.setTimeout(
       () => setLaunchVisible(false),
       preferences.reduceMotion ? 1_420 : 8_200,
@@ -515,7 +523,7 @@ export function App() {
   }, []);
 
   const loadBootstrap = useCallback(async () => {
-    if (hubQa) return;
+    if (hubQa || loginQa) return;
     if (bootstrapInFlight.current) {
       // Cookie, resume and service-navigation events can arrive while an older
       // projection is in flight. Never lose the newest refresh request.
@@ -546,7 +554,7 @@ export function App() {
       bootstrapInFlight.current = false;
       setBootstrapLoading(false);
     }
-  }, [hubQa]);
+  }, [hubQa, loginQa]);
 
   const loadOverlay = useCallback(async () => {
     const api = overlayApi();
@@ -562,7 +570,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (hubQa) return;
+    if (hubQa || loginQa) return;
     void loadBootstrap();
     const api = browserApi();
     if (!api) return;
@@ -591,7 +599,7 @@ export function App() {
       window.clearInterval(refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [hubQa, loadBootstrap]);
+  }, [hubQa, loginQa, loadBootstrap]);
 
   useEffect(() => {
     if (bootstrap.authenticated) void loadOverlay();
@@ -868,6 +876,7 @@ export function App() {
     preferences.compactMode ? "compact-mode" : "",
     preferences.reduceMotion ? "reduce-motion" : "",
     preferences.solidSurfaces ? "solid-surfaces" : "",
+    desktopProduct.privateEdition && desktopState.activeService === "home" ? "blackbird-hub-active" : "",
     `edition-${desktopProduct.edition}`,
   ].filter(Boolean).join(" ");
 
@@ -989,7 +998,7 @@ export function App() {
             name={userName}
             bootstrap={bootstrap}
             loading={bootstrapLoading}
-            bridgeAvailable={bridgeAvailable}
+            bridgeAvailable={bridgeAvailable || loginQa}
             notifications={notifications}
             access={access}
             onOpen={selectService}
@@ -1068,7 +1077,7 @@ export function App() {
           onMinimize={() => void browserApi()?.minimize()}
         />
       )}
-      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion}/>}
+      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} hold={cinematicHold} onContinue={dismissLaunch}/>}
       {mandatoryUpdate && (
         <MandatoryUpdate updateState={updateState}/>
       )}
@@ -1200,6 +1209,22 @@ function Home({
         setLoginBusy(false);
       }
     };
+    if (desktopProduct.privateEdition) {
+      return (
+        <BlackbirdLogin
+          login={loginValue}
+          pin={pin}
+          busy={loginBusy}
+          online={bootstrap.online}
+          bridgeAvailable={bridgeAvailable}
+          error={loginError ? messages[loginError] : undefined}
+          onLoginChange={setLoginValue}
+          onPinChange={setPin}
+          onSubmit={(event) => void submit(event)}
+          onRetry={() => void onRetry()}
+        />
+      );
+    }
     return (
       <section className="login-stage">
         <div className="login-visual">

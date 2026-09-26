@@ -6,7 +6,8 @@ if (!["build", "package", "dist"].includes(mode)) {
   throw new Error(`Unknown BLACKBIRD build mode: ${mode}`);
 }
 
-const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const windows = process.platform === "win32";
+const executable = windows ? process.env.ComSpec || "cmd.exe" : "pnpm";
 const environment = {
   ...process.env,
   TMOD_DESKTOP_EDITION: "blackbird",
@@ -14,7 +15,10 @@ const environment = {
 };
 
 function run(args) {
-  const result = spawnSync(executable, args, {
+  // Windows .cmd launchers cannot be executed directly by spawnSync on modern
+  // Node. Arguments here are a fixed, validated list, never user-supplied text.
+  const commandArgs = windows ? ["/d", "/s", "/c", `pnpm.cmd ${args.join(" ")}`] : args;
+  const result = spawnSync(executable, commandArgs, {
     cwd: process.cwd(),
     env: environment,
     stdio: "inherit",

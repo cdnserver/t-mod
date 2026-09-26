@@ -1,0 +1,254 @@
+/* The Blackbird preview shares one restrained typographic language across all
+   three entry surfaces. The artwork remains an asset; the lettering is live. */
+.desktop.edition-blackbird,
+.desktop.edition-blackbird button,
+.desktop.edition-blackbird input,
+.desktop.edition-blackbird textarea,
+.desktop.edition-blackbird select,
+.blackbird-launch {
+  font-family: "IBM Plex Sans", sans-serif;
+}
+
+.bb-wordmark {
+  display: block;
+  width: 6.25em;
+  height: auto;
+  flex: none;
+  overflow: visible;
+}
+
+.blackbird-launch {
+  background: #07090b;
+}
+.blackbird-launch::before {
+  background: linear-gradient(109deg, #050607 0%, #0d1114 58%, #050607 100%);
+}
+.blackbird-launch::after {
+  background: rgba(238, 244, 247, .85);
+}
+.bbln-geometry::after,
+.bbln-geometry i:nth-child(3),
+.bbln-geometry i:nth-child(4),
+.bbln-sweep { display: none; }
+.bbln-mark {
+  right: 2%;
+  width: min(49vw, 690px);
+  filter: grayscale(1) contrast(1.08);
+}
+@keyframes bbln-mark-in {
+  to { opacity: .19; transform: translateY(-50%) scale(1); }
+}
+.bbln-title {
+  left: clamp(60px, 8vw, 130px);
+  width: min(85vw, 1160px);
+}
+.bbln-title > small {
+  display: none;
+}
+.bbln-title h1 {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  color: #f4f5f6;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: clamp(82px, 11.8vw, 185px);
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: -.055em;
+  text-transform: none;
+  white-space: nowrap;
+}
+.bbln-title h1 .bb-wordmark {
+  width: min(72vw, 1030px);
+  margin-left: -.025em;
+}
+.bbln-title h1 em {
+  margin: 0 0 .28em;
+  color: #b4bbc1;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: .115em;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: .21em;
+  text-transform: uppercase;
+}
+.bbln-lockup { margin-top: 34px; gap: 22px; }
+.bbln-lockup b {
+  color: #bcc3c8;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: clamp(13px, 1.45vw, 20px);
+  font-weight: 200;
+  letter-spacing: .28em;
+}
+.bbln-lockup strong {
+  background: linear-gradient(170deg, #fff, #8b9299);
+  background-clip: text;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: clamp(20px, 2.4vw, 35px);
+  font-weight: 600;
+  letter-spacing: .045em;
+}
+.bbln-lockup em { font-size: 10px; letter-spacing: .12em; }
+.blackbird-launch > footer { display: none; }
+
+.blackbird-login {
+  background: #090b0d;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+.blackbird-login::before,
+.bbl-lines i:nth-child(3),
+.bbl-lines i:nth-child(4) { display: none; }
+.bbl-lines i:first-child { top: auto; bottom: 74px; }
+.bbl-lines i:nth-child(2) { right: 43%; background: rgba(255, 255, 255, .085); }
+.bbl-head { z-index: 3; top: 88px; right: 5vw; left: 6vw; font-size: 11px; }
+.bbl-head .bb-wordmark { width: 220px; }
+.bbl-head > span { gap: 16px; }
+.bbl-head i { height: 22px; }
+.bbl-head small { border: 0; font-size: 11px; }
+.bbl-symbol {
+  z-index: 0;
+  left: 7%;
+  width: min(43vw, 670px);
+  opacity: .27;
+  filter: grayscale(1);
+}
+.bbl-symbol i { border-color: rgba(255, 255, 255, .075); }
+.bbl-panel {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 57% 43%;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  transform: none;
+  animation: none;
+}
+.bbl-copy {
+  position: relative;
+  z-index: 1;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 0 7vw 14vh;
+  border: 0;
+  background: transparent;
+}
+.bbl-copy small { color: #a1a9ae; font-size: 11px; font-weight: 400; }
+.bbl-copy h1 {
+  margin: 22px 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: clamp(48px, 5.2vw, 80px);
+  font-weight: 300;
+  line-height: .99;
+  letter-spacing: -.045em;
+}
+.bbl-copy p { max-width: 365px; color: #9aa3aa; font-size: 15px; }
+.bbl-panel form {
+  z-index: 1;
+  padding: 15vh clamp(38px, 6vw, 105px) 10vh;
+  gap: 27px;
+  border-left: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(15, 18, 21, .78);
+}
+.bbl-panel label { gap: 12px; }
+.bbl-panel label span { color: #a5afb5; font-size: 11px; letter-spacing: .12em; }
+.bbl-panel input {
+  height: 58px;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 0;
+  color: #f2f4f5;
+  background: transparent;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 19px;
+  font-weight: 300;
+}
+.bbl-panel input:focus { border-bottom-color: #f0f3f4; background: transparent; }
+.bbl-panel label > i { display: none; }
+.bbl-panel form > button {
+  height: 64px;
+  margin-top: 6px;
+  border: 1px solid rgba(255, 255, 255, .56);
+  color: #eff2f3;
+  background: transparent;
+  transition: color .25s, background .25s;
+}
+.bbl-panel form > button:hover { color: #101316; background: #e9edee; }
+.bbl-panel form > button span { font-size: 16px; font-weight: 400; }
+.bbl-panel form > button small { color: inherit; opacity: .55; font-size: 10px; }
+.bbl-panel form > footer { color: #929da4; font-size: 11px; }
+.bbl-foot { z-index: 3; bottom: 27px; font-size: 10px; }
+
+.blackbird-hub {
+  background: #090b0d;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+.blackbird-hub::before,
+.blackbird-hub::after,
+.bbh-atmosphere { display: none; }
+.bbh-bird {
+  top: 43%;
+  width: min(48vw, 640px);
+  opacity: .055;
+}
+.bbh-masthead { top: 88px; }
+.bbh-product { font-size: 11px; }
+.bbh-product .bb-wordmark { width: 205px; }
+.bbh-mode { font-size: 11px; }
+.bbh-center { top: 49%; width: min(1190px, calc(100% - 110px)); }
+.bbh-center > p { margin-bottom: 18px; color: #9aa3aa; font-size: 11px; font-weight: 400; }
+.bbh-center h1 {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: clamp(40px, 4.9vw, 69px);
+  font-weight: 300;
+  line-height: 1.05;
+  letter-spacing: -.045em;
+}
+.bbh-center h1 strong { font-weight: 400; }
+.bbh-center > span { color: #a2abb0; font-size: 15px; }
+.bbh-choices {
+  width: min(1120px, 100%);
+  margin-top: 52px;
+  gap: 0;
+  border-block: 1px solid rgba(255, 255, 255, .24);
+}
+.bbh-choice {
+  min-height: 245px;
+  padding: 27px 38px 28px;
+  grid-template-columns: 95px 1fr auto;
+  gap: 24px;
+  border: 0;
+  border-radius: 0;
+  background: rgba(255, 255, 255, .012);
+}
+.bbh-choice + .bbh-choice { border-left: 1px solid rgba(255, 255, 255, .22); }
+.bbh-choice:hover {
+  transform: none;
+  border-color: transparent;
+  background: rgba(255, 255, 255, .07);
+}
+.bbh-choice-number { top: 27px; left: 38px; color: #a0a8ad; font-size: 11px; }
+.bbh-choice img { width: 88px; height: 88px; }
+.bbh-choice-copy small { color: #a1a9af; font-size: 11px; font-weight: 400; }
+.bbh-choice-copy b {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 45px;
+  font-weight: 300;
+  letter-spacing: -.04em;
+}
+.bbh-choice-copy em { color: #a5afb5; font-size: 13px; }
+.bbh-choice-arrow { border: 0; font-size: 25px; }
+.bbh-footer { bottom: 29px; color: #8c969c; font-size: 10px; }
+
+@media (max-width: 900px) {
+  .bbl-panel { grid-template-columns: 1fr; }
+  .bbl-panel form { max-width: 560px; width: 100%; margin: auto; padding: 150px 38px 80px; border: 0; background: transparent; }
+  .bbl-copy { display: none; }
+  .bbl-symbol { left: 50%; width: 520px; transform: translate(-50%, -50%); opacity: .09; }
+  .bbh-choices { grid-template-columns: 1fr; }
+  .bbh-choice + .bbh-choice { border-left: 0; border-top: 1px solid rgba(255, 255, 255, .22); }
+  .bbh-center { width: calc(100% - 48px); }
+}
