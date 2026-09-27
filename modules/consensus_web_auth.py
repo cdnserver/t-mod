@@ -467,7 +467,7 @@ async def resolve_principal(
         return None
     user_id = int(payload.get("uid") or 0)
     from persistence.account_security_repository import session_allowed
-    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload, require_mfa=str(getattr(request, "headers", {}).get("X-TMod-Desktop-Edition", "")).lower() == "blackbird"):
+    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload, require_mfa=str(getattr(request, "headers", {}).get("X-TMod-Desktop-Edition", "")).strip().lower() == "blackbird"):
         return None
     session_version = payload.get("sv")
     if session_version is not None and not await asyncio.to_thread(
@@ -538,7 +538,7 @@ async def resolve_projected_principal(
         return None
     user_id = int(payload.get("uid") or 0)
     from persistence.account_security_repository import session_allowed
-    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload, require_mfa=str(getattr(request, "headers", {}).get("X-TMod-Desktop-Edition", "")).lower() == "blackbird"):
+    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload, require_mfa=str(getattr(request, "headers", {}).get("X-TMod-Desktop-Edition", "")).strip().lower() == "blackbird"):
         return None
     if user_id <= 0:
         return None

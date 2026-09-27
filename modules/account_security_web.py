@@ -54,7 +54,7 @@ def register_account_security_routes(app, bot, *, guild_id: int, authenticate) -
         selected, legacy = await authenticate(request)
         if selected is None or legacy:
             raise web.HTTPUnauthorized()
-        if write and str(request.headers.get("X-TMod-Desktop-Edition", "")).lower() != "blackbird":
+        if write and str(request.headers.get("X-TMod-Desktop-Edition", "")).strip().lower() != "blackbird":
             raise web.HTTPForbidden()
         if write and not csrf_matches(request, selected):
             raise web.HTTPForbidden()

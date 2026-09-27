@@ -232,7 +232,7 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         member = SimpleNamespace(id=42, display_name="Operator", guild_permissions=SimpleNamespace(administrator=True), roles=[])
         guild = SimpleNamespace(id=77, name="Test", get_member=lambda user: member)
         bot = SimpleNamespace(get_guild=lambda gid: guild, get_user=lambda user: None, fetch_user=AsyncMock(side_effect=RuntimeError("offline")))
-        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77)), headers={"X-TMod-Desktop-Edition": "blackbird"}) as client:
+        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77)), headers={"X-TMod-Desktop-Edition": "Blackbird "}) as client:
             response = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "12345678"}, allow_redirects=False)
             self.assertEqual(response.status, 202)
             data = await response.json()
