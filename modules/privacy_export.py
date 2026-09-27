@@ -39,7 +39,7 @@ _SUBJECT_COLUMNS = frozenset(
     }
 )
 _SECURITY_COLUMNS = re.compile(
-    r"(?:password|pin_hash|secret|token|cookie|session_key|code_hash|receipt_key|device_hash|fingerprint)",
+    r"(?:password|pin_hash|secret|token|cookie|session_key|code_hash|recovery_hashes|receipt_key|device_hash|fingerprint)",
     re.IGNORECASE,
 )
 _MAX_GLOBAL_EVENTS = 50_000

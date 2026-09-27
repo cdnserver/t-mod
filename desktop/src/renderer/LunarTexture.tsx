@@ -62,7 +62,7 @@ export function LunarTexture({ onPrepared, reduced = false }: { onPrepared?: (fa
         const bitmap = await createImageBitmap(image);
         if (disposed) { bitmap.close(); return; }
         latestSize = size(); initialized = true;
-        worker.postMessage({ bitmap, size: latestSize }, [bitmap]);
+        worker.postMessage({ bitmap, size: latestSize, cssSize: canvas.clientWidth }, [bitmap]);
         image.onload = null; image.src = "";
       } catch { prepared(true); }
     };
@@ -94,7 +94,7 @@ export function LunarTexture({ onPrepared, reduced = false }: { onPrepared?: (fa
       resizeTimer = setTimeout(() => {
         const next = size();
         if (initialized && Math.abs(next - latestSize) > 64) {
-          latestSize = next; worker.postMessage({ size: next });
+          latestSize = next; worker.postMessage({ size: next, cssSize: canvas.clientWidth });
         }
       }, 180);
     });

@@ -35,7 +35,7 @@
   animation: bb-prelude-reflected-light 12.6s ease both;
 }
 .bb-prelude-signature {
-  position: relative; width: min(76vw, 1420px); aspect-ratio: 3;
+  position: relative; width: min(59vw, 1080px); aspect-ratio: 3;
   opacity: 0; animation: bb-prelude-arrive 1.8s ease both;
 }
 .bb-prelude-artwork {
@@ -43,6 +43,15 @@
   mix-blend-mode: screen; opacity: .86;
 }
 .bb-prelude-glyph { opacity: 0; transform-box: fill-box; transform-origin: center; animation: bb-prelude-letter 1.9s cubic-bezier(.16,1,.3,1) var(--glyph-delay) both; }
+.bb-prelude.ident-veil .bb-prelude-glyph,
+.bb-prelude.ident-light .bb-prelude-glyph { animation: none; opacity: 1; transform: none; }
+.bb-prelude.ident-veil .bb-prelude-artwork { animation: bb-ident-veil 4.8s cubic-bezier(.2,.6,.2,1) .8s both; }
+.bb-prelude.ident-veil .bb-prelude-light { animation-delay: 4.6s; }
+.bb-prelude.ident-light .bb-prelude-artwork { animation: bb-ident-light 4.8s cubic-bezier(.3,.05,.2,1) 1s both; }
+.bb-prelude.ident-light .bb-prelude-light { animation-delay: 1.6s; animation-duration: 6.4s; }
+@keyframes bb-ident-veil { from { opacity: 0; filter: blur(5px); } 45% { opacity: .4; } to { opacity: .86; filter: blur(0); } }
+@keyframes bb-ident-light { from { opacity: 0; clip-path: inset(0 100% 0 0); } 15% { opacity: .86; } to { opacity: .86; clip-path: inset(0); } }
+.bb-prelude.reduced .bb-prelude-artwork { animation: none !important; filter: none; clip-path: none; }
 @keyframes bb-prelude-letter {
   from { opacity: 0; transform: translateY(9px) scaleY(.94); }
   55% { opacity: .65; }
@@ -91,6 +100,7 @@
 .bb-prelude.reduced .bb-prelude-light,
 .bb-prelude.reduced .bb-prelude-depth { display: none; }
 .bb-prelude.reduced .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }
+.bb-prelude.reduced.black-pause .bb-prelude-signature { animation: bb-prelude-blackout 1.2s ease both !important; animation-duration: 1.2s !important; }
 @keyframes bb-prelude-static { from { opacity: 0; } to { opacity: 1; } }
 .bb-prelude-loading {
   position: absolute; top: calc(50% + clamp(48px, 7vw, 100px));
@@ -108,6 +118,7 @@
 }
 @keyframes bb-prelude-loading-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
+  .bb-prelude .bb-prelude-artwork { animation: none !important; filter: none; clip-path: none; }
   .bb-prelude-light, .bb-prelude-depth { display: none; }
   .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }
 }

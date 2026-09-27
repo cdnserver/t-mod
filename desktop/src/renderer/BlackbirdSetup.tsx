@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { DesktopLoginCredentials, DesktopLoginResult, DesktopShellPreferences } from "../shared/contracts";
-import mark from "./assets/blackbird/master-hd.png";
 import technologies from "./assets/blackbird/technologies-signature.png";
 import "./blackbird-setup.css";
 
@@ -18,7 +17,8 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
 }) {
   const [step, setStep] = useState(authenticated ? 1 : 0);
   const [draft, setDraft] = useState({ ...preferences, preferredName: preferences.preferredName || (authenticated ? name : "") });
-  const [credentials, setCredentials] = useState({ login: "", pin: "" });
+  const [credentials, setCredentials] = useState({ login: "", pin: "", code: "", challenge: "" });
+  const [factor, setFactor] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   useEffect(() => { if (!authenticated && step > 0) setStep(0); else if (authenticated && step === 0) setStep(1); }, [authenticated, step]);
@@ -27,7 +27,9 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
     setBusy(true); setError("");
     try {
       const result = await onLogin(credentials);
+      if (result.ok) { setCredentials({ login: "", pin: "", code: "", challenge: "" }); setFactor(""); }
       if (!result.ok) {
+        if (result.challenge) { setFactor(result.method || "totp"); setCredentials(current => ({ ...current, challenge: result.challenge! })); }
         const messages: Partial<Record<NonNullable<DesktopLoginResult["error"]>, string>> = {
           private_access_required: "Для Blackbird требуется личный допуск.",
           network_unavailable: "Сервер не ответил после повторных попыток. Попробуйте позже — менять PIN не нужно.",
@@ -36,16 +38,16 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
           locked: "Слишком много попыток входа. Подождите несколько минут.",
           banned: "Доступ к системе заблокирован.",
           login_failed: "Не удалось подтвердить сессию. Попробуйте снова.",
+          two_factor_required: "Подтвердите вход временным или резервным кодом.",
         };
-        setError(messages[result.error || "login_failed"] || "Не удалось войти. Проверьте логин и PIN-код.");
+        setError(result.deliveryFailed ? "Доставка кода недоступна. Используйте сохранённый резервный код." : messages[result.error || "login_failed"] || "Не удалось войти. Проверьте логин и PIN-код.");
       }
     } catch { setError("Связь прервалась. Ваши настройки сохранены в мастере — попробуйте снова."); }
-    finally { setCredentials(current => ({ ...current, pin: "" })); setBusy(false); }
+    finally { setBusy(false); }
   };
   return <section className={`bb-setup${draft.reduceMotion ? " reduced" : ""}`} aria-label="Первоначальная настройка Blackbird">
     <aside className="bb-setup-aside">
       <div className="bb-setup-brand"><img className="bb-setup-technologies" src={technologies} alt="Технологии Товарищества"/></div>
-      <div className="bb-setup-emblem" aria-hidden="true"><i/><img src={mark} alt=""/></div>
       <div className="bb-setup-intro"><h1>Ваш Blackbird.<br/><span>Ваш ритм.</span></h1><p>Одно пространство.<br/>Настроенное на вас.</p></div>
       <ol>{SETUP_STEPS.map(([label, description], index) => <li aria-current={index === step ? "step" : undefined} className={index === step ? "active" : index < step ? "done" : ""} key={label}><b>{index < step ? "✓" : `0${index + 1}`}</b><div><strong>{label}</strong><small>{description}</small></div><i/></li>)}</ol>
       <div className="bb-setup-aside-foot"><span>ЛИЧНОЕ ПРОСТРАНСТВО</span><b>BLACKBIRD CLIENT</b></div>
@@ -56,7 +58,7 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
         {step === 0 && <><small>01 / АККАУНТ</small><h2>Начнём с вас.</h2><p>Подключите единый аккаунт Технологий Товарищества. Существующий аккаунт T-Mod подходит — новый создавать не нужно.</p>
           <div className="bb-setup-tabs"><button aria-pressed={!creating} className={!creating ? "active" : ""} onClick={() => setCreating(false)}>У меня есть аккаунт</button><button aria-pressed={creating} className={creating ? "active" : ""} onClick={() => setCreating(true)}>Создать аккаунт</button></div>
           {creating && <div className="bb-setup-note"><strong>Подтвердите свою личность</strong><p>Откройте сервер Товарищества, вызовите <b>/account</b> и создайте веб-доступ. Затем вернитесь сюда и введите полученные логин и PIN. Доступ к закрытому Blackbird выдаётся отдельно.</p><button onClick={() => { void window.tmodDesktop?.openAccountCreation().catch(() => setError("Не удалось открыть страницу создания аккаунта.")); }}>Открыть создание аккаунта ↗</button></div>}
-          <form onSubmit={submit}><label>Логин<input required autoComplete="username" value={credentials.login} minLength={3} maxLength={32} onChange={event => setCredentials(current => ({ ...current, login: event.target.value }))}/></label><label>PIN-код<input required type="password" autoComplete="current-password" inputMode="numeric" pattern="[0-9]{8}" maxLength={8} value={credentials.pin} onChange={event => setCredentials(current => ({ ...current, pin: event.target.value.replace(/\D/g, "") }))}/></label>{error && <p role="alert" className="bb-setup-error">{error}</p>}<button className="bb-setup-primary" disabled={busy}>{busy ? "Подтверждаем аккаунт…" : "Подключить аккаунт →"}</button></form>
+          <form onSubmit={submit}><label>Логин<input required autoComplete="username" value={credentials.login} minLength={3} maxLength={32} onChange={event => { setFactor(""); setCredentials(current => ({ ...current, login: event.target.value, challenge: "", code: "" })); }}/></label><label>PIN или пароль<input required type="password" autoComplete="current-password" maxLength={128} value={credentials.pin} onChange={event => { setFactor(""); setCredentials(current => ({ ...current, pin: event.target.value, challenge: "", code: "" })); }}/></label>{factor && <label>Код {factor === "totp" ? "аутентификатора" : factor === "telegram" ? "Telegram" : "Discord"} или резервный код<input name="verification_code" type="password" autoComplete="one-time-code" required maxLength={32} value={credentials.code} onChange={event => setCredentials(current => ({ ...current, code: event.target.value }))}/></label>}{error && <p role="alert" className="bb-setup-error">{error}</p>}<button className="bb-setup-primary" disabled={busy}>{busy ? "Подтверждаем аккаунт…" : "Подключить аккаунт →"}</button></form>
         </>}
         {step === 1 && <><small>02 / ЛИЧНЫЕ НАСТРОЙКИ</small><h2>Как к вам обращаться?</h2><p>Это имя появится в приветствии и на экране блокировки. Оно не меняет имя вашего аккаунта.</p><label>Ваше имя<input maxLength={24} value={draft.preferredName} placeholder="Например, Роберт" onChange={event => setDraft(current => ({ ...current, preferredName: event.target.value }))}/></label>
           <label>Блокировка при бездействии<select value={draft.idleLockMinutes} onChange={event => setDraft(current => ({ ...current, idleLockMinutes: Number(event.target.value) }))}><option value={0}>Только вручную</option><option value={5}>Через 5 минут</option><option value={10}>Через 10 минут</option><option value={15}>Через 15 минут</option><option value={30}>Через 30 минут</option></select></label>

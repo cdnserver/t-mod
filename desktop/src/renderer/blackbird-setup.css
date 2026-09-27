@@ -1,5 +1,5 @@
 .bb-setup {
-  position: absolute; z-index: 100; inset: 70px 0 0; display: grid;
+  position: absolute; z-index: 100; inset: var(--topbar, 70px) var(--control-right, 0px) 0 0; display: grid;
   grid-template-columns: minmax(320px, .8fr) minmax(460px, 1.2fr);
   color: #e9eaec; background: #101113; overflow: auto;
 }
@@ -14,7 +14,7 @@
 }
 .bb-setup-aside::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(90deg, transparent 49.85%, #ffffff04 50%, transparent 50.15%); }
 .bb-setup-brand { display: flex; align-items: center; justify-content: center; }
-.bb-setup-technologies { display: block; width: min(100%, 305px); height: 42px; object-fit: cover; object-position: center; mix-blend-mode: screen; opacity: .88; margin: 8px auto 0; }
+.bb-setup-technologies { display: block; width: min(100%, 380px); height: 64px; object-fit: cover; object-position: center; mix-blend-mode: screen; opacity: .95; margin: 12px auto 60px; }
 .bb-setup-emblem { position: relative; display: grid; place-items: center; height: clamp(160px, 23vh, 225px); margin: 5px 0 12px; }
 .bb-setup-emblem i { position: absolute; width: 235px; height: 235px; border-radius: 50%; background: radial-gradient(circle, #8caacc17, transparent 65%); animation: bb-setup-breathe 9s ease-in-out infinite; }
 .bb-setup-emblem img { position: relative; width: clamp(140px, 15vw, 188px); height: auto; filter: drop-shadow(0 14px 22px #0005); animation: bb-setup-float 9s ease-in-out infinite; }

@@ -2,6 +2,7 @@ import signature from "./assets/blackbird/technologies-signature.png";
 import { useId, type CSSProperties } from "react";
 import "./blackbird-prelude.css";
 import type { preloadSummary } from "./blackbird-preload";
+import type { IntroStyle } from "../shared/shell-layout";
 
 // Reveal the approved artwork itself, not a replacement font. Adjacent mask
 // cells overlap by one source pixel, so the settled signature has no seams.
@@ -12,9 +13,9 @@ const signatureCells = [
 ];
 
 /** Publisher ident, not a loading dialog. The real launch scene loads beneath it. */
-export function BlackbirdPrelude({ reduced, exiting, blackPause = false, preparation }: { reduced: boolean; exiting: boolean; blackPause?: boolean; preparation: ReturnType<typeof preloadSummary> }) {
+export function BlackbirdPrelude({ reduced, exiting, blackPause = false, preparation, introStyle = "letters" }: { reduced: boolean; exiting: boolean; blackPause?: boolean; preparation: ReturnType<typeof preloadSummary>; introStyle?: IntroStyle }) {
   const maskId = `bb-ident-${useId().replace(/:/g, "")}`;
-  return <div className={`bb-prelude ${reduced ? "reduced" : ""} ${exiting ? "exiting" : ""} ${blackPause ? "black-pause" : ""}`} aria-label="Технологии Товарищества">
+  return <div className={`bb-prelude ident-${introStyle} ${reduced ? "reduced" : ""} ${exiting ? "exiting" : ""} ${blackPause ? "black-pause" : ""}`} aria-label="Технологии Товарищества">
     <div className="bb-prelude-depth" aria-hidden="true"><i/><b/></div>
     <div className="bb-prelude-stars" aria-hidden="true"/>
     <div className="bb-prelude-signature" aria-hidden="true">

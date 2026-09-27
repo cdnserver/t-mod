@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { BlackbirdSetup } from "../src/renderer/BlackbirdSetup";
 import type { DesktopShellPreferences } from "../src/shared/contracts";
 const preferences: DesktopShellPreferences = {
+  introStyle: "letters", controlBar: "horizontal",
   preferredName: "", sidebarCollapsed: false, compactMode: false, reduceMotion: false, solidSurfaces: false,
   serviceZoom: 1, idleLockMinutes: 10, lockSound: true, notificationDelivery: "both", notificationSound: true, updateChannel: "private",
 };
@@ -16,6 +17,7 @@ describe("Blackbird first-run identity gate", () => {
     expect(html).not.toContain("Открыть Blackbird →");
     expect(html).toContain('alt="Технологии Товарищества"');
     expect(html).not.toContain('class="bb-wordmark"');
+    expect(html).not.toContain("bb-setup-emblem");
     expect(html).not.toContain("ПЕРВЫЙ ЗАПУСК · WINDOWS");
     expect(html).toContain('aria-current="step"');
   });

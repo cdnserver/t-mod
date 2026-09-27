@@ -86,16 +86,14 @@
             >
           </label>
           <label>
-            <span>PIN · 8 цифр</span>
+            <span>PIN или пароль</span>
             <span class="pin-field">
               <input
                 id="credential-pin"
                 name="pin"
                 type="password"
-                minlength="8"
-                maxlength="8"
-                pattern="[0-9]{8}"
-                inputmode="numeric"
+                minlength="1"
+                maxlength="128"
                 autocomplete="current-password"
                 required
                 placeholder="••••••••"
@@ -104,6 +102,8 @@
             </span>
           </label>
           <output id="login-feedback" class="login-feedback" aria-live="polite" hidden></output>
+          <label id="factor-field" hidden><span id="factor-label">Код подтверждения</span><input name="code" type="password" autocomplete="one-time-code" maxlength="32" id="factor-code"></label>
+          <input name="challenge" type="hidden" id="factor-challenge">
           <button class="login-submit" type="submit">
             <span>ВОЙТИ В T-MOD</span><i>→</i>
           </button>

@@ -84,7 +84,7 @@ def normalize_web_pin(value: str) -> str:
 def _hash_pin(pin: str, *, salt: bytes | None = None) -> str:
     selected_salt = salt or secrets.token_bytes(16)
     digest = hashlib.scrypt(
-        pin.encode("ascii"),
+        pin.encode("utf-8"),
         salt=selected_salt,
         n=_SCRYPT_N,
         r=_SCRYPT_R,
@@ -113,7 +113,7 @@ def _verify_pin(pin: str, encoded: str) -> bool:
         if algorithm != "scrypt":
             return False
         digest = hashlib.scrypt(
-            str(pin).encode("ascii", errors="ignore"),
+            str(pin).encode("utf-8"),
             salt=base64.urlsafe_b64decode(salt),
             n=int(n),
             r=int(r),
@@ -198,6 +198,12 @@ def configure_web_credential(
                 "SELECT * FROM web_credentials WHERE guild_id = ? AND user_id = ?",
                 (int(guild_id), int(user_id)),
             ).fetchone()
+            # Legacy /reset changes the primary credential, not the second
+            # factor. Keep its PIN label accurate and revoke legacy cookies too.
+            con.execute(
+                "UPDATE account_security SET credential_kind='pin', security_version=security_version+1, pending_method='', pending_secret='', pending_until=0 WHERE guild_id=? AND user_id=?",
+                (int(guild_id), int(user_id)),
+            )
             con.commit()
     except sqlite3.IntegrityError as exc:
         raise ValueError("web_login_taken") from exc
@@ -226,7 +232,9 @@ def authenticate_web_credential(
 ) -> WebAuthenticationResult:
     try:
         clean_login = normalize_web_login(login)
-        clean_pin = normalize_web_pin(pin)
+        clean_pin = str(pin or "")
+        if not 1 <= len(clean_pin) <= 128:
+            raise ValueError("credential_invalid")
     except ValueError:
         _verify_pin("00000000", _dummy_hash())
         return WebAuthenticationResult("invalid")

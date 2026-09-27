@@ -4,7 +4,7 @@ let map: Uint8ClampedArray | undefined;
 let mapWidth = 0;
 let mapHeight = 0;
 
-self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; size: number }>) => {
+self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; size: number; cssSize?: number }>) => {
   if (event.data.bitmap) {
     const bitmap = event.data.bitmap;
     mapWidth = bitmap.width; mapHeight = bitmap.height;
@@ -45,7 +45,8 @@ self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; size: number }>) =
         const bottom = map[b + channel] * (1 - fx) + map[b + 4 + channel] * fx;
         data[dest + channel] = (top * (1 - fy) + bottom * fy) * shade;
       }
-      data[dest + 3] = Math.min(255, (1 - r2) * radius * 255);
+      const coverage = Math.max(0, Math.min(1, (1 - r2) / Math.min(.03, 8 / Math.max(1, event.data.cssSize || size))));
+      data[dest + 3] = coverage * coverage * (3 - 2 * coverage) * 255;
     }
   }
   ctx.putImageData(pixels, 0, 0);

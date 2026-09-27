@@ -21,6 +21,7 @@ import type {
   DesktopUpdateState,
   ServiceId,
 } from "../shared/contracts";
+import { normalizeIntroStyle } from "../shared/shell-layout";
 import type {
   AtlasOverlayCatalog,
   AtlasOverlayConfig,
@@ -54,9 +55,12 @@ import blackbirdTasks from "./assets/blackbird/tasks.png";
 import blackbirdAdmin from "./assets/blackbird/admin.png";
 import { BlackbirdHub } from "./BlackbirdHub";
 import { BlackbirdLogin } from "./BlackbirdLogin";
+import { BlackbirdIdle } from "./BlackbirdIdle";
 import { BlackbirdSetup } from "./BlackbirdSetup";
 import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
 import { AccountMenu } from "./AccountMenu";
+import { WorkspaceHome, WorkspaceNavigation, WorkspaceIntro } from "./BlackbirdWorkspace";
+import { canEnterWorkspace, workspaceForService, type BlackbirdWorkspace } from "../shared/workspaces";
 import "./blackbird-notifications.css";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
@@ -77,6 +81,8 @@ const blackbirdServiceMarks: Record<ServiceId, string> = {
 
 const PREFERENCES_KEY = desktopProduct.preferencesKey;
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  introStyle: "letters",
+  controlBar: "horizontal",
   preferredName: "",
   sidebarCollapsed: false,
   compactMode: false,
@@ -95,6 +101,8 @@ function loadPreferences(): DesktopShellPreferences {
     const stored = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || "{}") as Partial<DesktopShellPreferences>;
     const zoom = Number(stored.serviceZoom);
     return {
+      introStyle: normalizeIntroStyle(stored.introStyle),
+      controlBar: stored.controlBar === "vertical" ? "vertical" : "horizontal",
       preferredName: typeof stored.preferredName === "string" ? stored.preferredName.slice(0, 24) : "",
       sidebarCollapsed: stored.sidebarCollapsed === true,
       compactMode: stored.compactMode === true,
@@ -466,6 +474,19 @@ export function App() {
     canGoForward: false,
   });
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa ? "atlas" : null);
+  const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(null);
+  const workspaceTransition = useRef(false);
+  const finishWorkspaceIntro = useCallback(() => setWorkspaceIntro(null),[]);
+  useEffect(() => {
+    if (!desktopProduct.privateEdition) return;
+    if (!bootstrap.authenticated) { setWorkspace(null); setWorkspaceIntro(null); }
+    else if (desktopState.activeService !== "home") {
+      const next = workspaceForService(desktopState.activeService);
+      setWorkspace(next);
+      if (next !== workspace) setWorkspaceIntro(next);
+    }
+  },[bootstrap.authenticated,desktopState.activeService]);
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(cinematicQaEnabled && cinematicParams.get("settings-preview") === "app" || desktopProduct.privateEdition && atlasSettingsQa);
@@ -598,7 +619,13 @@ export function App() {
     void loadBootstrap();
     const api = browserApi();
     if (!api) return;
-    const unsubscribeState = api.onState(setDesktopState);
+    const unsubscribeState = api.onState(value => {
+      setDesktopState(value);
+      if (value.locked) {
+        setLocked(true); setLockReason(value.lockReason || "idle");
+        setSettingsOpen(false); setNotificationsOpen(false); setAtlasSettingsOpen(false); setPaletteOpen(false);
+      }
+    });
     const unsubscribeAuth = api.onAuthChanged(loadBootstrap);
     const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
     const unsubscribeNotifications = api.onNotifications(() => {
@@ -711,7 +738,7 @@ export function App() {
     if (!locked) return;
     const stopSound = playVaultSound("lock", preferences.lockSound);
     const release = (event: KeyboardEvent) => {
-      if (event.repeat || unlocking) return;
+      if (event.repeat || unlocking || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       unlock();
@@ -751,8 +778,8 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || profileOpen || locked || setupOpen);
-  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, profileOpen, locked, setupOpen]);
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || profileOpen || locked || setupOpen || launchVisible || Boolean(workspaceIntro));
+  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, profileOpen, locked, setupOpen, launchVisible, workspaceIntro]);
 
   useEffect(() => { setProfileOpen(false); }, [settingsOpen, notificationsOpen, atlasSettingsOpen, paletteOpen, locked, setupOpen, desktopState.activeService]);
 
@@ -779,9 +806,31 @@ export function App() {
     setNotificationsOpen(false);
     setSettingsOpen(false);
     setAtlasSettingsOpen(false);
+    if (desktopProduct.privateEdition) {
+      const next = workspaceForService(serviceId);
+      if (next && next !== workspace) setWorkspaceIntro(next);
+      if (!next) setWorkspaceIntro(null);
+      setWorkspace(next);
+    }
     const api = browserApi();
-    if (api) setDesktopState(await api.navigate(serviceId));
-    else setDesktopState((current) => ({ ...current, activeService: serviceId }));
+    try {
+      if (api) setDesktopState(await api.navigate(serviceId));
+      else setDesktopState((current) => ({ ...current, activeService: serviceId }));
+    } catch { setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); }
+  };
+
+  const enterWorkspace = async (space:BlackbirdWorkspace, intro = true) => {
+    if (!bootstrap.authenticated || !canEnterWorkspace(space,access) || workspaceTransition.current) return;
+    workspaceTransition.current = true;
+    setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false); setProfileOpen(false);
+    try {
+      const api = browserApi();
+      if (api) setDesktopState(await api.navigate("home"));
+      else setDesktopState(current => ({...current,activeService:"home",loading:false,error:undefined}));
+      setWorkspace(space);
+      setWorkspaceIntro(intro ? space : null);
+    } catch { setToast("Не удалось открыть пространство. Попробуйте ещё раз."); }
+    finally { workspaceTransition.current = false; }
   };
 
   const notifications = bootstrap.data?.notifications.items || [];
@@ -929,7 +978,9 @@ export function App() {
     preferences.reduceMotion ? "reduce-motion" : "",
     preferences.solidSurfaces ? "solid-surfaces" : "",
     profileOpen ? "profile-menu-open" : "",
-    desktopProduct.privateEdition && desktopState.activeService === "home" ? "blackbird-hub-active" : "",
+    desktopProduct.privateEdition && preferences.controlBar === "vertical" ? "control-bar-vertical" : "",
+    desktopProduct.privateEdition && desktopState.activeService === "home" && !workspace ? "blackbird-hub-active" : "",
+    desktopProduct.privateEdition && workspace ? `blackbird-workspace-active workspace-${workspace}` : "",
     `edition-${desktopProduct.edition}`,
   ].filter(Boolean).join(" ");
 
@@ -940,7 +991,11 @@ export function App() {
   return (
     <div className={desktopClasses} style={style}>
       <div className="aurora" aria-hidden="true"><i/><i/><i/></div>
-      <aside className="sidebar" inert={settingsOpen}>
+      {desktopProduct.privateEdition && workspace ? <WorkspaceNavigation
+        space={workspace} active={desktopState.activeService} access={access} collapsed={preferences.sidebarCollapsed} online={bootstrap.online} inert={settingsOpen || locked || Boolean(workspaceIntro)}
+        onHome={() => void selectService("home")} onOverview={() => void enterWorkspace(workspace,false)} onSwitch={() => void enterWorkspace(workspace === "atlas" ? "senate" : "atlas")}
+        onOpen={selectService} onOverlay={openAtlasSettings} onToggle={() => setPreferences(current => ({...current,sidebarCollapsed:!current.sidebarCollapsed}))}
+      /> : <aside className="sidebar" inert={settingsOpen || locked}>
         <button
           className="sidebar-toggle"
           onClick={() => setPreferences((current) => ({ ...current, sidebarCollapsed: !current.sidebarCollapsed }))}
@@ -993,13 +1048,13 @@ export function App() {
           {bootstrap.authenticated && <button className="logout-button" onClick={() => void logout()} title="Выйти из аккаунта"><Icon name="logout"/></button>}
           </div>
         </div>
-      </aside>
+      </aside>}
 
-      <header className="topbar">
+      <header className="topbar" inert={locked || Boolean(workspaceIntro)}>
         <div className="browser-tools">
           <button disabled={!desktopState.canGoBack} onClick={() => void browserApi()?.goBack()}><Icon name="back"/></button>
           <button disabled={!desktopState.canGoForward} onClick={() => void browserApi()?.goForward()}><Icon name="forward"/></button>
-          <div className="surface-title"><span style={{ background: activeDefinition.accent }}/><strong>{activeDefinition.title}</strong><small>{activeDefinition.eyebrow}</small></div>
+          <div className="surface-title"><span style={{ background: activeDefinition.accent }}/><strong>{workspace && desktopState.activeService === "home" ? workspace === "atlas" ? "Atlas" : "Сенат" : activeDefinition.title}</strong><small>{workspace && desktopState.activeService === "home" ? "Обзор пространства" : activeDefinition.eyebrow}</small></div>
         </div>
         <div className="top-actions">
           {browserApi() && (
@@ -1038,7 +1093,7 @@ export function App() {
         {desktopState.loading && <div className="load-line"/>}
       </header>
 
-      <main inert={settingsOpen} className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
+      <main inert={settingsOpen || locked || Boolean(workspaceIntro)} className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
         {atlasSettingsOpen ? (
           <AtlasSettingsPage
             overlayConfig={overlayConfig}
@@ -1051,7 +1106,10 @@ export function App() {
             onClose={() => setAtlasSettingsOpen(false)}
             focusRequest={atlasSettingsFocusRequest}
           />
-        ) : desktopState.activeService === "home" ? (
+        ) : desktopProduct.privateEdition && workspace && desktopState.activeService === "home" && bootstrap.authenticated ? <WorkspaceHome
+          space={workspace} name={userName} access={access} notifications={notifications} overlayEnabled={overlayConfig.enabled}
+          onOpen={selectService} onOverlay={openAtlasSettings} onNotifications={() => setNotificationsOpen(true)}
+        /> : desktopState.activeService === "home" ? (
           <Home
             name={userName}
             bootstrap={bootstrap}
@@ -1060,6 +1118,7 @@ export function App() {
             notifications={notifications}
             access={access}
             onOpen={selectService}
+            onEnterWorkspace={enterWorkspace}
             onLogin={login}
             onRetry={loadBootstrap}
             overlayConfig={overlayConfig}
@@ -1102,6 +1161,7 @@ export function App() {
         onClose={() => setSettingsOpen(false)} onReconnect={loadBootstrap} onLock={lockNow}
         onSetup={() => { setSettingsOpen(false); setSetupOpen(true); }} onLogout={logoutFromSettings}
         onPreviewNotification={() => void browserApi()?.previewNotification()}
+        onPreviewIntro={() => setLaunchVisible(true)}
         atlas={<AtlasSettingsPage overlayConfig={overlayConfig} overlayCatalog={overlayCatalog}
           overlayAllowed={atlasSettingsQa || bootstrap.data?.atlas_overlay?.allowed === true}
           overlayBusy={overlayBusy} overlayError={overlayError} onOverlayChange={saveOverlay}
@@ -1152,7 +1212,7 @@ export function App() {
         }}
       />
       {locked && (
-        <VaultScreen
+        desktopProduct.privateEdition ? <BlackbirdIdle name={userName} reduced={preferences.reduceMotion} unlocking={unlocking} onMinimize={() => void browserApi()?.minimize()}/> : <VaultScreen
           name={userName}
           reason={lockReason}
           reduced={preferences.reduceMotion}
@@ -1160,7 +1220,8 @@ export function App() {
           onMinimize={() => void browserApi()?.minimize()}
         />
       )}
-      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} hold={cinematicHold} onContinue={dismissLaunch} connectionReady={!bootstrapLoading}/>}
+      {workspaceIntro && !launchVisible && !locked && <WorkspaceIntro space={workspaceIntro} reduced={preferences.reduceMotion} onComplete={finishWorkspaceIntro}/>}
+      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} introStyle={preferences.introStyle} hold={cinematicHold} onContinue={dismissLaunch} connectionReady={!bootstrapLoading}/>}
       {setupOpen && !launchVisible && <BlackbirdSetup authenticated={bootstrap.authenticated} name={userName} preferences={preferences} onLogin={login}
         onLater={() => setSetupOpen(false)} onComplete={value => {
           if (!bootstrap.authenticated || !bootstrap.data) return;
@@ -1222,6 +1283,7 @@ function Home({
   notifications,
   access,
   onOpen,
+  onEnterWorkspace,
   onLogin,
   onRetry,
   overlayConfig,
@@ -1236,6 +1298,7 @@ function Home({
   notifications: DesktopNotification[];
   access: Map<string, { enabled: boolean; reason: string | null }>;
   onOpen: (id: ServiceId) => Promise<void>;
+  onEnterWorkspace?: (space:BlackbirdWorkspace) => Promise<void>;
   onLogin: (credentials: DesktopLoginCredentials) => Promise<DesktopLoginResult>;
   onRetry: () => Promise<void>;
   overlayConfig: AtlasOverlayConfig;
@@ -1245,6 +1308,8 @@ function Home({
 }) {
   const [loginValue, setLoginValue] = useState("");
   const [pin, setPin] = useState("");
+  const [factor, setFactor] = useState<{ challenge: string; method: string; deliveryFailed?: boolean }>();
+  const [factorCode, setFactorCode] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<DesktopLoginResult["error"]>();
 
@@ -1277,6 +1342,7 @@ function Home({
       );
     }
     const messages: Record<NonNullable<DesktopLoginResult["error"]>, string> = {
+      two_factor_required: "Подтвердите вход временным или резервным кодом.",
       invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
       locked: "Слишком много попыток. Подождите несколько минут и попробуйте снова.",
       reset_required: "PIN заблокирован. Напишите T-Mod команду /reset в Discord.",
@@ -1296,7 +1362,8 @@ function Home({
       setLoginBusy(true);
       setLoginError(undefined);
       try {
-        const result = await onLogin({ login: loginValue, pin });
+        const result = await onLogin({ login: loginValue, pin, code: factorCode, challenge: factor?.challenge });
+        if (result.challenge) setFactor({ challenge: result.challenge, method: result.method || "totp", deliveryFailed: result.deliveryFailed });
         if (!result.ok) setLoginError(result.error || "login_failed");
       } catch { setLoginError("network_unavailable"); } finally {
         setLoginBusy(false);
@@ -1307,12 +1374,13 @@ function Home({
         <BlackbirdLogin
           login={loginValue}
           pin={pin}
+          code={factorCode} factor={factor?.method} onCodeChange={setFactorCode}
           busy={loginBusy}
           online={bootstrap.online}
           bridgeAvailable={bridgeAvailable}
-          error={loginError ? messages[loginError] : undefined}
-          onLoginChange={setLoginValue}
-          onPinChange={setPin}
+          error={factor?.deliveryFailed ? "Доставка кода недоступна. Используйте сохранённый резервный код." : loginError ? messages[loginError] : undefined}
+          onLoginChange={value => { setLoginValue(value); setFactor(undefined); setFactorCode(""); }}
+          onPinChange={value => { setPin(value); setFactor(undefined); setFactorCode(""); }}
           onSubmit={(event) => void submit(event)}
           onRetry={() => void onRetry()}
         />
@@ -1330,7 +1398,8 @@ function Home({
         <form className="desktop-login-form" onSubmit={(event) => void submit(event)}>
           <header><p>{desktopProduct.privateEdition ? "BLACKBIRD · PRIVATE" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
           <label><span>Логин</span><input value={loginValue} onChange={(event) => setLoginValue(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="ваш.логин" disabled={loginBusy}/></label>
-          <label><span>PIN · 8 цифр</span><input value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="••••••••" disabled={loginBusy}/></label>
+          <label><span>PIN или пароль</span><input value={pin} onChange={(event) => { setPin(event.target.value); setFactor(undefined); setFactorCode(""); }} autoComplete="current-password" type="password" minLength={1} maxLength={128} placeholder="Ваш способ входа" disabled={loginBusy}/></label>
+          {factor && <label><span>Код подтверждения или резервный код</span><input name="verification_code" type="password" autoComplete="one-time-code" maxLength={32} value={factorCode} onChange={event => setFactorCode(event.target.value)} disabled={loginBusy}/></label>}
           {loginError && <output className="desktop-login-error">{messages[loginError]}</output>}
           {!bridgeAvailable && <output className="desktop-login-error">Компонент приложения не загрузился. Переустановите {desktopProduct.name} из последней приватной сборки.</output>}
           <button className={`primary ${loginBusy ? "busy" : ""}`} type="submit" disabled={loginBusy || !bridgeAvailable} aria-busy={loginBusy}>{loginBusy ? "Устанавливаем защищённую сессию…" : `Войти в ${desktopProduct.name}`}<span>{loginBusy ? "•••" : "→"}</span></button>
@@ -1352,6 +1421,7 @@ function Home({
         overlayConfig={overlayConfig}
         overlayAllowed={overlayAllowed}
         onOpen={onOpen}
+        onEnterWorkspace={onEnterWorkspace}
         onOverlaySettings={onOverlaySettings}
         onOpenNotifications={onOpenNotifications}
       />

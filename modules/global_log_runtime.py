@@ -28,6 +28,7 @@ _SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 _TOKEN_PATTERNS = (
+    re.compile(r"(?i)((?:одноразовый код|код подтверждения)\s*[:：]\s*`?)[0-9A-Z-]{6,32}"),
     re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer|bot)\s+)[^\s,;]+"),
     re.compile(r"(?i)((?:token|password|secret|api[_-]?key|pin)\s*[:=]\s*)[^\s,;]+"),
     re.compile(r"\b[MN][A-Za-z\d_-]{20,}\.[A-Za-z\d_-]{5,}\.[A-Za-z\d_-]{20,}\b"),
@@ -534,6 +535,8 @@ def activity_event(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _request_payload(request: web.Request) -> Any:
+    if request.path.startswith("/api/account/security") or request.path == "/auth/login":
+        return {"omitted": "authentication_secrets"}
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return None
     length = int(request.content_length or 0)
@@ -560,6 +563,8 @@ async def _request_payload(request: web.Request) -> Any:
 
 
 def _response_payload(response: web.StreamResponse, path: str) -> Any:
+    if path.startswith("/api/account/security") or path == "/auth/login":
+        return {"omitted": "authentication_secrets"}
     if path.startswith("/api/global-log/events") or path.startswith("/api/global-log/export"):
         return {"omitted": "global_log_result"}
     if not isinstance(response, web.Response) or response.body is None:

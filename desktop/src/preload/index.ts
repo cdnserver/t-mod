@@ -24,6 +24,8 @@ import type {
 } from "../shared/atlas-overlay";
 
 const api: TModDesktopApi = {
+  accountRequest: (action, data) => ipcRenderer.invoke("desktop:account-request", action, data),
+  openBilling: () => ipcRenderer.invoke("desktop:billing-open"),
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap") as Promise<BootstrapResult>,
   login: (credentials: DesktopLoginCredentials) =>
     ipcRenderer.invoke("desktop:login", credentials) as Promise<DesktopLoginResult>,

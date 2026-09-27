@@ -44,7 +44,43 @@ visibility.addEventListener("click", () => {
   pin.focus();
 });
 
-form.addEventListener("submit", () => {
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (form.classList.contains("submitting")) return;
   form.classList.add("submitting");
   form.querySelector("button[type='submit']").disabled = true;
+  feedback.hidden = true;
+  try {
+    const response = await fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)), credentials: "same-origin", signal: AbortSignal.timeout(25000) });
+    if (response.status === 202) {
+      const result = await response.json();
+      document.querySelector("#factor-challenge").value = result.challenge || "";
+      document.querySelector("#factor-field").hidden = false;
+      document.querySelector("#factor-label").textContent = result.method === "totp" ? "Код аутентификатора или резервный код" : `Код ${result.method === "telegram" ? "Telegram" : "Discord"} или резервный код`;
+      document.querySelector("#factor-code").focus();
+      feedback.textContent = result.delivery_failed ? "Доставка кода недоступна. Используйте сохранённый резервный код." : "Подтвердите вход. Если код истёк, измените поле PIN/пароля, чтобы начать заново.";
+      feedback.hidden = false;
+      return;
+    }
+    const destination = new URL(response.url, location.origin);
+    if (destination.origin !== location.origin) throw new Error("unexpected_origin");
+    if (destination.pathname === "/login") {
+      feedback.textContent = errors[destination.searchParams.get("error")] || "Не удалось войти. Проверьте данные.";
+      feedback.hidden = false;
+      return;
+    }
+    if (!response.ok) throw new Error("login_unavailable");
+    location.assign(destination.pathname + destination.search + destination.hash);
+  } catch {
+    feedback.textContent = "Не удалось завершить вход. Проверьте соединение и повторите попытку.";
+    feedback.hidden = false;
+  } finally {
+    form.classList.remove("submitting");
+    form.querySelector("button[type='submit']").disabled = false;
+  }
+});
+for (const input of [pin, form.querySelector('[name="login"]')]) input.addEventListener("input", () => {
+  document.querySelector("#factor-challenge").value = "";
+  document.querySelector("#factor-code").value = "";
+  document.querySelector("#factor-field").hidden = true;
 });

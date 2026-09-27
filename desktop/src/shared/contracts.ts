@@ -86,6 +86,8 @@ export interface BootstrapResult {
 }
 
 export interface DesktopShellPreferences {
+  introStyle: "letters" | "veil" | "light";
+  controlBar: "horizontal" | "vertical";
   preferredName: string;
   sidebarCollapsed: boolean;
   compactMode: boolean;
@@ -104,10 +106,15 @@ export type DesktopLockReason = "idle" | "manual";
 export interface DesktopLoginCredentials {
   login: string;
   pin: string;
+  code?: string;
+  challenge?: string;
 }
 
 export interface DesktopLoginResult {
   ok: boolean;
+  challenge?: string;
+  method?: string;
+  deliveryFailed?: boolean;
   /** Fresh server projection returned by the successful login transaction. */
   bootstrap?: BootstrapResult;
   error?:
@@ -122,10 +129,13 @@ export interface DesktopLoginResult {
     | "login_in_progress"
     | "server_response_invalid"
     | "login_failed"
-    | "invalid_input";
+    | "invalid_input"
+    | "two_factor_required";
 }
 
 export interface DesktopState {
+  locked?: boolean;
+  lockReason?: DesktopLockReason;
   activeService: ServiceId;
   loading: boolean;
   canGoBack: boolean;
@@ -158,6 +168,8 @@ export interface DesktopUpdateState {
 }
 
 export interface TModDesktopApi {
+  accountRequest?(action: "security" | "billing" | "update", data?: Record<string, string>): Promise<Record<string, unknown>>;
+  openBilling?(): Promise<boolean>;
   bootstrap(): Promise<BootstrapResult>;
   login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult>;
   logout(): Promise<boolean>;

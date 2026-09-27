@@ -5,6 +5,9 @@ import { BlackbirdWordmark } from "./BlackbirdWordmark";
 interface BlackbirdLoginProps {
   login: string;
   pin: string;
+  code?: string;
+  factor?: string;
+  onCodeChange?: (value: string) => void;
   busy: boolean;
   online: boolean;
   bridgeAvailable: boolean;
@@ -15,7 +18,7 @@ interface BlackbirdLoginProps {
   onRetry: () => void;
 }
 
-export function BlackbirdLogin({ login, pin, busy, online, bridgeAvailable, error, onLoginChange, onPinChange, onSubmit, onRetry }: BlackbirdLoginProps) {
+export function BlackbirdLogin({ login, pin, code, factor, onCodeChange, busy, online, bridgeAvailable, error, onLoginChange, onPinChange, onSubmit, onRetry }: BlackbirdLoginProps) {
   return (
     <section className="blackbird-login">
       <div className="bbl-lines" aria-hidden="true"><i/><i/><i/><i/></div>
@@ -29,7 +32,8 @@ export function BlackbirdLogin({ login, pin, busy, online, bridgeAvailable, erro
         </div>
         <form onSubmit={onSubmit}>
           <label><span>Логин</span><input value={login} onChange={(event) => onLoginChange(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="Имя аккаунта" disabled={busy}/><i/></label>
-          <label><span>PIN-код</span><input value={pin} onChange={(event) => onPinChange(event.target.value.replace(/\D/g, "").slice(0,8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="8 цифр" disabled={busy}/><i/></label>
+          <label><span>PIN или пароль</span><input value={pin} onChange={(event) => onPinChange(event.target.value.slice(0,128))} autoComplete="current-password" type="password" minLength={1} maxLength={128} placeholder="Ваш способ входа" disabled={busy}/><i/></label>
+          {factor && <label><span>{factor === "totp" ? "Код аутентификатора" : `Код из ${factor === "telegram" ? "Telegram" : "Discord"}`} · или резервный код</span><input autoFocus name="verification_code" autoComplete="one-time-code" type="password" maxLength={32} value={code || ""} onChange={event => onCodeChange?.(event.target.value)} disabled={busy}/><i/></label>}
           {error && <output>{error}</output>}
           {!bridgeAvailable && <output>Компонент авторизации не загружен. Откройте Blackbird Client.</output>}
           <button type="submit" disabled={busy || !bridgeAvailable} aria-busy={busy}><span>{busy ? "Подключаем аккаунт…" : "Войти в Blackbird"}</span><b>{busy ? "···" : "→"}</b></button>

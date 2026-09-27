@@ -44,6 +44,7 @@ import type {
   ServiceId,
 } from "../shared/contracts";
 import { desktopProduct } from "../shared/product";
+import { normalizeIntroStyle, serviceBounds } from "../shared/shell-layout";
 
 const { autoUpdater } = electronUpdater;
 
@@ -61,9 +62,6 @@ app.commandLine.appendSwitch("disable-background-timer-throttling");
 // electron-vite injects its own `__dirname` shim into the ESM bundle.
 // A distinct name avoids a duplicate top-level declaration in packaged builds.
 const bundleDirectory = path.dirname(fileURLToPath(import.meta.url));
-const SHELL_HEADER_HEIGHT = 70;
-const SHELL_SIDEBAR_WIDTH = 286;
-const SHELL_SIDEBAR_COLLAPSED_WIDTH = 78;
 const DESKTOP_PARTITION = desktopProduct.partition;
 const ACCOUNT_SESSION_COOKIE = "tmod_account_session";
 const BOOTSTRAP_URLS = [
@@ -87,6 +85,8 @@ const LOGIN_TIMEOUT_MS = 10_000;
 const SERVICE_RETRY_DELAYS = [700, 1_800, 4_000] as const;
 const RETRYABLE_NETWORK_ERRORS = new Set([-2, -7, -21, -101, -102, -105, -106, -118, -324]);
 const DEFAULT_PREFERENCES: DesktopShellPreferences = {
+  introStyle: "letters",
+  controlBar: "horizontal",
   preferredName: "",
   sidebarCollapsed: false,
   compactMode: false,
@@ -110,6 +110,7 @@ let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
 let forcedUpdateInstallTimer: ReturnType<typeof setTimeout> | undefined;
 let idleLockTimer: ReturnType<typeof setInterval> | undefined;
+let desktopLockReason: DesktopLockReason = "manual";
 let desktopLocked = false;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
@@ -314,6 +315,8 @@ function reconcileActiveServiceAccess(): void {
 
 function state(): DesktopState {
   return {
+    locked: desktopLocked,
+    lockReason: desktopLockReason,
     activeService,
     loading: serviceLoading,
     canGoBack: Boolean(serviceView?.webContents.navigationHistory.canGoBack()),
@@ -486,15 +489,7 @@ function configureAutoUpdater(): void {
 function positionViews(): void {
   if (!mainWindow || !serviceView) return;
   const [width, height] = mainWindow.getContentSize();
-  const sidebarWidth = shellPreferences.sidebarCollapsed
-    ? SHELL_SIDEBAR_COLLAPSED_WIDTH
-    : SHELL_SIDEBAR_WIDTH;
-  serviceView.setBounds({
-    x: sidebarWidth,
-    y: SHELL_HEADER_HEIGHT,
-    width: Math.max(1, width - sidebarWidth),
-    height: Math.max(1, height - SHELL_HEADER_HEIGHT),
-  });
+  serviceView.setBounds(serviceBounds(width, height, desktopProduct.privateEdition, shellPreferences.controlBar === "vertical", shellPreferences.sidebarCollapsed));
 }
 
 function normalizePreferences(value: unknown): DesktopShellPreferences {
@@ -508,6 +503,8 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     : "";
   return {
     preferredName,
+    introStyle: normalizeIntroStyle(candidate.introStyle),
+    controlBar: candidate.controlBar === "vertical" ? "vertical" : "horizontal",
     sidebarCollapsed: candidate.sidebarCollapsed === true,
     compactMode: candidate.compactMode === true,
     reduceMotion: candidate.reduceMotion === true,
@@ -620,10 +617,12 @@ function applyPreferences(value: unknown): DesktopShellPreferences {
 function lockDesktop(reason: DesktopLockReason): boolean {
   if (desktopLocked || !mainWindow || mainWindow.isDestroyed()) return desktopLocked;
   desktopLocked = true;
+  desktopLockReason = reason;
   notificationPopup?.clear();
   syncServiceVisibility();
   mainWindow.webContents.send("desktop:lock-requested", reason);
-  mainWindow.webContents.focus();
+  emitState();
+  if (mainWindow.isFocused()) mainWindow.webContents.focus();
   return true;
 }
 
@@ -991,8 +990,8 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
 
 async function performLogin(credentials: DesktopLoginCredentials, cancellation: AbortSignal): Promise<DesktopLoginResult> {
   const loginValue = String(credentials?.login || "").trim();
-  const pin = String(credentials?.pin || "").trim();
-  if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginValue) || !/^\d{8}$/.test(pin)) {
+  const pin = String(credentials?.pin || "");
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginValue) || !pin || pin.length > 128) {
     return { ok: false, error: "invalid_input" };
   }
   // Invalidate an older periodic bootstrap before changing the session. This
@@ -1007,6 +1006,8 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
   notificationPopup?.clear();
   try {
     const form = new URLSearchParams({ login: loginValue, pin });
+    if (credentials.code) form.set("code", credentials.code.slice(0, 32));
+    if (credentials.challenge) form.set("challenge", credentials.challenge.slice(0, 64));
     let response: Response | undefined;
     for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt += 1) {
       if (cancellation.aborted || revision !== bootstrapRevision) return { ok: false, error: "login_failed" };
@@ -1041,6 +1042,10 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
     }
     if (revision !== bootstrapRevision) return { ok: false, error: "login_failed" };
     if (!response) return { ok: false, error: "network_unavailable" };
+    if (response.status === 202) {
+      const factor = await response.json() as { challenge?: string; method?: string; delivery_failed?: boolean };
+      return { ok: false, error: "two_factor_required", challenge: factor.challenge, method: factor.method, deliveryFailed: factor.delivery_failed };
+    }
     if (!response.ok && ![301, 302, 303, 307, 308, 403, 423].includes(response.status)) return { ok: false, error: "login_failed" };
     if (response.status === 403 || response.status === 423) {
       if (response.status === 423) await bootstrap();
@@ -1133,6 +1138,31 @@ function registerIpc(): void {
       : ({ ok: false, error: "login_failed" } satisfies DesktopLoginResult),
   );
   ipcMain.handle("desktop:logout", (event) => trusted(event) ? logout() : false);
+  ipcMain.handle("desktop:account-request", async (event, action: unknown, data: unknown) => {
+    if (!trusted(event) || !["security", "billing", "update"].includes(String(action))) throw new Error("untrusted_request");
+    const host = "https://tvr.lat";
+    const revision = bootstrapRevision;
+    const snapshot = await desktopSession().fetch(`${host}/api/account/${action === "billing" ? "billing" : "security"}`, {
+      credentials: "include", headers: desktopIdentityHeaders(), signal: AbortSignal.timeout(12_000),
+    });
+    if (!snapshot.ok) throw new Error(snapshot.status === 401 ? "session_expired" : "account_unavailable");
+    const result = await snapshot.json() as Record<string, unknown>;
+    if (revision !== bootstrapRevision) throw new Error("session_changed");
+    if (action !== "update") return result;
+    if (!data || typeof data !== "object" || Array.isArray(data) || JSON.stringify(data).length > 4096 || typeof result.csrf_token !== "string") throw new Error("invalid_request");
+    const response = await desktopSession().fetch(`${host}/api/account/security`, {
+      method: "POST", credentials: "include", headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": result.csrf_token },
+      body: JSON.stringify(data), signal: AbortSignal.timeout(20_000),
+    });
+    const body = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "account_unavailable");
+    return body;
+  });
+  ipcMain.handle("desktop:billing-open", async event => {
+    if (!trusted(event)) return false;
+    await shell.openExternal("https://atlas.tvr.lat/account");
+    return true;
+  });
   ipcMain.handle("desktop:account-create", async event => {
     if (!trusted(event)) return false;
     // Fixed verified registration destination; no arbitrary URL from the renderer.
@@ -1301,6 +1331,7 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
     },
   });
   serviceView = new WebContentsView({
@@ -1468,6 +1499,8 @@ async function createWindow(): Promise<void> {
   mainWindow.on("resize", positionViews);
   mainWindow.on("maximize", positionViews);
   mainWindow.on("unmaximize", positionViews);
+  mainWindow.on("focus", emitState);
+  mainWindow.on("restore", emitState);
   mainWindow.on("closed", () => {
     notificationPopup?.dispose();
     clearServiceRetry();

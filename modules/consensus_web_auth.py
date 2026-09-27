@@ -334,6 +334,8 @@ def create_session_token(
     user_id: int,
     lifetime_seconds: int = _SESSION_LIFETIME_SECONDS,
     session_version: int | None = None,
+    mfa_verified: bool = False,
+    account_security_version: int | None = None,
 ) -> tuple[str, str]:
     now = int(time.time())
     csrf_token = secrets.token_urlsafe(24)
@@ -347,6 +349,10 @@ def create_session_token(
     }
     if session_version is not None:
         payload["sv"] = int(session_version)
+    from persistence.account_security_repository import state
+    payload["av"] = account_security_version if account_security_version is not None else state(int(guild_id), int(user_id))["security_version"]
+    if mfa_verified:
+        payload["mfv"] = payload["av"]
     return (
         _sign(payload, purpose="session"),
         csrf_token,
@@ -460,6 +466,9 @@ async def resolve_principal(
     if int(payload.get("gid") or 0) != int(guild_id):
         return None
     user_id = int(payload.get("uid") or 0)
+    from persistence.account_security_repository import session_allowed
+    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload):
+        return None
     session_version = payload.get("sv")
     if session_version is not None and not await asyncio.to_thread(
         credential_storage.web_session_version_matches,
@@ -528,6 +537,9 @@ async def resolve_projected_principal(
     if int(payload.get("gid") or 0) != int(guild_id):
         return None
     user_id = int(payload.get("uid") or 0)
+    from persistence.account_security_repository import session_allowed
+    if not await asyncio.to_thread(session_allowed, int(guild_id), user_id, payload):
+        return None
     if user_id <= 0:
         return None
     session_version = payload.get("sv")

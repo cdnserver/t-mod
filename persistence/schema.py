@@ -298,6 +298,24 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
 
+            CREATE TABLE IF NOT EXISTS account_security (
+                guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                credential_kind TEXT NOT NULL DEFAULT 'pin',
+                mfa_method TEXT NOT NULL DEFAULT '', mfa_secret TEXT NOT NULL DEFAULT '',
+                pending_method TEXT NOT NULL DEFAULT '', pending_secret TEXT NOT NULL DEFAULT '',
+                pending_until INTEGER NOT NULL DEFAULT 0, last_step INTEGER NOT NULL DEFAULT -1,
+                recovery_hashes TEXT NOT NULL DEFAULT '[]', security_version INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS account_security_challenges (
+                id TEXT PRIMARY KEY, guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                purpose TEXT NOT NULL, method TEXT NOT NULL, code_hash TEXT NOT NULL,
+                security_version INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_account_security_challenges_owner
+            ON account_security_challenges(guild_id, user_id, expires_at);
+
             -- Entry links are one-time credentials.  Their consumption must
             -- survive a process restart, otherwise an already opened Discord
             -- link could be replayed after a web-container restart.

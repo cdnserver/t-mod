@@ -8,13 +8,17 @@ import type { DesktopShellPreferences, DesktopUpdateState } from "../src/shared/
 
 vi.mock("../src/shared/product", () => ({ desktopProduct: { name:"BLACKBIRD", privateEdition:true } }));
 
-const preferences: DesktopShellPreferences = { preferredName:"Роберт", sidebarCollapsed:false, compactMode:false, reduceMotion:false, solidSurfaces:false, serviceZoom:1, idleLockMinutes:10, lockSound:true, notificationDelivery:"both", notificationSound:true, updateChannel:"private" };
+const preferences: DesktopShellPreferences = { introStyle:"letters", controlBar:"horizontal", preferredName:"Роберт", sidebarCollapsed:false, compactMode:false, reduceMotion:false, solidSurfaces:false, serviceZoom:1, idleLockMinutes:10, lockSound:true, notificationDelivery:"both", notificationSound:true, updateChannel:"private" };
 const viewer = { id:42, name:"Роберт", display_name:"R. Smith | 123 | Роберт", account_tier:"administrator" as const, guild_member:true, administrator:true, sections:[] };
 const props = { preferences, defaults:preferences, viewer, name:"Роберт", online:true, updateState:{ phase:"idle", currentVersion:"1.0" } as DesktopUpdateState,
   atlas:createElement("div", {}, "Существующие настройки Atlas"), onChange:()=>{}, onClose:()=>{}, onReconnect:async()=>{}, onLock:()=>{}, onLogout:async()=>{}, onUpdate:()=>{}, onPreviewNotification:()=>{} };
 
 describe("Blackbird full-page settings", () => {
-  it.each<SettingsSection>(["account","appearance","lock","notifications","atlas","updates","connection"])("renders section %s with shared navigation", initialSection => {
+  it("provides persistent rail layout and three intro styles with a preview", () => {
+    const html = renderToStaticMarkup(createElement(BlackbirdSettings, { ...props, initialSection:"appearance", onPreviewIntro:()=>{} }));
+    for (const label of ["Расположение панели управления", "Справа", "Поэтапно", "Из темноты", "Световой проход", "Посмотреть вступление"]) expect(html).toContain(label);
+  });
+  it.each<SettingsSection>(["account","security","billing","appearance","lock","notifications","atlas","updates","connection"])("renders section %s with shared navigation", initialSection => {
     const html = renderToStaticMarkup(createElement(BlackbirdSettings, { ...props, initialSection }));
     expect(html).toContain('class="bb-settings-page"');
     expect(html).toContain('aria-current="page"');

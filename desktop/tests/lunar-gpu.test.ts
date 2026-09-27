@@ -39,6 +39,7 @@ describe("lunar surface rendering", () => {
     expect(canvas.width).toBe(2000);
     expect(canvas.height).toBe(2000);
     expect(gl.uniform1f).toHaveBeenCalledWith("longitude", .125);
+    expect(gl.uniform1f).toHaveBeenCalledWith("edge", .008);
     expect(gl.drawArrays).toHaveBeenCalledOnce();
     renderer.dispose();
     expect(gl.deleteShader).toHaveBeenCalledTimes(2);

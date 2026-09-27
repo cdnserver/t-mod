@@ -3,6 +3,7 @@ import type { DesktopNotification, ServiceId } from "../shared/contracts";
 import type { AtlasOverlayConfig } from "../shared/atlas-overlay";
 import atlasMark from "./assets/blackbird/atlas.png";
 import consensusMark from "./assets/blackbird/consensus.png";
+import type { BlackbirdWorkspace } from "../shared/workspaces";
 
 type AccessMap = Map<string, { enabled: boolean; reason: string | null }>;
 
@@ -15,6 +16,7 @@ interface BlackbirdHubProps {
   overlayConfig: AtlasOverlayConfig;
   overlayAllowed: boolean;
   onOpen: (id: ServiceId) => Promise<void>;
+  onEnterWorkspace?: (space:BlackbirdWorkspace) => Promise<void>;
   onOverlaySettings: () => void;
   onOpenNotifications: () => void;
 }
@@ -25,7 +27,7 @@ function clock(date: Date): string {
   return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-export function BlackbirdHub({ name, tier, online, notifications, access, overlayConfig, overlayAllowed, onOpen, onOverlaySettings, onOpenNotifications }: BlackbirdHubProps) {
+export function BlackbirdHub({ name, tier, online, notifications, access, overlayConfig, overlayAllowed, onOpen, onEnterWorkspace, onOverlaySettings, onOpenNotifications }: BlackbirdHubProps) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 20_000);
@@ -58,12 +60,12 @@ export function BlackbirdHub({ name, tier, online, notifications, access, overla
           <section className="bb3-apps" aria-label="Рабочие пространства">
             <header><h2>Выберите своё направление</h2></header>
             <div className="bb3-app-grid">
-              <button type="button" className="bb3-app atlas" disabled={!atlasReady} title={!atlasReady ? access.get("atlas")?.reason || "Доступ не выдан" : undefined} onClick={() => atlasReady && void onOpen("atlas")}>
+              <button type="button" className="bb3-app atlas" disabled={!atlasReady} title={!atlasReady ? access.get("atlas")?.reason || "Доступ не выдан" : undefined} onClick={() => atlasReady && void (onEnterWorkspace ? onEnterWorkspace("atlas") : onOpen("atlas"))}>
                 <span className="bb3-app-icon"><img src={atlasMark} alt=""/></span>
                 <span className="bb3-app-copy"><small>ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА</small><strong>Atlas</strong><span>Ответы, источники и ваш помощник в игре.</span><em>{atlasReady ? "Открыть интеллект" : "Доступ не выдан"}</em></span>
                 <span className="bb3-app-arrow" aria-hidden="true">↗</span>
               </button>
-              <button type="button" className="bb3-app senate" disabled={!senateEntry} onClick={() => senateEntry && void onOpen(senateEntry)}>
+              <button type="button" className="bb3-app senate" disabled={!senateEntry} onClick={() => senateEntry && void (onEnterWorkspace ? onEnterWorkspace("senate") : onOpen(senateEntry))}>
                 <span className="bb3-app-icon"><img src={consensusMark} alt=""/></span>
                 <span className="bb3-app-copy"><small>МАНДАТ · РЕШЕНИЯ · СИСТЕМЫ</small><strong>Сенат</strong><span>Личный реактор, инициативы и совместные решения.</span><em>{senateEntry ? "Открыть контур" : "Доступ не выдан"}</em></span>
                 <span className="bb3-app-arrow" aria-hidden="true">↗</span>

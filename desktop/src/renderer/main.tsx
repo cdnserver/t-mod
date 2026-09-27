@@ -23,6 +23,8 @@ import "./blackbird-launch.css";
 import "./blackbird-refine.css";
 import "./blackbird-recut.css";
 import "./blackbird-hub-recut.css";
+import "./blackbird-control-bar.css";
+import "./blackbird-workspace.css";
 
 document.title = desktopProduct.fullName;
 

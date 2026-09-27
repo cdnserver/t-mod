@@ -65,7 +65,8 @@ export function createLunarRenderer(canvas: HTMLCanvasElement, image: HTMLImageE
         const size = Math.max(1, Math.min(4096, Math.ceil(canvas.clientWidth * Math.min(2, window.devicePixelRatio || 1))));
         if (canvas.width !== size || canvas.height !== size) { canvas.width = size; canvas.height = size; }
         gl.viewport(0, 0, size, size);
-        gl.uniform1f(longitude, turn); gl.uniform1f(edge, 2 / size);
+        // Feather only the limb in CSS pixels, keeping the 8K surface sharp.
+        gl.uniform1f(longitude, turn); gl.uniform1f(edge, Math.min(.03, 8 / Math.max(1, canvas.clientWidth)));
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       },
       dispose,

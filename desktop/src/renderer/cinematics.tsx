@@ -9,6 +9,7 @@ import { BlackbirdPrelude } from "./BlackbirdPrelude";
 import { useBlackbirdPreload } from "./useBlackbirdPreload";
 import type { PreloadStatus } from "./blackbird-preload";
 import { BLACKBIRD_IDENT_TIMING } from "./blackbird-preload";
+import type { IntroStyle } from "../shared/shell-layout";
 
 type StopSound = () => void;
 
@@ -355,7 +356,7 @@ function StarClock({ hour, minute, date }: { hour: string; minute: string; date:
   );
 }
 
-export function CinematicLaunch({ name, reduced, hold = false, onContinue, connectionReady = true }: { name: string; reduced: boolean; hold?: boolean; onContinue?: () => void; connectionReady?: boolean }) {
+export function CinematicLaunch({ name, reduced, hold = false, onContinue, connectionReady = true, introStyle = "letters" }: { name: string; reduced: boolean; hold?: boolean; onContinue?: () => void; connectionReady?: boolean; introStyle?: IntroStyle }) {
   const [leaving, setLeaving] = useState(false);
   const [prelude, setPrelude] = useState(desktopProduct.privateEdition);
   const [minimumElapsed, setMinimumElapsed] = useState(false);
@@ -407,7 +408,7 @@ export function CinematicLaunch({ name, reduced, hold = false, onContinue, conne
   if (desktopProduct.privateEdition) {
     return (
       <section className={`blackbird-launch ${prelude ? "prelude-active" : ""} ${reduced ? "reduced" : ""} ${hold ? "hold" : ""} ${leaving ? "leaving" : ""}`} aria-label={prelude ? "Технологии Товарищества — Blackbird запускается" : "Blackbird Client — нажмите любую клавишу, чтобы продолжить"} aria-live="polite">
-        {prelude && <BlackbirdPrelude reduced={reduced} exiting={preludeExiting} blackPause={blackPause} preparation={preparation}/>}
+        {prelude && <BlackbirdPrelude reduced={reduced} exiting={preludeExiting} blackPause={blackPause} preparation={preparation} introStyle={introStyle}/>}
         <div className="bbc-deep-space" aria-hidden="true"><Starfield/></div>
         <div className="bbc-moon"><BlackbirdMoon onPrepared={moonPrepared} reduced={reduced}/></div>
         <div className="bbc-moon-shade" aria-hidden="true"/>

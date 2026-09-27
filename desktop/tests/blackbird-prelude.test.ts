@@ -5,6 +5,11 @@ import { BlackbirdPrelude } from "../src/renderer/BlackbirdPrelude";
 import { BLACKBIRD_IDENT_TIMING, preloadSummary } from "../src/renderer/blackbird-preload";
 
 describe("publisher ident loading indicator", () => {
+  it.each(["letters", "veil", "light"] as const)("preserves the approved artwork in %s mode", introStyle => {
+    const html = renderToStaticMarkup(createElement(BlackbirdPrelude, { reduced:false, exiting:false, preparation:preloadSummary([]), introStyle }));
+    expect(html).toContain(`ident-${introStyle}`);
+    expect(html).toContain('viewBox="0 0 2172 724"');
+  });
   it("holds the signature and black pause before a fifteen-second lunar transition", () => {
     expect(BLACKBIRD_IDENT_TIMING.visibleMs).toBe(10_000);
     expect(BLACKBIRD_IDENT_TIMING.minimumMs).toBe(BLACKBIRD_IDENT_TIMING.visibleMs + BLACKBIRD_IDENT_TIMING.blackHoldMs);
