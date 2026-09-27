@@ -68,7 +68,8 @@ describe("desktop release contract", () => {
     expect(login).toContain("Подтвердите");
     expect(login).toContain("Имя аккаунта");
     expect(cinematic).toContain("<BlackbirdWordmark/>");
-    expect(cinematic).toContain('<BlackbirdMoon/>');
+    expect(cinematic).toContain('<BlackbirdMoon onPrepared={moonPrepared} reduced={reduced}/>');
+    expect(cinematic).toContain('!minimumElapsed || !preparation.ready');
     expect(cinematic).toContain('className="bbc-moon-shade"');
     expect(cinematic).toContain('Нажмите любую клавишу, чтобы продолжить');
     expect(cinematic).toContain('window.addEventListener("keydown", continueOnKey, true)');
@@ -78,7 +79,9 @@ describe("desktop release contract", () => {
     expect(wordmark).toContain('assets/blackbird/wordmark.svg');
     expect(existsSync(resolve(root, "src/renderer/assets/blackbird/wordmark.svg"))).toBe(true);
     expect(existsSync(resolve(root, "src/renderer/assets/blackbird/master-hd.png"))).toBe(true);
-    expect(hub).toContain('className="bb3-rail"');
+    expect(hub).not.toContain('className="bb3-rail"');
+    expect(hub).not.toContain("BlackbirdWordmark");
+    expect(hub).not.toContain("masterMark");
     expect(hub).toContain("onClick={onOpenNotifications}");
     expect(hub).toContain("onClick={onOverlaySettings}");
     expect(renderer).toContain("cinematicHold || desktopProduct.privateEdition");
@@ -133,7 +136,9 @@ describe("desktop release contract", () => {
   it("keeps login authoritative across transient network and bootstrap races", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const renderer = readFileSync(resolve(root, "src/renderer/App.tsx"), "utf8");
-    expect(main).toContain("Promise.any(requests)");
+    expect(main).toContain("selectBootstrapCandidate(requests)");
+    expect(main).toContain("isFreshLoginProjection(result)");
+    expect(main).toContain("loginInFlight");
     expect(main).toContain("bootstrapRevision += 1");
     expect(main).toContain("return { ok: true, bootstrap: result }");
     expect(main).toContain("AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length]");
@@ -143,7 +148,7 @@ describe("desktop release contract", () => {
     expect(main).toContain("reconcileActiveServiceAccess");
     expect(renderer).toContain("result.ok && result.bootstrap");
     expect(renderer).toContain("bootstrapRefreshPending.current = true");
-    expect(renderer).toContain("while (bootstrapRefreshPending.current)");
+    expect(renderer).toContain("while (bootstrapRefreshPending.current && !authTransaction.current)");
     expect(renderer).toContain("Устанавливаем защищённую сессию");
     expect(renderer).toContain("Восстанавливаем соединение с T-Mod");
     expect(renderer).not.toContain("Нет соединения с сервером");

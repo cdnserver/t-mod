@@ -12,6 +12,18 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
+from persistence.activity_repository import set_meta
+
+
+def _avatar_key(guild_id: int, user_id: int) -> str:
+    return f"desktop_avatar:v1:{int(guild_id)}:{int(user_id)}"
+
+
+def get_web_avatar_url(guild_id: int, user_id: int) -> str | None:
+    """Cosmetic Discord identity, deliberately separate from authorization."""
+    with connect_readonly() as con:
+        row = con.execute("SELECT value FROM meta WHERE key = ?", (_avatar_key(guild_id, user_id),)).fetchone()
+    return str(row["value"]) if row and row["value"] else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +93,7 @@ def upsert_web_access_projection(
     administrator: bool,
     role_ids: Iterable[int] = (),
     observed_at: str | None = None,
+    avatar_url: str | None = None,
 ) -> WebAccessProjection:
     now = observed_at or utc_now_iso()
     normalized_roles = _normalized_role_ids(role_ids)
@@ -111,6 +124,8 @@ def upsert_web_access_projection(
                 now,
             ),
         )
+        if avatar_url is not None:
+            set_meta(con, _avatar_key(guild_id, user_id), str(avatar_url)[:2048])
         con.commit()
     result = get_web_access_projection(guild_id, user_id)
     if result is None:  # pragma: no cover - protects against storage corruption
@@ -167,6 +182,8 @@ def replace_web_access_projections(
             )
         )
     active_ids = {item[0] for item in normalized}
+    avatars = {int(member["user_id"]): str(member["avatar_url"] or "")[:2048]
+               for member in members if int(member.get("user_id") or 0) > 0 and "avatar_url" in member}
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         for user_id, display_name, administrator, roles in normalized:
@@ -197,6 +214,8 @@ def replace_web_access_projections(
                 ),
             )
         revoked = 0
+        for user_id, avatar_url in avatars.items():
+            set_meta(con, _avatar_key(guild_id, user_id), avatar_url)
         if revoke_missing:
             rows = con.execute(
                 """
@@ -240,6 +259,7 @@ def get_web_access_projection(
 
 __all__ = [
     "WebAccessProjection",
+    "get_web_avatar_url",
     "get_web_access_projection",
     "mark_web_access_projection_departed",
     "replace_web_access_projections",

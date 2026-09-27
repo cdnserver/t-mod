@@ -131,6 +131,7 @@ def _member_access_projection(member: discord.Member) -> dict[str, object]:
         "display_name": str(member.display_name),
         "administrator": bool(member.guild_permissions.administrator),
         "role_ids": [int(role.id) for role in member.roles],
+        "avatar_url": str(getattr(getattr(member, "display_avatar", None), "url", "")),
     }
 
 
@@ -148,6 +149,7 @@ async def _sync_member_access_projection(member: discord.Member) -> None:
             str(member.display_name),
             administrator=bool(payload["administrator"]),
             role_ids=payload["role_ids"],
+            avatar_url=payload["avatar_url"],
         )
     except Exception as exc:
         print(

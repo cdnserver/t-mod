@@ -53,6 +53,7 @@ export interface DesktopBootstrap {
     id: number;
     name: string;
     display_name: string;
+    avatar_url?: string | null;
     account_tier: "zero" | "member" | "administrator";
     guild_member: boolean;
     administrator: boolean;
@@ -118,6 +119,8 @@ export interface DesktopLoginResult {
     | "private_access_required"
     | "banned"
     | "network_unavailable"
+    | "login_in_progress"
+    | "server_response_invalid"
     | "login_failed"
     | "invalid_input";
 }
@@ -167,6 +170,9 @@ export interface TModDesktopApi {
   copyCurrentLink(): Promise<boolean>;
   openCurrentLink(): Promise<boolean>;
   openLogin(): Promise<DesktopState>;
+  openAccountCreation(): Promise<boolean>;
+  previewNotification(): Promise<boolean>;
+  markNotificationsRead(ids: number[]): Promise<boolean>;
   lock(): Promise<boolean>;
   unlock(): Promise<boolean>;
   minimize(): Promise<void>;
@@ -178,6 +184,7 @@ export interface TModDesktopApi {
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
   onCommandPalette(listener: () => void): () => void;
+  onNotifications(listener: () => void): () => void;
   onAtlasOverlaySettings(listener: () => void): () => void;
   onLockRequested(listener: (reason: DesktopLockReason) => void): () => void;
   onUpdate(listener: (state: DesktopUpdateState) => void): () => void;

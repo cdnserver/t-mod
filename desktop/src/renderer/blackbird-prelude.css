@@ -1,0 +1,108 @@
+/* Darkness, grazing light, a held signature and a long dissolve.
+   No zoom, scan line, blur filter or flashing flare. */
+.bb-prelude {
+  position: absolute; inset: 0; z-index: 20; overflow: hidden;
+  display: grid; place-items: center; background: #010204;
+  pointer-events: none;
+}
+.bb-prelude.exiting { animation: bb-prelude-release 2.2s cubic-bezier(.4,0,.2,1) both; }
+.bb-prelude-stars { position: absolute; inset: 0; opacity: .28; background:
+  radial-gradient(circle at 13% 23%, #8195a8 0 .6px, transparent 1.2px),
+  radial-gradient(circle at 79% 29%, #8195a8 0 .8px, transparent 1.5px),
+  radial-gradient(circle at 33% 71%, #8195a8 0 .5px, transparent 1.1px),
+  radial-gradient(circle at 88% 74%, #8195a8 0 .6px, transparent 1.2px),
+  radial-gradient(circle at 59% 17%, #8195a8 0 .5px, transparent 1.1px);
+  transition: opacity 1.1s ease;
+}
+.bb-prelude.black-pause { background: #000; }
+.bb-prelude.black-pause .bb-prelude-signature,
+.bb-prelude.black-pause .bb-prelude-depth i,
+.bb-prelude.black-pause .bb-prelude-depth b { animation: bb-prelude-blackout .9s ease both; }
+.bb-prelude.black-pause .bb-prelude-stars { opacity: 0; }
+.bb-prelude.black-pause .bb-prelude-vignette { opacity: 0; }
+@keyframes bb-prelude-blackout { from { opacity: 1; } to { opacity: 0; } }
+.bb-prelude-depth { position: absolute; inset: -15%; overflow: hidden; }
+.bb-prelude-depth i, .bb-prelude-depth b {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  will-change: transform, opacity;
+}
+.bb-prelude-depth i {
+  background: radial-gradient(ellipse at 25% 45%, rgba(104,130,154,.17), transparent 46%);
+  animation: bb-prelude-grazing-light 7.8s cubic-bezier(.22,.61,.36,1) both;
+}
+.bb-prelude-depth b {
+  background: radial-gradient(ellipse at 64% 52%, rgba(191,211,227,.05), transparent 36%);
+  animation: bb-prelude-reflected-light 7.8s ease both;
+}
+.bb-prelude-signature {
+  position: relative; width: min(76vw, 1420px); aspect-ratio: 3;
+  opacity: 0; animation: bb-prelude-arrive 7.8s linear both;
+}
+.bb-prelude-signature img {
+  display: block; width: 100%; height: 100%; object-fit: contain;
+  mix-blend-mode: screen; opacity: .68;
+}
+.bb-prelude-light {
+  position: absolute; inset: 0;
+  mask-mode: luminance; mask-size: contain; mask-position: center; mask-repeat: no-repeat;
+  -webkit-mask-size: contain; -webkit-mask-position: center; -webkit-mask-repeat: no-repeat;
+  background: linear-gradient(105deg, transparent 15%, rgba(178,198,216,.1) 30%, rgba(227,238,247,.9) 48%, rgba(178,198,216,.15) 66%, transparent 83%);
+  background-size: 300% 100%;
+  animation: bb-prelude-light 6.7s cubic-bezier(.22,.61,.36,1) .3s both;
+}
+.bb-prelude-vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 50% 49%, transparent 12%, rgba(1,2,4,.4) 65%, #010204 100%);
+}
+@keyframes bb-prelude-arrive {
+  0%, 8% { opacity: 0; }
+  18% { opacity: .1; }
+  40% { opacity: .9; }
+  48%, 63% { opacity: 1; }
+  100% { opacity: 1; }
+}
+@keyframes bb-prelude-light {
+  0% { background-position: 100% 0; opacity: 0; }
+  25% { opacity: .45; }
+  50% { opacity: .8; }
+  85% { opacity: .2; }
+  100% { background-position: 0% 0; opacity: 0; }
+}
+@keyframes bb-prelude-grazing-light {
+  0% { opacity: 0; transform: translate3d(-12%,3%,0); }
+  28% { opacity: .75; }
+  52% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(18%,-3%,0); }
+}
+@keyframes bb-prelude-reflected-light {
+  0%, 18% { opacity: 0; transform: translate3d(-5%,0,0); }
+  55% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(8%,0,0); }
+}
+@keyframes bb-prelude-release { from { opacity: 1; } to { opacity: 0; } }
+.blackbird-launch.prelude-active .bbc-final-lockup,
+.blackbird-launch.prelude-active .bbc-launch-footer,
+.blackbird-launch.prelude-active .bbc-continue { animation-play-state: paused; }
+.blackbird-launch.reduced .bb-prelude.exiting { animation-duration: .4s !important; }
+.blackbird-launch.reduced .bb-prelude-signature { animation: bb-prelude-static 1.6s ease both; animation-duration: 1.6s !important; }
+.bb-prelude.reduced .bb-prelude-light,
+.bb-prelude.reduced .bb-prelude-depth { display: none; }
+@keyframes bb-prelude-static { from { opacity: 0; } to { opacity: 1; } }
+.bb-prelude-loading {
+  position: absolute; top: calc(50% + clamp(48px, 7vw, 100px));
+  left: 50%; width: min(250px, 48vw); transform: translateX(-50%);
+  animation: bb-prelude-loading-in .6s ease .6s both;
+}
+.bb-prelude-progress { height: 1px; background: rgba(190,205,220,.13); overflow: hidden; }
+.bb-prelude-progress i {
+  display: block; width: 100%; height: 100%; background: #b3c4d2;
+  transform-origin: left; transition: transform .5s cubic-bezier(.22,.61,.36,1);
+}
+.bb-prelude-loading span {
+  display: block; margin-top: 15px; text-align: center;
+  font-size: 10px; letter-spacing: .045em; color: #7b8793;
+}
+@keyframes bb-prelude-loading-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .bb-prelude-light, .bb-prelude-depth { display: none; }
+}

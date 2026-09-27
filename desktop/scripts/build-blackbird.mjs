@@ -7,6 +7,7 @@ if (!["build", "package", "dist"].includes(mode)) {
 }
 
 const windows = process.platform === "win32";
+if (!windows && mode !== "build") throw new Error("BLACKBIRD installers are built on native Windows only.");
 const executable = windows ? process.env.ComSpec || "cmd.exe" : "pnpm";
 const environment = {
   ...process.env,
@@ -30,7 +31,7 @@ function run(args) {
 
 run(["exec", "electron-vite", "build"]);
 if (mode !== "build") {
-  const builder = ["exec", "electron-builder", "--config", "electron-builder.blackbird.yml"];
+  const builder = ["exec", "electron-builder", "--config", "electron-builder.blackbird.yml", "--win", "--x64"];
   if (mode === "package") builder.push("--dir");
   run(builder);
 }

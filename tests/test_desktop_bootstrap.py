@@ -17,6 +17,16 @@ from persistence import atlas_repository
 
 
 class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
+    async def test_projected_bootstrap_uses_durable_discord_avatar(self) -> None:
+        from modules.desktop_bootstrap_service import build_desktop_bootstrap_payload
+        from modules.consensus_web_auth import ProjectedTModMember
+
+        url = "https://cdn.discordapp.com/avatars/42/cached.png"
+        storage.upsert_web_access_projection(77, 42, "Member", administrator=False, avatar_url=url)
+        principal = ConsensusWebPrincipal(user_id=42, guild_id=77, display_name="Member", csrf_token="test", member=ProjectedTModMember(id=42, display_name="Member", administrator=False))
+        payload = await build_desktop_bootstrap_payload(headers={}, principal=principal, guild_id=77)
+        self.assertEqual(payload["viewer"]["avatar_url"], url)
+
     def setUp(self) -> None:
         self.old_data_dir = storage.DATA_DIR
         self.old_database_file = storage.DATABASE_FILE
@@ -46,6 +56,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             guild_permissions=SimpleNamespace(administrator=administrator),
             roles=[],
             joined_at=None,
+            display_avatar=SimpleNamespace(url="https://cdn.discordapp.com/avatars/42/hash.png"),
         )
         return ConsensusWebPrincipal(
             user_id=42,
@@ -98,6 +109,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(payload["protocol_version"], 1)
             self.assertTrue(payload["viewer"]["administrator"])
+            self.assertEqual(payload["viewer"]["avatar_url"], "https://cdn.discordapp.com/avatars/42/hash.png")
             self.assertTrue(services["reactor"]["enabled"])
             self.assertTrue(services["admin"]["enabled"])
             self.assertIn("unread", payload["notifications"])

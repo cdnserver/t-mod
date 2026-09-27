@@ -3,7 +3,7 @@ import moon8k from "./assets/blackbird/moon-nasa-8k.jpg";
 import { createLunarRenderer } from "./lunar-gpu";
 
 /* A real textured sphere with fixed lighting; software fallback stays static. */
-export function LunarTexture() {
+export function LunarTexture({ onPrepared, reduced = false }: { onPrepared?: (fallback: boolean) => void; reduced?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gpuRef = useRef<HTMLCanvasElement>(null);
   const [ready, setReady] = useState(false);
@@ -11,7 +11,6 @@ export function LunarTexture() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const worker = new Worker(new URL("./lunar-worker.ts", import.meta.url), { type: "module" });
     const image = new Image();
     let disposed = false;
     let initialized = false;
@@ -22,12 +21,25 @@ export function LunarTexture() {
     let lastFrame = 0;
     let turn = 0;
     let previousTime = 0;
+    let settled = false;
+    const prepared = (fallback = false) => {
+      if (disposed || settled) return;
+      settled = true; window.clearTimeout(deadline); onPrepared?.(fallback);
+    };
+    const deadline = window.setTimeout(() => prepared(true), 12000);
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./lunar-worker.ts", import.meta.url), { type: "module" });
+    } catch {
+      prepared(true);
+      return () => { disposed = true; window.clearTimeout(deadline); };
+    }
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const animate = (now: number) => {
       if (disposed || !renderer) return;
       // Ignore hidden time: resume without a sudden surface jump.
       if (!document.hidden && now - lastFrame >= 1000 / 30) {
-        if (!reducedMotion.matches && previousTime) turn += Math.min(now - previousTime, 100) / 720_000;
+        if (!reduced && !reducedMotion.matches && previousTime) turn += Math.min(now - previousTime, 100) / 720_000;
         renderer.render(turn); lastFrame = now; previousTime = now;
       }
       if (document.hidden) previousTime = 0;
@@ -39,8 +51,9 @@ export function LunarTexture() {
       if (!bitmap) return;
       if (!disposed) {
         canvas.width = bitmap.width; canvas.height = bitmap.height;
-        canvas.getContext("2d", { alpha: true })?.drawImage(bitmap, 0, 0);
-        setReady(true);
+        const context = canvas.getContext("2d", { alpha: true });
+        if (context) { context.drawImage(bitmap, 0, 0); setReady(true); prepared(); }
+        else prepared(true);
       }
       bitmap.close();
     };
@@ -51,7 +64,7 @@ export function LunarTexture() {
         latestSize = size(); initialized = true;
         worker.postMessage({ bitmap, size: latestSize }, [bitmap]);
         image.onload = null; image.src = "";
-      } catch { /* Keep the vector fallback if the device cannot decode the map. */ }
+      } catch { prepared(true); }
     };
     const gpuCanvas = gpuRef.current;
     const contextLost = (event: Event) => {
@@ -65,14 +78,16 @@ export function LunarTexture() {
         if (disposed) return;
         if (gpuRef.current) renderer = createLunarRenderer(gpuRef.current, image);
         if (renderer) {
-          renderer.render(0); setGpuReady(true);
+          renderer.render(0); setGpuReady(true); prepared();
           frame = requestAnimationFrame(animate);
           image.onload = null; image.src = "";
           return;
         }
         await renderFallback();
-      } catch { /* Keep the vector fallback if the device cannot decode the map. */ }
+      } catch { prepared(true); }
     };
+    image.onerror = () => prepared(true);
+    worker.onerror = () => prepared(true);
     image.src = moon8k;
     const observer = new ResizeObserver(() => {
       clearTimeout(resizeTimer);
@@ -85,12 +100,13 @@ export function LunarTexture() {
     });
     observer.observe(canvas);
     return () => {
-      disposed = true; image.onload = null; image.src = "";
+      disposed = true; image.onload = null; image.onerror = null; image.src = "";
+      window.clearTimeout(deadline);
       observer.disconnect(); clearTimeout(resizeTimer); worker.terminate();
       cancelAnimationFrame(frame); renderer?.dispose();
       gpuCanvas?.removeEventListener("webglcontextlost", contextLost);
     };
-  }, []);
+  }, [onPrepared, reduced]);
   return <>
     <canvas className={`bbc-lunar-texture ${gpuReady ? "ready" : ""}`} ref={gpuRef} aria-hidden="true"/>
     <canvas className={`bbc-lunar-texture ${ready && !gpuReady ? "ready" : ""}`} ref={canvasRef} aria-hidden="true"/>

@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { desktopProduct } from "../shared/product";
 import type { DesktopLockReason } from "../shared/contracts";
 import { BlackbirdWordmark } from "./BlackbirdWordmark";
 import blackbirdMaster from "./assets/blackbird/master-hd.png";
 import { BlackbirdMoon } from "./BlackbirdMoon";
+import { BlackbirdPrelude } from "./BlackbirdPrelude";
+import { useBlackbirdPreload } from "./useBlackbirdPreload";
+import type { PreloadStatus } from "./blackbird-preload";
 
 type StopSound = () => void;
 
@@ -351,19 +354,50 @@ function StarClock({ hour, minute, date }: { hour: string; minute: string; date:
   );
 }
 
-export function CinematicLaunch({ name, reduced, hold = false, onContinue }: { name: string; reduced: boolean; hold?: boolean; onContinue?: () => void }) {
+export function CinematicLaunch({ name, reduced, hold = false, onContinue, connectionReady = true }: { name: string; reduced: boolean; hold?: boolean; onContinue?: () => void; connectionReady?: boolean }) {
   const [leaving, setLeaving] = useState(false);
+  const [prelude, setPrelude] = useState(desktopProduct.privateEdition);
+  const [minimumElapsed, setMinimumElapsed] = useState(false);
+  const [preludeExiting, setPreludeExiting] = useState(false);
+  const [blackPause, setBlackPause] = useState(false);
+  const [blackoutElapsed, setBlackoutElapsed] = useState(false);
+  const [blackHoldElapsed, setBlackHoldElapsed] = useState(false);
+  const [moon, setMoon] = useState<PreloadStatus>("pending");
+  const moonPrepared = useCallback((fallback: boolean) => setMoon(fallback ? "fallback" : "ready"), []);
+  const preparation = useBlackbirdPreload(desktopProduct.privateEdition, connectionReady, moon);
+  useEffect(() => {
+    if (!prelude) return;
+    const blackout = window.setTimeout(() => setBlackoutElapsed(true), 5000);
+    const timer = window.setTimeout(() => setMinimumElapsed(true), 7000);
+    return () => { window.clearTimeout(timer); window.clearTimeout(blackout); };
+  }, [prelude, reduced]);
+  useEffect(() => {
+    if (prelude && blackoutElapsed && preparation.ready) setBlackPause(true);
+  }, [prelude, blackoutElapsed, preparation.ready]);
+  useEffect(() => {
+    if (!blackPause) return;
+    const timer = window.setTimeout(() => setBlackHoldElapsed(true), 2000);
+    return () => window.clearTimeout(timer);
+  }, [blackPause]);
+  useEffect(() => {
+    if (!prelude || !minimumElapsed || !preparation.ready || !blackHoldElapsed) return;
+    setPreludeExiting(true);
+    const timer = window.setTimeout(() => setPrelude(false), reduced ? 400 : 2200);
+    return () => window.clearTimeout(timer);
+  }, [prelude, minimumElapsed, preparation.ready, blackHoldElapsed, reduced]);
   useEffect(() => {
     if (!desktopProduct.privateEdition || !onContinue || leaving) return;
     const continueOnKey = (event: KeyboardEvent) => {
       if (event.repeat || event.isComposing || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      // The publisher ident always gets its minimum duration, even on a warm start.
+      if (prelude) return;
       setLeaving(true);
     };
     window.addEventListener("keydown", continueOnKey, true);
     return () => window.removeEventListener("keydown", continueOnKey, true);
-  }, [leaving, onContinue]);
+  }, [leaving, onContinue, prelude]);
   useEffect(() => {
     if (!leaving || !onContinue) return;
     const timer = window.setTimeout(onContinue, reduced ? 40 : 650);
@@ -371,9 +405,10 @@ export function CinematicLaunch({ name, reduced, hold = false, onContinue }: { n
   }, [leaving, onContinue, reduced]);
   if (desktopProduct.privateEdition) {
     return (
-      <section className={`blackbird-launch ${reduced ? "reduced" : ""} ${hold ? "hold" : ""} ${leaving ? "leaving" : ""}`} aria-label="Blackbird Client — нажмите любую клавишу, чтобы продолжить" aria-live="polite">
+      <section className={`blackbird-launch ${prelude ? "prelude-active" : ""} ${reduced ? "reduced" : ""} ${hold ? "hold" : ""} ${leaving ? "leaving" : ""}`} aria-label={prelude ? "Технологии Товарищества — Blackbird запускается" : "Blackbird Client — нажмите любую клавишу, чтобы продолжить"} aria-live="polite">
+        {prelude && <BlackbirdPrelude reduced={reduced} exiting={preludeExiting} blackPause={blackPause} preparation={preparation}/>}
         <div className="bbc-deep-space" aria-hidden="true"><Starfield/></div>
-        <div className="bbc-moon"><BlackbirdMoon/></div>
+        <div className="bbc-moon"><BlackbirdMoon onPrepared={moonPrepared} reduced={reduced}/></div>
         <div className="bbc-moon-shade" aria-hidden="true"/>
         <div className="bbc-final-lockup">
           <img className="bbc-approved-mark" src={blackbirdMaster} alt=""/>

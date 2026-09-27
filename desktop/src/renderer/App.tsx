@@ -54,6 +54,10 @@ import blackbirdTasks from "./assets/blackbird/tasks.png";
 import blackbirdAdmin from "./assets/blackbird/admin.png";
 import { BlackbirdHub } from "./BlackbirdHub";
 import { BlackbirdLogin } from "./BlackbirdLogin";
+import { BlackbirdSetup } from "./BlackbirdSetup";
+import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
+import { AccountMenu } from "./AccountMenu";
+import "./blackbird-notifications.css";
 
 type IconName = ServiceId | "search" | "bell" | "refresh" | "back" | "forward" |
   "command" | "lock" | "download" | "logout" | "shield" | "minimize" |
@@ -184,7 +188,7 @@ function hubPreviewBootstrap(): BootstrapResult {
       viewer: { id: 1, name: "Роберт", display_name: "Роберт", account_tier: "administrator", guild_member: true, administrator: true, sections: ["all"] },
       services: services.filter((service) => service.id !== "home").map((service) => ({ id: service.id as Exclude<ServiceId, "home">, title: service.title, url: service.url || "https://tvr.lat/", enabled: true, reason: null })),
       notifications: {
-        unread: 2,
+        unread: 3,
         items: [
           { id: 3, severity: "success", kind: "consensus", title: "Протокол подготовлен", body: "Итоги последнего заседания доступны в контуре Сената.", route: "/consensus", read_at: null, created_at: now },
           { id: 2, severity: "info", kind: "atlas", title: "Atlas синхронизирован", body: "Библиотека источников и полевой контекст обновлены.", route: "/atlas", read_at: null, created_at: now },
@@ -438,6 +442,7 @@ export function App() {
   const atlasSettingsQa = cinematicQaEnabled && cinematicParams.get("settings-preview") === "atlas";
   const hubQa = cinematicQaEnabled && cinematicParams.get("hub-preview") === "1";
   const loginQa = cinematicQaEnabled && cinematicParams.get("login-preview") === "1";
+  const setupQa = cinematicQaEnabled && cinematicParams.get("setup-preview") === "1";
   const skipLaunchQa = cinematicQaEnabled && cinematicParams.get("skip-launch") === "1";
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const cinematicPreviewName = cinematicQaEnabled
@@ -463,8 +468,11 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [atlasSettingsOpen, setAtlasSettingsOpen] = useState(atlasSettingsQa);
+  const [settingsOpen, setSettingsOpen] = useState(cinematicQaEnabled && cinematicParams.get("settings-preview") === "app" || desktopProduct.privateEdition && atlasSettingsQa);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>(atlasSettingsQa ? "atlas" : "account");
+  const [settingsRevision, setSettingsRevision] = useState(0);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [atlasSettingsOpen, setAtlasSettingsOpen] = useState(atlasSettingsQa && !desktopProduct.privateEdition);
   const [atlasSettingsFocusRequest, setAtlasSettingsFocusRequest] = useState(0);
   const [preferences, setPreferences] = useState<DesktopShellPreferences>(loadPreferences);
   const [overlayConfig, setOverlayConfig] = useState<AtlasOverlayConfig>({
@@ -492,12 +500,21 @@ export function App() {
   });
   const [dismissedUpdate, setDismissedUpdate] = useState<string>();
   const [launchVisible, setLaunchVisible] = useState(!atlasSettingsQa && !skipLaunchQa && cinematicQa !== "lock");
+  const [setupOpen, setSetupOpen] = useState(desktopProduct.privateEdition && (setupQa || (!hubQa && !loginQa && !atlasSettingsQa && cinematicQa !== "lock")));
+  useEffect(() => {
+    if (!desktopProduct.privateEdition || !bootstrap.authenticated || !bootstrap.data) return;
+    if ((hubQa || loginQa) && !setupQa) return;
+    const id = bootstrap.data.viewer.id;
+    try { setSetupOpen(setupQa || localStorage.getItem(`blackbird:setup:v1:${id}`) !== "complete"); }
+    catch { setSetupOpen(true); }
+  }, [bootstrap.authenticated, bootstrap.data?.viewer.id, setupQa, hubQa, loginQa]);
   const dismissLaunch = useCallback(() => setLaunchVisible(false), []);
   const [locked, setLocked] = useState(cinematicQa === "lock");
   const [unlocking, setUnlocking] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
+  const authTransaction = useRef(false);
   const bootstrapRefreshPending = useRef(false);
   const bootstrapRevision = useRef(0);
   const hasLoadedBootstrap = useRef(false);
@@ -524,6 +541,7 @@ export function App() {
 
   const loadBootstrap = useCallback(async () => {
     if (hubQa || loginQa) return;
+    if (authTransaction.current) { bootstrapRefreshPending.current = true; return; }
     if (bootstrapInFlight.current) {
       // Cookie, resume and service-navigation events can arrive while an older
       // projection is in flight. Never lose the newest refresh request.
@@ -541,18 +559,24 @@ export function App() {
       return;
     }
     bootstrapInFlight.current = true;
+    let attemptedRevision = bootstrapRevision.current;
     if (!hasLoadedBootstrap.current) setBootstrapLoading(true);
     try {
       do {
         bootstrapRefreshPending.current = false;
         const revision = ++bootstrapRevision.current;
+        attemptedRevision = revision;
         const result = await api.bootstrap();
         if (bootstrapRevision.current === revision) setBootstrap(result);
-      } while (bootstrapRefreshPending.current);
+      } while (bootstrapRefreshPending.current && !authTransaction.current);
+    } catch {
+      // IPC/renderer failures must not discard a previously confirmed identity.
+      if (!authTransaction.current && attemptedRevision === bootstrapRevision.current) setBootstrap(current => ({ ...current, online: false, error: "desktop_bridge_unavailable" }));
     } finally {
       hasLoadedBootstrap.current = true;
       bootstrapInFlight.current = false;
       setBootstrapLoading(false);
+      if (bootstrapRefreshPending.current && !authTransaction.current) void loadBootstrap();
     }
   }, [hubQa, loginQa]);
 
@@ -577,6 +601,9 @@ export function App() {
     const unsubscribeState = api.onState(setDesktopState);
     const unsubscribeAuth = api.onAuthChanged(loadBootstrap);
     const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
+    const unsubscribeNotifications = api.onNotifications(() => {
+      setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen(true);
+    });
     const unsubscribeOverlaySettings = api.onAtlasOverlaySettings(() => {
       setPaletteOpen(false);
       setNotificationsOpen(false);
@@ -595,6 +622,7 @@ export function App() {
       unsubscribeState();
       unsubscribeAuth();
       unsubscribePalette();
+      unsubscribeNotifications();
       unsubscribeOverlaySettings();
       window.clearInterval(refresh);
       document.removeEventListener("visibilitychange", onVisible);
@@ -702,6 +730,8 @@ export function App() {
         setPaletteOpen((open) => !open);
       }
       if (event.key === "Escape") {
+        if (profileOpen) { setProfileOpen(false); return; }
+        setProfileOpen(false);
         setPaletteOpen(false);
         setNotificationsOpen(false);
         setSettingsOpen(false);
@@ -721,8 +751,10 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || locked);
-  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, locked]);
+    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || profileOpen || locked || setupOpen);
+  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, profileOpen, locked, setupOpen]);
+
+  useEffect(() => { setProfileOpen(false); }, [settingsOpen, notificationsOpen, atlasSettingsOpen, paletteOpen, locked, setupOpen, desktopState.activeService]);
 
   useEffect(() => () => {
     void browserApi()?.setShellOverlayOpen(false);
@@ -771,6 +803,8 @@ export function App() {
     }
     const fresh = notifications.filter((item) => !knownNotificationIds.current.has(item.id));
     notifications.forEach((item) => knownNotificationIds.current.add(item.id));
+    // Packaged Blackbird owns a separate native popup above all service views.
+    if (desktopProduct.privateEdition && bridgeAvailable) return;
     if (!fresh.length || !["both", "in-app"].includes(preferences.notificationDelivery)) return;
     if (preferences.notificationSound) playNotificationSound(fresh[0].severity);
     setNotificationToasts((current) => [...fresh.reverse(), ...current].slice(0, 4));
@@ -815,29 +849,40 @@ export function App() {
   const login = async (credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> => {
     const api = browserApi();
     if (!api) return { ok: false, error: "login_failed" };
+    if (authTransaction.current) return { ok: false, error: "login_in_progress" };
+    authTransaction.current = true;
     // Any periodic bootstrap that started before this click is now stale.
     // Its late offline result must not replace the authenticated projection.
     bootstrapRevision.current += 1;
-    const result = await api.login(credentials);
-    if (result.ok && result.bootstrap) {
-      hasLoadedBootstrap.current = true;
-      setBootstrapLoading(false);
-      setBootstrap(result.bootstrap);
-    } else if (result.ok) {
-      await loadBootstrap();
+    try {
+      const result = await api.login(credentials);
+      if (result.ok && result.bootstrap) {
+        hasLoadedBootstrap.current = true;
+        setBootstrapLoading(false);
+        setBootstrap(result.bootstrap);
+      } else if (result.ok) bootstrapRefreshPending.current = true;
+      return result;
+    } catch { return { ok: false, error: "network_unavailable" }; }
+    finally {
+      authTransaction.current = false;
+      if (bootstrapRefreshPending.current && !bootstrapInFlight.current) void loadBootstrap();
     }
-    return result;
   };
 
   const logout = async () => {
     const api = browserApi();
-    if (!api) return;
-    await api.logout();
+    if (!api) return false;
+    bootstrapRevision.current += 1;
+    const cleared = await api.logout().catch(() => false);
+    if (!cleared) { setBootstrap(current => ({ ...current, error: "logout_failed" })); return false; }
+    setProfileOpen(false);
     setSettingsOpen(false);
     setAtlasSettingsOpen(false);
     setBootstrap({ authenticated: false, online: true, error: "login_required" });
     setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
+    return true;
   };
+  const logoutFromSettings = async () => { if (!await logout()) throw new Error("logout_failed"); };
 
   const saveOverlay = async (patch: Partial<AtlasOverlayConfig>) => {
     const api = overlayApi();
@@ -865,6 +910,13 @@ export function App() {
   const openAtlasSettings = () => {
     setPaletteOpen(false);
     setNotificationsOpen(false);
+    if (desktopProduct.privateEdition) {
+      setAtlasSettingsOpen(false);
+      setSettingsSection("atlas");
+      setSettingsRevision(value => value + 1);
+      setSettingsOpen(true);
+      return;
+    }
     setSettingsOpen(false);
     setAtlasSettingsFocusRequest((value) => value + 1);
     setAtlasSettingsOpen(true);
@@ -876,6 +928,7 @@ export function App() {
     preferences.compactMode ? "compact-mode" : "",
     preferences.reduceMotion ? "reduce-motion" : "",
     preferences.solidSurfaces ? "solid-surfaces" : "",
+    profileOpen ? "profile-menu-open" : "",
     desktopProduct.privateEdition && desktopState.activeService === "home" ? "blackbird-hub-active" : "",
     `edition-${desktopProduct.edition}`,
   ].filter(Boolean).join(" ");
@@ -887,7 +940,7 @@ export function App() {
   return (
     <div className={desktopClasses} style={style}>
       <div className="aurora" aria-hidden="true"><i/><i/><i/></div>
-      <aside className="sidebar">
+      <aside className="sidebar" inert={settingsOpen}>
         <button
           className="sidebar-toggle"
           onClick={() => setPreferences((current) => ({ ...current, sidebarCollapsed: !current.sidebarCollapsed }))}
@@ -963,14 +1016,19 @@ export function App() {
               )}
             </button>
           )}
-          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel === "private" ? "OWNER" : preferences.updateChannel.toUpperCase()}</button>
+          <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("updates"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel === "private" ? "OWNER" : preferences.updateChannel.toUpperCase()}</button>
           {desktopState.activeService === "atlas" && <button className={`atlas-overlay-shortcut ${overlayConfig.enabled ? "active" : ""} ${atlasSettingsOpen ? "selected" : ""}`} onClick={openAtlasSettings} title="Настройки Atlas"><Icon name="atlas"/><span>Настройки Atlas</span><i/></button>}
           <button className="circle-action" onClick={lockNow} title={`Заблокировать ${desktopProduct.name}`}><Icon name="lock"/></button>
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
           {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
           <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => { setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen((open) => !open); }} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
-          <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
+          <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
+          {bootstrap.authenticated && bootstrap.data && <AccountMenu
+            viewer={bootstrap.data.viewer} name={userName} open={profileOpen} onOpenChange={setProfileOpen}
+            onSettings={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }}
+            onLock={lockNow} onLogout={logoutFromSettings}
+          />}
           <div className="window-actions">
             <button aria-label="Свернуть" title="Свернуть" onClick={() => void browserApi()?.minimize()}><Icon name="minimize"/></button>
             <button aria-label="Развернуть" title="Развернуть" onClick={() => void browserApi()?.toggleMaximize()}><Icon name="maximize"/></button>
@@ -980,7 +1038,7 @@ export function App() {
         {desktopState.loading && <div className="load-line"/>}
       </header>
 
-      <main className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
+      <main inert={settingsOpen} className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
         {atlasSettingsOpen ? (
           <AtlasSettingsPage
             overlayConfig={overlayConfig}
@@ -1023,9 +1081,33 @@ export function App() {
       </main>
 
       {notificationsOpen && (
-        <Notifications items={notifications} unread={unread} onClose={() => setNotificationsOpen(false)} onOpen={selectService}/>
+        <Notifications items={notifications} unread={unread} onClose={() => setNotificationsOpen(false)} onOpen={selectService} onRead={async ids => {
+          if ((hubQa || loginQa) && !bridgeAvailable) {
+            setBootstrap(current => !current.data ? current : { ...current, data: { ...current.data, notifications: {
+              items: current.data.notifications.items.map(item => ids.includes(item.id) ? { ...item, read_at: new Date().toISOString() } : item),
+              unread: current.data.notifications.items.filter(item => !item.read_at && !ids.includes(item.id)).length,
+            } } });
+            return true;
+          }
+          const ok = await browserApi()?.markNotificationsRead(ids);
+          if (ok) await loadBootstrap();
+          return Boolean(ok);
+        }}/>
       )}
-      {settingsOpen && (
+      {settingsOpen && desktopProduct.privateEdition && <BlackbirdSettings
+        key={`${settingsSection}:${settingsRevision}`} initialSection={settingsSection}
+        preferences={preferences} defaults={DEFAULT_PREFERENCES} onChange={setPreferences}
+        viewer={bootstrap.data?.viewer} name={userName} online={bootstrap.online} lastSuccessfulAt={bootstrap.lastSuccessfulAt}
+        updateState={updateState} onUpdate={runUpdateAction}
+        onClose={() => setSettingsOpen(false)} onReconnect={loadBootstrap} onLock={lockNow}
+        onSetup={() => { setSettingsOpen(false); setSetupOpen(true); }} onLogout={logoutFromSettings}
+        onPreviewNotification={() => void browserApi()?.previewNotification()}
+        atlas={<AtlasSettingsPage overlayConfig={overlayConfig} overlayCatalog={overlayCatalog}
+          overlayAllowed={atlasSettingsQa || bootstrap.data?.atlas_overlay?.allowed === true}
+          overlayBusy={overlayBusy} overlayError={overlayError} onOverlayChange={saveOverlay}
+          onOverlayPreview={previewOverlay} onClose={() => setSettingsOpen(false)} focusRequest={atlasSettingsFocusRequest}/>}
+      />}
+      {settingsOpen && !desktopProduct.privateEdition && (
         <SettingsDrawer
           preferences={preferences}
           online={bootstrap.online}
@@ -1035,6 +1117,7 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
           onReconnect={loadBootstrap}
           onLock={lockNow}
+          onSetup={desktopProduct.privateEdition ? () => { setSettingsOpen(false); setSetupOpen(true); } : undefined}
         />
       )}
       {paletteOpen && (
@@ -1077,7 +1160,15 @@ export function App() {
           onMinimize={() => void browserApi()?.minimize()}
         />
       )}
-      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} hold={cinematicHold} onContinue={dismissLaunch}/>}
+      {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} hold={cinematicHold} onContinue={dismissLaunch} connectionReady={!bootstrapLoading}/>}
+      {setupOpen && !launchVisible && <BlackbirdSetup authenticated={bootstrap.authenticated} name={userName} preferences={preferences} onLogin={login}
+        onLater={() => setSetupOpen(false)} onComplete={value => {
+          if (!bootstrap.authenticated || !bootstrap.data) return;
+          setPreferences(value);
+          if (!setupQa) { try { localStorage.setItem(`blackbird:setup:v1:${bootstrap.data.viewer.id}`, "complete"); } catch { /* Remains available next launch. */ } }
+          setSetupOpen(false);
+        }}/>
+      }
       {mandatoryUpdate && (
         <MandatoryUpdate updateState={updateState}/>
       )}
@@ -1160,8 +1251,8 @@ function Home({
   if (loading) {
     return (
       <section className="session-stage" aria-live="polite">
-        <div className="session-orbit"><span>T</span><i/><i/></div>
-        <p className="kicker">T-MOD ACCOUNT</p>
+        {desktopProduct.privateEdition ? <img className="bb-session-mark" src={blackbirdMaster} alt=""/> : <div className="session-orbit"><span>T</span><i/><i/></div>}
+        <p className="kicker">{desktopProduct.privateEdition ? "ТЕХНОЛОГИИ ТОВАРИЩЕСТВА" : "T-MOD ACCOUNT"}</p>
         <h1>Восстанавливаем<br/>защищённую сессию</h1>
         <p>Проверяем аккаунт, доступные пространства и актуальную версию клиента.</p>
         <div className="session-progress"><i/></div>
@@ -1194,6 +1285,8 @@ function Home({
       private_access_required: "BLACKBIRD — личная редакция владельца. Этот аккаунт не включён в закрытый список доступа.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
       network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
+      login_in_progress: "Вход уже выполняется. Подождите завершения проверки.",
+      server_response_invalid: "Сервер вернул некорректный ответ. Попробуйте позже — ваши данные входа не изменились.",
       login_failed: "Вход принят, но подтверждение сессии задержалось. Повторите нажатие — PIN вводить заново не потребуется.",
       invalid_input: "Логин — от 3 символов, PIN — ровно 8 цифр.",
     };
@@ -1205,7 +1298,7 @@ function Home({
       try {
         const result = await onLogin({ login: loginValue, pin });
         if (!result.ok) setLoginError(result.error || "login_failed");
-      } finally {
+      } catch { setLoginError("network_unavailable"); } finally {
         setLoginBusy(false);
       }
     };
@@ -1322,8 +1415,23 @@ function Home({
   );
 }
 
-function Notifications({ items, unread, onClose, onOpen }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void> }) {
-  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">Поток T-Mod</p><h2>Уведомления</h2></div><span>{unread} новых</span></header><div className="notification-list">{items.map((item) => <button key={item.id} onClick={() => { const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><strong>{item.title}</strong><p>{item.body}</p><small>{formatTime(item.created_at)}</small></span></button>)}{!items.length && <div className="drawer-empty"><Icon name="bell"/><p>В центре уведомлений тихо.</p></div>}</div></aside></>;
+function Notifications({ items, unread, onClose, onOpen, onRead }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void>; onRead: (ids: number[]) => Promise<boolean> }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "unread" | "important">("all");
+  const [readError, setReadError] = useState(false), [busy, setBusy] = useState(false);
+  const read = async (ids: number[]) => {
+    if (!ids.length || busy) return;
+    setBusy(true); setReadError(false);
+    try { setReadError(!await onRead(ids)); } catch { setReadError(true); } finally { setBusy(false); }
+  };
+  const filtered = items.filter(item => (filter !== "unread" || !item.read_at)
+    && (filter !== "important" || ["critical", "warning"].includes(item.severity))
+    && `${item.title} ${item.body} ${item.kind}`.toLowerCase().includes(query.toLowerCase().trim()));
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">{desktopProduct.name} · ЦЕНТР СОБЫТИЙ</p><h2>Уведомления</h2></div><span>{unread} новых</span><button onClick={onClose} aria-label="Закрыть уведомления">×</button></header>
+    <div className="bb-notification-tools"><input aria-label="Поиск уведомлений" placeholder="Поиск по событиям" value={query} onChange={event => setQuery(event.target.value)}/><nav>{([["all", "Все"], ["unread", "Непрочитанные"], ["important", "Важные"]] as const).map(([value, title]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)}>{title}</button>)}</nav></div>
+    {filtered.some(item => !item.read_at) && <button className="bb-notification-read" disabled={busy} onClick={() => void read(filtered.filter(item => !item.read_at).map(item => item.id))}>{busy ? "Сохраняем…" : "Отметить показанные события прочитанными"}</button>}
+    {readError && <p className="bb-notification-error" role="alert">Не удалось сохранить. Попробуйте ещё раз.</p>}
+    <div className="notification-list">{filtered.map(item => <button className={!item.read_at ? "unread" : ""} key={item.id} onClick={() => { if (!item.read_at) void read([item.id]); const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><small className="bb-event-kind">{item.severity === "critical" ? "ТРЕБУЕТ ВНИМАНИЯ" : item.severity === "warning" ? "ВАЖНО" : "СОБЫТИЕ"}</small><strong>{item.title}</strong><p>{item.body}</p><small>{new Date(item.created_at).toLocaleDateString("ru-RU")} · {formatTime(item.created_at)}{resolveNotificationServiceId(item.route) ? " · Открыть ↗" : ""}</small></span></button>)}{!filtered.length && <div className="drawer-empty"><Icon name="bell"/><p>{query || filter !== "all" ? "Событий по этому запросу нет." : "Пока всё спокойно."}</p></div>}</div></aside></>;
 }
 
 function NotificationToasts({
@@ -1380,6 +1488,7 @@ function SettingsDrawer({
   onClose,
   onReconnect,
   onLock,
+  onSetup,
 }: {
   preferences: DesktopShellPreferences;
   online: boolean;
@@ -1389,6 +1498,7 @@ function SettingsDrawer({
   onClose: () => void;
   onReconnect: () => Promise<void>;
   onLock: () => void;
+  onSetup?: () => void;
 }) {
   const toggle = (key: keyof Pick<DesktopShellPreferences, "compactMode" | "reduceMotion" | "solidSurfaces" | "lockSound" | "notificationSound">) =>
     onChange({ ...preferences, [key]: !preferences[key] });
@@ -1396,6 +1506,7 @@ function SettingsDrawer({
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
     <header><div><p className="kicker">{desktopProduct.name} · {desktopProduct.privateEdition ? "OWNER EDITION" : "DESKTOP"}</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     <div className="settings-scroll">
+      {onSetup && <section><p className="settings-label">Первый запуск</p><button className="primary" onClick={onSetup}>Повторить настройку Blackbird</button></section>}
       <section><p className="settings-label">Обращение</p>
         <label className="preferred-name-setting">
           <span><strong>Как вас называть</strong><small>Это имя используется во всей оболочке T‑Mod на этом устройстве</small></span>
@@ -1415,12 +1526,13 @@ function SettingsDrawer({
       </section>
       <section><p className="settings-label">Уведомления</p>
         <div className="setting-row notification-delivery-setting"><span><strong>Куда доставлять</strong><small>Blackbird может показать собственную карточку и системное уведомление</small></span><div>{([
-          ["both", "Оба"],
+          ["both", desktopProduct.privateEdition ? "Адаптивно" : "Оба"],
           ["in-app", "В Blackbird"],
           ["system", "Системные"],
           ["off", "Тишина"],
         ] as const).map(([value, label]) => <button key={value} className={preferences.notificationDelivery === value ? "active" : ""} onClick={() => onChange({ ...preferences, notificationDelivery: value })}>{label}</button>)}</div></div>
         <SettingToggle label="Звук событий" hint="Короткий сигнал для новых уведомлений" active={preferences.notificationSound} onClick={() => toggle("notificationSound")}/>
+        {desktopProduct.privateEdition && <button className="primary" onClick={() => void browserApi()?.previewNotification()}>Проверить карточку уведомления</button>}
       </section>
       <section><p className="settings-label">Обновления</p>
         {desktopProduct.privateEdition

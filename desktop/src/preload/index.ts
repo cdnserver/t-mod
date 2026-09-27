@@ -40,6 +40,9 @@ const api: TModDesktopApi = {
   copyCurrentLink: () => ipcRenderer.invoke("desktop:copy-current-link") as Promise<boolean>,
   openCurrentLink: () => ipcRenderer.invoke("desktop:open-current-link") as Promise<boolean>,
   openLogin: () => ipcRenderer.invoke("desktop:open-login") as Promise<DesktopState>,
+  openAccountCreation: () => ipcRenderer.invoke("desktop:account-create") as Promise<boolean>,
+  previewNotification: () => ipcRenderer.invoke("desktop:notification-preview") as Promise<boolean>,
+  markNotificationsRead: ids => ipcRenderer.invoke("desktop:notifications-read", ids) as Promise<boolean>,
   lock: () => ipcRenderer.invoke("desktop:lock") as Promise<boolean>,
   unlock: () => ipcRenderer.invoke("desktop:unlock") as Promise<boolean>,
   minimize: () => ipcRenderer.invoke("desktop:minimize"),
@@ -64,6 +67,11 @@ const api: TModDesktopApi = {
     const handler = () => listener();
     ipcRenderer.on("desktop:command-palette", handler);
     return () => ipcRenderer.removeListener("desktop:command-palette", handler);
+  },
+  onNotifications: listener => {
+    const handler = () => listener();
+    ipcRenderer.on("desktop:open-notifications", handler);
+    return () => ipcRenderer.removeListener("desktop:open-notifications", handler);
   },
   onAtlasOverlaySettings: (listener) => {
     const handler = () => listener();

@@ -6,6 +6,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import storage
+from persistence.access_projection_repository import get_web_avatar_url
 from modules import consensus_web_auth
 from modules.consensus_web_auth import (
     SESSION_COOKIE,
@@ -28,6 +29,18 @@ class AccessProjectionRepositoryTests(unittest.TestCase):
         storage.DATA_DIR = self.old_data_dir
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
+
+    def test_discord_avatar_survives_projected_identity_and_snapshot_refresh(self) -> None:
+        url = "https://cdn.discordapp.com/avatars/42/hash.png"
+        storage.upsert_web_access_projection(77, 42, "Member", administrator=False, avatar_url=url)
+        self.assertEqual(get_web_avatar_url(77, 42), url)
+        self.assertIsNone(get_web_avatar_url(88, 42))
+        # Callers without avatar data must not erase a previously observed image.
+        storage.upsert_web_access_projection(77, 42, "Member", administrator=True)
+        self.assertEqual(get_web_avatar_url(77, 42), url)
+        storage.replace_web_access_projections(77, [{"user_id":42, "display_name":"Member", "avatar_url":"https://cdn.discordapp.com/embed/avatars/1.png"}])
+        self.assertEqual(get_web_avatar_url(77, 42), "https://cdn.discordapp.com/embed/avatars/1.png")
+
 
     def test_snapshot_updates_roles_and_revokes_missing_members(self) -> None:
         first = storage.replace_web_access_projections(

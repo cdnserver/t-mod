@@ -22,6 +22,9 @@ import path from "node:path";
 import log from "electron-log/main";
 import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
+import { NotificationPopup } from "./notification-popup";
+import { notificationChannel } from "../shared/notification-policy";
+import { BootstrapProtocolError, isFreshLoginProjection, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
   isServiceId,
   resolveNotificationServiceId,
@@ -98,6 +101,7 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let notificationPopup: NotificationPopup | undefined;
 let serviceView: WebContentsView | null = null;
 let activeService: ServiceId = "home";
 let serviceLoading = false;
@@ -111,6 +115,8 @@ let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
 let lastKnownBan: BootstrapResult["ban"];
 let bootstrapRevision = 0;
+let loginInFlight = false;
+let loginAbortController: AbortController | undefined;
 let bootstrapInFlight: {
   revision: number;
   promise: Promise<BootstrapResult>;
@@ -256,6 +262,7 @@ function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {
     lastSuccessfulBootstrapAt = undefined;
     notificationStreamInitialized = false;
     knownNotificationIds.clear();
+    notificationPopup?.clear();
     clearServiceManifest();
     void applyAtlasOverlayBootstrapSafely(undefined);
     activeService = "home";
@@ -529,16 +536,26 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
   for (const item of items.slice().reverse()) {
     if (knownNotificationIds.has(item.id)) continue;
     knownNotificationIds.add(item.id);
-    if (!["both", "system"].includes(delivery) || !Notification.isSupported()) continue;
+    if (item.read_at) continue;
+    const channel = desktopProduct.privateEdition
+      ? notificationChannel(delivery, Boolean(mainWindow?.isFocused()))
+      : ["both", "system"].includes(delivery) ? "system" : "none";
+    if (channel === "custom") {
+      notificationPopup?.show(desktopLocked ? { ...item, title: "Новое событие", body: "Откройте Blackbird, чтобы прочитать." } : item, shellPreferences.notificationSound); continue;
+    }
+    if (channel !== "system" || !Notification.isSupported()) continue;
     const notification = new Notification({
       title: item.title,
-      body: item.body,
+      body: desktopLocked ? "Новое событие. Откройте Blackbird, чтобы прочитать." : item.body,
       silent: !shellPreferences.notificationSound,
       urgency: item.severity === "critical" ? "critical" : "normal",
     });
     notification.on("click", () => {
+      void markNotificationsRead([item.id]);
       const target = resolveNotificationServiceId(item.route);
       if (target) void navigate(target);
+      else mainWindow?.webContents.send("desktop:open-notifications");
+      if (mainWindow?.isMinimized()) mainWindow.restore();
       mainWindow?.show();
       mainWindow?.focus();
     });
@@ -547,6 +564,33 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
   for (const id of [...knownNotificationIds]) {
     if (!currentIds.has(id) && knownNotificationIds.size > 500) knownNotificationIds.delete(id);
   }
+}
+
+async function markNotificationsRead(value: unknown): Promise<boolean> {
+  if (!Array.isArray(value) || !lastSuccessfulBootstrap) return false;
+  const known = new Set(lastSuccessfulBootstrap.notifications.items.map(item => item.id));
+  const ids = [...new Set(value.filter((id): id is number => Number.isSafeInteger(id) && id > 0 && known.has(id)))].slice(0, 100);
+  if (!ids.length) return false; // Empty IDs mean "all" on the server; never send them.
+  const revision = bootstrapRevision;
+  const account = lastSuccessfulBootstrap.viewer.id;
+  try {
+    const host = "https://reactor.tvr.lat";
+    const response = await desktopSession().fetch(`${host}/api/reactor/home`, {
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) return false;
+    const home = await response.json() as { viewer?: { id: number; csrf_token: string } };
+    const viewer = home.viewer;
+    if (revision !== bootstrapRevision || !viewer || viewer.id !== account || !viewer.csrf_token) return false;
+    const update = await desktopSession().fetch(`${host}/api/reactor/notifications/read`, {
+      method: "POST", credentials: "include", signal: AbortSignal.timeout(7000),
+      headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": viewer.csrf_token },
+      body: JSON.stringify({ ids }),
+    });
+    if (!update.ok) return false;
+    mainWindow?.webContents.send("desktop:auth-changed");
+    return true;
+  } catch { return false; }
 }
 
 function applyPreferences(value: unknown): DesktopShellPreferences {
@@ -576,6 +620,7 @@ function applyPreferences(value: unknown): DesktopShellPreferences {
 function lockDesktop(reason: DesktopLockReason): boolean {
   if (desktopLocked || !mainWindow || mainWindow.isDestroyed()) return desktopLocked;
   desktopLocked = true;
+  notificationPopup?.clear();
   syncServiceVisibility();
   mainWindow.webContents.send("desktop:lock-requested", reason);
   mainWindow.webContents.focus();
@@ -747,7 +792,7 @@ function bootstrapUnavailable(error: string): BootstrapResult {
       lastSuccessfulAt: lastSuccessfulBootstrapAt,
     };
   }
-  return { authenticated: false, online: false, error: "network_unavailable" };
+  return { authenticated: false, online: false, error };
 }
 
 async function applyAtlasOverlayBootstrapSafely(
@@ -766,7 +811,7 @@ function retryableBootstrapStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-async function fetchBootstrapCandidate(): Promise<Response | undefined> {
+async function fetchBootstrapCandidate() {
   const requests = BOOTSTRAP_URLS.map(async (endpoint) => {
     const response = await desktopSession().fetch(endpoint, {
       method: "GET",
@@ -780,31 +825,9 @@ async function fetchBootstrapCandidate(): Promise<Response | undefined> {
     });
     // A dead contour must not delay a healthy mirror. Promise.any resolves as
     // soon as one endpoint returns an authoritative response.
-    if (retryableBootstrapStatus(response.status)) {
-      throw new Error(`bootstrap_http_${response.status}`);
-    }
-    return response;
+    return parseBootstrapResponse(response);
   });
-  try {
-    const never = new Promise<Response>(() => undefined);
-    const healthy = Promise.any(
-      requests.map(async (request) => {
-        const response = await request;
-        if (!response.ok) throw new Error(`bootstrap_non_success_${response.status}`);
-        return response;
-      }),
-    ).catch(() => never);
-    const fallback = Promise.any(requests).then(async (response) => {
-      // During a rolling restart one contour can briefly reject a valid shared
-      // session while its healthy mirror already accepts it. Give a successful
-      // mirror a short priority window without making real login failures slow.
-      if (!response.ok) await wait(400);
-      return response;
-    });
-    return await Promise.race([healthy, fallback]);
-  } catch {
-    return undefined;
-  }
+  return selectBootstrapCandidate(requests);
 }
 
 async function performBootstrap(revision: number): Promise<BootstrapResult> {
@@ -812,8 +835,9 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
   for (let attempt = 0; attempt < BOOTSTRAP_WAVES; attempt += 1) {
     if (attempt > 0) await wait(attempt === 1 ? 450 : 1_250);
     try {
-      const response = await fetchBootstrapCandidate();
-      if (!response) continue;
+      const candidate = await fetchBootstrapCandidate();
+      const { response } = candidate;
+      if (revision !== bootstrapRevision) return { authenticated: false, online: false, error: "session_superseded" };
       // A login/logout transaction superseded this request. Its result may be
       // returned to the old caller, but must never mutate the current session.
       const current = revision === bootstrapRevision;
@@ -852,6 +876,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         } catch {
           // A valid 423 is authoritative even if a proxy stripped its body.
         }
+        if (revision !== bootstrapRevision) return { authenticated: false, online: false, error: "session_superseded" };
         if (current) {
           lastKnownBan = decision;
           lastSuccessfulBootstrap = undefined;
@@ -878,7 +903,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
           error: `bootstrap_http_${response.status}`,
         };
       }
-      const data = await response.json() as DesktopBootstrap;
+      const data = candidate.data!;
       if (data.protocol_version !== 1 || !Array.isArray(data.services)) {
         if (current) {
           clearServiceManifest();
@@ -903,10 +928,11 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
           };
         }
         reconcileActiveServiceAccess();
-        await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
         lastSuccessfulBootstrap = data;
         lastSuccessfulBootstrapAt = new Date().toISOString();
         syncNativeNotifications(data.notifications.items || []);
+        await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
+        if (revision !== bootstrapRevision) return { authenticated: false, online: false, error: "session_superseded" };
       }
       return {
         authenticated: true,
@@ -914,11 +940,12 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         data,
         lastSuccessfulAt: current ? lastSuccessfulBootstrapAt : new Date().toISOString(),
       };
-    } catch {
-      lastError = "network_unavailable";
+    } catch (error) {
+      lastError = error instanceof BootstrapProtocolError ? "desktop_protocol_invalid" : "network_unavailable";
+      log.warn("Account projection retry failed", { attempt: attempt + 1, reason: lastError });
     }
   }
-  return bootstrapUnavailable(lastError);
+  return revision === bootstrapRevision ? bootstrapUnavailable(lastError) : { authenticated: false, online: false, error: "session_superseded" };
 }
 
 async function bootstrap(): Promise<BootstrapResult> {
@@ -954,6 +981,15 @@ function loginErrorFromLocation(location: string | null): DesktopLoginResult["er
 }
 
 async function login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult> {
+  if (loginInFlight) return { ok: false, error: "login_in_progress" };
+  loginInFlight = true;
+  const controller = new AbortController();
+  loginAbortController = controller;
+  try { return await performLogin(credentials, controller.signal); }
+  finally { loginInFlight = false; if (loginAbortController === controller) loginAbortController = undefined; }
+}
+
+async function performLogin(credentials: DesktopLoginCredentials, cancellation: AbortSignal): Promise<DesktopLoginResult> {
   const loginValue = String(credentials?.login || "").trim();
   const pin = String(credentials?.pin || "").trim();
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(loginValue) || !/^\d{8}$/.test(pin)) {
@@ -962,10 +998,18 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
   // Invalidate an older periodic bootstrap before changing the session. This
   // closes the race where its delayed 401 overwrote a successful login.
   bootstrapRevision += 1;
+  const revision = bootstrapRevision;
+  // Cached identity is useful for an outage, never as proof of a new login.
+  lastSuccessfulBootstrap = undefined;
+  lastSuccessfulBootstrapAt = undefined;
+  notificationStreamInitialized = false;
+  knownNotificationIds.clear();
+  notificationPopup?.clear();
   try {
     const form = new URLSearchParams({ login: loginValue, pin });
     let response: Response | undefined;
     for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt += 1) {
+      if (cancellation.aborted || revision !== bootstrapRevision) return { ok: false, error: "login_failed" };
       if (attempt > 0) await wait(attempt === 1 ? 450 : 1_250);
       try {
         const candidate = await desktopSession().fetch(
@@ -980,18 +1024,24 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
               ...desktopIdentityHeaders(),
             },
             body: form.toString(),
-            signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
+            signal: AbortSignal.any([cancellation, AbortSignal.timeout(LOGIN_TIMEOUT_MS)]),
           },
         );
-        if (retryableBootstrapStatus(candidate.status)) continue;
+        if (retryableBootstrapStatus(candidate.status)) {
+          log.warn("Account login retry: server unavailable", { attempt: attempt + 1, status: candidate.status });
+          continue;
+        }
         response = candidate;
         break;
       } catch {
+        log.warn("Account login retry: transport interrupted", { attempt: attempt + 1 });
         // Retry short DNS, TLS and service-restart gaps inside this same login
         // operation so the user never has to submit the PIN twice.
       }
     }
+    if (revision !== bootstrapRevision) return { ok: false, error: "login_failed" };
     if (!response) return { ok: false, error: "network_unavailable" };
+    if (!response.ok && ![301, 302, 303, 307, 308, 403, 423].includes(response.status)) return { ok: false, error: "login_failed" };
     if (response.status === 403 || response.status === 423) {
       if (response.status === 423) await bootstrap();
       if (response.status === 403 && desktopProduct.privateEdition) {
@@ -1005,13 +1055,18 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
     for (const delay of [120, 450, 1_100]) {
       await wait(delay);
       result = await bootstrap();
-      if (result.authenticated) break;
+      if (revision !== bootstrapRevision) return { ok: false, error: "login_failed" };
+      if (isFreshLoginProjection(result)) break;
+      if (!result.online) break;
+      if (["private_access_required", "globally_banned", "desktop_protocol_invalid"].includes(result.error || "")) break;
     }
-    if (!result?.authenticated) {
+    if (!isFreshLoginProjection(result)) {
       return {
         ok: false,
         error: result?.error === "private_access_required"
           ? "private_access_required"
+          : result?.error === "globally_banned" ? "banned"
+          : result?.error === "desktop_protocol_invalid" ? "server_response_invalid"
           : result?.online ? "login_failed" : "network_unavailable",
       };
     }
@@ -1027,11 +1082,16 @@ async function login(credentials: DesktopLoginCredentials): Promise<DesktopLogin
 }
 
 async function logout(): Promise<boolean> {
+  loginAbortController?.abort();
+  notificationPopup?.clear();
+  notificationStreamInitialized = false;
+  knownNotificationIds.clear();
   bootstrapRevision += 1;
   try {
     await desktopSession().fetch(LOGOUT_URL, {
       redirect: "manual",
       credentials: "include",
+      signal: AbortSignal.timeout(5000),
     });
   } catch {
     // The dedicated desktop partition contains only T-Mod sessions. Clearing
@@ -1073,6 +1133,19 @@ function registerIpc(): void {
       : ({ ok: false, error: "login_failed" } satisfies DesktopLoginResult),
   );
   ipcMain.handle("desktop:logout", (event) => trusted(event) ? logout() : false);
+  ipcMain.handle("desktop:account-create", async event => {
+    if (!trusted(event)) return false;
+    // Fixed verified registration destination; no arbitrary URL from the renderer.
+    await shell.openExternal("https://discord.gg/5vAKXdX5sw");
+    return true;
+  });
+  ipcMain.handle("desktop:notification-preview", event => {
+    if (!trusted(event) || !desktopProduct.privateEdition) return false;
+    notificationPopup?.show({ id: -Date.now(), severity: "info", kind: "preview", title: "Blackbird на связи",
+      body: "Так будут появляться ваши уведомления. Нажмите, чтобы открыть приложение.", route: null, read_at: null, created_at: new Date().toISOString() }, shellPreferences.notificationSound);
+    return true;
+  });
+  ipcMain.handle("desktop:notifications-read", (event, ids: unknown) => trusted(event) ? markNotificationsRead(ids) : false);
   ipcMain.handle("desktop:navigate", (event, serviceId: unknown) => {
     if (!trusted(event) || !isServiceId(serviceId)) return state();
     return navigate(serviceId);
@@ -1396,6 +1469,7 @@ async function createWindow(): Promise<void> {
   mainWindow.on("maximize", positionViews);
   mainWindow.on("unmaximize", positionViews);
   mainWindow.on("closed", () => {
+    notificationPopup?.dispose();
     clearServiceRetry();
     if (serviceView && !serviceView.webContents.isDestroyed()) {
       serviceView.webContents.close();
@@ -1437,6 +1511,14 @@ app.whenReady().then(async () => {
   app.setAppUserModelId(desktopProduct.appId);
   app.setAsDefaultProtocolClient(desktopProduct.protocol);
   registerIpc();
+  if (desktopProduct.privateEdition) notificationPopup = new NotificationPopup(bundleDirectory, item => {
+    if (item.id > 0) void markNotificationsRead([item.id]);
+    const target = resolveNotificationServiceId(item.route);
+    if (mainWindow?.isMinimized()) mainWindow.restore();
+    mainWindow?.show(); mainWindow?.focus();
+    if (target) void navigate(target);
+    else mainWindow?.webContents.send("desktop:open-notifications");
+  }, () => mainWindow?.getBounds());
   configureAutoUpdater();
   await createWindow();
   screen.on("display-added", () => atlasOverlay?.onDisplaysChanged());
@@ -1469,4 +1551,5 @@ app.on("before-quit", () => {
   if (authProjectionTimer) clearTimeout(authProjectionTimer);
   if (forcedUpdateInstallTimer) clearTimeout(forcedUpdateInstallTimer);
   atlasOverlay?.dispose();
+  notificationPopup?.dispose();
 });

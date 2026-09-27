@@ -32,8 +32,8 @@ export function BlackbirdLogin({ login, pin, busy, online, bridgeAvailable, erro
           <label><span>PIN-код</span><input value={pin} onChange={(event) => onPinChange(event.target.value.replace(/\D/g, "").slice(0,8))} autoComplete="current-password" inputMode="numeric" type="password" minLength={8} maxLength={8} placeholder="8 цифр" disabled={busy}/><i/></label>
           {error && <output>{error}</output>}
           {!bridgeAvailable && <output>Компонент авторизации не загружен. Откройте Blackbird Client.</output>}
-          <button type="submit" disabled={busy || !bridgeAvailable}><span>{busy ? "Проверяем доступ" : "Войти в Blackbird"}</span><b>{busy ? "···" : "→"}</b></button>
-          <footer className={online ? "online" : ""}><i/><span>{online ? "Соединение установлено" : "Восстанавливаем соединение"}</span>{!online && <button type="button" onClick={onRetry}>Повторить</button>}</footer>
+          <button type="submit" disabled={busy || !bridgeAvailable} aria-busy={busy}><span>{busy ? "Подключаем аккаунт…" : "Войти в Blackbird"}</span><b>{busy ? "···" : "→"}</b></button>
+          <footer className={online ? "online" : ""} aria-live="polite"><i/><span>{busy ? "Устанавливаем защищённую сессию…" : online ? "Соединение установлено" : "Восстанавливаем соединение"}</span>{!online && !busy && <button type="button" onClick={onRetry}>Повторить</button>}</footer>
         </form>
       </main>
       <footer className="bbl-foot"><span>Технологии Товарищества</span></footer>

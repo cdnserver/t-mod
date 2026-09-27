@@ -61,6 +61,6 @@ function LunarFallback() {
   );
 }
 
-export function BlackbirdMoon() {
-  return <><LunarFallback/><LunarTexture/></>;
+export function BlackbirdMoon({ onPrepared, reduced = false }: { onPrepared?: (fallback: boolean) => void; reduced?: boolean }) {
+  return <><LunarFallback/><LunarTexture onPrepared={onPrepared} reduced={reduced}/></>;
 }

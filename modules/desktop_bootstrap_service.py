@@ -15,6 +15,7 @@ from persistence import global_ban_repository as global_ban_storage
 from persistence import profile_repository as profile_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import web_auth_repository as web_auth_storage
+from persistence import access_projection_repository as access_projection_storage
 
 
 BLACKBIRD_PRIVATE_EDITION = "blackbird"
@@ -130,6 +131,9 @@ async def build_desktop_bootstrap_payload(
     )
     notification_payload: dict[str, Any] = {"items": [], "unread": 0}
     preferred_name = ""
+    avatar_url = str(getattr(getattr(principal.member, "display_avatar", None), "url", "")) or None
+    if avatar_url is None:
+        avatar_url = await asyncio.to_thread(access_projection_storage.get_web_avatar_url, guild_id, principal.user_id)
     if guild_member:
         notification_payload, profile_snapshot = await asyncio.gather(
             asyncio.to_thread(
@@ -199,6 +203,7 @@ async def build_desktop_bootstrap_payload(
             "id": int(principal.user_id),
             "name": preferred_name or str(principal.display_name),
             "display_name": str(principal.display_name),
+            "avatar_url": avatar_url,
             "account_tier": str(principal.account_tier),
             "guild_member": guild_member,
             "administrator": administrator,
