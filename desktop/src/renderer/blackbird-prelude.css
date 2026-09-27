@@ -117,8 +117,6 @@
   font-size: 10px; letter-spacing: .045em; color: #7b8793;
 }
 @keyframes bb-prelude-loading-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .bb-prelude .bb-prelude-artwork { animation: none !important; filter: none; clip-path: none; }
-  .bb-prelude-light, .bb-prelude-depth { display: none; }
-  .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }
-}
+.reduce-motion .bb-prelude .bb-prelude-artwork { animation: none !important; filter: none; clip-path: none; }
+.reduce-motion .bb-prelude-light, .reduce-motion .bb-prelude-depth { display: none; }
+.reduce-motion .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }

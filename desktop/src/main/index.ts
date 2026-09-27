@@ -24,7 +24,7 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import { NotificationPopup } from "./notification-popup";
 import { notificationChannel } from "../shared/notification-policy";
-import { BootstrapProtocolError, isFreshLoginProjection, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
+import { BootstrapProtocolError, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
   isServiceId,
   resolveNotificationServiceId,
@@ -538,7 +538,7 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
       ? notificationChannel(delivery, Boolean(mainWindow?.isFocused()))
       : ["both", "system"].includes(delivery) ? "system" : "none";
     if (channel === "custom") {
-      notificationPopup?.show(desktopLocked ? { ...item, title: "Новое событие", body: "Откройте Blackbird, чтобы прочитать." } : item, shellPreferences.notificationSound); continue;
+      notificationPopup?.show(desktopLocked ? { ...item, title: "Новое событие", body: "Откройте Blackbird, чтобы прочитать." } : item, shellPreferences.notificationSound, shellPreferences.reduceMotion); continue;
     }
     if (channel !== "system" || !Notification.isSupported()) continue;
     const notification = new Notification({
@@ -1017,7 +1017,10 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
           AUTH_LOGIN_URLS[attempt % AUTH_LOGIN_URLS.length],
           {
             method: "POST",
-            redirect: "manual",
+            // Electron rejects manual redirects with "Redirect was cancelled"
+            // rather than exposing a 303 Response. Follow legacy server flows;
+            // the final URL and fresh bootstrap still decide authentication.
+            redirect: "follow",
             credentials: "include",
             headers: {
               Accept: "text/html,application/xhtml+xml",
@@ -1028,7 +1031,8 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
             signal: AbortSignal.any([cancellation, AbortSignal.timeout(LOGIN_TIMEOUT_MS)]),
           },
         );
-        if (retryableBootstrapStatus(candidate.status)) {
+        // A JSON 429 is an explicit login lockout, not a transport failure.
+        if (retryableBootstrapStatus(candidate.status) && !(candidate.status === 429 && candidate.headers.get("content-type")?.includes("application/json"))) {
           log.warn("Account login retry: server unavailable", { attempt: attempt + 1, status: candidate.status });
           continue;
         }
@@ -1045,6 +1049,13 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
     if (response.status === 202) {
       const factor = await response.json() as { challenge?: string; method?: string; delivery_failed?: boolean };
       return { ok: false, error: "two_factor_required", challenge: factor.challenge, method: factor.method, deliveryFailed: factor.delivery_failed };
+    }
+    if (response.headers.get("content-type")?.includes("application/json")) {
+      let payload: unknown;
+      try { payload = await response.json(); } catch { return { ok: false, error: "server_response_invalid" }; }
+      const error = loginPayloadError(payload);
+      if (error) return { ok: false, error };
+      if (!response.ok) return { ok: false, error: "server_response_invalid" };
     }
     if (!response.ok && ![301, 302, 303, 307, 308, 403, 423].includes(response.status)) return { ok: false, error: "login_failed" };
     if (response.status === 403 || response.status === 423) {
@@ -1172,7 +1183,7 @@ function registerIpc(): void {
   ipcMain.handle("desktop:notification-preview", event => {
     if (!trusted(event) || !desktopProduct.privateEdition) return false;
     notificationPopup?.show({ id: -Date.now(), severity: "info", kind: "preview", title: "Blackbird на связи",
-      body: "Так будут появляться ваши уведомления. Нажмите, чтобы открыть приложение.", route: null, read_at: null, created_at: new Date().toISOString() }, shellPreferences.notificationSound);
+      body: "Так будут появляться ваши уведомления. Нажмите, чтобы открыть приложение.", route: null, read_at: null, created_at: new Date().toISOString() }, shellPreferences.notificationSound, shellPreferences.reduceMotion);
     return true;
   });
   ipcMain.handle("desktop:notifications-read", (event, ids: unknown) => trusted(event) ? markNotificationsRead(ids) : false);

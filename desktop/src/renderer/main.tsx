@@ -27,6 +27,9 @@ import "./blackbird-control-bar.css";
 import "./blackbird-workspace.css";
 
 document.title = desktopProduct.fullName;
+// Blackbird has its own explicit accessibility preference. Windows' global
+// animation switch must not silently override the client's chosen appearance.
+if (desktopProduct.privateEdition) document.documentElement.dataset.motionPolicy = "app";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

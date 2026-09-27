@@ -115,4 +115,4 @@
 @keyframes bbw-reduced-screen { 0%,100% { opacity:0; } 25%,80% { opacity:1; } }
 @media(max-width:1100px) { .bbw-home-inner { padding-left:30px; padding-right:30px; }.bbw-senate-hero > img { width:145px; top:85px; }.bbw-service { padding:18px; gap:12px; }.bbw-service.feature { padding:22px; }.bbw-atlas-tools > button { padding:22px; }.bbw-atlas-tools footer { flex-wrap:wrap; } }
 @media(max-width:850px) { .bbw-services,.bbw-institutions > div,.bbw-atlas-tools { grid-template-columns:1fr; }.bbw-home h1 { font-size:42px; }.bbw-hero-art { opacity:.3; }.bbw-senate-hero > img { opacity:.09; }.bbw-home-footer span:last-child { display:none; } }
-@media(prefers-reduced-motion:reduce) { .bbw-intro-title,.bbw-intro-title > i,.bbw-intro-scene * { animation:none !important; }.bbw-intro-scene { opacity:.25; } }
+.reduce-motion .bbw-intro-title,.reduce-motion .bbw-intro-title > i,.reduce-motion .bbw-intro-scene * { animation:none !important; }.reduce-motion .bbw-intro-scene { opacity:.25; }

@@ -39,7 +39,7 @@ export function LunarTexture({ onPrepared, reduced = false }: { onPrepared?: (fa
       if (disposed || !renderer) return;
       // Ignore hidden time: resume without a sudden surface jump.
       if (!document.hidden && now - lastFrame >= 1000 / 30) {
-        if (!reduced && !reducedMotion.matches && previousTime) turn += Math.min(now - previousTime, 100) / 720_000;
+        if (!reduced && (document.documentElement.dataset.motionPolicy === "app" || !reducedMotion.matches) && previousTime) turn += Math.min(now - previousTime, 100) / 720_000;
         renderer.render(turn); lastFrame = now; previousTime = now;
       }
       if (document.hidden) previousTime = 0;

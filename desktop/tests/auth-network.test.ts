@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { BootstrapProtocolError, isBootstrapPayload, isFreshLoginProjection, parseBootstrapResponse, selectBootstrapCandidate } from "../src/shared/auth-network";
+import { readFileSync } from "node:fs";
+import { BootstrapProtocolError, isBootstrapPayload, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../src/shared/auth-network";
 
 const payload = { protocol_version: 1, generated_at: "2026-09-27", viewer: { id: 1, name: "User", display_name: "User", administrator: true, guild_member: true, sections: [] }, services: [], notifications: { unread: 0, items: [] } };
 const valid = () => parseBootstrapResponse(Response.json(payload));
 describe("authenticated bootstrap mirror selection", () => {
+  it("follows legacy login redirects that Electron cannot expose manually", () => {
+    const main = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    const login = main.slice(main.indexOf("async function performLogin("), main.indexOf("async function logout("));
+    expect(login).toContain('redirect: "follow"');
+    expect(login).not.toContain('redirect: "manual"');
+    expect(login).toContain("isFreshLoginProjection(result)");
+  });
+  it("distinguishes JSON login denial from a network outage", () => {
+    expect(loginPayloadError({ ok: true })).toBeUndefined();
+    expect(loginPayloadError({ error: "invalid" })).toBe("invalid");
+    expect(loginPayloadError({ error: "locked" })).toBe("locked");
+    expect(loginPayloadError({ error: "blackbird_private_access_required" })).toBe("private_access_required");
+    expect(loginPayloadError({ error: "banned" })).toBe("banned");
+    expect(loginPayloadError({})).toBe("server_response_invalid");
+    expect(loginPayloadError(null)).toBe("server_response_invalid");
+  });
   it("rejects HTML from an HTTP 200 proxy", async () => {
     await expect(parseBootstrapResponse(new Response("<html>Proxy</html>"))).rejects.toBeInstanceOf(BootstrapProtocolError);
   });

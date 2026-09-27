@@ -1,4 +1,15 @@
-import type { BootstrapResult, DesktopBootstrap } from "./contracts";
+import type { BootstrapResult, DesktopBootstrap, DesktopLoginResult } from "./contracts";
+
+export function loginPayloadError(payload: unknown): DesktopLoginResult["error"] {
+  if (!payload || typeof payload !== "object") return "server_response_invalid";
+  const value = payload as { ok?: unknown; error?: unknown };
+  if (value.ok === true) return undefined;
+  const error = String(value.error || "");
+  if (["invalid", "locked", "reset_required", "character_required", "atlas_access", "private_access_required", "banned", "two_factor_required", "login_failed"].includes(error)) return error as DesktopLoginResult["error"];
+  if (error.endsWith("_private_access_required")) return "private_access_required";
+  if (["administrator", "membership"].includes(error)) return "login_failed";
+  return "server_response_invalid";
+}
 
 export class BootstrapProtocolError extends Error {}
 export interface BootstrapCandidate { response: Response; data?: DesktopBootstrap }

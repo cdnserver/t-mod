@@ -4,9 +4,10 @@ import type { DesktopNotification } from "../shared/contracts";
 
 export class NotificationPopup {
   private window: BrowserWindow | null = null;
-  private queue: { item: DesktopNotification; sound: boolean }[] = [];
+  private queue: { item: DesktopNotification; sound: boolean; reduced: boolean }[] = [];
   private current?: DesktopNotification;
   private sound = false;
+  private reduced = false;
   constructor(private directory: string, private onOpen: (item: DesktopNotification) => void, private bounds: () => Electron.Rectangle | undefined) {
     ipcMain.on("blackbird:notification-action", (event, action: unknown) => {
       if (event.sender.id !== this.window?.webContents.id) return;
@@ -17,15 +18,16 @@ export class NotificationPopup {
       if (event.sender.id === this.window?.webContents.id) this.present(this.sound);
     });
   }
-  show(item: DesktopNotification, sound: boolean) {
+  show(item: DesktopNotification, sound: boolean, reduced = false) {
     if (this.current?.id === item.id || this.queue.some(entry => entry.item.id === item.id)) return;
-    this.queue.push({ item, sound });
+    this.queue.push({ item, sound, reduced });
     this.queue = this.queue.slice(-8);
     if (!this.current) this.next();
   }
   private next() {
     const next = this.queue.shift();
     this.current = next?.item; this.sound = next?.sound ?? false;
+    this.reduced = next?.reduced ?? false;
     if (!this.current) { this.window?.hide(); return; }
     if (!this.window || this.window.isDestroyed()) {
       this.window = new BrowserWindow({ width: 430, height: 180, frame: false, resizable: false,
@@ -49,7 +51,7 @@ export class NotificationPopup {
     const area = display.workArea;
     const width = Math.min(430, area.width - 24);
     this.window.setBounds({ x: area.x + area.width - width - 12, y: area.y + area.height - 192, width, height: 180 });
-    this.window.webContents.send("blackbird:notification", { item: this.current, sound });
+    this.window.webContents.send("blackbird:notification", { item: this.current, sound, reduced: this.reduced });
     this.sound = false;
     this.window.showInactive();
   }

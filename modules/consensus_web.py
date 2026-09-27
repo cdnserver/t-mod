@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import discord
 from aiohttp import web
@@ -1615,7 +1615,7 @@ def create_consensus_web_app(
         )
         return response
 
-    async def credential_login(request: web.Request) -> web.Response:
+    async def credential_login_impl(request: web.Request) -> web.Response:
         remote = _request_remote(request)
         now = asyncio.get_running_loop().time()
         desktop_client = request.query.get("client") == "desktop"
@@ -1806,6 +1806,34 @@ def create_consensus_web_app(
             max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
             request_host=request_public_host(request),
         )
+        return response
+
+    async def credential_login(request: web.Request) -> web.Response:
+        # Desktop authentication is a JSON transaction, not a page navigation.
+        # Chromium can filter manual cross-origin redirect responses; retain
+        # Set-Cookie but avoid making a redirect the proof of a successful login.
+        try:
+            response = await credential_login_impl(request)
+        except web.HTTPSeeOther as redirect:
+            if request.query.get("client") != "desktop":
+                raise
+            target = urlsplit(redirect.location)
+            error = parse_qs(target.query).get("error", [""])[0]
+            allowed = {"invalid", "locked", "reset_required", "character_required",
+                       "atlas_access", "administrator", "membership"}
+            if target.path == "/banned":
+                error, status = "banned", 423
+            else:
+                error = error if error in allowed else "login_failed"
+                status = 429 if error == "locked" else 401
+            return web.json_response({"ok": False, "error": error}, status=status,
+                                     headers={"Cache-Control": "no-store"})
+        if request.query.get("client") == "desktop" and response.status == 303:
+            response.set_status(200)
+            response.headers.pop("Location", None)
+            response.content_type = "application/json"
+            response.text = json.dumps({"ok": True})
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     async def logout(request: web.Request) -> web.Response:

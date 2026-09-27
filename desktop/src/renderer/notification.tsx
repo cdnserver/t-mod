@@ -7,7 +7,7 @@ import mark from "./assets/blackbird/master.png";
 import "./notification.css";
 
 declare global { interface Window { blackbirdNotification?: {
-  onItem(listener: (value: { item: DesktopNotification; sound: boolean }) => void): () => void;
+  onItem(listener: (value: { item: DesktopNotification; sound: boolean; reduced?: boolean }) => void): () => void;
   action(action: "open" | "dismiss"): void;
 } } }
 
@@ -16,8 +16,9 @@ function Popup() {
   const [item, setItem] = useState<DesktopNotification | undefined>(preview ? { id: 1, severity: "info", kind: "preview", title: "Ваше пространство готово",
     body: "Новые материалы появились в Сенате. Откройте Blackbird, чтобы продолжить.", route: null, read_at: null, created_at: new Date().toISOString() } : undefined);
   const [hover, setHover] = useState(false);
+  const [reduced, setReduced] = useState(false);
   useEffect(() => window.blackbirdNotification?.onItem(value => {
-    setItem(value.item); setHover(false);
+    setItem(value.item); setHover(false); setReduced(value.reduced === true);
     if (value.sound) {
       const audio = new AudioContext();
       const oscillator = audio.createOscillator(), volume = audio.createGain();
@@ -34,7 +35,7 @@ function Popup() {
     return () => clearTimeout(timer);
   }, [item, hover, preview]);
   if (!item) return null;
-  return <article key={item.id} className={`bb-popup ${item.severity}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+  return <article key={item.id} className={`bb-popup ${item.severity} ${reduced ? "reduced" : ""}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
     <header><img src={mark} alt=""/><span>BLACKBIRD <i/> {item.severity === "critical" ? "ВАЖНО" : "СОБЫТИЕ"}</span><button aria-label="Скрыть" onClick={() => window.blackbirdNotification?.action("dismiss")}>×</button></header>
     <button className="bb-popup-body" onClick={() => window.blackbirdNotification?.action("open")}><strong>{item.title}</strong><p>{item.body}</p><small>Открыть в Blackbird <b>↗</b></small></button>
   </article>;

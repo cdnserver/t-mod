@@ -26,3 +26,20 @@ Verification: executable mirror/payload tests, login-state rendering tests, type
 checking and production JS build. Live Electron cookie propagation, native Windows
 resume, and cross-service login still need a Windows integration run before release.
 Network/server outages remain possible; this does not promise permanent connectivity.
+
+## Redirect regression (p7)
+
+An actual Electron 43 Windows probe reproduced `Redirect was cancelled` on
+`session.fetch(..., {redirect: "manual"})` when the production login endpoint
+returned a 303. The client previously caught this as a transport outage, including
+ordinary credential errors. Login now follows legacy redirects, reads the final
+login-error URL when Electron exposes it, and still requires a fresh authenticated
+bootstrap before success. Some Electron responses have an empty URL; those cannot
+prove login success and are still checked against the fresh server projection.
+The updated backend returns JSON for `client=desktop`, retaining the session
+cookie, while browser login retains its usual redirects. Both server versions
+remain supported by the client. No cached identity or client flag grants access.
+
+Blackbird scene motion is governed by its explicit `reduceMotion` preference,
+not the Windows animation switch. Public T-Mod's system accessibility policy is
+unchanged. Custom notifications receive the same explicit client preference.

@@ -172,7 +172,9 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
             data = await response.json()
             self.assertTrue(data["delivery_failed"])
             response = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "12345678", "code": recovery[0], "challenge": data["challenge"]}, allow_redirects=False)
-            self.assertEqual(response.status, 303)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.json(), {"ok": True})
+            self.assertIn("tmod_account_session", response.cookies)
 
     def test_restarted_enrollment_invalidates_old_confirmation(self):
         old = security.begin_enrollment(77, 42, "totp", "operator")
@@ -218,7 +220,25 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("tmod_account_session", response.cookies)
             challenge = (await response.json())["challenge"]
             response = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "12345678", "challenge": challenge, "code": recovery[0]}, allow_redirects=False)
-            self.assertEqual(response.status, 303)
+            self.assertEqual(response.status, 200)
             self.assertIn("tmod_account_session", response.cookies)
             payload = _verify(response.cookies["tmod_account_session"].value, purpose="session")
             self.assertTrue(security.session_allowed(77, 42, payload))
+
+    async def test_desktop_json_login_preserves_cookie_and_browser_redirect(self):
+        from modules.consensus_web import create_consensus_web_app
+        member = SimpleNamespace(id=42, display_name="Operator", guild_permissions=SimpleNamespace(administrator=True), roles=[])
+        guild = SimpleNamespace(id=77, name="Test", get_member=lambda user: member)
+        bot = SimpleNamespace(get_guild=lambda gid: guild)
+        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77))) as client:
+            bad = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "00000000"}, allow_redirects=False)
+            self.assertEqual(bad.status, 401)
+            self.assertEqual((await bad.json())["error"], "invalid")
+            self.assertNotIn("tmod_account_session", bad.cookies)
+            accepted = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "12345678"}, allow_redirects=False)
+            self.assertEqual(accepted.status, 200)
+            self.assertEqual(await accepted.json(), {"ok": True})
+            self.assertIn("tmod_account_session", accepted.cookies)
+            self.assertNotIn("Location", accepted.headers)
+            browser = await client.post("/auth/login", data={"login": "operator", "pin": "12345678"}, allow_redirects=False)
+            self.assertEqual(browser.status, 303)
