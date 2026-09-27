@@ -5,7 +5,7 @@
   display: grid; place-items: center; background: #010204;
   pointer-events: none;
 }
-.bb-prelude.exiting { animation: bb-prelude-release 2.2s cubic-bezier(.4,0,.2,1) both; }
+.bb-prelude.exiting { animation: bb-prelude-release 2.4s cubic-bezier(.4,0,.2,1) both; }
 .bb-prelude-stars { position: absolute; inset: 0; opacity: .28; background:
   radial-gradient(circle at 13% 23%, #8195a8 0 .6px, transparent 1.2px),
   radial-gradient(circle at 79% 29%, #8195a8 0 .8px, transparent 1.5px),
@@ -17,7 +17,7 @@
 .bb-prelude.black-pause { background: #000; }
 .bb-prelude.black-pause .bb-prelude-signature,
 .bb-prelude.black-pause .bb-prelude-depth i,
-.bb-prelude.black-pause .bb-prelude-depth b { animation: bb-prelude-blackout .9s ease both; }
+.bb-prelude.black-pause .bb-prelude-depth b { animation: bb-prelude-blackout 1.2s ease both; }
 .bb-prelude.black-pause .bb-prelude-stars { opacity: 0; }
 .bb-prelude.black-pause .bb-prelude-vignette { opacity: 0; }
 @keyframes bb-prelude-blackout { from { opacity: 1; } to { opacity: 0; } }
@@ -28,19 +28,25 @@
 }
 .bb-prelude-depth i {
   background: radial-gradient(ellipse at 25% 45%, rgba(104,130,154,.17), transparent 46%);
-  animation: bb-prelude-grazing-light 7.8s cubic-bezier(.22,.61,.36,1) both;
+  animation: bb-prelude-grazing-light 12.6s cubic-bezier(.22,.61,.36,1) both;
 }
 .bb-prelude-depth b {
   background: radial-gradient(ellipse at 64% 52%, rgba(191,211,227,.05), transparent 36%);
-  animation: bb-prelude-reflected-light 7.8s ease both;
+  animation: bb-prelude-reflected-light 12.6s ease both;
 }
 .bb-prelude-signature {
   position: relative; width: min(76vw, 1420px); aspect-ratio: 3;
-  opacity: 0; animation: bb-prelude-arrive 7.8s linear both;
+  opacity: 0; animation: bb-prelude-arrive 1.8s ease both;
 }
-.bb-prelude-signature img {
+.bb-prelude-artwork {
   display: block; width: 100%; height: 100%; object-fit: contain;
-  mix-blend-mode: screen; opacity: .68;
+  mix-blend-mode: screen; opacity: .86;
+}
+.bb-prelude-glyph { opacity: 0; transform-box: fill-box; transform-origin: center; animation: bb-prelude-letter 1.9s cubic-bezier(.16,1,.3,1) var(--glyph-delay) both; }
+@keyframes bb-prelude-letter {
+  from { opacity: 0; transform: translateY(9px) scaleY(.94); }
+  55% { opacity: .65; }
+  to { opacity: 1; transform: translateY(0) scaleY(1); }
 }
 .bb-prelude-light {
   position: absolute; inset: 0;
@@ -48,18 +54,15 @@
   -webkit-mask-size: contain; -webkit-mask-position: center; -webkit-mask-repeat: no-repeat;
   background: linear-gradient(105deg, transparent 15%, rgba(178,198,216,.1) 30%, rgba(227,238,247,.9) 48%, rgba(178,198,216,.15) 66%, transparent 83%);
   background-size: 300% 100%;
-  animation: bb-prelude-light 6.7s cubic-bezier(.22,.61,.36,1) .3s both;
+  animation: bb-prelude-light 5.4s cubic-bezier(.22,.61,.36,1) 3.8s both;
 }
 .bb-prelude-vignette {
   position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(ellipse at 50% 49%, transparent 12%, rgba(1,2,4,.4) 65%, #010204 100%);
 }
 @keyframes bb-prelude-arrive {
-  0%, 8% { opacity: 0; }
-  18% { opacity: .1; }
-  40% { opacity: .9; }
-  48%, 63% { opacity: 1; }
-  100% { opacity: 1; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 @keyframes bb-prelude-light {
   0% { background-position: 100% 0; opacity: 0; }
@@ -87,6 +90,7 @@
 .blackbird-launch.reduced .bb-prelude-signature { animation: bb-prelude-static 1.6s ease both; animation-duration: 1.6s !important; }
 .bb-prelude.reduced .bb-prelude-light,
 .bb-prelude.reduced .bb-prelude-depth { display: none; }
+.bb-prelude.reduced .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }
 @keyframes bb-prelude-static { from { opacity: 0; } to { opacity: 1; } }
 .bb-prelude-loading {
   position: absolute; top: calc(50% + clamp(48px, 7vw, 100px));
@@ -105,4 +109,5 @@
 @keyframes bb-prelude-loading-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .bb-prelude-light, .bb-prelude-depth { display: none; }
+  .bb-prelude-glyph { animation: none !important; opacity: 1; transform: none; }
 }

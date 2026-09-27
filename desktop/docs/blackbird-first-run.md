@@ -1,10 +1,13 @@
 # Blackbird · Windows first run and notifications
 
-The publisher scene runs for at least seven seconds even with cached assets.
-After five seconds and real preparation it fades to black, then holds this
-phase for two seconds (including the fade). Slow loading postpones this phase,
-so the black pause is never skipped. After the minimum interval, a long dissolve opens
-the lunar keyboard-gated launch screen. Keyboard input cannot bypass the minimum.
+The publisher scene holds the signature for ten seconds even with cached assets.
+Its original artwork is revealed in staggered mask cells, followed by a soft
+light pass. After ten seconds and real preparation it fades to black, then
+holds this phase for 2.6 seconds (including the fade). Slow loading postpones
+this phase, so the black pause is never skipped. A 2.4-second dissolve opens
+the lunar keyboard-gated launch screen: fifteen seconds total with cached
+assets. Keyboard input cannot bypass the minimum. Reduced motion shows the
+complete signature without staggered movement but preserves the pause.
 Graphics preparation falls back after 12 seconds; font, image and initial
 connection preparation settle after 15 seconds rather than blocking indefinitely.
 

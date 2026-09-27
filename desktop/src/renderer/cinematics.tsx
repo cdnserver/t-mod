@@ -8,6 +8,7 @@ import { BlackbirdMoon } from "./BlackbirdMoon";
 import { BlackbirdPrelude } from "./BlackbirdPrelude";
 import { useBlackbirdPreload } from "./useBlackbirdPreload";
 import type { PreloadStatus } from "./blackbird-preload";
+import { BLACKBIRD_IDENT_TIMING } from "./blackbird-preload";
 
 type StopSound = () => void;
 
@@ -367,22 +368,22 @@ export function CinematicLaunch({ name, reduced, hold = false, onContinue, conne
   const preparation = useBlackbirdPreload(desktopProduct.privateEdition, connectionReady, moon);
   useEffect(() => {
     if (!prelude) return;
-    const blackout = window.setTimeout(() => setBlackoutElapsed(true), 5000);
-    const timer = window.setTimeout(() => setMinimumElapsed(true), 7000);
+    const blackout = window.setTimeout(() => setBlackoutElapsed(true), BLACKBIRD_IDENT_TIMING.visibleMs);
+    const timer = window.setTimeout(() => setMinimumElapsed(true), BLACKBIRD_IDENT_TIMING.minimumMs);
     return () => { window.clearTimeout(timer); window.clearTimeout(blackout); };
-  }, [prelude, reduced]);
+  }, [prelude]);
   useEffect(() => {
     if (prelude && blackoutElapsed && preparation.ready) setBlackPause(true);
   }, [prelude, blackoutElapsed, preparation.ready]);
   useEffect(() => {
     if (!blackPause) return;
-    const timer = window.setTimeout(() => setBlackHoldElapsed(true), 2000);
+    const timer = window.setTimeout(() => setBlackHoldElapsed(true), BLACKBIRD_IDENT_TIMING.blackHoldMs);
     return () => window.clearTimeout(timer);
   }, [blackPause]);
   useEffect(() => {
     if (!prelude || !minimumElapsed || !preparation.ready || !blackHoldElapsed) return;
     setPreludeExiting(true);
-    const timer = window.setTimeout(() => setPrelude(false), reduced ? 400 : 2200);
+    const timer = window.setTimeout(() => setPrelude(false), reduced ? BLACKBIRD_IDENT_TIMING.reducedDissolveMs : BLACKBIRD_IDENT_TIMING.dissolveMs);
     return () => window.clearTimeout(timer);
   }, [prelude, minimumElapsed, preparation.ready, blackHoldElapsed, reduced]);
   useEffect(() => {
