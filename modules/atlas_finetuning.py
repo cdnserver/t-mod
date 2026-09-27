@@ -218,6 +218,7 @@ def prepare_candidates(
         "too_short": 0,
         "too_large": 0,
         "duplicate": 0,
+        "retrieval_refusal": 0,
         "project_scope_mismatch": 0,
         "agent_scope_mismatch": 0,
         "invalid_scope": 0,
@@ -264,6 +265,14 @@ def prepare_candidates(
             continue
         if len(user_text) > 20_000 or len(answer_text) > 40_000:
             rejected["too_large"] += 1
+            continue
+        # Never teach the model to answer with its internal retrieval state.
+        # Use the same canonical detector as the online delivery guard so
+        # newline-wrapped and softer provider variants are rejected too.
+        from modules.atlas_ai import _atlas_answer_is_retrieval_refusal
+
+        if _atlas_answer_is_retrieval_refusal(answer_text):
+            rejected["retrieval_refusal"] += 1
             continue
         checksum = hashlib.sha256(
             f"{user_text.casefold()}\0{answer_text.casefold()}".encode("utf-8")

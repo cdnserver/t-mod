@@ -3517,7 +3517,22 @@ def register_atlas_web_routes(
                 status=503,
             )
         source_url = str(payload.get("source_url") or "").strip()
-        if forum_sync_runner.is_configured_listing_url(source_url):
+        explicit_feed_options = any(
+            key in payload
+            for key in (
+                "server_code",
+                "faction_code",
+                "visibility_scope",
+                "federation_scope",
+                "confirm_platform_scope",
+                "knowledge_domain",
+                "corpus_kind",
+            )
+        )
+        if (
+            forum_sync_runner.is_configured_listing_url(source_url)
+            and not explicit_feed_options
+        ):
             if not forum_sync_runner.trigger():
                 return web.json_response(
                     {

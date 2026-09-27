@@ -783,6 +783,48 @@ class AtlasRepositoryTests(unittest.TestCase):
 
         self.assertIn(int(old_complaint["id"]), {int(item["id"]) for item in sources})
 
+    def test_searchable_corpus_ranks_multi_term_cases_and_reserves_reference_sources(self) -> None:
+        dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
+        organization_id = int(dashboard["organization"]["id"])
+        relevant_case = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Рассмотрено — дело 001",
+            content=(
+                "Проверка ареста и порядок обжалования подробно разобраны "
+                "в материалах дела."
+            ),
+            visibility_scope="server",
+        )
+        law = atlas_repository.atlas_add_knowledge(
+            organization_id,
+            42,
+            title="Уголовный кодекс штата San Andreas",
+            content="Нормативная база с действующими составами и процедурами.",
+            visibility_scope="server",
+        )
+        for index in range(610):
+            single_term = ("проверка", "арест", "обжалование")[index % 3]
+            atlas_repository.atlas_add_knowledge(
+                organization_id,
+                42,
+                title=f"Новая тема форума {index}",
+                content=f"Краткое упоминание: {single_term}. Материал обновлён.",
+                visibility_scope="server",
+            )
+
+        sources = atlas_repository.atlas_searchable_knowledge_sources(
+            organization_id,
+            server_code="phoenix-15",
+            faction_code="lspd",
+            query_terms=("проверка", "арест", "обжалование"),
+            limit=40,
+        )
+        source_ids = {int(item["id"]) for item in sources}
+
+        self.assertIn(int(relevant_case["id"]), source_ids)
+        self.assertIn(int(law["id"]), source_ids)
+
     def test_knowledge_is_separated_by_server_and_faction(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Пользователь")
         organization_id = int(dashboard["organization"]["id"])
@@ -1355,6 +1397,12 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.intent, "drafting")
         self.assertEqual(profile.reasoning_effort, "medium")
         self.assertIn("жёсткий предел — 70 слов", _response_delivery_contract(profile, question))
+
+    def test_default_answer_contract_is_compact_without_requesting_a_deep_analysis(self) -> None:
+        question = "Что делать, если остановили?"
+        profile = _atlas_task_profile(question, mode="balanced")
+
+        self.assertIn("жёсткий предел — 60 слов", _response_delivery_contract(profile, question))
 
     def test_expensive_legacy_default_is_downgraded_to_economy_model(self) -> None:
         with patch.dict(
@@ -3183,15 +3231,18 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks, [result["answer"]])
 
     async def test_source_free_stream_does_not_flash_retrieval_refusal(self) -> None:
+        active_refusal = [""]
+
         async def completion(request: web.Request) -> web.StreamResponse | web.Response:
             body = await request.json()
+            refusal = active_refusal[0]
             if not body.get("stream"):
                 return web.json_response(
                     {
                         "choices": [
                             {
                                 "message": {
-                                    "content": "В библиотеке Atlas нет точной статьи по запросу."
+                                    "content": refusal
                                 }
                             }
                         ]
@@ -3199,9 +3250,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 )
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
-            # Split the diagnostic like a real token stream: the first
-            # fragment alone is not enough for the final refusal regex.
-            for part in ("В библиотеке Atlas ", "нет точной статьи по запросу."):
+            # Split a diagnostic like a real token stream, before its text
+            # can be classified by the full refusal recognizer.
+            for part in (refusal[:20], refusal[20:]):
                 payload = json.dumps(
                     {"choices": [{"delta": {"content": part}}]},
                     ensure_ascii=False,
@@ -3226,28 +3277,39 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             referer="",
             title="Atlas",
         )
-        chunks: list[str] = []
-
-        async def receive(text: str) -> None:
-            chunks.append(text)
-
         try:
             with patch("modules.atlas_ai.atlas_ai_config", return_value=config), patch(
                 "modules.atlas_ai.atlas_search",
                 AsyncMock(return_value=[]),
             ):
-                result = await atlas_answer_stream(
-                    77,
-                    "Скажи коротко, что делать.",
-                    on_delta=receive,
-                )
+                for refusal in (
+                    "В библиотеке Atlas нет точной статьи по запросу.",
+                    "В этом контексте нет информации по запросу.",
+                    "По запросу ничего не найдено в источниках.",
+                    "Атлас не знает ответа по этому вопросу.",
+                ):
+                    active_refusal[0] = refusal
+                    chunks: list[str] = []
+
+                    async def receive(text: str) -> None:
+                        chunks.append(text)
+
+                    result = await atlas_answer_stream(
+                        77,
+                        "Скажи коротко, что делать.",
+                        on_delta=receive,
+                    )
+                    joined = "".join(chunks).casefold()
+                    self.assertNotIn("библиотек", joined)
+                    self.assertNotIn("контексте нет", joined)
+                    self.assertNotIn("ничего не найдено", joined)
+                    self.assertNotIn("атлас не знает", joined)
+                    self.assertTrue(
+                        any(term in result["answer"].casefold() for term in ("уточни", "опиши"))
+                    )
+                    self.assertEqual(chunks, [result["answer"]])
         finally:
             await server.close()
-
-        joined = "".join(chunks)
-        self.assertNotIn("библиотек", joined.casefold())
-        self.assertNotIn("статьи по запросу", joined.casefold())
-        self.assertEqual(chunks, [result["answer"]])
 
     async def test_partial_stream_continues_after_provider_token_limit(self) -> None:
         requests: list[dict] = []

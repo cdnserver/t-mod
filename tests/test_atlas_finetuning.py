@@ -51,14 +51,17 @@ class AtlasFinetuningTests(unittest.TestCase):
         self.assertNotIn("10.8.0.3", text)
         self.assertEqual(set(labels), {"discord_id", "email", "ip_address", "secret"})
 
-    def test_deduplicates_and_marks_low_value_answers_for_review(self) -> None:
+    def test_deduplicates_and_rejects_retrieval_refusal_answers(self) -> None:
         rows = [
             candidate(1, 10, "Что такое УК?", "Этой информации нет в библиотеке Atlas."),
-            candidate(2, 11, "Что такое УК?", "Этой информации нет в библиотеке Atlas."),
+            candidate(2, 11, "Что такое УК?", "В библиотеке Atlas\nнет точной статьи."),
+            candidate(3, 12, "Что такое УК?", "УК — это Уголовный кодекс штата San Andreas."),
+            candidate(4, 13, "Что такое УК?", "УК — это Уголовный кодекс штата San Andreas."),
         ]
         prepared, rejected = prepare_candidates(rows)
         self.assertEqual(len(prepared), 1)
-        self.assertIn("low_value_review", prepared[0].flags)
+        self.assertEqual(prepared[0].candidate_id, 3)
+        self.assertEqual(rejected["retrieval_refusal"], 2)
         self.assertEqual(rejected["duplicate"], 1)
 
     def test_keeps_whole_conversations_out_of_training_split(self) -> None:

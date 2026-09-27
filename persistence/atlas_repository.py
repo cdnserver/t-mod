@@ -1542,7 +1542,9 @@ def atlas_searchable_knowledge_sources(
         "судебн",
     )
     with connect_readonly() as con:
-        batches: list[list[Any]] = []
+        identifier_rows: list[Any] = []
+        title_rows: list[Any] = []
+        content_rows: list[Any] = []
         if clean_terms:
             # Static IDs, case numbers and forum topic IDs are high-signal
             # identifiers.  A generic content batch is capped and ordered by
@@ -1573,8 +1575,7 @@ def atlas_searchable_knowledge_sources(
                 for term in identifier_terms:
                     pattern = f"%{term}%"
                     rank_params.extend((pattern, pattern))
-                batches.append(
-                    con.execute(
+                identifier_rows = con.execute(
                         f"""
                         SELECT * FROM atlas_knowledge_sources
                         WHERE {scope_sql} AND ({identifier_match_sql})
@@ -1588,19 +1589,25 @@ def atlas_searchable_knowledge_sources(
                             min(160, clean_limit),
                         ),
                     ).fetchall()
-                )
             title_sql = " OR ".join("lower(title) LIKE ?" for _ in clean_terms)
-            batches.append(
-                con.execute(
+            title_rank_sql = " + ".join(
+                "CASE WHEN lower(title) LIKE ? THEN 1 ELSE 0 END"
+                for _ in clean_terms
+            )
+            title_rows = con.execute(
                     f"""
                     SELECT * FROM atlas_knowledge_sources
                     WHERE {scope_sql} AND ({title_sql})
-                    ORDER BY updated_at DESC, id DESC
+                    ORDER BY ({title_rank_sql}) DESC, updated_at DESC, id DESC
                     LIMIT ?
                     """,
-                    (*scope_params, *(f"%{term}%" for term in clean_terms), min(220, clean_limit)),
+                    (
+                        *scope_params,
+                        *(f"%{term}%" for term in clean_terms),
+                        *(f"%{term}%" for term in clean_terms),
+                        min(220, clean_limit),
+                    ),
                 ).fetchall()
-            )
             if include_content_search:
                 # A forum thread often has a neutral title (an ID, a player's
                 # name, or just "Рассмотрено"), while the decisive legal wording
@@ -1611,20 +1618,32 @@ def atlas_searchable_knowledge_sources(
                 # already receives the primary code/ruleset from the reference
                 # batch and must not scan hundreds of megabytes of forum text.
                 content_sql = " OR ".join("lower(content_text) LIKE ?" for _ in clean_terms)
-                batches.append(
-                    con.execute(
+                content_rank_sql = " + ".join(
+                    "CASE WHEN lower(title) LIKE ? THEN 5 ELSE 0 END + "
+                    "CASE WHEN lower(content_text) LIKE ? THEN 1 ELSE 0 END"
+                    for _ in clean_terms
+                )
+                content_rank_params = tuple(
+                    value
+                    for term in clean_terms
+                    for value in (f"%{term}%", f"%{term}%")
+                )
+                content_rows = con.execute(
                         f"""
                         SELECT * FROM atlas_knowledge_sources
                         WHERE {scope_sql} AND ({content_sql})
-                        ORDER BY updated_at DESC, id DESC
+                        ORDER BY ({content_rank_sql}) DESC, updated_at DESC, id DESC
                         LIMIT ?
                         """,
-                        (*scope_params, *(f"%{term}%" for term in clean_terms), min(600, clean_limit)),
+                        (
+                            *scope_params,
+                            *(f"%{term}%" for term in clean_terms),
+                            *content_rank_params,
+                            min(600, clean_limit),
+                        ),
                     ).fetchall()
-                )
         reference_sql = " OR ".join("lower(title) LIKE ?" for _ in reference_markers)
-        batches.append(
-            con.execute(
+        reference_rows = con.execute(
                 f"""
                 SELECT * FROM atlas_knowledge_sources
                 WHERE {scope_sql} AND ({reference_sql})
@@ -1637,9 +1656,7 @@ def atlas_searchable_knowledge_sources(
                     min(520, clean_limit),
                 ),
             ).fetchall()
-        )
-        batches.append(
-            con.execute(
+        recent_rows = con.execute(
                 f"""
                 SELECT * FROM atlas_knowledge_sources
                 WHERE {scope_sql}
@@ -1648,7 +1665,55 @@ def atlas_searchable_knowledge_sources(
                 """,
                 (*scope_params, min(360, clean_limit)),
             ).fetchall()
+
+    def _as_source(row: Any) -> dict[str, Any]:
+        return _row(row)
+
+    def _relevance(source: dict[str, Any]) -> tuple[int, int, str, int]:
+        title = str(source.get("title") or "").casefold()
+        content = str(source.get("content_text") or "").casefold()
+        title_hits = sum(term in title for term in clean_terms)
+        content_hits = sum(term in content for term in clean_terms)
+        identifier_hits = sum(
+            bool(re.fullmatch(r"\d{3,}(?:\.\d+)*", term))
+            and (term in title or term in content)
+            for term in clean_terms
         )
+        return (
+            identifier_hits * 100 + title_hits * 5 + content_hits,
+            title_hits,
+            str(source.get("updated_at") or ""),
+            int(source.get("id") or 0),
+        )
+
+    def _ranked(rows: list[Any]) -> list[dict[str, Any]]:
+        unique: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            source = _as_source(row)
+            unique.setdefault(int(source["id"]), source)
+        return sorted(unique.values(), key=_relevance, reverse=True)
+
+    direct_rows = _ranked([*identifier_rows, *title_rows, *content_rows])
+    reference_sources = _ranked(reference_rows)
+    recent_sources = _ranked(recent_rows)
+
+    # Keep governing documents in the bounded canonical window even when a
+    # busy forum section produces hundreds of newer body-text matches.  The
+    # SQL above already ranks multi-term matches first; this reserve protects
+    # the separate reference lane from being crowded out before downstream
+    # legal/ruleset extraction and domain filtering can see it.
+    if clean_terms:
+        reference_quota = min(len(reference_sources), max(1, clean_limit // 4))
+        direct_quota = max(0, clean_limit - reference_quota)
+        batches = [
+            direct_rows[:direct_quota],
+            reference_sources[:reference_quota],
+            direct_rows[direct_quota:],
+            reference_sources[reference_quota:],
+            recent_sources,
+        ]
+    else:
+        batches = [reference_sources, recent_sources]
     result: list[dict[str, Any]] = []
     seen: set[int] = set()
     for batch in batches:
