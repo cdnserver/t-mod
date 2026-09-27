@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from pypdf import PdfReader
 
 import storage
+from persistence import telegram_repository as telegram_storage
 from modules.consensus_admin_web import _json_ready
 from modules.consensus_core import (
     LiveConsensusSession,
@@ -1419,6 +1420,11 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             login_text = await login_page.text()
             self.assertIn("T·ID", login_text)
             self.assertIn('name="pin"', login_text)
+            self.assertIn('id="telegram-login"', login_text)
+            self.assertIn('id="telegram-login-code"', login_text)
+            login_script = await client.get("/assets/login.js")
+            self.assertEqual(login_script.status, 200)
+            self.assertIn('location.hash === "#telegram-login"', await login_script.text())
 
             host_redirect = await client.get("/host", allow_redirects=False)
             self.assertEqual(host_redirect.status, 303)
@@ -1863,6 +1869,56 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(delegated.status, 303)
             self.assertEqual(delegated.headers["Location"], "/admin")
+        finally:
+            await client.close()
+
+    async def test_telegram_one_time_code_logs_into_the_linked_tmod_account(self) -> None:
+        storage.add_profile_character(77, 42, "Operator Test", "42001")
+        storage.configure_web_credential(77, 42, "operator", "12345678")
+        link = telegram_storage.create_link_challenge(77, 42)
+        linked = telegram_storage.consume_link_challenge(
+            link["code"],
+            guild_id=77,
+            telegram_user_id=900,
+            telegram_chat_id=901,
+            telegram_display_name="Operator Telegram",
+        )
+        self.assertTrue(linked["ok"])
+        challenge = telegram_storage.create_telegram_login_code(77, 42, 900)
+
+        member = SimpleNamespace(
+            id=42,
+            display_name="Оператор",
+            guild_permissions=SimpleNamespace(administrator=False),
+            roles=[],
+        )
+        guild = SimpleNamespace(
+            id=77,
+            name="Товарищество",
+            get_member=lambda user_id: member if user_id == 42 else None,
+            fetch_member=AsyncMock(return_value=member),
+        )
+        bot = SimpleNamespace(get_guild=lambda guild_id: guild if guild_id == 77 else None)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            accepted = await client.post(
+                "/auth/telegram?next=/reactor",
+                data={"code": challenge["code"]},
+                allow_redirects=False,
+            )
+            self.assertEqual(accepted.status, 303)
+            self.assertEqual(accepted.headers["Location"], "/reactor")
+            self.assertIn("tmod_account_session=", accepted.headers["Set-Cookie"])
+
+            replay = await client.post(
+                "/auth/telegram?next=/reactor",
+                data={"code": challenge["code"]},
+                allow_redirects=False,
+            )
+            self.assertEqual(replay.status, 303)
+            self.assertIn("error=telegram_invalid", replay.headers["Location"])
         finally:
             await client.close()
 

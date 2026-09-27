@@ -2,6 +2,8 @@
 
 const params = new URLSearchParams(location.search);
 const form = document.querySelector("#credential-form");
+const telegramForm = document.querySelector("#telegram-login-form");
+const telegramLogin = document.querySelector("#telegram-login");
 const pin = document.querySelector("#credential-pin");
 const visibility = document.querySelector("#pin-visibility");
 const feedback = document.querySelector("#login-feedback");
@@ -24,13 +26,21 @@ const destinations = {
 const errors = {
   invalid: "Логин, PIN или пароль не подошли. Проверьте данные и повторите вход.",
   locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",
+  telegram_invalid: "Код Telegram неверный, просрочен или уже использован. Запросите новый в боте.",
+  account_missing: "Для этого T‑Mod аккаунта ещё не создан веб-вход. Настройте его через /account у бота.",
+  membership: "Этот раздел доступен только участникам сервера Товарищества.",
   reset_required: "После трёх неверных попыток вход заблокирован. Напишите боту /reset в личных сообщениях и задайте новый PIN.",
   administrator: "Эта учётная запись действует, но административных прав в Discord нет.",
   atlas_access: "Для этого раздела нужен отдельный доступ администратора.",
 };
 
 form.action = `/auth/login?next=${encodeURIComponent(next)}`;
+telegramForm.action = `/auth/telegram?next=${encodeURIComponent(next)}`;
 context.textContent = destinations[next] || "После входа сервис определит доступные вам возможности.";
+if (location.hash === "#telegram-login") {
+  telegramLogin.open = true;
+  requestAnimationFrame(() => document.querySelector("#telegram-login-code").focus());
+}
 if (errors[params.get("error")]) {
   feedback.textContent = errors[params.get("error")];
   feedback.hidden = false;
@@ -83,4 +93,9 @@ for (const input of [pin, form.querySelector('[name="login"]')]) input.addEventL
   document.querySelector("#factor-challenge").value = "";
   document.querySelector("#factor-code").value = "";
   document.querySelector("#factor-field").hidden = true;
+});
+
+telegramForm.addEventListener("submit", () => {
+  telegramForm.classList.add("submitting");
+  telegramForm.querySelector("button[type='submit']").disabled = true;
 });

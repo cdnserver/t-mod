@@ -56,6 +56,41 @@ class TelegramRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(result["error"], "telegram_already_linked")
 
+    def _link_telegram(self, discord_user_id: int = 42, telegram_user_id: int = 900) -> None:
+        challenge = telegram.create_link_challenge(77, discord_user_id)
+        result = telegram.consume_link_challenge(
+            challenge["code"],
+            guild_id=77,
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=901,
+            telegram_username="atlas_user",
+            telegram_display_name="Atlas User",
+        )
+        self.assertTrue(result["ok"])
+
+    def test_telegram_login_code_is_one_time_and_only_for_linked_identity(self) -> None:
+        self._link_telegram()
+        with self.assertRaisesRegex(ValueError, "telegram_account_not_linked"):
+            telegram.create_telegram_login_code(77, 42, 901)
+
+        challenge = telegram.create_telegram_login_code(77, 42, 900)
+        self.assertEqual(len(challenge["code"]), 8)
+        self.assertTrue(challenge["code"].isascii() and challenge["code"].isdigit())
+        authenticated = telegram.consume_telegram_login_code(challenge["code"], guild_id=77)
+        self.assertTrue(authenticated["ok"])
+        self.assertEqual(authenticated["discord_user_id"], 42)
+        self.assertEqual(authenticated["telegram_user_id"], 900)
+        replay = telegram.consume_telegram_login_code(challenge["code"], guild_id=77)
+        self.assertEqual(replay["error"], "invalid_or_expired_code")
+
+    def test_telegram_login_code_cannot_be_reissued_in_a_short_burst(self) -> None:
+        self._link_telegram()
+        first = telegram.create_telegram_login_code(77, 42, 900)
+        with self.assertRaisesRegex(ValueError, "telegram_login_code_rate_limited"):
+            telegram.create_telegram_login_code(77, 42, 900)
+        # A rate-limited request must not invalidate the code already delivered.
+        self.assertTrue(telegram.consume_telegram_login_code(first["code"], guild_id=77)["ok"])
+
     def test_thread_mapping_round_trips(self) -> None:
         dashboard = atlas_repository.atlas_dashboard(77, 42, "Test")
         organization_id = int(dashboard["organization"]["id"])

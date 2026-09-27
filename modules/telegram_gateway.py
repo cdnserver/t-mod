@@ -46,18 +46,42 @@ _POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "true").lower() in {
 _COMMAND_RE = re.compile(r"^\s*/(?P<name>[a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\s+(?P<args>.*))?$", re.DOTALL)
 _ATLAS_RE = re.compile(r"^\s*атлас\s*2?\s*[,;:—–-]\s*(?P<question>.+)$", re.IGNORECASE | re.DOTALL)
 _MAX_TELEGRAM_TEXT = 3900
+_REACTOR_CONNECTION_URL = "https://tvr.lat/login?next=%2Freactor"
 _MAIN_KEYBOARD = {
-    "keyboard": [
-        [{"text": "🤖 Atlas"}, {"text": "👤 Профиль"}],
-        [{"text": "🧩 Персонажи"}, {"text": "💳 Atlas Token"}],
-        [{"text": "🔔 Уведомления"}, {"text": "⚙ Настройки"}],
-        [{"text": "🆕 Новый диалог"}],
-        [{"text": "⌂ Главное меню"}],
-        [{"text": "❌ Выйти из Atlas"}],
+    "inline_keyboard": [
+        [
+            {"text": "🤖 Atlas", "callback_data": "menu:atlas"},
+            {"text": "👤 Профиль", "callback_data": "menu:profile"},
+        ],
+        [
+            {"text": "🗂 История", "callback_data": "menu:history"},
+            {"text": "🆕 Новый диалог", "callback_data": "menu:newchat"},
+        ],
+        [
+            {"text": "🧩 Персонажи", "callback_data": "menu:characters"},
+            {"text": "💳 Atlas Token", "callback_data": "menu:usage"},
+        ],
+        [
+            {"text": "🔔 Уведомления", "callback_data": "menu:notifications"},
+            {"text": "⚙ Настройки", "callback_data": "menu:settings"},
+        ],
+        [
+            {"text": "🔐 Код входа в T‑Mod", "callback_data": "menu:loginpin"},
+            {"text": "⌂ Главное меню", "callback_data": "menu:home"},
+        ],
     ],
-    "resize_keyboard": True,
-    "is_persistent": True,
-    "input_field_placeholder": "Выберите раздел или напишите вопрос…",
+}
+_CHAT_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🗂 История", "callback_data": "menu:history"},
+            {"text": "🆕 Новый диалог", "callback_data": "menu:newchat"},
+        ],
+        [
+            {"text": "⌂ Меню", "callback_data": "menu:home"},
+            {"text": "❌ Выйти из Atlas", "callback_data": "menu:stop"},
+        ],
+    ]
 }
 
 
@@ -129,6 +153,7 @@ class _TelegramApi:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self.session = session
         self.base_url = f"https://api.telegram.org/bot{_TOKEN}"
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def call(self, method: str, payload: dict[str, Any]) -> Any:
         async with self.session.post(
@@ -162,8 +187,134 @@ class _TelegramApi:
                 payload,
             )
 
+    async def send_temporary(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        ttl_seconds: int,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        """Send a sensitive one-time code and remove its message after expiry."""
+
+        payload: dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": str(text)[:_MAX_TELEGRAM_TEXT],
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        result = await self.call("sendMessage", payload)
+        message_id = int(result.get("message_id") or 0)
+        if message_id <= 0:
+            return
+
+        async def expire() -> None:
+            try:
+                await asyncio.sleep(max(60, min(600, int(ttl_seconds))))
+                await self.call(
+                    "deleteMessage",
+                    {"chat_id": int(chat_id), "message_id": message_id},
+                )
+            except (asyncio.CancelledError, Exception):
+                return
+
+        task = asyncio.create_task(expire())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def cancel_background_tasks(self) -> None:
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+
     async def typing(self, chat_id: int) -> None:
         await self.call("sendChatAction", {"chat_id": int(chat_id), "action": "typing"})
+
+    async def answer_callback(self, callback_id: str, text: str = "") -> None:
+        payload: dict[str, Any] = {"callback_query_id": str(callback_id)}
+        if text:
+            payload["text"] = str(text)[:180]
+        await self.call("answerCallbackQuery", payload)
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        await self.call(
+            "deleteMessage",
+            {"chat_id": int(chat_id), "message_id": int(message_id)},
+        )
+
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "text": str(text)[:_MAX_TELEGRAM_TEXT],
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        await self.call("editMessageText", payload)
+
+
+class _TelegramPanelApi:
+    """Edit the clicked dashboard message instead of stacking new menu posts."""
+
+    _EDIT_FALLBACK_ERRORS = (
+        "message is not modified",
+        "message can't be edited",
+        "message to edit not found",
+        "message_id_invalid",
+    )
+
+    def __init__(self, api: _TelegramApi, chat_id: int, message_id: int) -> None:
+        self._api = api
+        self._chat_id = int(chat_id)
+        self._message_id = int(message_id)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._api, name)
+
+    async def send(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        if int(chat_id) != self._chat_id or self._message_id <= 0:
+            await self._api.send(chat_id, text, reply_markup=reply_markup)
+            return
+        parts = _chunks(text)
+        try:
+            await self._api.edit_message_text(
+                self._chat_id,
+                self._message_id,
+                parts[0],
+                reply_markup=reply_markup,
+            )
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            if "message is not modified" in message:
+                return
+            if not any(error in message for error in self._EDIT_FALLBACK_ERRORS):
+                raise
+            try:
+                await self._api.delete_message(self._chat_id, self._message_id)
+            except Exception:
+                pass
+            await self._api.send(self._chat_id, text, reply_markup=reply_markup)
+            return
+        for part in parts[1:]:
+            await self._api.send(self._chat_id, part)
 
 
 async def _keep_typing(api: _TelegramApi, chat_id: int, stop: asyncio.Event) -> None:
@@ -240,7 +391,13 @@ async def _handle_notifications(api: _TelegramApi, *, chat_id: int, telegram_use
             marker = "●" if not item.get("read_at") else "○"
             lines.append(f"{marker} {item.get('title') or 'Событие'}\n  {item.get('body') or ''}")
         text = "\n".join(lines)
-    await api.send(chat_id, text, reply_markup=_MAIN_KEYBOARD)
+    notification_keyboard = {
+        "inline_keyboard": [
+            *[list(row) for row in _MAIN_KEYBOARD["inline_keyboard"]],
+            [{"text": "✅ Отметить прочитанными", "callback_data": "menu:read"}],
+        ]
+    }
+    await api.send(chat_id, text, reply_markup=notification_keyboard)
 
 
 async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
@@ -250,14 +407,22 @@ async def _handle_settings(api: _TelegramApi, *, chat_id: int, telegram_user: di
         int(telegram_user.get("id") or 0),
     )
     status = "подключён" if link else "не подключён"
+    settings_keyboard = {
+        "inline_keyboard": [
+            [{"text": "🔐 Получить одноразовый код входа", "callback_data": "menu:loginpin"}],
+            [{"text": "🔗 Управлять подключением", "url": _REACTOR_CONNECTION_URL}],
+            [{"text": "⌂ Главное меню", "callback_data": "menu:home"}],
+        ]
+    }
+    if not link:
+        settings_keyboard["inline_keyboard"].pop(0)
     await api.send(
         chat_id,
         "⚙ Настройки\n\n"
         f"Telegram ↔ T‑Mod: {status}\n"
-        "Изменить подключение можно в личном Реакторе → Подключения.\n\n"
-        "Atlas отвечает в режиме диалога после кнопки «🤖 Atlas».\n"
-        "Для выхода используйте /stop.",
-        reply_markup=_MAIN_KEYBOARD,
+        "Пароль T‑Mod не передаётся боту. Подключение можно проверить или изменить в личном Реакторе.\n\n"
+        "Atlas отвечает в режиме диалога после нажатия кнопки «🤖 Atlas».",
+        reply_markup=settings_keyboard,
     )
 
 
@@ -280,10 +445,16 @@ async def _handle_menu(
     if link is None:
         body = (
             f"👋 {_greeting()}, {greeting_name}!\n\n"
-            "Это ваш личный помощник T‑Mod. Здесь доступны профиль, персонажи и диалог с Atlas.\n\n"
-            "Статус аккаунта: ещё не подключён. Чтобы связать T‑Mod и Telegram, отправьте "
-            "`/tg-link` в личных сообщениях Discord-боту T‑Mod."
+            "Добро пожаловать в T‑Mod — личный центр уведомлений и Atlas.\n\n"
+            "Чтобы открыть профиль и безопасный вход по одноразовому коду, сначала свяжите Telegram "
+            "с аккаунтом T‑Mod в личном Реакторе. Пароль боту не нужен."
         )
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "🔗 Подключить Telegram", "url": _REACTOR_CONNECTION_URL}],
+                [{"text": "↻ Проверить подключение", "callback_data": "menu:home"}],
+            ]
+        }
     else:
         owner_id = int(link["discord_user_id"])
         profile, characters = await asyncio.to_thread(
@@ -310,7 +481,8 @@ async def _handle_menu(
             f"Персонажей: {character_count} · непрочитанных уведомлений: {int(inbox.get('unread') or 0)}\n\n"
             "Куда направимся? Выберите раздел в меню."
         )
-    await api.send(chat_id, body, reply_markup=_MAIN_KEYBOARD)
+        keyboard = _MAIN_KEYBOARD
+    await api.send(chat_id, body, reply_markup=keyboard)
 
 
 async def _handle_usage(api: _TelegramApi, *, chat_id: int, telegram_user: dict[str, Any]) -> None:
@@ -413,6 +585,324 @@ async def _handle_new_chat(api: _TelegramApi, *, chat_id: int, telegram_user: di
         "Нажмите «🤖 Atlas» и отправьте первый вопрос.",
         reply_markup=_MAIN_KEYBOARD,
     )
+
+
+async def _list_atlas_threads(owner_id: int) -> list[dict[str, Any]]:
+    spaces = await asyncio.to_thread(atlas_storage.atlas_user_spaces, _GUILD_ID, int(owner_id))
+    current_ids = {
+        int(space["id"]): str(space.get("display_name") or space.get("name") or "Пространство")
+        for space in spaces
+    }
+    threads: list[dict[str, Any]] = []
+    for organization_id, space_name in current_ids.items():
+        rows = await asyncio.to_thread(
+            atlas_storage.atlas_threads,
+            organization_id,
+            int(owner_id),
+            limit=200,
+        )
+        threads.extend({**row, "_space_name": space_name} for row in rows)
+    return sorted(
+        threads,
+        key=lambda row: (str(row.get("updated_at") or ""), int(row.get("id") or 0)),
+        reverse=True,
+    )[:40]
+
+
+async def _handle_atlas_history(
+    api: _TelegramApi,
+    *,
+    chat_id: int,
+    telegram_user: dict[str, Any],
+    offset: int = 0,
+) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт через /tg-link в Discord.", reply_markup=_MAIN_KEYBOARD)
+        return
+    owner_id = int(link["discord_user_id"])
+    if not await _access_allowed(_GUILD_ID, owner_id):
+        await api.send(chat_id, "Для этого аккаунта Atlas сейчас недоступен.", reply_markup=_MAIN_KEYBOARD)
+        return
+    threads = await _list_atlas_threads(owner_id)
+    if not threads:
+        await api.send(
+            chat_id,
+            "🗂 История Atlas\n\nПока нет сохранённых диалогов. Нажмите «🤖 Atlas», чтобы начать.",
+            reply_markup=_MAIN_KEYBOARD,
+        )
+        return
+
+    page_size = 6
+    page = max(0, min(int(offset), max(0, len(threads) - 1))) // page_size
+    start = page * page_size
+    visible = threads[start : start + page_size]
+    active = await asyncio.to_thread(
+        telegram_storage.get_atlas_thread,
+        _GUILD_ID,
+        owner_id,
+        int(chat_id),
+    )
+    lines = [f"🗂 История Atlas · {start + 1}–{start + len(visible)} из {len(threads)}", ""]
+    keyboard: list[list[dict[str, str]]] = []
+    for item in visible:
+        thread_id = int(item["id"])
+        title = " ".join(str(item.get("title") or "Новый диалог").split())[:64]
+        count = int(item.get("message_count") or 0)
+        is_active = active is not None and int(active.get("atlas_thread_id") or 0) == thread_id
+        stamp = str(item.get("updated_at") or "")[:16].replace("T", " ")
+        preview = " ".join(str(item.get("preview") or "").split())[:100]
+        lines.append(
+            f"{'▶ ' if is_active else ''}{title}\n"
+            f"{item.get('_space_name') or 'Atlas'} · {count} сообщ. · {stamp}"
+            + (f"\n{preview}" if preview else "")
+        )
+        keyboard.append([{
+            "text": f"{'▶ ' if is_active else '↪ '}{title[:52]}",
+            "callback_data": f"atlas_thread:{thread_id}",
+        }])
+    nav: list[dict[str, str]] = []
+    if page > 0:
+        nav.append({"text": "‹ Новее", "callback_data": f"atlas_history:{(page - 1) * page_size}"})
+    if start + page_size < len(threads):
+        nav.append({"text": "Старее ›", "callback_data": f"atlas_history:{(page + 1) * page_size}"})
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([
+        {"text": "🤖 Atlas", "callback_data": "menu:atlas"},
+        {"text": "⌂ Меню", "callback_data": "menu:home"},
+    ])
+    await api.send(
+        chat_id,
+        "\n\n".join(lines),
+        reply_markup={"inline_keyboard": keyboard},
+    )
+
+
+async def _resume_atlas_thread(
+    api: _TelegramApi,
+    *,
+    chat_id: int,
+    telegram_user: dict[str, Any],
+    thread_id: int,
+    active_modes: dict[int, str],
+) -> None:
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        int(telegram_user.get("id") or 0),
+    )
+    if link is None:
+        await api.send(chat_id, "Сначала подключите T‑Mod аккаунт через /tg-link в Discord.", reply_markup=_MAIN_KEYBOARD)
+        return
+    owner_id = int(link["discord_user_id"])
+    if not await _access_allowed(_GUILD_ID, owner_id):
+        await api.send(chat_id, "Для этого аккаунта Atlas сейчас недоступен.", reply_markup=_MAIN_KEYBOARD)
+        return
+    spaces = await asyncio.to_thread(atlas_storage.atlas_user_spaces, _GUILD_ID, owner_id)
+    selected: dict[str, Any] | None = None
+    for space in spaces:
+        organization_id = int(space["id"])
+        try:
+            selected = await asyncio.to_thread(
+                atlas_storage.atlas_thread_messages,
+                organization_id,
+                owner_id,
+                int(thread_id),
+                limit=3,
+            )
+            selected["organization_id"] = organization_id
+            break
+        except ValueError as exc:
+            if str(exc) != "atlas_thread_not_found":
+                raise
+    if selected is None:
+        await api.send(chat_id, "Этот диалог не найден или больше недоступен.", reply_markup=_MAIN_KEYBOARD)
+        return
+
+    thread = dict(selected["thread"])
+    organization_id = int(selected["organization_id"])
+    await asyncio.to_thread(
+        telegram_storage.save_atlas_thread,
+        _GUILD_ID,
+        owner_id,
+        int(chat_id),
+        organization_id,
+        int(thread_id),
+    )
+    active_modes[int(chat_id)] = "atlas"
+    messages = list(selected.get("messages") or [])
+    latest = " ".join(str(messages[-1].get("content_text") or "").split())[:300] if messages else ""
+    await api.send(
+        chat_id,
+        f"↪ Продолжаем диалог «{str(thread.get('title') or 'Новый диалог')[:100]}».\n"
+        "Контекст переписки восстановлен. Напишите следующее сообщение."
+        + (f"\n\nПоследнее в чате: {latest}" if latest else ""),
+        reply_markup=_CHAT_KEYBOARD,
+    )
+
+
+async def _handle_login_code(
+    api: _TelegramApi,
+    *,
+    chat_id: int,
+    telegram_user: dict[str, Any],
+) -> None:
+    """Send a short-lived T-Mod web sign-in code to the verified Telegram link."""
+
+    telegram_user_id = int(telegram_user.get("id") or 0)
+    link = await asyncio.to_thread(
+        telegram_storage.get_link_by_telegram,
+        _GUILD_ID,
+        telegram_user_id,
+    )
+    if link is None:
+        await api.send(
+            chat_id,
+            "Сначала подключите Telegram в личном Реакторе → Подключения. Без привязанного аккаунта код не выдаётся.",
+            reply_markup=_MAIN_KEYBOARD,
+        )
+        return
+    discord_user_id = int(link["discord_user_id"])
+    credential = await asyncio.to_thread(
+        auth_storage.get_web_credential,
+        _GUILD_ID,
+        discord_user_id,
+    )
+    if credential is None:
+        await api.send(
+            chat_id,
+            "Для аккаунта ещё не настроен веб-вход. Сначала создайте логин в T‑Mod через /account.",
+            reply_markup=_MAIN_KEYBOARD,
+        )
+        return
+    if await asyncio.to_thread(
+        ban_storage.is_globally_banned,
+        _GUILD_ID,
+        discord_user_id,
+    ):
+        await api.send(chat_id, "Вход в экосистему T‑Mod сейчас недоступен.", reply_markup=_MAIN_KEYBOARD)
+        return
+    try:
+        challenge = await asyncio.to_thread(
+            telegram_storage.create_telegram_login_code,
+            _GUILD_ID,
+            discord_user_id,
+            telegram_user_id,
+        )
+    except ValueError as exc:
+        if str(exc) == "telegram_login_code_rate_limited":
+            await api.send(
+                chat_id,
+                "🔐 Код уже выпускался недавно. Подождите полминуты — так мы защищаем вход от частого перевыпуска.",
+                reply_markup=_MAIN_KEYBOARD,
+            )
+            return
+        if str(exc) != "telegram_account_not_linked":
+            raise
+        await api.send(chat_id, "Привязка изменилась. Подключите Telegram заново в личном Реакторе.", reply_markup=_MAIN_KEYBOARD)
+        return
+    await api.send_temporary(
+        chat_id,
+        "🔐 Одноразовый код входа в T‑Mod\n\n"
+        f"Код: {challenge['code']}\n\n"
+        "Введите его на странице входа в поле «Войти по Telegram». Код действует 5 минут, "
+        "подходит только один раз и заменяет предыдущий код. Сообщение удалится автоматически. Никому не пересылайте код.",
+        ttl_seconds=int(challenge.get("ttl_seconds") or 300),
+        reply_markup={
+            "inline_keyboard": [
+                [{"text": "Открыть форму входа", "url": "https://tvr.lat/login?next=%2Freactor#telegram-login"}],
+                [{"text": "📋 Скопировать код", "copy_text": {"text": str(challenge["code"])}}],
+                [{"text": "↻ Выпустить новый код", "callback_data": "menu:loginpin"}],
+                [{"text": "⌂ Главное меню", "callback_data": "menu:home"}],
+            ]
+        },
+    )
+    emit_global_event({
+        "event_type": "auth.telegram_login_code.issued",
+        "summary": "Выдан временный код входа T‑Mod в привязанный Telegram",
+        "guild_id": _GUILD_ID,
+        "actor_user_id": discord_user_id,
+        "details": {"telegram_user_id": telegram_user_id, "ttl_seconds": int(challenge.get("ttl_seconds") or 300)},
+    })
+
+
+async def _handle_callback(
+    api: _TelegramApi,
+    callback: dict[str, Any],
+    *,
+    active_modes: dict[int, str],
+) -> None:
+    callback_id = str(callback.get("id") or "")
+    if callback_id:
+        try:
+            await api.answer_callback(
+                callback_id,
+                "Готовлю одноразовый код…" if callback.get("data") == "menu:loginpin" else "",
+            )
+        except Exception:
+            # Old inline keyboards may outlive Telegram's callback window.
+            pass
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    telegram_user = callback.get("from") or {}
+    chat_id = int(chat.get("id") or 0)
+    if chat_id <= 0 or str(chat.get("type") or "") != "private":
+        return
+    message_id = int(message.get("message_id") or 0)
+    panel_api = _TelegramPanelApi(api, chat_id, message_id)
+    data = str(callback.get("data") or "")
+    if data != "menu:atlas" and not data.startswith("atlas_thread:"):
+        active_modes.pop(chat_id, None)
+    if data == "menu:home":
+        await _handle_menu(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:atlas":
+        active_modes[chat_id] = "atlas"
+        await panel_api.send(chat_id, "🤖 Atlas готов. Напишите вопрос — контекст этой переписки сохранится.", reply_markup=_CHAT_KEYBOARD)
+    elif data == "menu:profile":
+        await _handle_profile(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:history":
+        await _handle_atlas_history(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data.startswith("atlas_history:"):
+        try:
+            offset = max(0, min(240, int(data.partition(":")[2])))
+        except ValueError:
+            offset = 0
+        await _handle_atlas_history(panel_api, chat_id=chat_id, telegram_user=telegram_user, offset=offset)
+    elif data.startswith("atlas_thread:"):
+        try:
+            thread_id = int(data.partition(":")[2])
+        except ValueError:
+            thread_id = 0
+        if thread_id > 0:
+            await _resume_atlas_thread(
+                panel_api,
+                chat_id=chat_id,
+                telegram_user=telegram_user,
+                thread_id=thread_id,
+                active_modes=active_modes,
+            )
+    elif data == "menu:newchat":
+        await _handle_new_chat(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:characters":
+        await _handle_characters(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:usage":
+        await _handle_usage(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:notifications":
+        await _handle_notifications(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:read":
+        await _handle_read_notifications(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:settings":
+        await _handle_settings(panel_api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:loginpin":
+        await _handle_login_code(api, chat_id=chat_id, telegram_user=telegram_user)
+    elif data == "menu:stop":
+        active_modes.pop(chat_id, None)
+        await _handle_menu(api, chat_id=chat_id, telegram_user=telegram_user)
 
 
 def _discord_dm_text(message: discord.Message) -> str:
@@ -660,7 +1150,7 @@ async def _handle_atlas(
             await api.send(
                 chat_id,
                 str(result.get("answer") or "Ответ не сформирован."),
-                reply_markup=_MAIN_KEYBOARD,
+                reply_markup=_CHAT_KEYBOARD,
             )
             emit_global_event({
                 "event_type": "atlas.telegram.answer",
@@ -679,7 +1169,7 @@ async def _handle_atlas(
             await api.send(
                 chat_id,
                 "Atlas временно не смог ответить. Повторите запрос через несколько секунд.",
-                reply_markup=_MAIN_KEYBOARD,
+                reply_markup=_CHAT_KEYBOARD,
             )
             emit_global_event({
                 "event_type": "atlas.telegram.error",
@@ -692,7 +1182,7 @@ async def _handle_atlas(
             await api.send(
                 chat_id,
                 "Не удалось обработать запрос. Попробуйте ещё раз.",
-                reply_markup=_MAIN_KEYBOARD,
+                reply_markup=_CHAT_KEYBOARD,
             )
             print(f"Telegram Atlas request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             emit_global_event({
@@ -712,10 +1202,14 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
         try:
             updates = await api.call(
                 "getUpdates",
-                {"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
+                {"offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"]},
             )
             for update in updates if isinstance(updates, list) else []:
                 offset = max(offset, int(update.get("update_id") or 0) + 1)
+                callback = update.get("callback_query")
+                if isinstance(callback, dict):
+                    await _handle_callback(api, callback, active_modes=active_modes)
+                    continue
                 message = update.get("message") or {}
                 chat = message.get("chat") or {}
                 user = message.get("from") or {}
@@ -784,7 +1278,7 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                                 if command == "atlas2"
                                 else "Режим Atlas включён. Напишите вопрос одним или несколькими сообщениями.\n"
                                 "Для выхода нажмите «Выйти из Atlas» или отправьте `/stop`.",
-                                reply_markup=_MAIN_KEYBOARD,
+                                reply_markup=_CHAT_KEYBOARD,
                             )
                             continue
                         await _handle_atlas(
@@ -808,6 +1302,12 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     if command in {"notifications", "notify"}:
                         await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
                         continue
+                    if command in {"history", "chats"}:
+                        await _handle_atlas_history(api, chat_id=chat_id, telegram_user=user)
+                        continue
+                    if command in {"loginpin", "login_code"}:
+                        await _handle_login_code(api, chat_id=chat_id, telegram_user=user)
+                        continue
                     if command in {"read", "read_notifications"}:
                         await _handle_read_notifications(api, chat_id=chat_id, telegram_user=user)
                         continue
@@ -830,7 +1330,7 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     await api.send(
                         chat_id,
                         "Режим Atlas включён. Напишите вопрос — я сохраню контекст этого диалога.",
-                        reply_markup=_MAIN_KEYBOARD,
+                        reply_markup=_CHAT_KEYBOARD,
                     )
                     continue
                 if normalized in {"👤 профиль", "профиль", "мой профиль"}:
@@ -844,6 +1344,12 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                     continue
                 if normalized in {"🔔 уведомления", "уведомления"}:
                     await _handle_notifications(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"🗂 история", "история atlas", "история"}:
+                    await _handle_atlas_history(api, chat_id=chat_id, telegram_user=user)
+                    continue
+                if normalized in {"🔐 код входа в t‑mod", "код входа", "временный пин"}:
+                    await _handle_login_code(api, chat_id=chat_id, telegram_user=user)
                     continue
                 if normalized in {"⚙ настройки", "настройки", "подключения"}:
                     await _handle_settings(api, chat_id=chat_id, telegram_user=user)
@@ -881,11 +1387,11 @@ async def _poll(api: _TelegramApi, *, stop: asyncio.Event) -> None:
                         locks=locks,
                     )
                     continue
-                    await api.send(
-                        chat_id,
-                        "Выберите раздел в меню ниже. Для свободного вопроса нажмите «🤖 Atlas».",
-                        reply_markup=_MAIN_KEYBOARD,
-                    )
+                await api.send(
+                    chat_id,
+                    "Выберите раздел кнопками ниже или нажмите «🤖 Atlas», чтобы начать диалог.",
+                    reply_markup=_MAIN_KEYBOARD,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -995,12 +1501,14 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
                         "commands": [
                             {"command": "start", "description": "Открыть меню T-Mod"},
                             {"command": "atlas", "description": "Войти в режим общения с Atlas"},
-                            {"command": "profile", "description": "Показать профиль T-Mod"},
+                            {"command": "account", "description": "Показать аккаунт T-Mod"},
                             {"command": "characters", "description": "Показать персонажей"},
                             {"command": "notifications", "description": "Показать уведомления"},
+                            {"command": "history", "description": "Открыть историю Atlas"},
                             {"command": "read", "description": "Отметить уведомления прочитанными"},
                             {"command": "usage", "description": "Показать Atlas Token"},
                             {"command": "settings", "description": "Открыть настройки"},
+                            {"command": "loginpin", "description": "Получить временный код входа T-Mod"},
                             {"command": "newchat", "description": "Начать новый диалог"},
                             {"command": "stop", "description": "Выйти из режима Atlas"},
                         ]
@@ -1009,7 +1517,10 @@ def setup_telegram_gateway(bot: commands.Bot) -> None:
             except Exception as exc:
                 print(f"Telegram command menu setup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             print("Telegram gateway: polling enabled", flush=True)
-            await _poll(api, stop=stop)
+            try:
+                await _poll(api, stop=stop)
+            finally:
+                await api.cancel_background_tasks()
 
     # ``setup_telegram_gateway`` is called while the module catalog is built,
     # before ``Bot.run`` has installed its event loop.  Store the coroutine

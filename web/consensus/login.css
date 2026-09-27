@@ -178,6 +178,27 @@ input:focus { border-color: rgba(167, 239, 196, 0.48); background: rgba(167, 239
 .login-submit:hover i { transform: translateX(3px); }
 .submitting .login-submit { opacity: 0.68; cursor: wait; transform: none; }
 .login-feedback { padding: 12px 14px; border: 1px solid rgba(255, 140, 133, 0.2); border-radius: 12px; color: #ffaca6; background: rgba(255, 140, 133, 0.055); font-size: 12px; }
+.telegram-login { margin-top: 15px; overflow: hidden; border: 1px solid rgba(167, 239, 196, 0.13); border-radius: 15px; background: rgba(167, 239, 196, 0.025); transition: border-color 180ms ease, background 180ms ease; }
+.telegram-login[open] { border-color: rgba(167, 239, 196, 0.28); background: rgba(167, 239, 196, 0.045); }
+.telegram-login > summary { display: grid; min-height: 66px; grid-template-columns: 30px 1fr 18px; align-items: center; gap: 11px; padding: 11px 15px; list-style: none; cursor: pointer; }
+.telegram-login > summary::-webkit-details-marker { display: none; }
+.telegram-login > summary > span:first-child { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid rgba(167, 239, 196, 0.16); border-radius: 10px; background: rgba(167, 239, 196, 0.06); }
+.telegram-login > summary b,
+.telegram-login > summary small { display: block; }
+.telegram-login > summary b { color: var(--text); font-size: 12px; font-weight: 750; }
+.telegram-login > summary small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.telegram-login > summary > i { color: var(--mint); font-size: 18px; font-style: normal; transition: transform 180ms ease; }
+.telegram-login[open] > summary > i { transform: rotate(45deg); }
+.telegram-login-body { padding: 0 15px 15px; animation: telegram-reveal 220ms var(--ease) both; }
+.telegram-login-body > p { margin: 0 0 14px; color: #aab4ae; font-size: 11px; line-height: 1.6; }
+.telegram-login-body > p b { color: var(--mint); font-weight: 700; }
+.telegram-login-body label { display: grid; gap: 7px; margin-bottom: 12px; }
+.telegram-login-body label > span { color: #c5cdc8; font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
+.telegram-login-body input { width: 100%; min-height: 49px; padding: 0 15px; border: 1px solid rgba(239, 244, 237, 0.12); border-radius: 12px; outline: 0; color: var(--text); background: rgba(0, 0, 0, 0.2); font: inherit; font-size: 17px; font-weight: 750; letter-spacing: 0.22em; text-align: center; transition: border-color 160ms ease, box-shadow 160ms ease; }
+.telegram-login-body input:focus { border-color: rgba(167, 239, 196, 0.56); box-shadow: 0 0 0 3px rgba(107, 226, 161, 0.08); }
+.telegram-login-submit { width: 100%; min-height: 49px; }
+.telegram-login .submitting .login-submit { opacity: 0.68; cursor: wait; }
+@keyframes telegram-reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
 
 .login-context { display: flex; align-items: center; gap: 12px; margin-top: 24px; padding: 13px 14px; border: 1px solid rgba(167, 239, 196, 0.08); border-radius: 13px; background: rgba(167, 239, 196, 0.022); }
 .login-context span { display: grid; gap: 2px; }
@@ -249,6 +270,7 @@ input:focus { border-color: rgba(167, 239, 196, 0.48); background: rgba(167, 239
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .telegram-login-body { animation: none; }
   *, *::before, *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;

@@ -108,6 +108,30 @@
             <span>ВОЙТИ В T-MOD</span><i>→</i>
           </button>
         </form>
+        <details id="telegram-login" class="telegram-login">
+          <summary><span>🔐</span><span><b>Войти через Telegram</b><small>Одноразовый код вместо постоянного PIN</small></span><i>＋</i></summary>
+          <div class="telegram-login-body">
+            <p>В привязанном Telegram-боте нажмите <b>«Код входа в T‑Mod»</b>. Код действует 5 минут и используется один раз.</p>
+            <form id="telegram-login-form" action="/auth/telegram" method="post">
+              <label>
+                <span>Временный код · 8 цифр</span>
+                <input
+                  id="telegram-login-code"
+                  name="code"
+                  type="text"
+                  minlength="8"
+                  maxlength="8"
+                  pattern="[0-9]{8}"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  required
+                  placeholder="00000000"
+                >
+              </label>
+              <button class="login-submit telegram-login-submit" type="submit"><span>ПРОДОЛЖИТЬ</span><i>→</i></button>
+            </form>
+          </div>
+        </details>
         <div id="login-context" class="login-context" aria-live="polite">
           <i></i><span><b>Единая сессия</b><small>После входа вернём вас в выбранный сервис.</small></span>
         </div>

@@ -1058,6 +1058,23 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_telegram_account_links_telegram
             ON telegram_account_links(guild_id, telegram_user_id);
 
+            -- Telegram-issued web login codes are short lived and one time.
+            -- Only their SHA-256 digest is persisted; a code is delivered to
+            -- the already-bound private Telegram account and never logged.
+            CREATE TABLE IF NOT EXISTS telegram_login_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash TEXT NOT NULL UNIQUE,
+                guild_id INTEGER NOT NULL,
+                discord_user_id INTEGER NOT NULL,
+                telegram_user_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_telegram_login_codes_owner
+            ON telegram_login_codes(guild_id, discord_user_id, expires_at);
+
             CREATE TABLE IF NOT EXISTS telegram_atlas_threads (
                 guild_id INTEGER NOT NULL,
                 discord_user_id INTEGER NOT NULL,

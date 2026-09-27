@@ -60,7 +60,7 @@ from modules.atlas_finance_admin_web import register_atlas_finance_admin_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
-from modules.global_log_runtime import global_log_web_middleware, runtime_health as global_log_runtime_health
+from modules.global_log_runtime import emit_global_event, global_log_web_middleware, runtime_health as global_log_runtime_health
 from modules.global_log_web import register_global_log_web_routes
 from modules.legal_web import register_legal_web_routes
 from persistence import activity_repository as meta_storage
@@ -70,6 +70,7 @@ from persistence import web_auth_repository as credential_storage
 from persistence import reactor_repository as reactor_storage
 from persistence import consensus_schedule_repository as schedule_storage
 from persistence import global_ban_repository as global_ban_storage
+from persistence import telegram_repository as telegram_storage
 from persistence import legislation_repository as legislation_storage
 from modules.consensus_schedule import public_schedule_payload
 from modules.consensus_artifacts import generate_session_report
@@ -1157,7 +1158,6 @@ def _apply_security_headers(
     request_host: str = "",
 ) -> None:
     path = str(request_path or "")
-    host = str(request_host or "").strip().lower().split(":", 1)[0].rstrip(".")
     if path.startswith(("/assets/", "/sgl/assets/")):
         if path.endswith((".woff2", ".mp3")):
             response.headers["Cache-Control"] = (
@@ -1615,6 +1615,117 @@ def create_consensus_web_app(
             secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
             request_host=request_public_host(request),
         )
+        return response
+
+    async def telegram_code_login(request: web.Request) -> web.Response:
+        """Authenticate with a one-time code delivered to the user's linked Telegram."""
+
+        remote = _request_remote(request)
+        now = asyncio.get_running_loop().time()
+        attempts = _login_failures[remote]
+        while attempts and now - attempts[0] > 10 * 60:
+            attempts.popleft()
+        allowed_next = {
+            "/admin", "/reactor", "/atlas", "/atlas-billing", "/account",
+            "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission",
+        }
+        next_path = str(request.query.get("next") or "/")
+        if next_path not in allowed_next:
+            next_path = "/"
+        if len(attempts) >= 8:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'locked'})}"
+            )
+        try:
+            body = await request.post()
+        except (ValueError, web.HTTPException):
+            body = {}
+        code = str(body.get("code") or "")[:16]
+        try:
+            result = await asyncio.to_thread(
+                telegram_storage.consume_telegram_login_code,
+                code,
+                guild_id=int(guild_id),
+            )
+        except Exception as exc:
+            raise web.HTTPServiceUnavailable(
+                text="Вход по Telegram временно недоступен. Повторите попытку позже."
+            ) from exc
+        if not result.get("ok"):
+            attempts.append(now)
+            error = "locked" if len(attempts) >= 8 else "telegram_invalid"
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': error})}"
+            )
+        user_id = int(result["discord_user_id"])
+        if await asyncio.to_thread(
+            global_ban_storage.is_globally_banned,
+            int(guild_id),
+            user_id,
+        ):
+            raise web.HTTPSeeOther(location="/banned")
+        credential = await asyncio.to_thread(
+            credential_storage.get_web_credential,
+            int(guild_id),
+            user_id,
+        )
+        if credential is None:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'account_missing'})}"
+            )
+
+        guild = bot.get_guild(int(guild_id))
+        member = guild.get_member(user_id) if guild is not None else None
+        if member is None and guild is not None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.DiscordException:
+                member = None
+        if guild is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
+            raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
+        if member is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'membership'})}"
+            )
+
+        grants = await asyncio.to_thread(
+            credential_storage.web_section_grants,
+            int(guild_id),
+            user_id,
+        )
+        sections = {str(item["section"]) for item in grants}
+        is_administrator = bool(member and member.guild_permissions.administrator)
+        if next_path == "/admin" and not is_administrator and not (sections - {"atlas_ai"}):
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'administrator'})}"
+            )
+        if next_path == "/atlas" and not is_administrator and "atlas_ai" not in sections:
+            raise web.HTTPSeeOther(
+                location=f"/login?{urlencode({'next': next_path, 'error': 'atlas_access'})}"
+            )
+
+        attempts.clear()
+        token, _ = create_session_token(
+            guild_id=int(guild_id),
+            user_id=user_id,
+            lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
+            session_version=int(credential.session_version),
+        )
+        response = web.Response(status=303, headers={"Location": next_path})
+        set_session_cookie(
+            response,
+            token,
+            secure=bool(CONSENSUS_WEB_PUBLIC_URL or request_public_secure(request)),
+            max_age=PERSISTENT_SESSION_LIFETIME_SECONDS,
+            request_host=request_public_host(request),
+        )
+        emit_global_event({
+            "event_type": "auth.telegram_login.success",
+            "summary": "Вход в T‑Mod выполнен через одноразовый Telegram-код",
+            "guild_id": int(guild_id),
+            "actor_user_id": user_id,
+            "details": {"destination": next_path, "remote": remote},
+        })
         return response
 
     async def credential_login_impl(request: web.Request) -> web.Response:
@@ -2222,6 +2333,7 @@ def create_consensus_web_app(
     app.router.add_get("/assets/{name}", asset)
     app.router.add_get("/favicon.ico", favicon)
     app.router.add_get("/auth/ticket", ticket_login)
+    app.router.add_post("/auth/telegram", telegram_code_login)
     app.router.add_post("/auth/login", credential_login)
     app.router.add_get("/auth/logout", logout)
     app.router.add_get("/api/health", health)
