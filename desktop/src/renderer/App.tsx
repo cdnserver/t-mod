@@ -56,6 +56,7 @@ import blackbirdAdmin from "./assets/blackbird/admin.png";
 import { BlackbirdHub } from "./BlackbirdHub";
 import { BlackbirdLogin } from "./BlackbirdLogin";
 import { BlackbirdIdle } from "./BlackbirdIdle";
+import { AtlasUsage } from "./AtlasUsage";
 import { BlackbirdSetup } from "./BlackbirdSetup";
 import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
 import { AccountMenu } from "./AccountMenu";
@@ -1052,11 +1053,12 @@ export function App() {
 
       <header className="topbar" inert={locked || Boolean(workspaceIntro)}>
         <div className="browser-tools">
-          <button disabled={!desktopState.canGoBack} onClick={() => void browserApi()?.goBack()}><Icon name="back"/></button>
-          <button disabled={!desktopState.canGoForward} onClick={() => void browserApi()?.goForward()}><Icon name="forward"/></button>
+          <button className={`bb-history-button ${desktopState.canGoBack ? "available" : ""}`} title="Назад" aria-label="Назад" disabled={!desktopState.canGoBack} onClick={() => void browserApi()?.goBack()}><Icon name="back"/></button>
+          <button className={`bb-history-button ${desktopState.canGoForward ? "available" : ""}`} title="Вперёд" aria-label="Вперёд" disabled={!desktopState.canGoForward} onClick={() => void browserApi()?.goForward()}><Icon name="forward"/></button>
           <div className="surface-title"><span style={{ background: activeDefinition.accent }}/><strong>{workspace && desktopState.activeService === "home" ? workspace === "atlas" ? "Atlas" : "Сенат" : activeDefinition.title}</strong><small>{workspace && desktopState.activeService === "home" ? "Обзор пространства" : activeDefinition.eyebrow}</small></div>
         </div>
         <div className="top-actions">
+          {desktopProduct.privateEdition && <AtlasUsage authenticated={bootstrap.authenticated} onOpen={() => { setSettingsSection("billing"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }}/>}
           {browserApi() && (
             <button
               className={`update-pill ${updateState.phase}`}

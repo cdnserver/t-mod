@@ -119,7 +119,9 @@ def atlas_billing_summary(user_id: int) -> dict[str, Any]:
                    COALESCE(SUM(CASE WHEN balance_bucket = 'monthly' THEN amount_tokens ELSE 0 END), 0)
                        AS monthly_value,
                    COALESCE(SUM(CASE WHEN balance_bucket = 'payg' THEN amount_tokens ELSE 0 END), 0)
-                       AS payg_value
+                       AS payg_value,
+                   COALESCE(SUM(CASE WHEN balance_bucket = 'payg' AND amount_tokens > 0 THEN amount_tokens ELSE 0 END), 0) AS payg_capacity,
+                   COALESCE(SUM(CASE WHEN balance_bucket = 'monthly' AND amount_tokens > 0 THEN amount_tokens ELSE 0 END), 0) AS monthly_capacity
             FROM atlas_token_ledger
             WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)
             """,
@@ -171,6 +173,8 @@ def atlas_billing_summary(user_id: int) -> dict[str, Any]:
         "balance_tokens": int(balances["value"] if balances else 0),
         "monthly_balance_tokens": int(balances["monthly_value"] if balances else 0),
         "payg_balance_tokens": int(balances["payg_value"] if balances else 0),
+        "payg_capacity_tokens": int(balances["payg_capacity"] if balances else 0),
+        "monthly_capacity_tokens": int(balances["monthly_capacity"] if balances else 0),
         "period_usage": {
             key: int(value or 0)
             for key, value in (dict(period_usage) if period_usage is not None else {}).items()

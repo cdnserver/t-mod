@@ -31,7 +31,7 @@ export function AccountSecurity() {
     setBusy(true); setError(""); setMessage("");
     try {
       const result = await api("update", { action, current, code, challenge, ...data });
-      if (action === "enroll") { setEnrollment(result); setChallenge(String(result.challenge)); setCode(""); }
+      if (action === "enroll") { setEnrollment(result); setChallenge(String(result.challenge)); setCode(""); if (result.delivery_failed) setError("Код не доставлен. Способ ещё не включён; проверьте личные сообщения и повторите подключение позже."); }
       else if (action === "challenge") { setChallenge(String(result.challenge)); setCode(""); setMessage(result.delivery_failed ? "Доставка недоступна. Используйте сохранённый резервный код." : "Подтвердите действие кодом или резервным кодом."); }
       else {
         setEnrollment(undefined); setChallenge(""); setCode(""); setCurrent(""); setValue(""); setRepeat("");

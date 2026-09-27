@@ -685,7 +685,7 @@ class ProfileUiTests(unittest.TestCase):
         labels = {getattr(item, "label", None) for item in view.children}
         self.assertEqual(
             labels,
-            {"Добавить персонажа", "Персонажи", "Логин и PIN", "Баг-репорт"},
+            {"Добавить персонажа", "Персонажи", "Логин и PIN", "Логин и пароль", "Баг-репорт"},
         )
         add_character = next(
             item

@@ -90,11 +90,21 @@ export function WorkspaceIntro({ space, reduced, onComplete }: { space:Blackbird
     return () => { window.removeEventListener("keydown",key,true); if (previous?.isConnected) previous.focus({preventScroll:true}); };
   },[onComplete]);
   useEffect(() => {
-    const timer = window.setTimeout(onComplete,reduced ? 850 : 3400);
+    const timer = window.setTimeout(onComplete,reduced ? 850 : 4600);
     return () => window.clearTimeout(timer);
   },[space,reduced,onComplete]);
   return <section className={`bbw-intro space-${space} ${reduced ? "reduced" : ""}`} role="dialog" aria-modal="true" aria-label={`Переход в ${space === "atlas" ? "Atlas" : "Сенат"}`}>
-    <div className="bbw-intro-scene" aria-hidden="true">{space === "atlas" ? <><i className="bbw-orbit one"/><i className="bbw-orbit two"/><i className="bbw-orbit three"/><b className="bbw-star"/></> : <><i className="bbw-column one"/><i className="bbw-column two"/><i className="bbw-column three"/><b className="bbw-plinth"/></>}</div>
+    <div className="bbw-intro-scene bbw-cinematic" aria-hidden="true"><svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
+      {space === "atlas" ? <>
+        <g className="bbw-celestial"><circle cx="1040" cy="450" r="350"/><circle cx="1040" cy="450" r="310"/><ellipse cx="1040" cy="450" rx="470" ry="160" transform="rotate(-32 1040 450)"/><ellipse cx="1040" cy="450" rx="385" ry="230" transform="rotate(24 1040 450)"/></g>
+        <g className="bbw-map">{Array.from({length:22},(_,i) => <g key={i}><circle cx={120+(i*179)%1200} cy={90+(i*137)%720} r={i%4===0 ? 2.5 : 1.2}/>{i%3===0 && <path d={`M${120+(i*179)%1200} ${90+(i*137)%720}l72 -43 90 20 44 -80`}/>}</g>)}</g>
+        <path className="bbw-orbital-trace" d="M -100 720 C 200 900 600 100 1150 250 S 1650 550 1100 850"/>
+      </> : <g className="bbw-architecture">
+        {Array.from({length:10},(_,i) => <path key={i} d={`M${-300+i*225} 900L${570+i*32} 170L${570+i*32} 60M${-300+i*225} 900V650L${570+i*32} 60`}/>)}
+        {[190,280,440,680,860].map(y => <path key={y} d={`M0 ${y}H1440`}/>)}
+        <path className="bbw-arch-emblem" d="M490 180H950M520 210H920M550 240H890M575 240V640M635 240V640M805 240V640M865 240V640M550 650H890M520 680H920"/>
+      </g>}
+    </svg><div className="bbw-cinematic-veil"/></div>
     <div className="bbw-intro-title"><img src={space === "atlas" ? atlas : senate} alt=""/><small>BLACKBIRD / {space === "atlas" ? "INTELLIGENCE" : "COMMUNITY"}</small><h1>{space === "atlas" ? "Atlas" : "Сенат"}</h1><p>{space === "atlas" ? "Ясность начинается здесь." : "В пространстве общих решений."}</p><i/></div><button ref={skip} className="bbw-intro-skip" onClick={onComplete}>Пропустить ↗</button>
   </section>;
 }

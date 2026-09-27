@@ -22,7 +22,7 @@ const destinations = {
   "/admission": "После входа вернём вас к заявке в Сенат Phoenix.",
 };
 const errors = {
-  invalid: "Логин или PIN не подошли. Проверьте данные и повторите вход.",
+  invalid: "Логин, PIN или пароль не подошли. Проверьте данные и повторите вход.",
   locked: "Вход временно приостановлен после частых попыток. Подождите несколько минут и повторите вход.",
   reset_required: "После трёх неверных попыток вход заблокирован. Напишите боту /reset в личных сообщениях и задайте новый PIN.",
   administrator: "Эта учётная запись действует, но административных прав в Discord нет.",
@@ -39,7 +39,7 @@ if (errors[params.get("error")]) {
 visibility.addEventListener("click", () => {
   const visible = pin.type === "text";
   pin.type = visible ? "password" : "text";
-  visibility.setAttribute("aria-label", visible ? "Показать PIN" : "Скрыть PIN");
+  visibility.setAttribute("aria-label", visible ? "Показать PIN или пароль" : "Скрыть PIN или пароль");
   visibility.textContent = visible ? "◉" : "○";
   pin.focus();
 });

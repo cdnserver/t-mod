@@ -2,6 +2,22 @@
 .desktop.edition-blackbird { --topbar:44px; --control-right:0px; }
 .edition-blackbird .topbar { padding:0 8px 0 12px; backdrop-filter:blur(18px); }
 .edition-blackbird .top-actions,.edition-blackbird .browser-tools { gap:3px; }
+.edition-blackbird .browser-tools { -webkit-app-region:drag; }
+.edition-blackbird .browser-tools > button { -webkit-app-region:no-drag; }
+.edition-blackbird .topbar button { -webkit-app-region:no-drag; }
+.edition-blackbird.control-bar-vertical .top-actions { -webkit-app-region:drag; }
+.edition-blackbird.control-bar-vertical .top-actions > button,.edition-blackbird .window-actions,.edition-blackbird .bb-profile { -webkit-app-region:no-drag; }
+.edition-blackbird.control-bar-vertical .topbar:after { content:''; width:22px; height:28px; flex-shrink:0; order:-1; background:radial-gradient(circle,#7a80894d 1px,transparent 1.2px) center/6px 6px; -webkit-app-region:drag; }
+.edition-blackbird .browser-tools > .bb-history-button { transition:width .28s ease,height .28s ease,opacity .22s ease,transform .28s ease,margin .28s ease; overflow:hidden; }
+.edition-blackbird .browser-tools > .bb-history-button:not(.available) { width:0; margin-right:-3px; padding:0; opacity:0; transform:translateX(-6px); pointer-events:none; }
+.edition-blackbird.control-bar-vertical .browser-tools > .bb-history-button:not(.available) { width:30px;height:0;margin-right:0;margin-bottom:-3px;transform:translateY(-6px); }
+.bb-atlas-usage { -webkit-app-region:no-drag; display:flex; align-items:center;gap:6px;border:0;background:none;color:#b4becb;padding:0 5px;cursor:pointer;font-size:11px;font-variant-numeric:tabular-nums; }
+.bb-atlas-usage svg { width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1; }
+.bb-atlas-usage .bb-usage-track { stroke:#ffffff12;stroke-width:1.8; }
+.bb-atlas-usage .bb-usage-ring { stroke-width:1.8;transform:rotate(-90deg);transform-origin:center;transition:stroke-dasharray 1s ease; }
+.bb-atlas-usage.stale { opacity:.55; }
+.control-bar-vertical .bb-atlas-usage { flex-direction:column;gap:2px;padding:5px 0; }
+.reduce-motion .bb-history-button,.reduce-motion .bb-usage-ring { transition:none!important; }
 .edition-blackbird .circle-action,.edition-blackbird .browser-tools > button { width:30px; height:30px; border-radius:6px; }
 .edition-blackbird .topbar .icon { width:15px; }
 .edition-blackbird .surface-title small { display:none; }

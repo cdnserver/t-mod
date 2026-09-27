@@ -1769,7 +1769,8 @@ def create_consensus_web_app(
                     location="/login?next=%2Fadmin&error=administrator"
                 )
         factor = await asyncio.to_thread(security_storage.state, int(guild_id), int(result.credential.user_id))
-        if factor["mfa_method"]:
+        blackbird_login = desktop_client and str(request.headers.get("X-TMod-Desktop-Edition", "")).lower() == "blackbird"
+        if factor["mfa_method"] and blackbird_login:
             nonce = str(body.get("challenge") or "")[:64]
             code = str(body.get("code") or "")[:32]
             try:
@@ -1792,7 +1793,7 @@ def create_consensus_web_app(
             user_id=int(result.credential.user_id),
             lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
             session_version=int(result.credential.session_version),
-            mfa_verified=True,
+            mfa_verified=blackbird_login,
             account_security_version=factor["security_version"],
         )
         response = web.Response(

@@ -54,6 +54,8 @@ def register_account_security_routes(app, bot, *, guild_id: int, authenticate) -
         selected, legacy = await authenticate(request)
         if selected is None or legacy:
             raise web.HTTPUnauthorized()
+        if write and str(request.headers.get("X-TMod-Desktop-Edition", "")).lower() != "blackbird":
+            raise web.HTTPForbidden()
         if write and not csrf_matches(request, selected):
             raise web.HTTPForbidden()
         return selected
@@ -112,7 +114,10 @@ def register_account_security_routes(app, bot, *, guild_id: int, authenticate) -
                     credential = await asyncio.to_thread(credentials.get_web_credential, guild_id, user)
                     response_data.update(await asyncio.to_thread(security.begin_enrollment, guild_id, user, method, credential.login))
                     session_epoch = response_data["security_version"]
-                    response_data["challenge"] = await issue_challenge(bot, guild_id, user, "enroll", method)
+                    try:
+                        response_data["challenge"] = await issue_challenge(bot, guild_id, user, "enroll", method)
+                    except FactorDeliveryError as exc:
+                        response_data.update(challenge=exc.nonce, delivery_failed=True)
                 elif action == "confirm":
                     if not await asyncio.to_thread(security.verify, guild_id, user, str(data.get("code", ""))[:32], str(data.get("challenge", ""))[:64], "enroll"):
                         raise ValueError("verification_invalid")

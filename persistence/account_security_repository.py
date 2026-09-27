@@ -13,6 +13,7 @@ import os
 import secrets
 import struct
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -20,9 +21,19 @@ from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso, p
 from persistence import web_auth_repository as credentials
 
 
+def _key() -> str:
+    key = os.environ.get("TMOD_ACCOUNT_SECURITY_KEY", "").strip()
+    if not key and os.environ.get("TMOD_ACCOUNT_SECURITY_KEY_FILE"):
+        try:
+            key = Path(os.environ["TMOD_ACCOUNT_SECURITY_KEY_FILE"]).read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            raise ValueError("security_key_unavailable") from None
+    return key
+
+
 def cipher() -> Fernet:
     try:
-        return Fernet(os.environ["TMOD_ACCOUNT_SECURITY_KEY"].encode("ascii"))
+        return Fernet(_key().encode("ascii"))
     except (KeyError, ValueError, UnicodeError) as exc:
         raise ValueError("security_key_unavailable") from exc
 
@@ -41,12 +52,12 @@ def state(guild: int, user: int) -> dict:
     return dict(row) if row else dict(credential_kind="pin", mfa_method="", security_version=1)
 
 
-def session_allowed(guild: int, user: int, payload: dict) -> bool:
+def session_allowed(guild: int, user: int, payload: dict, *, require_mfa: bool = True) -> bool:
     selected = state(guild, user)
     version = selected["security_version"]
     if version > 1 and payload.get("av") != version:
         return False
-    return not selected["mfa_method"] or payload.get("mfv") == version
+    return not require_mfa or not selected["mfa_method"] or payload.get("mfv") == version
 
 
 def totp(seed: str, step: int) -> str:
@@ -58,7 +69,7 @@ def totp(seed: str, step: int) -> str:
 
 def _hash(value: str) -> str:
     # HMAC prevents offline brute force of six-digit message codes from a DB leak.
-    key = base64.urlsafe_b64decode(os.environ.get("TMOD_ACCOUNT_SECURITY_KEY", ""))
+    key = base64.urlsafe_b64decode(_key())
     if len(key) != 32:
         raise ValueError("security_key_unavailable")
     return hmac.new(key, value.encode(), hashlib.sha256).hexdigest()

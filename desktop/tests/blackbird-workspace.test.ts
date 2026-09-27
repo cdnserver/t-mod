@@ -40,7 +40,7 @@ describe("isolated Blackbird workspaces", () => {
     expect(html).toContain(`space-${space}`); expect(html).toContain("Пока всё спокойно");
     const intro = renderToStaticMarkup(createElement(WorkspaceIntro,{space,reduced:false,onComplete:()=>{}}));
     expect(intro).toContain('aria-modal="true"'); expect(intro).toContain("Пропустить");
-    expect(intro).toContain(space === "atlas" ? "bbw-orbit" : "bbw-column");
+    expect(intro).toContain(space === "atlas" ? "bbw-celestial" : "bbw-architecture");
   });
   it("filters and sorts actual events by workspace instead of inventing activity", () => {
     const event = {id:1,title:"Заседание",body:"Результаты",route:"/consensus",severity:"info",kind:"test",created_at:"2026-09-27T10:00:00Z",read_at:null} as DesktopNotification;

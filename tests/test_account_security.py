@@ -46,6 +46,69 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         seed = base64.b32encode(b"12345678901234567890").decode()
         self.assertEqual(security.totp(seed, 59 // 30), "287082")
 
+    def test_discord_password_configuration_preserves_second_factor(self):
+        self.enroll()
+        credentials.configure_web_credential(77, 42, "operator", "my-new-long-password", kind="password")
+        self.assertEqual(security.state(77, 42)["credential_kind"], "password")
+        self.assertEqual(security.state(77, 42)["mfa_method"], "totp")
+        self.assertEqual(credentials.authenticate_web_credential(77, "operator", "my-new-long-password").status, "ok")
+
+    def test_browser_factor_scope_does_not_bypass_blackbird(self):
+        self.enroll()
+        token, _ = create_session_token(guild_id=77, user_id=42)
+        payload = _verify(token, purpose="session")
+        self.assertTrue(security.session_allowed(77, 42, payload, require_mfa=False))
+        self.assertFalse(security.session_allowed(77, 42, payload))
+
+    def test_key_file_support_without_exposing_or_rotating_secret(self):
+        keyfile = Path(self.temp.name) / "factor.key"
+        keyfile.write_bytes(Fernet.generate_key())
+        with patch.dict(os.environ, {"TMOD_ACCOUNT_SECURITY_KEY": "", "TMOD_ACCOUNT_SECURITY_KEY_FILE": str(keyfile)}):
+            self.assertTrue(security.configured())
+            encrypted = security.cipher().encrypt(b"test")
+            self.assertEqual(security.cipher().decrypt(encrypted), b"test")
+            self.assertEqual(len(security._hash("test")), 64)
+            keyfile.unlink()
+            self.assertFalse(security.configured())
+
+    def test_key_provisioning_is_idempotent_and_preserves_configuration(self):
+        from scripts.tmod_account_security_setup import configure
+        root = Path(self.temp.name)
+        envfile = root / ".env"
+        envfile.write_text("APP_NAME=existing\n", encoding="utf-8")
+        result = configure(root)
+        keyfile = root / "secrets" / "account-security.key"
+        before = keyfile.read_bytes()
+        self.assertTrue(result["ok"])
+        self.assertNotIn(before.decode().strip(), json.dumps(result))
+        self.assertTrue(configure(root)["ok"])
+        self.assertEqual(keyfile.read_bytes(), before)
+        self.assertIn("APP_NAME=existing", envfile.read_text())
+        self.assertEqual(envfile.read_text().count("TMOD_ACCOUNT_SECURITY_KEY_FILE="), 1)
+
+    def test_provisioning_refuses_to_replace_lost_key_for_existing_factors(self):
+        from scripts.tmod_account_security_setup import configure
+        self.enroll()
+        root = Path(self.temp.name)
+        (root / ".env").write_text("APP_NAME=existing\n")
+        with self.assertRaisesRegex(RuntimeError, "original_key"):
+            configure(root)
+        self.assertFalse((root / "secrets" / "account-security.key").exists())
+
+    async def test_browser_login_does_not_verify_or_claim_blackbird_factor(self):
+        self.enroll()
+        from modules.consensus_web import create_consensus_web_app
+        member = SimpleNamespace(id=42, display_name="Operator", guild_permissions=SimpleNamespace(administrator=True), roles=[])
+        guild = SimpleNamespace(id=77, name="Test", get_member=lambda user: member)
+        bot = SimpleNamespace(get_guild=lambda gid: guild)
+        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77))) as client:
+            response = await client.post("/auth/login", data={"login":"operator", "pin":"12345678"}, allow_redirects=False)
+            self.assertEqual(response.status, 303)
+            payload = _verify(response.cookies["tmod_account_session"].value, purpose="session")
+            self.assertNotIn("mfv", payload)
+            self.assertFalse(security.session_allowed(77,42,payload))
+            self.assertTrue(security.session_allowed(77,42,payload,require_mfa=False))
+
     def test_password_supports_unicode_and_revokes_sessions(self):
         before = credentials.get_web_credential(77, 42)
         security.change_credential(77, 42, "12345678", "Длинный уникальный пароль!", "password")
@@ -153,12 +216,15 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(security.state(77, 42)["mfa_method"], "totp")
 
     def test_security_secrets_are_omitted_from_global_log_and_privacy_export(self):
-        from modules.global_log_runtime import _response_payload, scrub_text
+        from modules.global_log_runtime import _response_payload, scrub_text, redact_value
         from modules.privacy_export import _sanitize
         self.assertNotIn("123456", scrub_text("Blackbird · код подтверждения: 123456"))
         response = web.json_response({"secret": "TOTPKEY", "recovery_codes": ["PRIVATECODE"]})
         self.assertEqual(_response_payload(response, "/api/account/security"), {"omitted": "authentication_secrets"})
         self.assertNotIn("PRIVATECODE", _sanitize("PRIVATECODE", key="recovery_hashes", subject_id=42))
+        modal = {"components": [{"type": 1, "components": [{"type": 4, "custom_id": "random-id", "value": "my-private-password"}]}]}
+        self.assertNotIn("my-private-password", json.dumps(redact_value(modal)))
+        self.assertNotIn("my-private-password", json.dumps(redact_value({"name":"password", "value":"my-private-password"})))
 
     async def test_delivery_failure_still_allows_recovery_code_login(self):
         recovery = self.enroll("discord")
@@ -166,7 +232,7 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         member = SimpleNamespace(id=42, display_name="Operator", guild_permissions=SimpleNamespace(administrator=True), roles=[])
         guild = SimpleNamespace(id=77, name="Test", get_member=lambda user: member)
         bot = SimpleNamespace(get_guild=lambda gid: guild, get_user=lambda user: None, fetch_user=AsyncMock(side_effect=RuntimeError("offline")))
-        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77))) as client:
+        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77)), headers={"X-TMod-Desktop-Edition": "blackbird"}) as client:
             response = await client.post("/auth/login?client=desktop", data={"login": "operator", "pin": "12345678"}, allow_redirects=False)
             self.assertEqual(response.status, 202)
             data = await response.json()
@@ -190,7 +256,7 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         register_account_security_routes(app, SimpleNamespace(), guild_id=77, authenticate=authenticate)
         async with TestClient(TestServer(app)) as client:
             self.assertEqual((await client.get("/api/account/security")).status, 401)
-            headers = {"X-Test-Session": "yes"}
+            headers = {"X-Test-Session": "yes", "X-TMod-Desktop-Edition": "blackbird"}
             response = await client.get("/api/account/security", headers=headers)
             payload = await response.json()
             self.assertNotIn("mfa_secret", payload)
@@ -211,7 +277,7 @@ class AccountSecurityTests(unittest.IsolatedAsyncioTestCase):
         member = SimpleNamespace(id=42, display_name="Operator", guild_permissions=SimpleNamespace(administrator=True), roles=[])
         guild = SimpleNamespace(id=77, name="Test", get_member=lambda user: member, fetch_member=AsyncMock(return_value=member))
         bot = SimpleNamespace(get_guild=lambda guild_id: guild)
-        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77))) as client:
+        async with TestClient(TestServer(create_consensus_web_app(bot, guild_id=77)), headers={"X-TMod-Desktop-Edition": "blackbird"}) as client:
             legacy, _ = create_session_token(guild_id=77, user_id=42)
             denied = await client.get("/api/account/security", headers={"Cookie": f"tmod_account_session={legacy}"})
             self.assertEqual(denied.status, 401)

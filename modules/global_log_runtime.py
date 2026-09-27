@@ -80,8 +80,11 @@ def redact_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
     if depth >= _MAX_DEPTH:
         return "[DEPTH_LIMIT]"
     if isinstance(value, Mapping):
+        # Discord text inputs have random custom IDs, not semantic field names.
+        # Never persist their raw values: they can be PIN/password/OTP forms.
+        private_input = value.get("type") == 4 or bool(_SECRET_KEY.search(str(value.get("name") or value.get("custom_id") or "")))
         return {
-            str(item_key)[:200]: redact_value(item_value, key=str(item_key), depth=depth + 1)
+            str(item_key)[:200]: redact_value(item_value, key="password" if private_input and item_key in {"value", "values"} else str(item_key), depth=depth + 1)
             for item_key, item_value in list(value.items())[:500]
         }
     if isinstance(value, (list, tuple, set)):

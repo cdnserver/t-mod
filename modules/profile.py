@@ -91,6 +91,7 @@ PROFILE_ERROR_MESSAGES = {
     "web_login_invalid": "Логин: 3–32 латинских символа, цифры, точка, дефис или подчёркивание.",
     "web_pin_invalid": "PIN должен состоять ровно из 8 цифр.",
     "web_pin_mismatch": "Введённые PIN не совпадают.",
+    "password_length": "Пароль должен содержать от 12 до 128 символов и не состоять только из пробелов.",
     "web_login_taken": "Этот логин уже занят другим участником.",
 }
 CHARACTER_NUMBERS = {1: "①", 2: "②", 3: "③"}
@@ -669,7 +670,7 @@ def profile_web_access_embed(
     embed = discord.Embed(
         title="Веб-доступ T-Mod",
         description=(
-            "Логин и восьмизначный PIN задаются только здесь, в личном меню Discord. "
+            "В /account можно задать логин и выбрать PIN из 8 цифр или пароль от 12 до 128 символов. "
             "Права на сайте всегда берутся из текущих ролей сервера."
         ),
         color=PROFILE_COLOR,
@@ -691,7 +692,7 @@ def profile_web_access_embed(
     embed.add_field(
         name="Безопасность",
         value=(
-            "PIN хранится только в виде защищённого хэша. После трёх ошибочных попыток "
+            "PIN и пароль хранятся только в виде защищённого хэша. После трёх ошибочных попыток "
             "вход блокируется до установки нового PIN через `/reset`. Смена или "
             "отключение доступа завершает старые сессии."
         ),
@@ -1103,7 +1104,7 @@ def _tmod_account_embed(
         description=(
             "Единая учётная запись активна. Она узнаёт вас в сервисах T-Mod."
             if active
-            else "Задайте логин и восьмизначный PIN. Персонажа можно добавить до подачи заявок в сервисах."
+            else "Задайте логин и PIN из 8 цифр или пароль от 12 до 128 символов. Персонажа можно добавить до подачи заявок в сервисах."
         ),
         color=0x57F2C8 if active else 0x5865F2,
     )
@@ -1128,7 +1129,7 @@ def _tmod_account_embed(
     )
     embed.add_field(
         name="Веб-вход",
-        value=f"Логин: `{credential.login}`" if credential else "Логин и PIN ещё не заданы",
+        value=f"Логин: `{credential.login}`" if credential else "Логин и PIN / пароль ещё не заданы",
         inline=False,
     )
     if not isinstance(user, discord.Member):
@@ -1219,10 +1220,18 @@ class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"
     pin = discord.ui.TextInput(label="PIN — ровно 8 цифр", placeholder="••••••••", min_length=8, max_length=8)
     pin_repeat = discord.ui.TextInput(label="Повторите PIN", placeholder="••••••••", min_length=8, max_length=8)
 
-    def __init__(self, guild_id: int, requester_id: int, credential: Any | None) -> None:
+    def __init__(self, guild_id: int, requester_id: int, credential: Any | None, *, kind: str = "pin") -> None:
         super().__init__(timeout=300)
         self.guild_id = int(guild_id)
         self.requester_id = int(requester_id)
+        self.kind = kind
+        if kind == "password":
+            self.pin.label = "Пароль — от 12 до 128 символов"
+            self.pin.min_length = 12
+            self.pin.max_length = 128
+            self.pin_repeat.label = "Повторите пароль"
+            self.pin_repeat.min_length = 12
+            self.pin_repeat.max_length = 128
         if credential is not None:
             self.login.default = str(credential.login)
 
@@ -1231,7 +1240,7 @@ class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"
             await interaction.response.send_message("Нельзя изменить чужой аккаунт.", ephemeral=True)
             return
         if str(self.pin.value) != str(self.pin_repeat.value):
-            await interaction.response.send_message(PROFILE_ERROR_MESSAGES["web_pin_mismatch"], ephemeral=True)
+            await interaction.response.send_message("Введённые PIN или пароли не совпадают.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1241,6 +1250,7 @@ class TModAccountCredentialModal(ProfileModal, title="Веб-доступ T-Mod"
                 self.requester_id,
                 str(self.login.value),
                 str(self.pin.value),
+                kind=self.kind,
             )
         except ValueError as exc:
             await _send_profile_error(interaction, exc)
@@ -1548,6 +1558,12 @@ class TModAccountView(ProfileBaseView):
     async def web_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(
             TModAccountCredentialModal(self.guild_id, self.requester_id, self.credential)
+        )
+
+    @discord.ui.button(label="Логин и пароль", emoji="🔐", style=discord.ButtonStyle.secondary, row=2)
+    async def password_access(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(
+            TModAccountCredentialModal(self.guild_id, self.requester_id, self.credential, kind="password")
         )
 
     @discord.ui.button(label="Баг-репорт", emoji="🪲", style=discord.ButtonStyle.secondary, row=1)

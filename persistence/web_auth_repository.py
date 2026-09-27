@@ -158,9 +158,17 @@ def configure_web_credential(
     user_id: int,
     login: str,
     pin: str,
+    *, kind: str = "pin",
 ) -> WebCredential:
     clean_login = normalize_web_login(login)
-    clean_pin = normalize_web_pin(pin)
+    if kind == "pin":
+        clean_pin = normalize_web_pin(pin)
+    elif kind == "password":
+        clean_pin = str(pin)
+        if not 12 <= len(clean_pin) <= 128 or clean_pin.isspace():
+            raise ValueError("password_length")
+    else:
+        raise ValueError("credential_kind_invalid")
     pin_hash = _hash_pin(clean_pin)
     now = utc_now_iso()
     try:
@@ -201,8 +209,8 @@ def configure_web_credential(
             # Legacy /reset changes the primary credential, not the second
             # factor. Keep its PIN label accurate and revoke legacy cookies too.
             con.execute(
-                "UPDATE account_security SET credential_kind='pin', security_version=security_version+1, pending_method='', pending_secret='', pending_until=0 WHERE guild_id=? AND user_id=?",
-                (int(guild_id), int(user_id)),
+                "INSERT INTO account_security(guild_id,user_id,credential_kind) VALUES(?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET credential_kind=excluded.credential_kind, security_version=account_security.security_version+1, pending_method='', pending_secret='', pending_until=0",
+                (int(guild_id), int(user_id), kind),
             )
             con.commit()
     except sqlite3.IntegrityError as exc:

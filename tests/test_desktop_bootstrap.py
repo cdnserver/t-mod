@@ -341,8 +341,9 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                     data={"login": "zero.user", "pin": "12345678"},
                     allow_redirects=False,
                 )
-            self.assertEqual(response.status, 303)
-            self.assertEqual(response.headers["Location"], "/")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.json(), {"ok": True})
+            self.assertNotIn("Location", response.headers)
             self.assertIn("tmod_account_session", response.cookies)
         finally:
             await client.close()
