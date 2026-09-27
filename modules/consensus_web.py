@@ -1501,8 +1501,8 @@ def create_consensus_web_app(
                 and not request.path.startswith("/api/atlas")
                 and request.path != "/api/sgl/bootstrap"
                 and request.path != "/api/desktop/v1/bootstrap"
-            ):
                 and not request.path.startswith("/api/account/")
+            ):
                 raise web.HTTPForbidden(
                     text=json.dumps(
                         {
@@ -1768,12 +1768,32 @@ def create_consensus_web_app(
                 raise web.HTTPSeeOther(
                     location="/login?next=%2Fadmin&error=administrator"
                 )
+        factor = await asyncio.to_thread(security_storage.state, int(guild_id), int(result.credential.user_id))
+        if factor["mfa_method"]:
+            nonce = str(body.get("challenge") or "")[:64]
+            code = str(body.get("code") or "")[:32]
+            try:
+                valid = nonce and code and await asyncio.to_thread(security_storage.verify, int(guild_id), int(result.credential.user_id), code, nonce, "login")
+            except ValueError:
+                return web.json_response({"error": "factor_temporarily_unavailable"}, status=503, headers={"Cache-Control": "no-store"})
+            if not valid:
+                attempts.append(now)
+                try:
+                    if not nonce:
+                        nonce = await issue_challenge(bot, int(guild_id), int(result.credential.user_id), "login", factor["mfa_method"])
+                except FactorDeliveryError as exc:
+                    return web.json_response({"error": "two_factor_required", "challenge": exc.nonce, "method": factor["mfa_method"], "delivery_failed": True}, status=202, headers={"Cache-Control": "no-store"})
+                except ValueError:
+                    return web.json_response({"error": "factor_delivery_unavailable"}, status=503)
+                return web.json_response({"error": "two_factor_required", "challenge": nonce, "method": factor["mfa_method"]}, status=202, headers={"Cache-Control": "no-store"})
         attempts.clear()
         token, _ = create_session_token(
             guild_id=int(guild_id),
             user_id=int(result.credential.user_id),
             lifetime_seconds=PERSISTENT_SESSION_LIFETIME_SECONDS,
             session_version=int(result.credential.session_version),
+            mfa_verified=True,
+            account_security_version=factor["security_version"],
         )
         response = web.Response(
             status=303,
@@ -1880,32 +1900,12 @@ def create_consensus_web_app(
                     result,
                     int(guild_id),
                 )
-        factor = await asyncio.to_thread(security_storage.state, int(guild_id), int(result.credential.user_id))
-        if factor["mfa_method"]:
-            nonce = str(body.get("challenge") or "")[:64]
-            code = str(body.get("code") or "")[:32]
-            try:
-                valid = nonce and code and await asyncio.to_thread(security_storage.verify, int(guild_id), int(result.credential.user_id), code, nonce, "login")
-            except ValueError:
-                return web.json_response({"error": "factor_temporarily_unavailable"}, status=503, headers={"Cache-Control": "no-store"})
-            if not valid:
-                attempts.append(now)
-                try:
-                    if not nonce:
-                        nonce = await issue_challenge(bot, int(guild_id), int(result.credential.user_id), "login", factor["mfa_method"])
-                except FactorDeliveryError as exc:
-                    return web.json_response({"error": "two_factor_required", "challenge": exc.nonce, "method": factor["mfa_method"], "delivery_failed": True}, status=202, headers={"Cache-Control": "no-store"})
-                except ValueError:
-                    return web.json_response({"error": "factor_delivery_unavailable"}, status=503)
-                return web.json_response({"error": "two_factor_required", "challenge": nonce, "method": factor["mfa_method"]}, status=202, headers={"Cache-Control": "no-store"})
                 for result in simulation.session.results
             }
             items = []
             for number in sorted(numbers, reverse=True):
                 bill = _simulation_bill_payload(simulation, number)
                 catalog_item = _catalog_bill_payload(
-            mfa_verified=True,
-            account_security_version=factor["security_version"],
                     bill,
                     int(guild_id),
                 )
@@ -2246,6 +2246,7 @@ def create_consensus_web_app(
         authenticate=authenticated_request,
         ecosystem_asset_dir=_ASSET_DIR,
     )
+    register_account_security_routes(app, bot, guild_id=int(guild_id), authenticate=authenticated_request)
     register_atlas_finance_admin_routes(
         app,
         guild_id=int(guild_id),
@@ -2359,7 +2360,6 @@ async def open_consensus_web_info(interaction: discord.Interaction) -> None:
         color=0xD9D9D9,
     )
     embed.add_field(
-    register_account_security_routes(app, bot, guild_id=int(guild_id), authenticate=authenticated_request)
         name="Режимы доступа",
         value=(
             "Кнопки ниже открывают персональную сессию и проверяют ваши роли "
