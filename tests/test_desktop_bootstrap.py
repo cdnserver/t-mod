@@ -231,7 +231,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_blackbird_private_edition_uses_new_owner_allowlist(self) -> None:
+    async def test_blackbird_accepts_any_authenticated_account_regardless_of_owner_allowlist(self) -> None:
         principal = self.principal(administrator=True)
         app = create_consensus_web_app(self.bot, guild_id=77)
         client = TestClient(TestServer(app))
@@ -239,7 +239,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
-                patch.dict(os.environ, {"TMOD_BLACKBIRD_OWNER_IDS": "42"}),
+                patch.dict(os.environ, {"TMOD_BLACKBIRD_OWNER_IDS": "99"}),
             ):
                 response = await client.get(
                     "/api/desktop/v1/bootstrap",
@@ -253,6 +253,63 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 "BLACKBIRD — Технологии Товарищества",
             )
             self.assertTrue(payload["client"]["private"])
+            self.assertEqual(payload["viewer"]["id"], 42)
+        finally:
+            await client.close()
+
+    async def test_blackbird_update_minimum_is_independent_from_public_desktop(self) -> None:
+        from modules.desktop_bootstrap_service import desktop_update_policy
+
+        with patch.dict(os.environ, {
+            "TMOD_DESKTOP_MIN_VERSION": "9.0.0",
+            "TMOD_BLACKBIRD_MIN_VERSION": "1.3.5-p8",
+        }):
+            blackbird = desktop_update_policy({
+                "X-TMod-Desktop-Edition": "blackbird",
+                "X-TMod-Desktop-Version": "1.3.5-p7",
+            })
+            public = desktop_update_policy({
+                "X-TMod-Desktop-Version": "1.3.5-p7",
+            })
+        self.assertTrue(blackbird["required"])
+        self.assertEqual(blackbird["minimum_version"], "1.3.5-p8")
+        self.assertIn("blackbird-releases", blackbird["release_url"])
+        self.assertEqual(public["minimum_version"], "9.0.0")
+
+    async def test_blackbird_update_feed_requires_account_and_supports_ranges(self) -> None:
+        update_dir = Path(self.temp_dir.name) / "blackbird-updates"
+        update_dir.mkdir()
+        installer = "BLACKBIRD-Private-Setup-1.3.5-p8.exe"
+        (update_dir / "latest.yml").write_text(f"version: 1.3.5-p8\npath: {installer}\n", encoding="utf-8")
+        (update_dir / installer).write_bytes(b"installer-data")
+        app = create_consensus_web_app(self.bot, guild_id=77)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch.dict(os.environ, {"TMOD_BLACKBIRD_UPDATE_DIR": str(update_dir)}):
+                no_session = await client.get("/api/desktop/v1/updates/blackbird/latest.yml")
+                self.assertEqual(no_session.status, 401)
+                with patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=self.principal())):
+                    manifest = await client.get("/api/desktop/v1/updates/blackbird/latest.yml")
+                    self.assertEqual(manifest.status, 200)
+                    self.assertIn(installer, await manifest.text())
+                    self.assertEqual(manifest.headers["Cache-Control"], "private, no-store")
+                    partial = await client.get(
+                        f"/api/desktop/v1/updates/blackbird/{installer}",
+                        headers={"Range": "bytes=0-8"},
+                    )
+                    self.assertEqual(partial.status, 206)
+                    self.assertEqual(await partial.read(), b"installer")
+                    missing = await client.get("/api/desktop/v1/updates/blackbird/secrets.txt")
+                    self.assertEqual(missing.status, 404)
+                zero_identity = TModAccountIdentity(id=99, display_name="Новый пользователь")
+                zero_principal = ConsensusWebPrincipal(
+                    user_id=99, guild_id=77, display_name=zero_identity.display_name,
+                    csrf_token="csrf-zero", member=zero_identity,
+                )
+                with patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=zero_principal)):
+                    zero_account = await client.get("/api/desktop/v1/updates/blackbird/latest.yml")
+                    self.assertEqual(zero_account.status, 200)
         finally:
             await client.close()
 

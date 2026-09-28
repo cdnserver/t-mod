@@ -37,7 +37,7 @@ describe("desktop release contract", () => {
     expect(manifest.build.mac.target).toContain("zip");
   });
 
-  it("ships BLACKBIRD as an isolated owner-only successor profile", () => {
+  it("ships BLACKBIRD as an isolated account-authenticated successor profile", () => {
     const main = readFileSync(resolve(root, "src/main/index.ts"), "utf8");
     const product = readFileSync(resolve(root, "src/shared/product.ts"), "utf8");
     const builder = readFileSync(resolve(root, "electron-builder.blackbird.yml"), "utf8");
@@ -49,6 +49,10 @@ describe("desktop release contract", () => {
     expect(builder).toContain("appId: lat.tvr.technology.blackbird");
     expect(builder).toContain("output: release-blackbird");
     expect(builder).not.toContain("t-mod-releases");
+    expect(builder).toContain("provider: generic");
+    expect(builder).toContain("/api/desktop/v1/updates/blackbird");
+    expect(main).toContain("autoUpdater.requestHeaders = { Cookie:");
+    expect(main).toContain("BLACKBIRD_UPDATE_FEED");
     expect(script).toContain('TMOD_DESKTOP_EDITION: "blackbird"');
     expect(script).toContain('process.env.ComSpec || "cmd.exe"');
     expect(existsSync(resolve(root, "resources/blackbird/icon.png"))).toBe(true);

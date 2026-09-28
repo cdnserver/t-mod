@@ -22,6 +22,7 @@ from discord.ext import commands
 
 from modules.consensus_admin_web import register_admin_web_routes
 from modules.account_security_web import register_account_security_routes, issue_challenge, FactorDeliveryError
+from modules.blackbird_update_web import register_blackbird_update_routes
 from persistence import account_security_repository as security_storage
 from modules.consensus_core import (
     ConsensusStateError,
@@ -1501,6 +1502,7 @@ def create_consensus_web_app(
                 and not request.path.startswith("/api/atlas")
                 and request.path != "/api/sgl/bootstrap"
                 and request.path != "/api/desktop/v1/bootstrap"
+                and not request.path.startswith("/api/desktop/v1/updates/blackbird/")
                 and not request.path.startswith("/api/account/")
             ):
                 raise web.HTTPForbidden(
@@ -2276,6 +2278,7 @@ def create_consensus_web_app(
         ecosystem_asset_dir=_ASSET_DIR,
     )
     register_account_security_routes(app, bot, guild_id=int(guild_id), authenticate=authenticated_request)
+    register_blackbird_update_routes(app, authenticate=authenticated_request)
     register_atlas_finance_admin_routes(
         app,
         guild_id=int(guild_id),

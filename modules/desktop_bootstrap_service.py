@@ -24,7 +24,7 @@ PRIVATE_DESKTOP_EDITIONS = {
     BLACKBIRD_PRIVATE_EDITION,
     LEGACY_LUMEN_PRIVATE_EDITION,
 }
-BLACKBIRD_DEFAULT_OWNER_ID = 902235631952998410
+LEGACY_LUMEN_DEFAULT_OWNER_ID = 902235631952998410
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,13 +40,9 @@ def desktop_edition(headers: Mapping[str, str]) -> str:
 
 
 def private_desktop_owner_ids() -> set[int]:
-    configured = str(
-        os.getenv("TMOD_BLACKBIRD_OWNER_IDS")
-        or os.getenv("TMOD_LUMEN_OWNER_IDS")
-        or ""
-    ).strip()
+    configured = str(os.getenv("TMOD_LUMEN_OWNER_IDS") or "").strip()
     if not configured:
-        return {BLACKBIRD_DEFAULT_OWNER_ID}
+        return {LEGACY_LUMEN_DEFAULT_OWNER_ID}
     return {
         int(value)
         for value in re.split(r"[\s,;]+", configured)
@@ -67,24 +63,30 @@ def desktop_version_key(value: str) -> tuple[int, int, int, int, str, int]:
     return (major, minor, patch, 1 if not label else 0, label, revision)
 
 
-def desktop_update_policy(headers: Mapping[str, str]) -> dict[str, Any]:
-    minimum = str(os.getenv("TMOD_DESKTOP_MIN_VERSION") or "").strip()
-    latest = str(os.getenv("TMOD_DESKTOP_LATEST_VERSION") or minimum).strip()
+def desktop_update_policy(headers: Mapping[str, str], *, edition: str | None = None) -> dict[str, Any]:
+    edition = edition or desktop_edition(headers)
+    prefix = "TMOD_BLACKBIRD" if edition == BLACKBIRD_PRIVATE_EDITION else "TMOD_DESKTOP"
+    minimum = str(os.getenv(f"{prefix}_MIN_VERSION") or "").strip()
+    latest = str(os.getenv(f"{prefix}_LATEST_VERSION") or minimum).strip()
     current = str(headers.get("X-TMod-Desktop-Version") or "").strip()
     required = bool(minimum) and desktop_version_key(current) < desktop_version_key(minimum)
+    product_name = "Blackbird" if edition == BLACKBIRD_PRIVATE_EDITION else "T-Mod Desktop"
     return {
         "required": required,
         "minimum_version": minimum or None,
         "latest_version": latest or None,
         "current_version": current or None,
         "release_url": str(
-            os.getenv("TMOD_DESKTOP_RELEASE_URL")
-            or "https://github.com/cdnserver/t-mod-releases/releases/latest"
+            os.getenv(f"{prefix}_RELEASE_URL")
+            or (
+                "https://github.com/cdnserver/blackbird-releases/releases"
+                if edition == BLACKBIRD_PRIVATE_EDITION
+                else "https://github.com/cdnserver/t-mod-releases/releases/latest"
+            )
         ).strip(),
         "message": (
-            "Для продолжения установите обязательное обновление T-Mod Desktop."
-            if required
-            else "Установлена поддерживаемая версия T-Mod Desktop."
+            f"Для продолжения установите обязательное обновление {product_name}."
+            if required else f"Установлена поддерживаемая версия {product_name}."
         ),
     }
 
@@ -96,7 +98,9 @@ async def build_desktop_bootstrap_payload(
     guild_id: int,
 ) -> dict[str, Any]:
     edition = desktop_edition(headers)
-    if edition in PRIVATE_DESKTOP_EDITIONS and int(principal.user_id) not in private_desktop_owner_ids():
+    # Blackbird distribution is controlled by the publisher, not a server-side
+    # owner allowlist. Every authenticated T-Mod account may use an installed copy.
+    if edition == LEGACY_LUMEN_PRIVATE_EDITION and int(principal.user_id) not in private_desktop_owner_ids():
         raise DesktopBootstrapError(
             status=403,
             error=f"{edition}_private_access_required",
@@ -112,7 +116,7 @@ async def build_desktop_bootstrap_payload(
         app_version=str(headers.get("X-TMod-Desktop-Version") or ""),
         device_fingerprint=str(headers.get("X-TMod-Device-Fingerprint") or ""),
     )
-    client_update = desktop_update_policy(headers)
+    client_update = desktop_update_policy(headers, edition=edition)
     update_required = bool(client_update["required"])
     guild_member = bool(principal.guild_member)
     administrator = bool(principal.administrator)

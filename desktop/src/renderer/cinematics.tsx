@@ -435,9 +435,9 @@ export function CinematicLaunch({ name, reduced, hold = false, onContinue, conne
       <div className="cinema-horizon" aria-hidden="true"><i/><b/></div>
       <div className="cinema-story">
         <div className="cinema-collaboration">
-          <span className="cinema-tmod"><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "private owner edition" : "by cdnserver"}</small></span>
+          <span className="cinema-tmod"><strong>{desktopProduct.name}</strong><small>{desktopProduct.privateEdition ? "client" : "by cdnserver"}</small></span>
           <i>{desktopProduct.privateEdition ? "·" : "×"}</i>
-          <span className="cinema-tvrs"><strong>{desktopProduct.privateEdition ? "ТЕХНОЛОГИИ ТОВАРИЩЕСТВА" : "ТОВАРИЩЕСТВО"}</strong><small>{desktopProduct.privateEdition ? "Персональный контур" : "Светлый круг"}</small></span>
+          <span className="cinema-tvrs"><strong>{desktopProduct.privateEdition ? "ТЕХНОЛОГИИ ТОВАРИЩЕСТВА" : "ТОВАРИЩЕСТВО"}</strong><small>{desktopProduct.privateEdition ? "Единый контур" : "Светлый круг"}</small></span>
         </div>
         <div className="cinema-greeting">
           <small>ВАШЕ ПРОСТРАНСТВО ГОТОВО</small>

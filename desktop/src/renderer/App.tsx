@@ -862,7 +862,7 @@ export function App() {
   const userName = cinematicPreviewName
     || preferences.preferredName.trim()
     || bootstrap.data?.viewer.name
-    || (desktopProduct.privateEdition ? "Владелец" : desktopProduct.name);
+    || (desktopProduct.privateEdition ? "Пользователь" : desktopProduct.name);
   const connectionState = bootstrap.online
     ? "online"
     : bootstrap.authenticated
@@ -885,14 +885,14 @@ export function App() {
       : updateState.phase === "checking"
         ? "Проверяем версию"
         : updateState.phase === "error"
-          ? "Скачать обновление"
+          ? desktopProduct.privateEdition ? "Повторить обновление" : "Скачать обновление"
         : `v${updateState.currentVersion}`;
 
   const runUpdateAction = () => {
     const api = browserApi();
     if (!api || updateBusy) return;
     if (updateState.phase === "ready") void api.installUpdate();
-    else if (updateState.phase === "error") void api.openReleasePage();
+    else if (updateState.phase === "error" && !desktopProduct.privateEdition) void api.openReleasePage();
     else void api.checkForUpdates().then(setUpdateState);
   };
 
@@ -1246,12 +1246,14 @@ function MandatoryUpdate({ updateState }: { updateState: DesktopUpdateState }) {
   const title = ready
     ? "Обновление готово"
     : failed
-      ? "Нужен новый установщик"
+      ? desktopProduct.privateEdition ? "Не удалось загрузить обновление" : "Нужен новый установщик"
       : `Обновляем ${desktopProduct.name}`;
   const description = ready
     ? "Приложение автоматически перезапустится через несколько секунд."
     : failed
-      ? updateState.message || "Автоматическое обновление недоступно. Откройте актуальный установщик."
+      ? desktopProduct.privateEdition
+        ? `${updateState.message || "Автоматическое обновление пока недоступно."} Повторите попытку; если ошибка сохранится, запросите установщик у администратора.`
+        : updateState.message || "Автоматическое обновление недоступно. Откройте актуальный установщик."
       : updateState.phase === "downloading" || updateState.phase === "available"
         ? `Загружаем обязательную версию${updateState.version ? ` ${updateState.version}` : ""}.`
         : "Проверяем канал обновлений и готовим безопасную установку.";
@@ -1267,7 +1269,9 @@ function MandatoryUpdate({ updateState }: { updateState: DesktopUpdateState }) {
         <div className={`mandatory-update-progress ${ready ? "ready" : ""}`}><i style={{ width: `${ready ? 100 : progress}%` }}/></div>
         <div className="mandatory-update-actions">
           {ready && <button onClick={() => void browserApi()?.installUpdate()}>Перезапустить сейчас</button>}
-          {failed && <button onClick={() => void browserApi()?.openReleasePage()}>Скачать установщик</button>}
+          {failed && (desktopProduct.privateEdition
+            ? <button onClick={() => void browserApi()?.checkForUpdates()}>Повторить</button>
+            : <button onClick={() => void browserApi()?.openReleasePage()}>Скачать установщик</button>)}
           {!ready && !failed && <span>{updateState.phase === "downloading" ? `${progress}%` : "Подготовка…"}</span>}
           <button className="quiet" onClick={() => void browserApi()?.minimize()}>Свернуть</button>
         </div>
@@ -1350,7 +1354,7 @@ function Home({
       reset_required: "PIN заблокирован. Напишите T-Mod команду /reset в Discord.",
       character_required: "Сначала добавьте персонажа через /account в Discord.",
       atlas_access: "Для этой учётной записи ещё не выдан доступ к Atlas.",
-      private_access_required: "BLACKBIRD — личная редакция владельца. Этот аккаунт не включён в закрытый список доступа.",
+      private_access_required: "На сервере ещё действуют прежние ограничения Blackbird. Обратитесь к администратору для обновления сервера.",
       banned: "Доступ к экосистеме T-Mod заблокирован.",
       network_unavailable: "Соединение пока восстанавливается. T-Mod уже повторяет попытку — немного подождите и нажмите вход ещё раз.",
       login_in_progress: "Вход уже выполняется. Подождите завершения проверки.",
@@ -1392,13 +1396,13 @@ function Home({
       <section className="login-stage">
         <div className="login-visual">
           <div className="login-sigil"><span>{desktopProduct.mark}</span><i/><i/><i/></div>
-          <p className="kicker">{desktopProduct.privateEdition ? "PRIVATE OWNER EDITION" : "ЕДИНЫЙ КОНТУР"}</p>
+          <p className="kicker">{desktopProduct.privateEdition ? "BLACKBIRD CLIENT" : "ЕДИНЫЙ КОНТУР"}</p>
           <h1>{desktopProduct.privateEdition ? <>Ваш контур.<br/>Без компромиссов.</> : <>Один вход.<br/>Вся экосистема.</>}</h1>
-          <p>{desktopProduct.privateEdition ? "Персональная система Технологий Товарищества. Допуск проверяется сервером при каждом запуске." : "Ваши права, сервисы и сессия синхронизируются через защищённый T-Mod Account."}</p>
+          <p>{desktopProduct.privateEdition ? "Единый аккаунт Технологий Товарищества. Доступ к каждому сервису определяется вашими правами." : "Ваши права, сервисы и сессия синхронизируются через защищённый T-Mod Account."}</p>
           <div className="login-assurances"><span><Icon name="shield"/><b>HttpOnly-сессия</b></span><span><i/>Все домены tvr.lat</span></div>
         </div>
         <form className="desktop-login-form" onSubmit={(event) => void submit(event)}>
-          <header><p>{desktopProduct.privateEdition ? "BLACKBIRD · PRIVATE" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
+          <header><p>{desktopProduct.privateEdition ? "BLACKBIRD · CLIENT" : "T·ID"}</p><h2>Войти в {desktopProduct.name}</h2><span>Используется ваш защищённый <b>T-Mod Account</b>.</span></header>
           <label><span>Логин</span><input value={loginValue} onChange={(event) => setLoginValue(event.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} minLength={3} maxLength={32} placeholder="ваш.логин" disabled={loginBusy}/></label>
           <label><span>PIN или пароль</span><input value={pin} onChange={(event) => { setPin(event.target.value); setFactor(undefined); setFactorCode(""); }} autoComplete="current-password" type="password" minLength={1} maxLength={128} placeholder="Ваш способ входа" disabled={loginBusy}/></label>
           {factor && <label><span>Код подтверждения или резервный код</span><input name="verification_code" type="password" autoComplete="one-time-code" maxLength={32} value={factorCode} onChange={event => setFactorCode(event.target.value)} disabled={loginBusy}/></label>}
@@ -1576,7 +1580,7 @@ function SettingsDrawer({
     onChange({ ...preferences, [key]: !preferences[key] });
 
   return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="settings-drawer">
-    <header><div><p className="kicker">{desktopProduct.name} · {desktopProduct.privateEdition ? "OWNER EDITION" : "DESKTOP"}</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
+    <header><div><p className="kicker">{desktopProduct.name} · {desktopProduct.privateEdition ? "CLIENT" : "DESKTOP"}</p><h2>Настройки</h2></div><button onClick={onClose} aria-label="Закрыть">×</button></header>
     <div className="settings-scroll">
       {onSetup && <section><p className="settings-label">Первый запуск</p><button className="primary" onClick={onSetup}>Повторить настройку Blackbird</button></section>}
       <section><p className="settings-label">Обращение</p>

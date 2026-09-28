@@ -76,6 +76,7 @@ const AUTH_LOGIN_URLS = [
 ] as const;
 const LOGOUT_URL = "https://tvr.lat/logout";
 const RELEASE_URL = desktopProduct.releaseUrl;
+const BLACKBIRD_UPDATE_FEED = "https://tvr.lat/api/desktop/v1/updates/blackbird";
 const ATLAS_OVERLAY_SETTINGS_URL = "https://tvr.lat/desktop/atlas-overlay-settings";
 const UPDATE_INTERVAL_MS = 30 * 60 * 1_000;
 const BOOTSTRAP_WAVES = 3;
@@ -357,16 +358,10 @@ function applyClientUpdatePolicy(data: DesktopBootstrap): void {
       : updateState.message,
   });
   if (forceUpdateRequired) void checkForUpdates();
+  else if (desktopProduct.privateEdition && app.isPackaged && !updateState.checkedAt) void checkForUpdates();
 }
 
 async function checkForUpdates(): Promise<DesktopUpdateState> {
-  if (desktopProduct.privateEdition) {
-    return setUpdateState({
-      phase: "current",
-      message: "Приватная редакция получает только персонально опубликованные сборки.",
-      checkedAt: new Date().toISOString(),
-    });
-  }
   if (!app.isPackaged) {
     return setUpdateState({
       phase: "development",
@@ -374,6 +369,21 @@ async function checkForUpdates(): Promise<DesktopUpdateState> {
     });
   }
   if (["checking", "downloading"].includes(updateState.phase)) return updateState;
+  if (desktopProduct.privateEdition) {
+    // electron-updater uses its own HTTP executor, not Electron's account
+    // partition. Forward only this first-party session cookie to our own feed.
+    try {
+      const cookies = await desktopSession().cookies.get({ url: "https://tvr.lat", name: ACCOUNT_SESSION_COOKIE });
+      const cookie = cookies.find(item => item.name === ACCOUNT_SESSION_COOKIE)?.value;
+      if (!cookie) return setUpdateState({
+        phase: "idle",
+        message: "Войдите в аккаунт, чтобы проверить обновления Blackbird.",
+      });
+      autoUpdater.requestHeaders = { Cookie: `${ACCOUNT_SESSION_COOKIE}=${cookie}` };
+    } catch {
+      return setUpdateState({ phase: "error", message: "Не удалось проверить сессию обновлений." });
+    }
+  }
   setUpdateState({ phase: "checking", message: undefined, percent: undefined });
   try {
     await autoUpdater.checkForUpdates();
@@ -388,14 +398,6 @@ async function checkForUpdates(): Promise<DesktopUpdateState> {
 }
 
 function configureAutoUpdater(): void {
-  if (desktopProduct.privateEdition) {
-    setUpdateState({
-      phase: "current",
-      message: "BLACKBIRD подключён к закрытому каналу выпусков.",
-      checkedAt: new Date().toISOString(),
-    });
-    return;
-  }
   if (!app.isPackaged) {
     setUpdateState({ phase: "development" });
     return;
@@ -404,16 +406,14 @@ function configureAutoUpdater(): void {
   log.initialize();
   log.transports.file.level = "info";
   autoUpdater.logger = log;
-  autoUpdater.setFeedURL({
-    provider: "github",
-    owner: "cdnserver",
-    repo: "t-mod-releases",
-  });
+  autoUpdater.setFeedURL(desktopProduct.privateEdition
+    ? { provider: "generic", url: BLACKBIRD_UPDATE_FEED }
+    : { provider: "github", owner: "cdnserver", repo: "t-mod-releases" });
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.autoRunAppAfterInstall = true;
-  autoUpdater.channel = shellPreferences.updateChannel === "dev" ? "dev" : "latest";
-  autoUpdater.allowPrerelease = shellPreferences.updateChannel === "dev";
+  autoUpdater.channel = !desktopProduct.privateEdition && shellPreferences.updateChannel === "dev" ? "dev" : "latest";
+  autoUpdater.allowPrerelease = desktopProduct.privateEdition || shellPreferences.updateChannel === "dev";
   autoUpdater.allowDowngrade = false;
 
   autoUpdater.on("checking-for-update", () => {
@@ -463,7 +463,7 @@ function configureAutoUpdater(): void {
       phase: "current",
       version: info.version,
       percent: undefined,
-      message: "Установлена актуальная версия T-Mod.",
+      message: `Установлена актуальная версия ${desktopProduct.name}.`,
       checkedAt: new Date().toISOString(),
     });
   });
@@ -858,10 +858,15 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
           reconcileActiveServiceAccess();
           await applyAtlasOverlayBootstrapSafely(undefined);
         }
+        let reason = "access_denied";
+        try {
+          const payload = await response.clone().json() as { error?: string };
+          if (String(payload.error || "").endsWith("_private_access_required")) reason = "private_access_required";
+        } catch { /* A plain-text 403 is still a real access denial. */ }
         return {
           authenticated: false,
           online: true,
-          error: "private_access_required",
+          error: reason,
         };
       }
       if (response.status === 423) {
@@ -1060,9 +1065,6 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
     if (!response.ok && ![301, 302, 303, 307, 308, 403, 423].includes(response.status)) return { ok: false, error: "login_failed" };
     if (response.status === 403 || response.status === 423) {
       if (response.status === 423) await bootstrap();
-      if (response.status === 403 && desktopProduct.privateEdition) {
-        return { ok: false, error: "private_access_required" };
-      }
       return { ok: false, error: "banned" };
     }
     const error = loginErrorFromLocation(response.headers.get("location") || response.url);
@@ -1099,6 +1101,7 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
 
 async function logout(): Promise<boolean> {
   loginAbortController?.abort();
+  if (desktopProduct.privateEdition) autoUpdater.requestHeaders = null;
   notificationPopup?.clear();
   notificationStreamInitialized = false;
   knownNotificationIds.clear();
