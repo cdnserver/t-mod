@@ -45,7 +45,7 @@ export function BlackbirdHub({ name, tier, online, notifications, access, overla
       <div className="bb3-workspace">
         <header className="bb3-top">
           <span className="bb3-location">Главная</span>
-          <span className="bb3-status"><time>{clock(now)}</time><i className={online ? "online" : ""}/>{online ? "На связи" : "Восстанавливаем связь"}</span>
+          <span className="bb3-status"><time>{clock(now)}</time><i className={online ? "online" : ""}/>{online ? "Система на связи" : "Восстанавливаем связь"}</span>
         </header>
 
         <main className="bb3-content">
@@ -53,7 +53,7 @@ export function BlackbirdHub({ name, tier, online, notifications, access, overla
             <div className="bb3-hero-copy">
               <p>{tier} <i/> ВАШЕ ПРОСТРАНСТВО</p>
               <h1><span>Добро пожаловать в Blackbird,</span><strong>{greeting}.</strong></h1>
-              <p className="bb3-hero-detail">Интеллект и сообщество. Одно пространство для того, что важно.</p>
+              <p className="bb3-hero-detail">Интеллект и сообщество. Ваши пространства всегда под рукой.</p>
             </div>
           </section>
 
