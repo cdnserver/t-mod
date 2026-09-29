@@ -30,10 +30,10 @@ const groups: {title:string; ids:Exclude<ServiceId,"home">[]}[] = [
   {title:"Системы",ids:["games","admin"]},
 ];
 
-export function WorkspaceNavigation({ space, active, access, collapsed, online, inert, onHome, onOverview, onSwitch, onOpen, onOverlay, onToggle }: {
+export function WorkspaceNavigation({ space, active, access, collapsed, online, inert, communicateOpen, onHome, onOverview, onSwitch, onOpen, onOverlay, onCommunicate, onToggle }: {
   space:BlackbirdWorkspace; active:ServiceId; access:Access; collapsed:boolean; online:boolean;
-  inert?:boolean;
-  onHome:()=>void; onOverview:()=>void; onSwitch:()=>void; onOpen:(id:ServiceId)=>Promise<void>; onOverlay:()=>void; onToggle:()=>void;
+  inert?:boolean; communicateOpen?:boolean;
+  onHome:()=>void; onOverview:()=>void; onSwitch:()=>void; onOpen:(id:ServiceId)=>Promise<void>; onOverlay:()=>void; onCommunicate:()=>void; onToggle:()=>void;
 }) {
   const menuItem = (id:Exclude<ServiceId,"home">) => {
     const granted = access.get(id)?.enabled === true;
@@ -45,14 +45,15 @@ export function WorkspaceNavigation({ space, active, access, collapsed, online, 
     <div className="bbw-nav-identity"><img src={space === "atlas" ? atlas : senate} alt=""/><div><small>РАБОЧЕЕ ПРОСТРАНСТВО</small><strong>{space === "atlas" ? "Atlas" : "Сенат"}</strong></div></div>
     <nav className="bbw-nav" aria-label="Разделы пространства"><button className={`bbw-nav-item ${active === "home" ? "active" : ""}`} aria-current={active === "home" ? "page" : undefined} title="Обзор пространства" onClick={onOverview}><b aria-hidden="true">◈</b><span>Обзор</span></button>
       {space === "atlas" ? <><small>ИНТЕЛЛЕКТ</small>{menuItem("atlas")}<button className="bbw-nav-item" title="Настройки Atlas Overlay" disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><b aria-hidden="true">▱</b><span>Игровой оверлей</span></button></> : groups.map(group => <div key={group.title}><small>{group.title.toLocaleUpperCase()}</small>{group.ids.map(menuItem)}</div>)}
+      <button className={`bbw-nav-item ${communicateOpen ? "active" : ""}`} aria-current={communicateOpen ? "page" : undefined} title="Blackbird Communicate" onClick={onCommunicate}><b aria-hidden="true">✧</b><span>Communicate</span></button>
     </nav>
     <footer><span className={`bbw-online ${online ? "online" : ""}`}><i/><span>{online ? "На связи" : "Восстанавливаем связь"}</span></span><button className="bbw-switch" disabled={!canEnterWorkspace(other,access)} title={`Перейти в ${other === "atlas" ? "Atlas" : "Сенат"}`} onClick={onSwitch}><img src={other === "atlas" ? atlas : senate} alt=""/><span>{other === "atlas" ? "Перейти в Atlas" : "Перейти в Сенат"}</span><b>↗</b></button></footer>
   </aside>;
 }
 
-export function WorkspaceHome({ space, name, access, notifications, overlayEnabled, onOpen, onOverlay, onNotifications }: {
+export function WorkspaceHome({ space, name, access, notifications, overlayEnabled, onOpen, onOverlay, onCommunicate, onNotifications }: {
   space:BlackbirdWorkspace; name:string; access:Access; notifications:DesktopNotification[]; overlayEnabled:boolean;
-  onOpen:(id:ServiceId)=>Promise<void>; onOverlay:()=>void; onNotifications:()=>void;
+  onOpen:(id:ServiceId)=>Promise<void>; onOverlay:()=>void; onCommunicate:()=>void; onNotifications:()=>void;
 }) {
   const events = [...notifications].filter(item => {
     const service = resolveNotificationServiceId(item.route);
@@ -66,7 +67,7 @@ export function WorkspaceHome({ space, name, access, notifications, overlayEnabl
     <div className="bbw-home-inner"><header className="bbw-location"><span>{space === "atlas" ? "ATLAS / INTELLIGENCE" : "СЕНАТ / ТОВАРИЩЕСТВО"}</span><span>Обзор пространства</span></header>
     {space === "atlas" ? <>
       <div className="bbw-atlas-hero"><div className="bbw-hero-art" aria-hidden="true"><i/><img src={atlas} alt=""/></div><small>ВАШ ИНТЕЛЛЕКТУАЛЬНЫЙ КОНТУР</small><h1>Меньше шума.<br/><span>Больше ясности.</span></h1><p>{name}, здесь начинается работа с Atlas.<br/>Ответы, правовой разбор и помощь прямо в игре.</p><button className="bbw-primary" disabled={!access.get("atlas")?.enabled} onClick={() => void onOpen("atlas")}>Открыть Atlas AI <b>↗</b></button></div>
-      <div className="bbw-atlas-tools"><button disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><span>01 / В ИГРЕ</span><h2>Всегда рядом.</h2><p>Голос, оформление и управление оверлеем.</p><footer><i className={overlayEnabled ? "online" : ""}/>{overlayEnabled ? "Оверлей включён" : "Оверлей выключен"}<b>Настроить ↗</b></footer></button><button onClick={onNotifications}><span>02 / ВАШЕ ВНИМАНИЕ</span><h2>Ничего лишнего.</h2><p>Уведомления и история событий вашего аккаунта.</p><footer>Центр уведомлений<b>Открыть ↗</b></footer></button></div>
+      <div className="bbw-atlas-tools"><button disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><span>01 / В ИГРЕ</span><h2>Всегда рядом.</h2><p>Голос, оформление и управление оверлеем.</p><footer><i className={overlayEnabled ? "online" : ""}/>{overlayEnabled ? "Оверлей включён" : "Оверлей выключен"}<b>Настроить ↗</b></footer></button><button onClick={onNotifications}><span>02 / ВАШЕ ВНИМАНИЕ</span><h2>Ничего лишнего.</h2><p>Уведомления и история событий вашего аккаунта.</p><footer>Центр уведомлений<b>Открыть ↗</b></footer></button><button onClick={onCommunicate}><span>03 / ЛЮДИ</span><h2>Communicate.</h2><p>Найдите человека по серверу и статику. Продолжите разговор здесь.</p><footer>Личные диалоги<b>Открыть ↗</b></footer></button></div>
     </> : <>
       <div className="bbw-senate-hero"><small>УЧАСТВОВАТЬ. ОБСУЖДАТЬ. РЕШАТЬ.</small><h1>Сенат.<br/><span>Общее дело.</span></h1><p>{name}, ваше пространство участия в Товариществе.<br/>От личной инициативы до общего решения.</p><img src={senate} alt="" aria-hidden="true"/></div>
       <section className="bbw-services" aria-label="Участие в Сенате">{card("reactor",true)}{card("consensus",true)}{card("tasks")}</section>
@@ -99,12 +100,29 @@ export function WorkspaceIntro({ space, reduced, onComplete }: { space:Blackbird
         <g className="bbw-celestial"><circle cx="1040" cy="450" r="350"/><circle cx="1040" cy="450" r="310"/><ellipse cx="1040" cy="450" rx="470" ry="160" transform="rotate(-32 1040 450)"/><ellipse cx="1040" cy="450" rx="385" ry="230" transform="rotate(24 1040 450)"/></g>
         <g className="bbw-map">{Array.from({length:22},(_,i) => <g key={i}><circle cx={120+(i*179)%1200} cy={90+(i*137)%720} r={i%4===0 ? 2.5 : 1.2}/>{i%3===0 && <path d={`M${120+(i*179)%1200} ${90+(i*137)%720}l72 -43 90 20 44 -80`}/>}</g>)}</g>
         <path className="bbw-orbital-trace" d="M -100 720 C 200 900 600 100 1150 250 S 1650 550 1100 850"/>
-      </> : <g className="bbw-architecture">
-        {Array.from({length:10},(_,i) => <path key={i} d={`M${-300+i*225} 900L${570+i*32} 170L${570+i*32} 60M${-300+i*225} 900V650L${570+i*32} 60`}/>)}
-        {[190,280,440,680,860].map(y => <path key={y} d={`M0 ${y}H1440`}/>)}
-        <path className="bbw-arch-emblem" d="M490 180H950M520 210H920M550 240H890M575 240V640M635 240V640M805 240V640M865 240V640M550 650H890M520 680H920"/>
-      </g>}
+      </> : <>
+        <defs><radialGradient id="bbw-senate-aura"><stop stopColor="#a89a83" stopOpacity=".12"/><stop offset="1" stopColor="#a89a83" stopOpacity="0"/></radialGradient></defs>
+        <ellipse className="bbw-senate-aura" cx="720" cy="560" rx="510" ry="300" fill="url(#bbw-senate-aura)" stroke="none"/>
+        <g className="bbw-senate-voices">
+          {[0,1,2,3].map(index => <g key={index} style={{animationDelay:`${.24 + index*.14}s`}}>
+            <path d={`M${210 + index*24} ${277 + index*61} C${390 + index*18} ${300 + index*52} 472 ${415 + index*20} 570 ${438 + index*16}`}/>
+            <path d={`M${1230 - index*24} ${277 + index*61} C${1050 - index*18} ${300 + index*52} 968 ${415 + index*20} 870 ${438 + index*16}`}/>
+            <circle cx={210 + index*24} cy={277 + index*61} r="2"/>
+            <circle cx={1230 - index*24} cy={277 + index*61} r="2"/>
+          </g>)}
+        </g>
+        <g className="bbw-senate-assembly">
+          <path className="bbw-senate-ring outer" d="M372 563 Q720 806 1068 563"/>
+          <path className="bbw-senate-ring inner" d="M475 563 Q720 704 965 563"/>
+          {[{radius:348,depth:121,count:17},{radius:245,depth:69,count:13}].flatMap(({radius,depth,count},row) => Array.from({length:count},(_,index) => {
+            const angle = Math.PI - index*Math.PI/(count-1);
+            return <circle className="bbw-senate-voice" key={`${row}-${index}`} style={{animationDelay:`${.65 + row*.12 + index*.055}s`}} cx={720 + Math.cos(angle)*radius} cy={563 + Math.sin(angle)*depth} r={index%4 === 0 ? 2.5 : 1.7}/>;
+          }))}
+          <circle className="bbw-senate-decision" cx="720" cy="594" r="18"/>
+          <circle className="bbw-senate-decision-core" cx="720" cy="594" r="2.8"/>
+        </g>
+      </>}
     </svg><div className="bbw-cinematic-veil"/></div>
-    <div className="bbw-intro-title"><img src={space === "atlas" ? atlas : senate} alt=""/><small>BLACKBIRD / {space === "atlas" ? "INTELLIGENCE" : "COMMUNITY"}</small><h1>{space === "atlas" ? "Atlas" : "Сенат"}</h1><p>{space === "atlas" ? "Ясность начинается здесь." : "В пространстве общих решений."}</p><i/></div><button ref={skip} className="bbw-intro-skip" onClick={onComplete}>Пропустить ↗</button>
+    <div className="bbw-intro-title"><img src={space === "atlas" ? atlas : senate} alt=""/><small>BLACKBIRD / {space === "atlas" ? "INTELLIGENCE" : "COMMUNITY"}</small><h1>{space === "atlas" ? "Atlas" : "Сенат"}</h1><p>{space === "atlas" ? "Ясность начинается здесь." : "Разные голоса. Общее решение."}</p><i/></div><button ref={skip} className="bbw-intro-skip" onClick={onComplete}>Пропустить ↗</button>
   </section>;
 }

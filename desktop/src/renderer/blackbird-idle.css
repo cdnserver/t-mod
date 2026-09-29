@@ -1,22 +1,35 @@
-.bb-idle{position:fixed;inset:0;z-index:950;background:#070809;color:#e9eaed;overflow:hidden;isolation:isolate;animation:bbi-arrive 1.4s cubic-bezier(.2,.7,.2,1) both;font-family:'IBM Plex Sans',sans-serif}
-.bb-idle header,.bb-idle footer{position:absolute;left:5.5%;right:5.5%;display:flex;align-items:center;justify-content:space-between;z-index:3}.bb-idle header{top:36px}.bb-idle header>span{font-size:11px;letter-spacing:.24em;color:#868a91}.bb-idle header i{display:inline-block;width:3px;height:3px;background:#b7c7d8;border-radius:50%;margin:0 13px;vertical-align:middle}.bb-idle header button{width:36px;height:32px;border:1px solid #ffffff15;border-radius:9px;background:#141519;color:#c4c9ce;font-size:23px;cursor:pointer}.bb-idle header button:hover{background:#26292e}
-.bb-idle main{position:absolute;left:12%;top:50%;transform:translateY(-50%);z-index:2}.bbi-date{font-size:15px;color:#9c9fa6;text-transform:capitalize;letter-spacing:.035em}.bb-idle time{display:block;font-family:'IBM Plex Sans',sans-serif;font-weight:200;font-variant-numeric:tabular-nums;font-feature-settings:'tnum';font-size:clamp(82px,12vw,168px);line-height:1.22;letter-spacing:-.065em;white-space:nowrap}.bbi-divider{width:36px;height:1px;background:#6b7380;margin:30px 0}.bb-idle h1{font-size:clamp(23px,3vw,36px);font-weight:400;letter-spacing:-.025em;margin:0 0 13px}.bb-idle main p{font-size:16px;color:#81868e;margin:0}
-.bbi-moon{position:absolute;width:min(82vh,850px);aspect-ratio:1;right:-24vh;top:50%;transform:translateY(-50%) rotate(-14deg);opacity:.52;filter:brightness(.52);pointer-events:none}.bbi-moon canvas{width:100%;height:100%}.bbi-moon:after{content:'';position:absolute;inset:-2px;border-radius:50%;background:linear-gradient(90deg,#070809e8 0%,transparent 70%)}.bbi-horizon{position:absolute;inset:0;background:radial-gradient(ellipse at 82% 53%,#19304925,transparent 58%);animation:bbi-breathe 18s ease-in-out infinite alternate}.bbi-stars{position:absolute;inset:-4%;opacity:.4;background-image:radial-gradient(1px 1px at 16% 19%,#d9e2eb 80%,transparent),radial-gradient(1px 1px at 64% 14%,#d9e2eb 80%,transparent),radial-gradient(1px 1px at 52% 71%,#d9e2eb 80%,transparent),radial-gradient(1.5px 1.5px at 83% 34%,#d9e2eb 80%,transparent),radial-gradient(1px 1px at 28% 81%,#d9e2eb 80%,transparent),radial-gradient(1px 1px at 47% 39%,#d9e2eb 80%,transparent);animation:bbi-drift 90s linear infinite alternate;pointer-events:none}
-.bb-idle footer{bottom:35px;font-size:13px;color:#797f88}.bb-idle footer small{font-size:13px;color:#c6cbd1}.bb-idle footer b{display:inline-grid;place-items:center;margin-left:14px;width:29px;height:25px;border:1px solid #ffffff24;border-radius:5px;font-weight:400}.bb-idle.leaving{animation:bbi-leave .92s cubic-bezier(.4,0,.2,1) both;pointer-events:none}.bb-idle.still,.bb-idle.still *{animation:none!important}.bb-idle.still.leaving{opacity:0}
-@keyframes bbi-arrive{from{opacity:0}to{opacity:1}}@keyframes bbi-leave{to{opacity:0;filter:blur(7px);transform:scale(1.015)}}@keyframes bbi-drift{to{transform:translate3d(-2%,1%,0)}}@keyframes bbi-breathe{to{opacity:.4}}
-.bb-idle time { margin:24px 0 0;line-height:1; }
-.bbi-clock { width:clamp(280px,38vw,580px);height:auto;overflow:visible;fill:#e5f1ff;stroke:none; }
-.bbi-clock polyline { fill:none;stroke:#c7defd;stroke-width:.55;stroke-opacity:.45;stroke-linecap:round;stroke-linejoin:round; }
-.bbi-clock-halo { fill:#8db4e0;opacity:.12; }
-.bbi-clock-flare { fill:none;stroke:#d4e7ff;stroke-width:.3;opacity:.65; }
-.bbi-clock-star { animation:bbi-starlight 6s ease-in-out infinite; }
-.bbi-deepfield,.bbi-meteors { position:absolute;inset:0;pointer-events:none; }
-.bbi-deepfield i { position:absolute;width:2px;height:2px;background:#c4d7eb;border-radius:50%;box-shadow:0 0 7px #b2d9ff50;animation:bbi-starlight 8s ease-in-out infinite; }
-.bbi-deepfield i:nth-child(7n) { width:3px;height:3px;box-shadow:0 0 12px #b9ddff70; }
-.bbi-meteors i { position:absolute;width:150px;height:1px;opacity:0;transform:rotate(30deg);background:linear-gradient(90deg,transparent,#b7d3f080,#eaf5ff);animation:bbi-meteor 27s linear infinite; }
-.bbi-meteors i:after { content:'';position:absolute;right:-2px;top:-1px;width:3px;height:3px;background:#eef6ff;border-radius:50%;box-shadow:0 0 8px #bcd9ff; }
-.bbi-signature { position:absolute;right:5.5%;bottom:110px;width:min(340px,26vw);opacity:.35;pointer-events:none;mask-image:linear-gradient(90deg,transparent,#000 15%,#000 90%,transparent); }
-.bbi-signature img { display:block;width:100%;filter:brightness(.9); }
-@keyframes bbi-starlight { 0%,100% { opacity:.42; } 45% { opacity:1; } 70% { opacity:.7; } }
-@keyframes bbi-meteor { 0%,90%,100% { opacity:0;transform:translate3d(0,0,0) rotate(30deg); } 91% { opacity:.8; } 96% { opacity:0;transform:translate3d(420px,243px,0) rotate(30deg); } }
-@media(max-width:760px){.bb-idle main{left:7%}.bb-idle footer>span{display:none}.bbi-moon{right:-50vh;opacity:.3}.bb-idle footer{justify-content:flex-end}}.reduce-motion .bb-idle,.reduce-motion .bb-idle *{animation:none!important}.reduce-motion .bb-idle.leaving{opacity:0}
+.bb-idle{position:fixed;inset:0;z-index:950;overflow:hidden;isolation:isolate;color:#e9eef4;background:#03060a;font-family:"IBM Plex Sans",sans-serif;animation:bbi-arrive 1.4s cubic-bezier(.2,.7,.2,1) both}
+.bbi-sky{position:absolute;inset:-3%;z-index:0;pointer-events:none;animation:bbi-sky-drift 115s ease-in-out infinite alternate}
+.bbi-sky img{display:block;width:100%;height:100%;object-fit:cover;object-position:center;filter:brightness(.58) saturate(.7)}
+.bbi-sky:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,#03060af0 0%,#03060abd 30%,#03060a28 78%,#03060a24),linear-gradient(0deg,#03060ac0,transparent 20%,transparent 78%,#03060a80)}
+.bbi-horizon{position:absolute;z-index:1;inset:0;pointer-events:none;background:radial-gradient(ellipse at 82% 52%,#9bbbdc20,transparent 49%);animation:bbi-breathe 17s ease-in-out infinite alternate}
+.bbi-starflight{position:absolute;z-index:3;inset:0;width:100%;height:100%;pointer-events:none}
+.bbi-meteors{position:absolute;z-index:1;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;fill:none}
+.bbi-meteor-trail{stroke:#dcefff;stroke-width:1.3;stroke-linecap:round;stroke-dasharray:95 1900;stroke-dashoffset:1750;opacity:0;filter:drop-shadow(0 0 7px #8bb9e5);animation:bbi-meteor 23s linear infinite}
+.bbi-meteor-trail.two{stroke-width:.9;stroke:#b2d1ec;animation-delay:8.2s;animation-duration:31s}
+.bbi-meteor-trail.three{stroke-width:1;stroke:#e1e7f3;animation-delay:18.1s;animation-duration:37s}
+.bbi-moon{position:absolute;z-index:2;width:min(82vh,850px);aspect-ratio:1;right:-24vh;top:50%;transform:translateY(-50%) rotate(-14deg);filter:brightness(.56);pointer-events:none}
+.bbi-moon:before{content:"";position:absolute;inset:0;border-radius:50%;background:#03060a}
+.bbi-moon canvas{width:100%;height:100%}
+.bbi-moon:after{content:"";position:absolute;inset:-2px;border-radius:50%;background:linear-gradient(90deg,#03060ad9 0%,transparent 72%)}
+.bb-idle header,.bb-idle footer{position:absolute;z-index:5;left:5.5%;right:5.5%;display:flex;align-items:center;justify-content:space-between}
+.bb-idle header{top:36px}.bb-idle header>span{font-size:11px;letter-spacing:.24em;color:#949fac}.bb-idle header i{display:inline-block;width:3px;height:3px;margin:0 13px;vertical-align:middle;border-radius:50%;background:#b7c7d8}
+.bb-idle header button{width:36px;height:32px;border:1px solid #ffffff20;border-radius:9px;color:#c4cbd5;background:#11161b;cursor:pointer;font-size:23px}.bb-idle header button:hover{background:#262d34}
+.bb-idle main{position:absolute;z-index:4;left:12%;top:50%;transform:translateY(-50%)}
+.bbi-date{color:#a6b2bf;font-size:15px;letter-spacing:.035em;text-transform:capitalize}
+.bb-idle time{display:block;margin:24px 0 0;line-height:1;white-space:nowrap}
+.bbi-clock{display:block;width:clamp(330px,42vw,620px);height:auto;aspect-ratio:560/158;filter:drop-shadow(0 0 12px #abc7e640)}
+.bbi-divider{width:36px;height:1px;margin:27px 0;background:#8495a8}
+.bb-idle h1{margin:0 0 13px;font-size:clamp(23px,3vw,36px);font-weight:400;letter-spacing:-.025em}.bb-idle main p{margin:0;color:#9ba6b1;font-size:16px}
+.bbi-signature{position:absolute;z-index:4;right:5.5%;bottom:110px;width:min(340px,26vw);opacity:.36;pointer-events:none;mask-image:linear-gradient(90deg,transparent,#000 15%,#000 90%,transparent)}
+.bbi-signature img{display:block;width:100%;filter:brightness(.9)}
+.bb-idle footer{bottom:35px;color:#929ca8;font-size:13px}.bb-idle footer small{color:#d0d8e0;font-size:13px}.bb-idle footer b{display:inline-grid;place-items:center;width:29px;height:25px;margin-left:14px;border:1px solid #ffffff29;border-radius:5px;font-weight:400}
+.bb-idle.leaving{animation:bbi-leave .92s cubic-bezier(.4,0,.2,1) both;pointer-events:none}
+.bb-idle.still,.bb-idle.still *{animation:none!important}.bb-idle.still.leaving{opacity:0}
+@keyframes bbi-arrive{from{opacity:0}to{opacity:1}}
+@keyframes bbi-leave{to{opacity:0;filter:blur(7px);transform:scale(1.015)}}
+@keyframes bbi-sky-drift{to{transform:translate3d(-1.5%,1%,0) scale(1.035)}}
+@keyframes bbi-breathe{to{opacity:.48}}
+@keyframes bbi-meteor{0%,8%{opacity:0;stroke-dashoffset:1750}9%{opacity:0}10%{opacity:.85}17%{opacity:.6}19%,100%{opacity:0;stroke-dashoffset:-100}}
+@media(max-width:760px){.bb-idle main{left:7%}.bb-idle footer>span{display:none}.bbi-moon{right:-50vh;opacity:.35}.bb-idle footer{justify-content:flex-end}.bbi-clock{width:min(88vw,520px)}}
+.reduce-motion .bb-idle,.reduce-motion .bb-idle *{animation:none!important}.reduce-motion .bb-idle.leaving{opacity:0}

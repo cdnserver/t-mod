@@ -33,6 +33,7 @@ from modules.delivery_runtime import setup_delivery
 from modules.consensus_web import ensure_consensus_web_server, setup_consensus_web
 from modules.reliability import setup_reliability
 from modules.atlas_discord import setup_atlas_discord
+from modules.overlay_remote_discord import setup_overlay_remote_discord
 from modules.telegram_gateway import setup_telegram_gateway, start_telegram_gateway
 from modules.games_discord import setup_games_discord
 from modules.admission import setup_admission
@@ -1180,6 +1181,7 @@ boot_module("T-Mod Games")
 setup_games_discord(bot)
 boot_module("Atlas Discord")
 setup_atlas_discord(bot)
+setup_overlay_remote_discord(bot)
 boot_module("Telegram Gateway")
 setup_telegram_gateway(bot)
 boot_module("T-Mod Music")

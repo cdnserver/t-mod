@@ -4,6 +4,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -24,6 +25,7 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import { NotificationPopup } from "./notification-popup";
 import { notificationChannel } from "../shared/notification-policy";
+import { csrfTokenFromAccountSnapshot } from "../shared/account-response";
 import { BootstrapProtocolError, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
   isServiceId,
@@ -102,6 +104,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let communicateWindow: BrowserWindow | null = null;
+let pendingCommunicateShare = "";
 let notificationPopup: NotificationPopup | undefined;
 let serviceView: WebContentsView | null = null;
 let activeService: ServiceId = "home";
@@ -109,6 +113,8 @@ let serviceLoading = false;
 let lastServiceError: string | undefined;
 let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
+let notificationPollTimer: ReturnType<typeof setInterval> | undefined;
+let notificationPollInFlight = false;
 let forcedUpdateInstallTimer: ReturnType<typeof setTimeout> | undefined;
 let idleLockTimer: ReturnType<typeof setInterval> | undefined;
 let desktopLockReason: DesktopLockReason = "manual";
@@ -527,6 +533,13 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
   if (!notificationStreamInitialized) {
     currentIds.forEach((id) => knownNotificationIds.add(id));
     notificationStreamInitialized = true;
+    if (desktopProduct.privateEdition) {
+      for (const item of items.slice().reverse()) {
+        if (!item.read_at && item.kind.startsWith("orl:"))
+          notificationPopup?.show(desktopLocked ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
+            shellPreferences.notificationSound, shellPreferences.reduceMotion);
+      }
+    }
     return;
   }
   const delivery = shellPreferences.notificationDelivery;
@@ -534,6 +547,14 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
     if (knownNotificationIds.has(item.id)) continue;
     knownNotificationIds.add(item.id);
     if (item.read_at) continue;
+    // Operator messages are an explicit surface request, independent of the
+    // adaptive Windows/in-app delivery choice. Never display their content on
+    // a locked workstation.
+    if (desktopProduct.privateEdition && item.kind.startsWith("orl:")) {
+      notificationPopup?.show(desktopLocked ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
+        shellPreferences.notificationSound, shellPreferences.reduceMotion);
+      continue;
+    }
     const channel = desktopProduct.privateEdition
       ? notificationChannel(delivery, Boolean(mainWindow?.isFocused()))
       : ["both", "system"].includes(delivery) ? "system" : "none";
@@ -560,6 +581,30 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
   }
   for (const id of [...knownNotificationIds]) {
     if (!currentIds.has(id) && knownNotificationIds.size > 500) knownNotificationIds.delete(id);
+  }
+}
+
+async function pollNotifications(): Promise<void> {
+  if (notificationPollInFlight || !lastSuccessfulBootstrap || !desktopProduct.privateEdition) return;
+  const revision = bootstrapRevision;
+  const account = lastSuccessfulBootstrap.viewer.id;
+  notificationPollInFlight = true;
+  try {
+    const response = await desktopSession().fetch("https://reactor.tvr.lat/api/reactor/notifications?unread=1", {
+      credentials: "include",
+      headers: { ...desktopIdentityHeaders(), Accept: "application/json" },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!response.ok) return;
+    const data = await response.json() as { viewer?: { id?: number }; items?: DesktopBootstrap["notifications"]["items"] };
+    if (revision !== bootstrapRevision || data.viewer?.id !== account || !Array.isArray(data.items)) return;
+    const fresh = data.items.some(item => !knownNotificationIds.has(item.id));
+    syncNativeNotifications(data.items);
+    if (fresh) mainWindow?.webContents.send("desktop:auth-changed");
+  } catch (error) {
+    log.debug("Notification refresh unavailable", error);
+  } finally {
+    notificationPollInFlight = false;
   }
 }
 
@@ -617,6 +662,7 @@ function applyPreferences(value: unknown): DesktopShellPreferences {
 function lockDesktop(reason: DesktopLockReason): boolean {
   if (desktopLocked || !mainWindow || mainWindow.isDestroyed()) return desktopLocked;
   desktopLocked = true;
+  communicateWindow?.close();
   desktopLockReason = reason;
   notificationPopup?.clear();
   syncServiceVisibility();
@@ -703,7 +749,7 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
     }
     if (isTrustedTModUrl(url)) {
       void contents.loadURL(url);
-    } else if (/^https:\/\/(?:discord\.com|support\.discord\.com)\//i.test(url)) {
+    } else if (/^https?:\/\//i.test(url)) {
       void shell.openExternal(url);
     }
     return { action: "deny" };
@@ -712,6 +758,14 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
     if (!local && !isTrustedTModUrl(url)) {
       event.preventDefault();
     }
+  });
+  if (!local) contents.on("context-menu", (_event, params) => {
+    if (!/^https?:\/\//i.test(params.linkURL || "")) return;
+    const url = params.linkURL;
+    Menu.buildFromTemplate([
+      { label: "Скопировать ссылку", click: () => clipboard.writeText(url) },
+      { label: "Открыть в браузере", click: () => void shell.openExternal(url) },
+    ]).popup({ window: mainWindow || undefined });
   });
 }
 
@@ -1101,6 +1155,7 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
 
 async function logout(): Promise<boolean> {
   loginAbortController?.abort();
+  communicateWindow?.close();
   if (desktopProduct.privateEdition) autoUpdater.requestHeaders = null;
   notificationPopup?.clear();
   notificationStreamInitialized = false;
@@ -1133,6 +1188,74 @@ async function logout(): Promise<boolean> {
   return true;
 }
 
+async function accountRequest(action: string, data?: Record<string, string>): Promise<Record<string, unknown>> {
+  const blackbirdAction = action.startsWith("characters") || action.startsWith("communicate");
+  const host = blackbirdAction ? "https://reactor.tvr.lat" : "https://tvr.lat";
+  const endpoint = blackbirdAction ? `/api/blackbird/${action.split("-")[0]}`
+    : `/api/account/${action === "billing" ? "billing" : "security"}`;
+  const revision = bootstrapRevision;
+  const snapshot = await desktopSession().fetch(`${host}${endpoint}`, {
+    credentials: "include", headers: desktopIdentityHeaders(), signal: AbortSignal.timeout(12_000),
+  });
+  if (!snapshot.ok) throw new Error(snapshot.status === 401 ? "session_expired" : "account_unavailable");
+  const result = await snapshot.json() as Record<string, unknown>;
+  if (revision !== bootstrapRevision) throw new Error("session_changed");
+  if (action !== "update" && !action.endsWith("-update")) return result;
+  const csrfToken = csrfTokenFromAccountSnapshot(result);
+  if (!data || typeof data !== "object" || Array.isArray(data) || JSON.stringify(data).length > 4096 || typeof csrfToken !== "string") throw new Error("invalid_request");
+  const response = await desktopSession().fetch(`${host}${endpoint}`, {
+    method: "POST", credentials: "include", headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(data), signal: AbortSignal.timeout(20_000),
+  });
+  const body = await response.json() as Record<string, unknown>;
+  if (revision !== bootstrapRevision) throw new Error("session_changed");
+  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "account_unavailable");
+  return body;
+}
+
+function shareableLink(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (!isTrustedTModUrl(parsed.href)) return null;
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/(token|code|state|secret|password|session|auth|key)/i.test(key)) parsed.searchParams.delete(key);
+    }
+    parsed.username = ""; parsed.password = "";
+    return parsed.href;
+  } catch { return null; }
+}
+
+function validExternalLink(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try { return ["http:", "https:"].includes(new URL(value).protocol); }
+  catch { return false; }
+}
+
+async function openCommunicateWindow(sharedUrl?: string): Promise<boolean> {
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || desktopLocked) return false;
+  if (communicateWindow && !communicateWindow.isDestroyed()) {
+    communicateWindow.show(); communicateWindow.focus();
+    if (sharedUrl) communicateWindow.webContents.send("blackbird:share-link", sharedUrl);
+    return true;
+  }
+  pendingCommunicateShare = sharedUrl || "";
+  const owner = mainWindow;
+  communicateWindow = new BrowserWindow({
+    width: 970, height: 660, minWidth: 760, minHeight: 520,
+    parent: owner || undefined, show: false, frame: false, backgroundColor: "#15191d",
+    title: "Blackbird Communicate",
+    webPreferences: { preload: path.join(bundleDirectory, "../preload/communicate.cjs"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
+  });
+  secureContents(communicateWindow.webContents, { local: true });
+  communicateWindow.on("closed", () => { communicateWindow = null; });
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  if (rendererUrl) await communicateWindow.loadURL(new URL("communicate.html", rendererUrl).href);
+  else await communicateWindow.loadFile(path.join(bundleDirectory, "../renderer/communicate.html"));
+  communicateWindow.show(); communicateWindow.focus();
+  return true;
+}
+
 function registerIpc(): void {
   const trusted = (event: Electron.IpcMainInvokeEvent): boolean =>
     Boolean(mainWindow && event.sender.id === mainWindow.webContents.id);
@@ -1153,24 +1276,35 @@ function registerIpc(): void {
   );
   ipcMain.handle("desktop:logout", (event) => trusted(event) ? logout() : false);
   ipcMain.handle("desktop:account-request", async (event, action: unknown, data: unknown) => {
-    if (!trusted(event) || !["security", "billing", "update"].includes(String(action))) throw new Error("untrusted_request");
-    const host = "https://tvr.lat";
-    const revision = bootstrapRevision;
-    const snapshot = await desktopSession().fetch(`${host}/api/account/${action === "billing" ? "billing" : "security"}`, {
-      credentials: "include", headers: desktopIdentityHeaders(), signal: AbortSignal.timeout(12_000),
-    });
-    if (!snapshot.ok) throw new Error(snapshot.status === 401 ? "session_expired" : "account_unavailable");
-    const result = await snapshot.json() as Record<string, unknown>;
-    if (revision !== bootstrapRevision) throw new Error("session_changed");
-    if (action !== "update") return result;
-    if (!data || typeof data !== "object" || Array.isArray(data) || JSON.stringify(data).length > 4096 || typeof result.csrf_token !== "string") throw new Error("invalid_request");
-    const response = await desktopSession().fetch(`${host}/api/account/security`, {
-      method: "POST", credentials: "include", headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": result.csrf_token },
-      body: JSON.stringify(data), signal: AbortSignal.timeout(20_000),
-    });
-    const body = await response.json() as Record<string, unknown>;
-    if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "account_unavailable");
-    return body;
+    if (!trusted(event) || !["security", "billing", "update", "characters", "characters-update", "communicate", "communicate-update"].includes(String(action))) throw new Error("untrusted_request");
+    return accountRequest(String(action), data as Record<string, string> | undefined);
+  });
+  const trustedCommunicate = (event: Electron.IpcMainInvokeEvent) => Boolean(communicateWindow && event.sender.id === communicateWindow.webContents.id);
+  ipcMain.handle("desktop:communicate-open", event => trusted(event) ? openCommunicateWindow() : false);
+  ipcMain.handle("desktop:communicate-share", event => {
+    if (!trusted(event) || !serviceView) return false;
+    const url = shareableLink(serviceView.webContents.getURL());
+    return url ? openCommunicateWindow(url) : false;
+  });
+  ipcMain.handle("blackbird:communicate-context", event => {
+    if (!trustedCommunicate(event)) throw new Error("untrusted_request");
+    const sharedUrl = pendingCommunicateShare;
+    pendingCommunicateShare = "";
+    return { viewerId: lastSuccessfulBootstrap?.viewer.id || 0, authenticated: Boolean(lastSuccessfulBootstrap), sharedUrl };
+  });
+  ipcMain.handle("blackbird:communicate-request", (event, action: unknown, data: unknown) => {
+    if (!trustedCommunicate(event) || !["communicate", "communicate-update"].includes(String(action))) throw new Error("untrusted_request");
+    return accountRequest(String(action), data as Record<string, string> | undefined);
+  });
+  ipcMain.handle("blackbird:communicate-close", event => { if (trustedCommunicate(event)) communicateWindow?.close(); });
+  ipcMain.handle("blackbird:communicate-minimize", event => { if (trustedCommunicate(event)) communicateWindow?.minimize(); });
+  ipcMain.handle("blackbird:communicate-open-link", (event, value: unknown) => {
+    if (!trustedCommunicate(event) || !validExternalLink(value)) return false;
+    void shell.openExternal(value); return true;
+  });
+  ipcMain.handle("blackbird:communicate-copy-link", (event, value: unknown) => {
+    if (!trustedCommunicate(event) || !validExternalLink(value)) return false;
+    clipboard.writeText(value); return true;
   });
   ipcMain.handle("desktop:billing-open", async event => {
     if (!trusted(event)) return false;
@@ -1560,18 +1694,23 @@ app.whenReady().then(async () => {
   registerIpc();
   if (desktopProduct.privateEdition) notificationPopup = new NotificationPopup(bundleDirectory, item => {
     if (item.id > 0) void markNotificationsRead([item.id]);
+    if (item.kind === "communicate" && !desktopLocked) {
+      if (mainWindow?.isMinimized()) mainWindow.restore();
+      void openCommunicateWindow(); return;
+    }
     const target = resolveNotificationServiceId(item.route);
     if (mainWindow?.isMinimized()) mainWindow.restore();
     mainWindow?.show(); mainWindow?.focus();
     if (target) void navigate(target);
     else mainWindow?.webContents.send("desktop:open-notifications");
-  }, () => mainWindow?.getBounds());
+  }, () => atlasOverlay?.getStatus().display || mainWindow?.getBounds());
   configureAutoUpdater();
   await createWindow();
   screen.on("display-added", () => atlasOverlay?.onDisplaysChanged());
   screen.on("display-removed", () => atlasOverlay?.onDisplaysChanged());
   screen.on("display-metrics-changed", () => atlasOverlay?.onDisplaysChanged());
   startIdleLockMonitor();
+  if (desktopProduct.privateEdition) notificationPollTimer = setInterval(() => void pollNotifications(), 6_000);
   setUpdateState({});
 
   app.on("activate", () => {
@@ -1594,6 +1733,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   if (updateTimer) clearInterval(updateTimer);
+  if (notificationPollTimer) clearInterval(notificationPollTimer);
   if (idleLockTimer) clearInterval(idleLockTimer);
   if (authProjectionTimer) clearTimeout(authProjectionTimer);
   if (forcedUpdateInstallTimer) clearTimeout(forcedUpdateInstallTimer);

@@ -153,6 +153,17 @@ def get_web_credential(guild_id: int, user_id: int) -> WebCredential | None:
     return _credential_from_row(row)
 
 
+def web_user_id_for_login(guild_id: int, login: str) -> int | None:
+    """Resolve an exact T-Mod login without exposing credential material."""
+    clean_login = normalize_web_login(login)
+    with connect_readonly() as con:
+        row = con.execute(
+            "SELECT user_id FROM web_credentials WHERE guild_id = ? AND login_key = ?",
+            (int(guild_id), clean_login),
+        ).fetchone()
+    return int(row["user_id"]) if row is not None else None
+
+
 def configure_web_credential(
     guild_id: int,
     user_id: int,
@@ -473,6 +484,7 @@ __all__ = [
     "delete_web_credential",
     "consume_web_entry_ticket_nonce",
     "get_web_credential",
+    "web_user_id_for_login",
     "invalidate_web_sessions",
     "normalize_web_login",
     "normalize_web_pin",

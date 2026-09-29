@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -477,17 +478,36 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa ? "atlas" : null);
   const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(null);
+  const pendingWorkspace = useRef<BlackbirdWorkspace|null>(null);
+  const workspaceIntroReady = useRef(true);
+  const workspaceIntroFinished = useRef(false);
   const workspaceTransition = useRef(false);
-  const finishWorkspaceIntro = useCallback(() => setWorkspaceIntro(null),[]);
-  useEffect(() => {
+  const beginWorkspaceIntro = useCallback((next:BlackbirdWorkspace, ready = false) => {
+    pendingWorkspace.current = next;
+    workspaceIntroReady.current = ready;
+    workspaceIntroFinished.current = false;
+    setWorkspaceIntro(next);
+  },[]);
+  const finishWorkspaceIntro = useCallback(() => {
+    if (!workspaceIntroReady.current) { workspaceIntroFinished.current = true; return; }
+    if (pendingWorkspace.current) setWorkspace(pendingWorkspace.current);
+    pendingWorkspace.current = null;
+    setWorkspaceIntro(null);
+  },[]);
+  const markWorkspaceIntroReady = useCallback(() => {
+    workspaceIntroReady.current = true;
+    if (workspaceIntroFinished.current) finishWorkspaceIntro();
+  },[finishWorkspaceIntro]);
+  useLayoutEffect(() => {
     if (!desktopProduct.privateEdition) return;
-    if (!bootstrap.authenticated) { setWorkspace(null); setWorkspaceIntro(null); }
+    if (!bootstrap.authenticated) { pendingWorkspace.current = null; setWorkspace(null); setWorkspaceIntro(null); }
     else if (desktopState.activeService !== "home") {
       const next = workspaceForService(desktopState.activeService);
-      setWorkspace(next);
-      if (next !== workspace) setWorkspaceIntro(next);
+      if (pendingWorkspace.current) return;
+      if (next && next !== workspace) beginWorkspaceIntro(next, true);
+      else if (!next) setWorkspace(null);
     }
-  },[bootstrap.authenticated,desktopState.activeService]);
+  },[bootstrap.authenticated,desktopState.activeService,workspace,beginWorkspaceIntro]);
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(cinematicQaEnabled && cinematicParams.get("settings-preview") === "app" || desktopProduct.privateEdition && atlasSettingsQa);
@@ -809,28 +829,29 @@ export function App() {
     setAtlasSettingsOpen(false);
     if (desktopProduct.privateEdition) {
       const next = workspaceForService(serviceId);
-      if (next && next !== workspace) setWorkspaceIntro(next);
-      if (!next) setWorkspaceIntro(null);
-      setWorkspace(next);
+      if (next && next !== workspace) beginWorkspaceIntro(next);
+      else if (!next) { pendingWorkspace.current = null; setWorkspaceIntro(null); setWorkspace(null); }
     }
     const api = browserApi();
     try {
       if (api) setDesktopState(await api.navigate(serviceId));
       else setDesktopState((current) => ({ ...current, activeService: serviceId }));
-    } catch { setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); }
+      markWorkspaceIntroReady();
+    } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); }
   };
 
   const enterWorkspace = async (space:BlackbirdWorkspace, intro = true) => {
     if (!bootstrap.authenticated || !canEnterWorkspace(space,access) || workspaceTransition.current) return;
     workspaceTransition.current = true;
     setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false); setProfileOpen(false);
+    if (intro) beginWorkspaceIntro(space);
     try {
       const api = browserApi();
       if (api) setDesktopState(await api.navigate("home"));
       else setDesktopState(current => ({...current,activeService:"home",loading:false,error:undefined}));
-      setWorkspace(space);
-      setWorkspaceIntro(intro ? space : null);
-    } catch { setToast("Не удалось открыть пространство. Попробуйте ещё раз."); }
+      if (intro) markWorkspaceIntroReady();
+      if (!intro) { pendingWorkspace.current = null; setWorkspace(space); setWorkspaceIntro(null); }
+    } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть пространство. Попробуйте ещё раз."); }
     finally { workspaceTransition.current = false; }
   };
 
@@ -972,6 +993,12 @@ export function App() {
     setAtlasSettingsOpen(true);
   };
 
+  const openCommunicate = async () => {
+    if (!bootstrap.authenticated || !desktopProduct.privateEdition) return;
+    setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false);
+    if (!(await browserApi()?.openCommunicate?.())) setToast("Communicate откроется отдельным окном в приложении Blackbird");
+  };
+
   const desktopClasses = [
     "desktop",
     preferences.sidebarCollapsed ? "sidebar-collapsed" : "",
@@ -995,7 +1022,7 @@ export function App() {
       {desktopProduct.privateEdition && workspace ? <WorkspaceNavigation
         space={workspace} active={desktopState.activeService} access={access} collapsed={preferences.sidebarCollapsed} online={bootstrap.online} inert={settingsOpen || locked || Boolean(workspaceIntro)}
         onHome={() => void selectService("home")} onOverview={() => void enterWorkspace(workspace,false)} onSwitch={() => void enterWorkspace(workspace === "atlas" ? "senate" : "atlas")}
-        onOpen={selectService} onOverlay={openAtlasSettings} onToggle={() => setPreferences(current => ({...current,sidebarCollapsed:!current.sidebarCollapsed}))}
+        onOpen={selectService} onOverlay={openAtlasSettings} onCommunicate={() => void openCommunicate()} communicateOpen={false} onToggle={() => setPreferences(current => ({...current,sidebarCollapsed:!current.sidebarCollapsed}))}
       /> : <aside className="sidebar" inert={settingsOpen || locked}>
         <button
           className="sidebar-toggle"
@@ -1074,12 +1101,14 @@ export function App() {
             </button>
           )}
           <button className={`channel-badge ${preferences.updateChannel}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("updates"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }} title="Канал обновлений">{preferences.updateChannel === "private" ? "OWNER" : preferences.updateChannel.toUpperCase()}</button>
-          {desktopState.activeService === "atlas" && <button className={`atlas-overlay-shortcut ${overlayConfig.enabled ? "active" : ""} ${atlasSettingsOpen ? "selected" : ""}`} onClick={openAtlasSettings} title="Настройки Atlas"><Icon name="atlas"/><span>Настройки Atlas</span><i/></button>}
+          <button className={`atlas-overlay-shortcut bb-dynamic-action ${desktopState.activeService === "atlas" ? "shown" : ""} ${overlayConfig.enabled ? "active" : ""} ${atlasSettingsOpen ? "selected" : ""}`} disabled={desktopState.activeService !== "atlas"} aria-hidden={desktopState.activeService !== "atlas"} tabIndex={desktopState.activeService === "atlas" ? 0 : -1} onClick={openAtlasSettings} title="Настройки Atlas"><Icon name="atlas"/><span>Настройки Atlas</span><i/></button>
           <button className="circle-action" onClick={lockNow} title={`Заблокировать ${desktopProduct.name}`}><Icon name="lock"/></button>
-          {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>}
-          {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>}
-          {desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>}
+          <button className={`circle-action bb-dynamic-action ${desktopState.activeService !== "home" ? "shown" : ""}`} disabled={desktopState.activeService === "home"} aria-hidden={desktopState.activeService === "home"} tabIndex={desktopState.activeService === "home" ? -1 : 0} onClick={() => void browserApi()?.reload()} title="Обновить"><Icon name="refresh"/></button>
+          <button className={`circle-action bb-dynamic-action ${desktopState.activeService !== "home" ? "shown" : ""}`} disabled={desktopState.activeService === "home"} aria-hidden={desktopState.activeService === "home"} tabIndex={desktopState.activeService === "home" ? -1 : 0} onClick={() => void copyCurrentLink()} title="Скопировать ссылку"><Icon name="link"/></button>
+          <button className={`circle-action bb-dynamic-action ${desktopState.activeService !== "home" ? "shown" : ""}`} disabled={desktopState.activeService === "home"} aria-hidden={desktopState.activeService === "home"} tabIndex={desktopState.activeService === "home" ? -1 : 0} onClick={() => void browserApi()?.openCurrentLink()} title="Открыть в браузере"><Icon name="external"/></button>
           <button className={`circle-action ${unread ? "has-unread" : ""}`} onClick={() => { setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen((open) => !open); }} title="Уведомления"><Icon name="bell"/>{unread > 0 && <b>{Math.min(unread, 99)}</b>}</button>
+          {desktopProduct.privateEdition && bootstrap.authenticated && <button className="circle-action bb-communicate-shortcut" onClick={() => void openCommunicate()} title="Blackbird Communicate" aria-label="Открыть Communicate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 5.5h16v11H9l-5 3V5.5Z"/><path d="M8 10h8M8 13h5"/></svg></button>}
+          {desktopProduct.privateEdition && bootstrap.authenticated && desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.shareCurrentLink?.()} title="Поделиться страницей в Communicate" aria-label="Поделиться страницей в Communicate"><Icon name="link"/></button>}
           <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
           {bootstrap.authenticated && bootstrap.data && <AccountMenu
             viewer={bootstrap.data.viewer} name={userName} open={profileOpen} onOpenChange={setProfileOpen}
@@ -1110,7 +1139,7 @@ export function App() {
           />
         ) : desktopProduct.privateEdition && workspace && desktopState.activeService === "home" && bootstrap.authenticated ? <WorkspaceHome
           space={workspace} name={userName} access={access} notifications={notifications} overlayEnabled={overlayConfig.enabled}
-          onOpen={selectService} onOverlay={openAtlasSettings} onNotifications={() => setNotificationsOpen(true)}
+          onOpen={selectService} onOverlay={openAtlasSettings} onCommunicate={() => void openCommunicate()} onNotifications={() => setNotificationsOpen(true)}
         /> : desktopState.activeService === "home" ? (
           <Home
             name={userName}
@@ -1142,7 +1171,7 @@ export function App() {
       </main>
 
       {notificationsOpen && (
-        <Notifications items={notifications} unread={unread} onClose={() => setNotificationsOpen(false)} onOpen={selectService} onRead={async ids => {
+        <Notifications items={notifications} unread={unread} onClose={() => setNotificationsOpen(false)} onOpen={selectService} onCommunicate={() => void openCommunicate()} onRead={async ids => {
           if ((hubQa || loginQa) && !bridgeAvailable) {
             setBootstrap(current => !current.data ? current : { ...current, data: { ...current.data, notifications: {
               items: current.data.notifications.items.map(item => ids.includes(item.id) ? { ...item, read_at: new Date().toISOString() } : item),
@@ -1491,7 +1520,7 @@ function Home({
   );
 }
 
-function Notifications({ items, unread, onClose, onOpen, onRead }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void>; onRead: (ids: number[]) => Promise<boolean> }) {
+function Notifications({ items, unread, onClose, onOpen, onCommunicate, onRead }: { items: DesktopNotification[]; unread: number; onClose: () => void; onOpen: (id: ServiceId) => Promise<void>; onCommunicate: () => void; onRead: (ids: number[]) => Promise<boolean> }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "unread" | "important">("all");
   const [readError, setReadError] = useState(false), [busy, setBusy] = useState(false);
@@ -1503,11 +1532,12 @@ function Notifications({ items, unread, onClose, onOpen, onRead }: { items: Desk
   const filtered = items.filter(item => (filter !== "unread" || !item.read_at)
     && (filter !== "important" || ["critical", "warning"].includes(item.severity))
     && `${item.title} ${item.body} ${item.kind}`.toLowerCase().includes(query.toLowerCase().trim()));
-  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">{desktopProduct.name} · ЦЕНТР СОБЫТИЙ</p><h2>Уведомления</h2></div><span>{unread} новых</span><button onClick={onClose} aria-label="Закрыть уведомления">×</button></header>
+  return <><button className="scrim clear" onClick={onClose} aria-label="Закрыть"/><aside className="notification-drawer"><header><div><p className="kicker">{desktopProduct.name} / ВАШ ПОТОК</p><h2>Центр событий<span>.</span></h2></div><button onClick={onClose} aria-label="Закрыть уведомления">×</button></header>
+    <div className="bb-notification-summary"><span><b>{unread}</b><small>непрочитанных</small></span><span><b>{items.length}</b><small>событий в ленте</small></span><i aria-hidden="true"/></div>
     <div className="bb-notification-tools"><input aria-label="Поиск уведомлений" placeholder="Поиск по событиям" value={query} onChange={event => setQuery(event.target.value)}/><nav>{([["all", "Все"], ["unread", "Непрочитанные"], ["important", "Важные"]] as const).map(([value, title]) => <button aria-pressed={filter === value} key={value} onClick={() => setFilter(value)}>{title}</button>)}</nav></div>
     {filtered.some(item => !item.read_at) && <button className="bb-notification-read" disabled={busy} onClick={() => void read(filtered.filter(item => !item.read_at).map(item => item.id))}>{busy ? "Сохраняем…" : "Отметить показанные события прочитанными"}</button>}
     {readError && <p className="bb-notification-error" role="alert">Не удалось сохранить. Попробуйте ещё раз.</p>}
-    <div className="notification-list">{filtered.map(item => <button className={!item.read_at ? "unread" : ""} key={item.id} onClick={() => { if (!item.read_at) void read([item.id]); const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><small className="bb-event-kind">{item.severity === "critical" ? "ТРЕБУЕТ ВНИМАНИЯ" : item.severity === "warning" ? "ВАЖНО" : "СОБЫТИЕ"}</small><strong>{item.title}</strong><p>{item.body}</p><small>{new Date(item.created_at).toLocaleDateString("ru-RU")} · {formatTime(item.created_at)}{resolveNotificationServiceId(item.route) ? " · Открыть ↗" : ""}</small></span></button>)}{!filtered.length && <div className="drawer-empty"><Icon name="bell"/><p>{query || filter !== "all" ? "Событий по этому запросу нет." : "Пока всё спокойно."}</p></div>}</div></aside></>;
+    <div className="notification-list"><small className="bb-notification-feed-label">ЛЕНТА / {filter === "unread" ? "НЕПРОЧИТАННЫЕ" : filter === "important" ? "ВАЖНЫЕ" : "ВСЕ СОБЫТИЯ"}</small>{filtered.map(item => <button className={`${!item.read_at ? "unread" : ""} ${item.kind.startsWith("orl:") ? "direct" : ""}`} key={item.id} onClick={() => { if (!item.read_at) void read([item.id]); if (item.kind === "communicate") { onCommunicate(); onClose(); return; } const target = resolveNotificationServiceId(item.route); if (target) void onOpen(target); }}><i className={item.severity}/><span><small className="bb-event-kind">{item.kind.startsWith("orl:") ? "ПРЯМОЕ СООБЩЕНИЕ" : item.kind === "communicate" ? "COMMUNICATE" : item.severity === "critical" ? "ТРЕБУЕТ ВНИМАНИЯ" : item.severity === "warning" ? "ВАЖНО" : "СОБЫТИЕ"}</small><strong>{item.title}</strong><p>{item.body}</p><small>{new Date(item.created_at).toLocaleDateString("ru-RU")} · {formatTime(item.created_at)}{item.kind === "communicate" || resolveNotificationServiceId(item.route) ? " · Открыть ↗" : ""}</small></span></button>)}{!filtered.length && <div className="drawer-empty"><Icon name="bell"/><p>{query || filter !== "all" ? "Событий по этому запросу нет." : "Пока всё спокойно."}</p></div>}</div></aside></>;
 }
 
 function NotificationToasts({

@@ -49,8 +49,17 @@ export class NotificationPopup {
     const bounds = this.bounds();
     const display = bounds ? screen.getDisplayMatching(bounds) : screen.getPrimaryDisplay();
     const area = display.workArea;
-    const width = Math.min(430, area.width - 24);
-    this.window.setBounds({ x: area.x + area.width - width - 12, y: area.y + area.height - 192, width, height: 180 });
+    const mode = this.current.kind === "orl:fullscreen" ? "fullscreen"
+      : this.current.kind === "orl:overlay" ? "overlay" : "toast";
+    const width = Math.min(mode === "overlay" ? 520 : 430, area.width - 24);
+    this.window.setBounds(mode === "fullscreen" ? display.bounds : {
+      x: area.x + area.width - width - 14,
+      y: area.y + area.height - (mode === "overlay" ? 238 : 200),
+      width,
+      height: mode === "overlay" ? 220 : 184,
+    });
+    this.window.setAlwaysOnTop(true, mode === "fullscreen" || mode === "overlay" ? "screen-saver" : "floating", 1);
+    this.window.setIgnoreMouseEvents(mode !== "toast", { forward: true });
     this.window.webContents.send("blackbird:notification", { item: this.current, sound, reduced: this.reduced });
     this.sound = false;
     this.window.showInactive();

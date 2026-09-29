@@ -1,16 +1,19 @@
 /* Matches native serviceBounds: 44px horizontal / 48px right-hand rail. */
 .desktop.edition-blackbird { --topbar:44px; --control-right:0px; }
 .edition-blackbird .topbar { padding:0 8px 0 12px; backdrop-filter:blur(18px); }
-.edition-blackbird .top-actions,.edition-blackbird .browser-tools { gap:3px; }
+.edition-blackbird .top-actions,.edition-blackbird .browser-tools { gap:0; }
 .edition-blackbird .browser-tools { -webkit-app-region:drag; }
 .edition-blackbird .browser-tools > button { -webkit-app-region:no-drag; }
 .edition-blackbird .topbar button { -webkit-app-region:no-drag; }
 .edition-blackbird.control-bar-vertical .top-actions { -webkit-app-region:drag; }
 .edition-blackbird.control-bar-vertical .top-actions > button,.edition-blackbird .window-actions,.edition-blackbird .bb-profile { -webkit-app-region:no-drag; }
 .edition-blackbird.control-bar-vertical .topbar:after { content:''; width:22px; height:28px; flex-shrink:0; order:-1; background:radial-gradient(circle,#7a80894d 1px,transparent 1.2px) center/6px 6px; -webkit-app-region:drag; }
-.edition-blackbird .browser-tools > .bb-history-button { transition:width .28s ease,height .28s ease,opacity .22s ease,transform .28s ease,margin .28s ease; overflow:hidden; }
-.edition-blackbird .browser-tools > .bb-history-button:not(.available) { width:0; margin-right:-3px; padding:0; opacity:0; transform:translateX(-6px); pointer-events:none; }
-.edition-blackbird.control-bar-vertical .browser-tools > .bb-history-button:not(.available) { width:30px;height:0;margin-right:0;margin-bottom:-3px;transform:translateY(-6px); }
+.edition-blackbird .browser-tools > .bb-history-button { flex:0 0 auto; margin-right:3px; transition:width .28s ease,height .28s ease,opacity .22s ease,transform .28s ease,margin .28s ease; overflow:hidden; }
+.edition-blackbird .browser-tools > .bb-history-button:not(.available) { width:0; min-width:0; margin-right:0; padding:0; opacity:0; transform:translateX(-6px); pointer-events:none; }
+.edition-blackbird .browser-tools .surface-title { margin-left:8px;transition:margin .28s ease,opacity .28s ease; }
+.edition-blackbird .browser-tools:not(:has(.bb-history-button.available)) .surface-title { margin-left:0; }
+.edition-blackbird.control-bar-vertical .browser-tools > .bb-history-button { margin:0 0 3px; }
+.edition-blackbird.control-bar-vertical .browser-tools > .bb-history-button:not(.available) { width:30px;height:0;margin:0;transform:translateY(-6px); }
 .bb-atlas-usage { -webkit-app-region:no-drag; display:flex; align-items:center;gap:6px;border:0;background:none;color:#b4becb;padding:0 5px;cursor:pointer;font-size:11px;font-variant-numeric:tabular-nums; }
 .bb-atlas-usage svg { width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1; }
 .bb-atlas-usage .bb-usage-track { stroke:#ffffff12;stroke-width:1.8; }
@@ -25,6 +28,11 @@
 .edition-blackbird .window-actions button { width:34px; height:32px; border-radius:5px; }
 .edition-blackbird .channel-badge { height:26px; font-size:8px; }
 .edition-blackbird .update-pill { height:28px; }
+.edition-blackbird .update-pill,.edition-blackbird .channel-badge { transition:width .3s cubic-bezier(.2,.8,.2,1),min-width .3s,padding .3s,margin .3s,opacity .22s; }
+.edition-blackbird .top-actions > button:not(.bb-dynamic-action),.edition-blackbird .top-actions > .bb-profile-anchor { margin-left:3px; }
+.edition-blackbird .top-actions > .bb-dynamic-action { flex:0 0 auto;min-width:0;margin-left:0;overflow:hidden;opacity:0;transform:translateX(-6px);transition:width .3s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1),padding .3s,margin .3s,opacity .2s,transform .3s;pointer-events:none; }
+.edition-blackbird .top-actions > .bb-dynamic-action.shown { width:30px;height:30px;margin-left:3px;opacity:1;transform:none;pointer-events:auto; }
+.edition-blackbird .top-actions > .bb-dynamic-action:not(.shown) { width:0!important;height:30px;min-width:0!important;padding:0!important;border:0!important; }
 .edition-blackbird .bb-account-avatar { width:26px; height:26px; font-size:12px; }
 .edition-blackbird .bb-profile-trigger { padding:1px; }
 .edition-blackbird .bb-profile-menu { top:37px; }
@@ -38,6 +46,10 @@
 .edition-blackbird.control-bar-vertical .browser-tools { flex-direction:column; }
 .edition-blackbird.control-bar-vertical .surface-title,.edition-blackbird.control-bar-vertical .channel-badge { display:none; }
 .edition-blackbird.control-bar-vertical .top-actions { margin:12px 0 0; width:100%; flex:1; display:flex; align-items:center; flex-direction:column; gap:6px; }
+.edition-blackbird.control-bar-vertical .top-actions { gap:0; }
+.edition-blackbird.control-bar-vertical .top-actions > button:not(.bb-dynamic-action),.edition-blackbird.control-bar-vertical .top-actions > .bb-profile-anchor { margin:6px 0 0; }
+.edition-blackbird.control-bar-vertical .top-actions > .bb-dynamic-action.shown { margin:6px 0 0; }
+.edition-blackbird.control-bar-vertical .top-actions > .bb-dynamic-action:not(.shown) { width:30px!important;height:0;transform:translateY(-6px); }
 .edition-blackbird.control-bar-vertical .update-pill { min-width:30px; width:30px; padding:0; }
 .edition-blackbird.control-bar-vertical .update-pill > span { display:none; }
 .edition-blackbird.control-bar-vertical .window-actions { flex-direction:column; gap:3px; margin: auto 0 0; padding:9px 0 0; border-left:0; border-top:1px solid #ffffff12; }
@@ -49,6 +61,10 @@
 .edition-blackbird.control-bar-vertical .load-line { left:-1px; right:auto; top:0; bottom:0; width:2px; height:auto; }
 .edition-blackbird.control-bar-vertical .load-line:after { width:100%; height:30%; animation:bb-rail-loading 1.25s ease-in-out infinite; }
 .edition-blackbird.control-bar-vertical .desktop-notification-stack { right:68px; }
+.edition-blackbird.blackbird-hub-active .browser-tools { flex:0 0 0;width:0;min-width:0;overflow:hidden;opacity:0;visibility:visible;transition:flex-basis .3s ease,width .3s ease,opacity .2s;pointer-events:none; }
+.edition-blackbird.blackbird-hub-active .update-pill,.edition-blackbird.blackbird-hub-active .channel-badge { width:0;min-width:0;height:0;padding:0;margin:0;border:0;overflow:hidden;opacity:0;visibility:visible;pointer-events:none; }
+.edition-blackbird.control-bar-vertical.blackbird-hub-active .browser-tools { height:0; }
+.reduce-motion .bb-dynamic-action,.reduce-motion .bb-history-button { transition:none!important; }
 @keyframes bb-rail-loading { from { transform:translateY(-110%); } to { transform:translateY(440%); } }
 .bbs-ident-options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:20px 0; }
 .bbs-ident-options > button { padding:18px 14px; text-align:left; background:#25272b; border:1px solid #41444b; border-radius:8px; }

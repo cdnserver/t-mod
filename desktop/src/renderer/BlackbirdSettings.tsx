@@ -3,10 +3,12 @@ import type { DesktopBootstrap, DesktopShellPreferences, DesktopUpdateState } fr
 import { desktopProduct } from "../shared/product";
 import { AccountAvatar } from "./AccountAvatar";
 import { AccountSecurity, AccountBilling } from "./AccountSettings";
+import { BlackbirdCharacters } from "./BlackbirdCharacters";
 import "./blackbird-settings.css";
 
 const sections = [
   ["account", "Мой аккаунт", "Ваше пространство"],
+  ["characters", "Персонажи", "Имя, статик и видимость"],
   ["security", "Безопасность", "Привязки, пароль и второй фактор"],
   ["billing", "Биллинг", "Atlas Token и платежи"],
   ["appearance", "Внешний вид", "Интерфейс и масштаб"],
@@ -60,6 +62,7 @@ export function BlackbirdSettings(props: {
         <section className="bbs-group"><h2>Аккаунт и устройство</h2><p>Одна сессия для доступных вам сервисов. Выход не удаляет аккаунт и его данные.</p><div className="bbs-buttons">{props.onSetup && <button onClick={props.onSetup}>Повторить первый запуск</button>}{viewer && <button className="danger" disabled={busy} onClick={() => void action(props.onLogout, "")}>Выйти из аккаунта</button>}</div></section>
       </>}
       {section === "security" && <AccountSecurity/>}
+      {section === "characters" && <BlackbirdCharacters/>}
       {section === "billing" && <AccountBilling/>}
       {section === "appearance" && <>
         <section className="bbs-group"><h2>Панель управления</h2><p>Компактная полоса сверху или вертикальная панель справа. Окна сервисов подстраиваются под выбранное расположение.</p>{options("controlBar", [["horizontal","Сверху"],["vertical","Справа"]], "Расположение панели управления")}</section>

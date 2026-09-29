@@ -227,10 +227,7 @@ def reactor_list_notifications(
                    read_at, created_at, updated_at
             FROM reactor_notifications
             WHERE {where}
-            ORDER BY CASE severity
-                       WHEN 'critical' THEN 0 WHEN 'warning' THEN 1
-                       WHEN 'success' THEN 2 ELSE 3 END,
-                     id DESC
+            ORDER BY id DESC
             LIMIT ?
             """,
             [*params, page_limit],

@@ -75,7 +75,9 @@ from modules.desktop_bootstrap_service import (
     DesktopBootstrapError,
     build_desktop_bootstrap_payload,
 )
+from persistence import blackbird_communicate_repository as communicate_storage
 from persistence import activity_repository as activity_storage
+from persistence import atlas_repository as atlas_storage
 from persistence import admin_dashboard_repository as dashboard_storage
 from persistence import bill_workspace_repository as workspace_storage
 from persistence import finance_repository as finance_storage
@@ -1699,7 +1701,9 @@ def register_reactor_web_routes(
         )
 
     async def notifications(request: web.Request) -> web.Response:
-        principal = await personal_request(request)
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
         payload = await asyncio.to_thread(
             reactor_storage.reactor_list_notifications,
             int(guild_id),
@@ -1746,7 +1750,9 @@ def register_reactor_web_routes(
         )
 
     async def read_notifications(request: web.Request) -> web.Response:
-        principal = await personal_request(request)
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
         body = await json_body(request, principal)
         raw_ids = body.get("ids")
         ids = raw_ids if isinstance(raw_ids, list) else None
@@ -1758,6 +1764,93 @@ def register_reactor_web_routes(
         )
         member_home_cache.invalidate()
         return web.json_response({"ok": True, "updated": updated})
+
+    async def blackbird_characters(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        characters, context = await asyncio.gather(
+            asyncio.to_thread(profile_storage.list_profile_characters, guild_id, principal.user_id),
+            asyncio.to_thread(atlas_storage.atlas_overlay_context, guild_id, principal.user_id),
+        )
+        return web.json_response({"viewer": viewer(principal), "characters": [asdict(item) for item in characters],
+                                  "bindings": context["characters"], "catalog": context["catalog"]},
+                                 headers={"Cache-Control": "private, no-store"})
+
+    async def blackbird_characters_update(request: web.Request) -> web.Response:
+        principal = await personal_request(request)
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "")
+        try:
+            if action == "add":
+                await asyncio.to_thread(profile_storage.add_profile_character, guild_id, principal.user_id,
+                                        str(body.get("nickname") or ""), str(body.get("static_id") or ""))
+            elif action == "edit":
+                await asyncio.to_thread(profile_storage.update_profile_character, guild_id, principal.user_id,
+                                        int(body.get("character_id") or 0), str(body.get("nickname") or ""),
+                                        str(body.get("static_id") or ""))
+            elif action == "visibility":
+                await asyncio.to_thread(profile_storage.set_profile_character_visibility, guild_id, principal.user_id,
+                                        int(body.get("character_id") or 0), is_public=body.get("is_public") in (True, "true"))
+            elif action == "bind":
+                await asyncio.to_thread(atlas_storage.atlas_set_overlay_character, guild_id, principal.user_id,
+                                        int(body.get("character_id") or 0),
+                                        server_code=str(body.get("server_code") or ""),
+                                        faction_code=str(body.get("faction_code") or ""))
+            elif action == "delete":
+                await asyncio.to_thread(profile_storage.delete_profile_character, guild_id, principal.user_id,
+                                        int(body.get("character_id") or 0))
+            else:
+                raise ValueError("character_action_invalid")
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return await blackbird_characters(request)
+
+    async def blackbird_communicate(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
+        options, conversations = await asyncio.gather(
+            asyncio.to_thread(communicate_storage.preferences, guild_id, principal.user_id),
+            asyncio.to_thread(communicate_storage.list_conversations, guild_id, principal.user_id),
+        )
+        return web.json_response({"viewer": viewer(principal), "preferences": options, "conversations": conversations},
+                                 headers={"Cache-Control": "private, no-store"})
+
+    async def blackbird_communicate_update(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "")
+        try:
+            if action == "discoverability":
+                raw_discoverable = body.get("discoverable")
+                if type(raw_discoverable) is not bool and raw_discoverable not in ("true", "false"):
+                    raise ValueError("communicate_discoverable_invalid")
+                result = await asyncio.to_thread(communicate_storage.set_discoverable, guild_id, principal.user_id,
+                                                 raw_discoverable is True or raw_discoverable == "true")
+            elif action == "search":
+                result = await asyncio.to_thread(communicate_storage.search_character, guild_id, principal.user_id,
+                                                 str(body.get("server_code") or ""), str(body.get("static_id") or ""))
+            elif action == "thread":
+                result = await asyncio.to_thread(communicate_storage.conversation, guild_id, principal.user_id,
+                                                 int(body.get("partner_id") or 0))
+            elif action == "send":
+                result = await asyncio.to_thread(communicate_storage.send_message, guild_id, principal.user_id,
+                                                 int(body.get("partner_id") or 0), str(body.get("message") or ""))
+                try:
+                    await asyncio.to_thread(
+                        reactor_storage.reactor_put_notification,
+                        guild_id=guild_id, user_id=int(result["recipient_id"]), severity="info", kind="communicate",
+                        title="Новое сообщение в Blackbird", body="Откройте Communicate, чтобы прочитать сообщение.",
+                        dedupe_key=f"communicate:{result['id']}", source_key=f"user:{principal.user_id}",
+                    )
+                except Exception:
+                    logging.exception("Communicate notification failed after message %s was saved", result["id"])
+            else:
+                raise ValueError("communicate_action_invalid")
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"ok": True, "result": result}, headers={"Cache-Control": "private, no-store"})
 
     async def attention(request: web.Request) -> web.Response:
         principal = await admin_request(request)
@@ -2301,6 +2394,10 @@ def register_reactor_web_routes(
     app.router.add_get("/api/reactor/notifications", notifications)
     app.router.add_get("/api/desktop/v1/bootstrap", desktop_bootstrap)
     app.router.add_post("/api/reactor/notifications/read", read_notifications)
+    app.router.add_get("/api/blackbird/characters", blackbird_characters)
+    app.router.add_post("/api/blackbird/characters", blackbird_characters_update)
+    app.router.add_get("/api/blackbird/communicate", blackbird_communicate)
+    app.router.add_post("/api/blackbird/communicate", blackbird_communicate_update)
     app.router.add_get("/api/admin/reactor/attention", attention)
     app.router.add_get("/api/admin/reactor/health", health)
     app.router.add_get("/api/admin/reactor/search", search)

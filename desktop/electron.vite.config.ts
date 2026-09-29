@@ -19,6 +19,7 @@ export default defineConfig({
           index: resolve("src/preload/index.ts"),
           overlay: resolve("src/preload/overlay.ts"),
           notification: resolve("src/preload/notification.ts"),
+          communicate: resolve("src/preload/communicate.ts"),
         },
         external: ["electron"],
         output: {
@@ -37,6 +38,7 @@ export default defineConfig({
           index: resolve("src/renderer/index.html"),
           overlay: resolve("src/renderer/overlay.html"),
           notification: resolve("src/renderer/notification.html"),
+          communicate: resolve("src/renderer/communicate.html"),
         },
       },
     },

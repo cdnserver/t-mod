@@ -168,7 +168,7 @@ export interface DesktopUpdateState {
 }
 
 export interface TModDesktopApi {
-  accountRequest?(action: "security" | "billing" | "update", data?: Record<string, string>): Promise<Record<string, unknown>>;
+  accountRequest?(action: "security" | "billing" | "update" | "characters" | "characters-update" | "communicate" | "communicate-update", data?: Record<string, string>): Promise<Record<string, unknown>>;
   openBilling?(): Promise<boolean>;
   bootstrap(): Promise<BootstrapResult>;
   login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult>;
@@ -181,6 +181,8 @@ export interface TModDesktopApi {
   applyPreferences(preferences: DesktopShellPreferences): Promise<DesktopShellPreferences>;
   copyCurrentLink(): Promise<boolean>;
   openCurrentLink(): Promise<boolean>;
+  openCommunicate?(): Promise<boolean>;
+  shareCurrentLink?(): Promise<boolean>;
   openLogin(): Promise<DesktopState>;
   openAccountCreation(): Promise<boolean>;
   previewNotification(): Promise<boolean>;

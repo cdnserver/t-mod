@@ -452,6 +452,30 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_reactor_notifications_inbox
             ON reactor_notifications(guild_id, user_id, read_at, id DESC);
 
+            CREATE TABLE IF NOT EXISTS blackbird_communicate_preferences (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                discoverable INTEGER NOT NULL DEFAULT 0 CHECK(discoverable IN (0, 1)),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS blackbird_communicate_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                sender_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                CHECK(sender_id != recipient_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_communicate_pair
+            ON blackbird_communicate_messages(guild_id, sender_id, recipient_id, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_communicate_inbox
+            ON blackbird_communicate_messages(guild_id, recipient_id, id DESC);
+
             CREATE TABLE IF NOT EXISTS atlas_projects (
                 code TEXT PRIMARY KEY,
                 name TEXT NOT NULL,

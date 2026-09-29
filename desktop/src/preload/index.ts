@@ -41,6 +41,8 @@ const api: TModDesktopApi = {
     ipcRenderer.invoke("desktop:preferences", preferences) as Promise<DesktopShellPreferences>,
   copyCurrentLink: () => ipcRenderer.invoke("desktop:copy-current-link") as Promise<boolean>,
   openCurrentLink: () => ipcRenderer.invoke("desktop:open-current-link") as Promise<boolean>,
+  openCommunicate: () => ipcRenderer.invoke("desktop:communicate-open") as Promise<boolean>,
+  shareCurrentLink: () => ipcRenderer.invoke("desktop:communicate-share") as Promise<boolean>,
   openLogin: () => ipcRenderer.invoke("desktop:open-login") as Promise<DesktopState>,
   openAccountCreation: () => ipcRenderer.invoke("desktop:account-create") as Promise<boolean>,
   previewNotification: () => ipcRenderer.invoke("desktop:notification-preview") as Promise<boolean>,

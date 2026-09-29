@@ -15,6 +15,7 @@ import type {
 import { IncrementalRussianSpeech, normalizeRussianKeyboardInput } from "./overlaySpeech";
 import { OverlayVoiceCapture } from "./voiceCapture";
 import "./atlas-overlay.css";
+import "./atlas-overlay-blackbird.css";
 
 function AtlasMark() {
   return (
@@ -777,14 +778,16 @@ export function AtlasOverlay() {
         onPointerCancel={finishCalibrationDrag}
       >
         <div className="atlas-overlay-aurora" aria-hidden="true" />
+        <div className="atlas-overlay-instrument" aria-hidden="true"><i/><i/><i/></div>
         <header className="atlas-overlay-head">
           <div className="atlas-overlay-brand">
             <span className="atlas-overlay-mark"><AtlasMark /></span>
             <span>
               <strong>{craftMode ? "ATLAS CRAFT" : "ATLAS"}</strong>
-              <small>{craftMode ? "PRODUCTION CONTROL" : "LIVE INTELLIGENCE"}</small>
+              <small>{craftMode ? "PRODUCTION CONTROL" : "BLACKBIRD / FIELD INTELLIGENCE"}</small>
             </span>
           </div>
+          <span className="atlas-overlay-sequence">{craftMode ? "PRODUCTION / 02" : "FIELD / 01"}</span>
           <div className="atlas-overlay-status">
             <i />
             <span>{craftMode ? (crafts?.attention_count ? "Требуется новый цикл" : "Крафты синхронизированы") : state.statusLabel}</span>
@@ -895,6 +898,7 @@ export function AtlasOverlay() {
 
           {state.stage === "answer" && (
             <article className="atlas-overlay-answer">
+              <small className="atlas-overlay-answer-label">ATLAS / ОТВЕТ</small>
               {state.transcript && <p className="atlas-overlay-question">{state.transcript}</p>}
               <p className="atlas-overlay-copy">{state.answer}<span className="atlas-overlay-caret" /></p>
               {config.showCitations && state.citations.length > 0 && (
@@ -942,7 +946,7 @@ export function AtlasOverlay() {
         <footer className="atlas-overlay-foot">
           <span>{craftMode ? `КРАФТЫ · ${visibleCraftPlans.length} АКТИВНО` : `${config.serverCode.toUpperCase()} · ${config.factionCode.toUpperCase()}`}</span>
           {config.showLatency && state.latencyMs !== undefined && <span>{Math.max(0, state.latencyMs / 1_000).toFixed(1)} s</span>}
-          <span className="atlas-overlay-mode">{craftMode ? config.craftHotkey.replaceAll("+", " · ") : "T-MOD DESKTOP"}</span>
+          <span className="atlas-overlay-mode">{craftMode ? config.craftHotkey.replaceAll("+", " · ") : "BLACKBIRD"}</span>
         </footer>
       </section>
     </main>

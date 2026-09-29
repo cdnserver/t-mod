@@ -133,24 +133,21 @@ async def build_desktop_bootstrap_payload(
             int(principal.user_id),
         ),
     )
-    notification_payload: dict[str, Any] = {"items": [], "unread": 0}
+    notification_payload = await asyncio.to_thread(
+        reactor_storage.reactor_list_notifications,
+        int(guild_id),
+        int(principal.user_id),
+        limit=100,
+    )
     preferred_name = ""
     avatar_url = str(getattr(getattr(principal.member, "display_avatar", None), "url", "")) or None
     if avatar_url is None:
         avatar_url = await asyncio.to_thread(access_projection_storage.get_web_avatar_url, guild_id, principal.user_id)
     if guild_member:
-        notification_payload, profile_snapshot = await asyncio.gather(
-            asyncio.to_thread(
-                reactor_storage.reactor_list_notifications,
-                int(guild_id),
-                int(principal.user_id),
-                limit=12,
-            ),
-            asyncio.to_thread(
-                profile_storage.get_profile_snapshot,
-                int(guild_id),
-                int(principal.user_id),
-            ),
+        profile_snapshot = await asyncio.to_thread(
+            profile_storage.get_profile_snapshot,
+            int(guild_id),
+            int(principal.user_id),
         )
         profile, _ = profile_snapshot
         preferred_name = str(getattr(profile, "preferred_name", "") or "").strip()
