@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$SkipBuild,
     [string]$PersistentDir = $(if ($env:TMOD_PERSISTENT_DIR) { $env:TMOD_PERSISTENT_DIR } else { Join-Path $env:USERPROFILE "Documents\SGLDiscordBot" })
