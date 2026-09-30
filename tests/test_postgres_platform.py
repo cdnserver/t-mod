@@ -14,13 +14,25 @@ from persistence.postgres_compat import (
     split_sql_script,
     translate_sql,
 )
-from scripts.migrate_sqlite_to_postgres import _coerce_value, _json_default
+from scripts.migrate_sqlite_to_postgres import (
+    _allow_long_schema_upgrade,
+    _coerce_value,
+    _json_default,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PostgresCompatibilityTests(unittest.TestCase):
+    def test_migration_gets_longer_timeout_without_changing_runtime_default(self) -> None:
+        with patch.dict(os.environ, {"POSTGRES_STATEMENT_TIMEOUT_MS": "30000"}):
+            _allow_long_schema_upgrade()
+            self.assertEqual(os.environ["POSTGRES_STATEMENT_TIMEOUT_MS"], "300000")
+        with patch.dict(os.environ, {"POSTGRES_STATEMENT_TIMEOUT_MS": "0"}):
+            _allow_long_schema_upgrade()
+            self.assertEqual(os.environ["POSTGRES_STATEMENT_TIMEOUT_MS"], "0")
+
     def test_sqlite_to_postgres_migration_script_parses(self) -> None:
         """Keep a malformed migration helper from reaching a live upgrade."""
 

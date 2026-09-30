@@ -27,6 +27,13 @@ from persistence.postgres_compat import (  # noqa: E402
 MIGRATION_ID = "sqlite-to-postgresql-v1"
 
 
+def _allow_long_schema_upgrade() -> None:
+    """The one-shot schema job must not inherit the short request query limit."""
+    current = int(os.getenv("POSTGRES_STATEMENT_TIMEOUT_MS", "30000") or 0)
+    if 0 < current < 300_000:
+        os.environ["POSTGRES_STATEMENT_TIMEOUT_MS"] = "300000"
+
+
 def _sqlite_tables(connection: sqlite3.Connection) -> list[str]:
     return [
         str(row[0])
@@ -147,6 +154,7 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
     if not postgres_enabled():
         raise RuntimeError("postgres_backend_not_enabled")
 
+    _allow_long_schema_upgrade()
     pg = raw_postgres_connection()
     migration_lock_acquired = False
     try:
