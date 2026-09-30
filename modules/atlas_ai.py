@@ -2745,6 +2745,72 @@ def _atlas_needs_retrieval_rescue(
     return best_overlap < minimum_overlap
 
 
+def _atlas_relevant_sources(
+    question: str,
+    sources: list[dict[str, Any]],
+    *,
+    intent: str = "",
+) -> list[dict[str, Any]]:
+    """Keep weak semantic neighbours out of the answer model's evidence.
+
+    Retrieval rescue intentionally merges its new hits with the first pass so
+    it does not lose useful evidence. That is unsafe when the first pass found
+    (for example) an unrelated code article and the rescue found the governing
+    code: a model can still anchor on the stale hit. Prefer an identified
+    document lane, otherwise require textual overlap with the actual question.
+    An explicitly requested numbered provision is the only exception. When no
+    relevant source survives, return no evidence rather than presenting an
+    unrelated source as authoritative.
+    """
+
+    route_hints = _atlas_document_route_hints(question)
+    if not route_hints or not sources:
+        routed: list[dict[str, Any]] = []
+    else:
+        routed = [
+            source
+            for source in sources
+            if any(
+                hint.casefold() in str(source.get("title") or "").casefold()
+                for hint in route_hints
+            )
+        ]
+
+    explicit_references = _atlas_requested_structured_references(question)
+    terms, phrases = _atlas_lexical_query_terms(question, sources)
+    meaningful_terms = [
+        term
+        for term in terms
+        if len(term) >= 3 and term not in _ATLAS_RULE_GENERIC_TERMS
+    ]
+    if not meaningful_terms and not phrases:
+        return routed or sources
+
+    required_overlap = (
+        1
+        if len(meaningful_terms) <= 2 or intent in {"drafting", "brainstorm", "summary"}
+        else 2
+    )
+    relevant = []
+    for source in sources:
+        if source in routed:
+            relevant.append(source)
+            continue
+        reference = str(source.get("reference") or "").strip()
+        if source.get("structured") and reference in explicit_references:
+            relevant.append(source)
+            continue
+        searchable = (
+            f"{str(source.get('title') or '')}\n"
+            f"{str(source.get('text') or source.get('content_text') or '')}"
+        ).casefold()
+        overlap = sum(term.casefold() in searchable for term in meaningful_terms)
+        phrase_overlap = sum(phrase.casefold() in searchable for phrase in phrases)
+        if overlap >= required_overlap or phrase_overlap:
+            relevant.append(source)
+    return relevant
+
+
 _ATLAS_PROCEDURE_RE = re.compile(
     r"\b(?:что\s+(?:мне\s+)?делать|как\s+(?:мне\s+)?(?:действовать|поступить|"
     r"получить|оформить|подать|обжаловать)|куда\s+обратиться|"
@@ -3847,6 +3913,11 @@ async def _prepare_atlas_answer(
                 "source_count": len(sources),
             },
         )
+    sources = _atlas_relevant_sources(
+        task_profile.retrieval_query,
+        sources,
+        intent=task_profile.intent,
+    )
     if selected_latency == "overlay":
         # The field path needs one decisive fragment per source, not an entire
         # legal library in the completion prompt. Exact/lexical extraction has
@@ -4609,23 +4680,23 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     requested_references = _atlas_requested_structured_references(question)
     if _is_thematic_article_request(question):
         return ""
-    for index, source in enumerate(prepared.sources, 1):
-        if not source.get("structured"):
-            continue
-        if requested_references and str(source.get("reference") or "").strip() not in requested_references:
-            continue
-        text = str(source.get("text") or "").strip()
-        if len(text) < 20:
-            continue
-        reference = str(source.get("reference") or "").strip()
-        label = next(
-            (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
-            reference.replace(":", " ", 1) or "точная норма",
-        )
-        # The answer itself is the useful part.  Do not expose internal RAG
-        # narration such as “по найденной норме”; keep the provenance as a
-        # compact source marker instead.
-        return f"{text}\n\n[{index}, {label}]"
+    if requested_references:
+        for index, source in enumerate(prepared.sources, 1):
+            if not source.get("structured"):
+                continue
+            if str(source.get("reference") or "").strip() not in requested_references:
+                continue
+            text = str(source.get("text") or "").strip()
+            if len(text) < 20:
+                continue
+            reference = str(source.get("reference") or "").strip()
+            label = next(
+                (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
+                reference.replace(":", " ", 1) or "точная норма",
+            )
+            # The answer itself is the useful part. Do not expose internal
+            # RAG narration; keep provenance as a compact source marker.
+            return f"{text}\n\n[{index}, {label}]"
 
     # Forum and handbook imports are not always split into numbered clauses.
     # They can still contain the answer, and returning only a clarification
@@ -5117,6 +5188,11 @@ def _deterministic_exact_lookup(prepared: _AtlasAnswerRequest) -> str:
     requested_references = _atlas_requested_structured_references(
         str(last_message.get("content") or "")
     )
+    # A structured result is not an answer to a general legal question just
+    # because it was the first Qdrant hit. This shortcut is only safe when the
+    # user explicitly asked for that exact article/chapter/clause.
+    if not requested_references:
+        return ""
     for index, source in enumerate(prepared.sources, 1):
         if not source.get("structured"):
             continue

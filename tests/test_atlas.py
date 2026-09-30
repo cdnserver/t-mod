@@ -22,11 +22,13 @@ from modules.atlas_ai import (
     _atlas_merge_source_fragments,
     _atlas_pinpoint_labels,
     _atlas_query_variants,
+    _atlas_relevant_sources,
     _atlas_task_profile,
     _bounded_dialog_messages,
     _cross_chat_context,
     _chunks,
     _compact_overlay_answer,
+    _deterministic_exact_lookup,
     _grounded_refusal_fallback,
     _recent_user_dialog_context,
     _response_delivery_contract,
@@ -1715,6 +1717,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
 
     def test_retrieval_refusal_fallback_returns_exact_structured_evidence(self) -> None:
         prepared = SimpleNamespace(
+            payload={"messages": [{"role": "user", "content": "Покажи статью 10.1 УК"}]},
             sources=[
                 {
                     "structured": True,
@@ -1730,6 +1733,82 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10.1 Кража", answer)
         self.assertIn("[1, статья 10.1]", answer)
         self.assertNotIn("информации нет", answer.casefold())
+
+    def test_retrieval_refusal_does_not_return_unrequested_structured_clause(self) -> None:
+        source = {
+            "structured": True,
+            "text": "1.1 На охраняемых территориях имеют право находиться все граждане.",
+            "reference": "article:1.1",
+            "pinpoints": ["статья 1.1"],
+        }
+        prepared = SimpleNamespace(
+            intent="legal_analysis",
+            payload={"messages": [{"role": "user", "content": "Нарушают ли законы мой внешний вид?"}]},
+            sources=[source],
+        )
+
+        self.assertEqual(_grounded_refusal_fallback(prepared), "")
+        self.assertEqual(_deterministic_exact_lookup(prepared), "")
+
+    def test_routed_query_drops_off_route_retrieval_hits(self) -> None:
+        road_code = {"title": "Дорожный Кодекс штата San Andreas", "source_id": 10}
+        unrelated = {"title": "Закон о статусе охраняемых территорий", "source_id": 11}
+
+        self.assertEqual(
+            _atlas_relevant_sources("Можно ли эвакуировать автомобиль?", [unrelated, road_code]),
+            [road_code],
+        )
+        self.assertEqual(
+            _atlas_relevant_sources("Можно ли эвакуировать автомобиль?", [unrelated]),
+            [],
+        )
+
+    def test_unrouted_query_discards_structured_neighbour_without_overlap(self) -> None:
+        unrelated = {
+            "title": "Закон о статусе охраняемых территорий",
+            "source_id": 11,
+            "structured": True,
+            "reference": "article:1.1",
+            "text": "1.1 На охраняемых территориях имеют право находиться все граждане.",
+        }
+
+        self.assertEqual(
+            _atlas_relevant_sources("Нарушают ли законы мой внешний вид?", [unrelated]),
+            [],
+        )
+
+    def test_unrouted_query_keeps_sources_with_lexical_evidence(self) -> None:
+        sources = [
+            {
+                "title": "Уголовный кодекс",
+                "source_id": 10,
+                "text": "Кража имущества является преступлением и наказывается по закону.",
+            },
+            {
+                "title": "Кодекс этики",
+                "source_id": 11,
+                "text": "Правила этики регулируют поведение государственных служащих.",
+            },
+        ]
+
+        self.assertEqual(
+            _atlas_relevant_sources("Как наказывается кража имущества?", sources),
+            [sources[0]],
+        )
+
+    def test_explicit_structured_reference_survives_relevance_filter(self) -> None:
+        requested = {
+            "title": "Уголовный кодекс",
+            "source_id": 10,
+            "structured": True,
+            "reference": "article:10.1",
+            "text": "10.1 Кража — тайное хищение чужого имущества.",
+        }
+
+        self.assertEqual(
+            _atlas_relevant_sources("Покажи статью 10.1 УК", [requested]),
+            [requested],
+        )
 
     def test_ic_legal_query_does_not_receive_an_ooc_rescue_variant(self) -> None:
         variants = _atlas_query_variants(
