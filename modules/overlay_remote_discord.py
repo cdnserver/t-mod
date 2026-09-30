@@ -100,5 +100,47 @@ def setup_overlay_remote_discord(bot: commands.Bot) -> None:
                 component="blackbird-overlay",
             )
 
+    @bot.tree.command(name="screenban", description="Показать экран блокировки в Blackbird без выдачи бана")
+    @app_commands.guild_only()
+    @app_commands.describe(target="Discord ID или точный логин T-Mod")
+    async def screenban(interaction: discord.Interaction, target: str) -> None:
+        guild_id = int(interaction.guild_id or 0)
+        if not guild_id or int(interaction.user.id) not in overlay_operator_ids():
+            await interaction.response.send_message("Команда доступна только операторам Blackbird.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        recipient = await asyncio.to_thread(resolve_overlay_recipient, guild_id, target)
+        if recipient is None:
+            await interaction.followup.send("Аккаунт с таким Discord ID или точным логином не найден.", ephemeral=True)
+            return
+        # Cosmetic, short-lived delivery only. Never call the global-ban store.
+        notification_id = await asyncio.to_thread(
+            reactor_repository.reactor_put_notification,
+            guild_id=guild_id,
+            user_id=recipient,
+            severity="warning",
+            kind="screenban",
+            title="Демонстрация экрана блокировки",
+            body="Это визуальная демонстрация. Ваш аккаунт не заблокирован.",
+            dedupe_key=f"screenban:{interaction.id}",
+            source_key=f"operator:{interaction.user.id}",
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        )
+        await interaction.followup.send(
+            f"Экран поставлен в очередь Blackbird (№{notification_id}). "
+            "Это только визуальный показ: реальная блокировка не выдана.",
+            ephemeral=True,
+        )
+        if interaction.guild is not None:
+            await log_technical_event(
+                bot,
+                interaction.guild,
+                title="Показан демонстрационный экран блокировки",
+                details=f"Оператор: {interaction.user.id}; получатель: {recipient}; событие: {notification_id}; бан не выдавался",
+                level="info",
+                dedupe_key=f"screenban:{interaction.id}",
+                component="blackbird-overlay",
+            )
+
 
 __all__ = ["overlay_operator_ids", "resolve_overlay_recipient", "setup_overlay_remote_discord"]

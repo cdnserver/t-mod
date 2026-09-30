@@ -1,10 +1,15 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import discord
+from discord.ext import commands
 
 import storage
-from modules.overlay_remote_discord import overlay_operator_ids, resolve_overlay_recipient
+from modules.overlay_remote_discord import overlay_operator_ids, resolve_overlay_recipient, setup_overlay_remote_discord
 from persistence import atlas_repository, blackbird_communicate_repository as communicate
 from persistence import profile_repository, web_auth_repository
 
@@ -43,7 +48,7 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         result = communicate.send_message(77, 200, 100, "hello")
         self.assertEqual(communicate.conversation(77, 100, 200)[0]["id"], result["id"])
         self.assertEqual(communicate.conversation(77, 300, 200), [])
-        self.assertEqual(communicate.list_conversations(77, 200)[0]["partner_id"], 100)
+        self.assertEqual(communicate.list_conversations(77, 200)[1]["partner_id"], 100)
         for _ in range(11):
             communicate.send_message(77, 200, 100, "another")
         with self.assertRaisesRegex(ValueError, "communicate_rate_limited"):
@@ -51,6 +56,16 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         communicate.set_discoverable(77, 100, False)
         with self.assertRaisesRegex(ValueError, "communicate_recipient_unavailable"):
             communicate.send_message(77, 200, 100, "opted out")
+
+    def test_verified_service_welcome_is_not_a_sendable_identity(self):
+        service = communicate.list_conversations(77, 200)[0]
+        self.assertEqual(service["partner_id"], 0)
+        self.assertTrue(service["verified"])
+        self.assertTrue(service["system"])
+        self.assertIn("Добро пожаловать", service["last_message"])
+        self.assertEqual(communicate.conversation(77, 200, 0)[0]["body"], service["last_message"])
+        with self.assertRaisesRegex(ValueError, "communicate_self_invalid"):
+            communicate.send_message(77, 200, 0, "spoof")
 
     def test_overlay_operator_and_exact_account_resolution(self):
         web_auth_repository.configure_web_credential(77, 100, "robert", "12345678")
@@ -60,3 +75,28 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         self.assertIsNone(resolve_overlay_recipient(77, "200"))
         with patch.dict("os.environ", {"BLACKBIRD_OVERLAY_OPERATOR_IDS": "902235631952998410,123"}):
             self.assertEqual(overlay_operator_ids(), {902235631952998410, 123})
+
+    def test_screenban_is_operator_only_and_cosmetic(self):
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        setup_overlay_remote_discord(bot)
+        command = bot.tree.get_command("screenban")
+        self.assertIsNotNone(command)
+        interaction = SimpleNamespace(
+            guild_id=77,
+            user=SimpleNamespace(id=902235631952998410),
+            id=456,
+            guild=None,
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        with patch("modules.overlay_remote_discord.resolve_overlay_recipient", return_value=100), \
+             patch("modules.overlay_remote_discord.reactor_repository.reactor_put_notification", return_value=42) as notify:
+            asyncio.run(command.callback(interaction, "robert"))
+        self.assertEqual(notify.call_args.kwargs["kind"], "screenban")
+        self.assertEqual(notify.call_args.kwargs["user_id"], 100)
+        self.assertIn("визуальный показ", interaction.followup.send.call_args.args[0].lower())
+
+        interaction.user.id = 999
+        with patch("modules.overlay_remote_discord.reactor_repository.reactor_put_notification") as notify:
+            asyncio.run(command.callback(interaction, "robert"))
+        notify.assert_not_called()

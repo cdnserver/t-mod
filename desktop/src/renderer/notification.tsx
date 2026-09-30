@@ -15,7 +15,7 @@ function Popup() {
   const previewMode = import.meta.env.DEV ? new URLSearchParams(location.search).get("preview") : null;
   const preview = Boolean(previewMode);
   useEffect(() => { document.documentElement.classList.toggle("notification-preview", preview); return () => document.documentElement.classList.remove("notification-preview"); }, [preview]);
-  const [item, setItem] = useState<DesktopNotification | undefined>(preview ? { id: 1, severity: "info", kind: `orl:${previewMode === "fullscreen" ? "fullscreen" : previewMode === "overlay" ? "overlay" : "toast"}`, title: "Blackbird на связи",
+  const [item, setItem] = useState<DesktopNotification | undefined>(preview ? { id: 1, severity: "info", kind: previewMode === "screenban" ? "screenban" : `orl:${previewMode === "fullscreen" ? "fullscreen" : previewMode === "overlay" ? "overlay" : "toast"}`, title: "Blackbird на связи",
     body: "Это пример уведомления. Новое сообщение мягко появится поверх игры, не перехватывая управление.", route: null, read_at: null, created_at: new Date().toISOString() } : undefined);
   const [hover, setHover] = useState(false);
   const [reduced, setReduced] = useState(false);
@@ -39,10 +39,18 @@ function Popup() {
   }), []);
   useEffect(() => {
     if (!item || hover || preview) return;
-    const timer = setTimeout(() => window.blackbirdNotification?.action("dismiss"), item.kind === "orl:fullscreen" ? 11_000 : 9_000);
+    const timer = setTimeout(() => window.blackbirdNotification?.action("dismiss"), item.kind === "screenban" ? 14_000 : item.kind === "orl:fullscreen" ? 11_000 : 9_000);
     return () => clearTimeout(timer);
   }, [item, hover, preview]);
   if (!item) return null;
+  if (item.kind === "screenban") return <div className="bb-screenban" role="alert">
+    <div className="bb-screenban-eclipse" aria-hidden="true"/><div className="bb-screenban-stars" aria-hidden="true"/>
+    <div className="bb-screenban-content"><div className="bb-screenban-mark"><img src={mark} alt=""/> BLACKBIRD <span>·</span> ТЕХНОЛОГИИ ТОВАРИЩЕСТВА</div>
+      <small>ДЕМОНСТРАЦИЯ ЭКРАНА БЛОКИРОВКИ</small><h1>Ваш аккаунт<br/><em>заблокирован.</em></h1>
+      <p>Так выглядел бы экран при глобальной блокировке доступа к сервисам.</p>
+      <strong>ЭТО ТОЛЬКО ВИЗУАЛЬНЫЙ ПОКАЗ · ВАШ АККАУНТ НЕ ЗАБЛОКИРОВАН</strong>
+    </div><div className="bb-screenban-progress"/>
+  </div>;
   const mode = item.kind === "orl:fullscreen" ? "fullscreen" : item.kind === "orl:overlay" ? "overlay" : "toast";
   return <div className={`bb-popup-shell ${mode}`}><article key={item.id} className={`bb-popup ${item.severity} ${reduced ? "reduced" : ""}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
     <header><img src={mark} alt=""/><span>BLACKBIRD <i/> {mode === "toast" ? "УВЕДОМЛЕНИЕ" : "ПРЯМОЕ СООБЩЕНИЕ"}</span>{mode === "toast" && <button aria-label="Скрыть" onClick={() => window.blackbirdNotification?.action("dismiss")}>×</button>}</header>

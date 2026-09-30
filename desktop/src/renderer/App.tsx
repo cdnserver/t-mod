@@ -59,6 +59,7 @@ import { BlackbirdLogin } from "./BlackbirdLogin";
 import { BlackbirdIdle } from "./BlackbirdIdle";
 import { AtlasUsage } from "./AtlasUsage";
 import { BlackbirdSetup } from "./BlackbirdSetup";
+import { BlackbirdBan } from "./BlackbirdBan";
 import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
 import { AccountMenu } from "./AccountMenu";
 import { WorkspaceHome, WorkspaceNavigation, WorkspaceIntro } from "./BlackbirdWorkspace";
@@ -453,22 +454,25 @@ export function App() {
   const hubQa = cinematicQaEnabled && cinematicParams.get("hub-preview") === "1";
   const loginQa = cinematicQaEnabled && cinematicParams.get("login-preview") === "1";
   const setupQa = cinematicQaEnabled && cinematicParams.get("setup-preview") === "1";
+  const banQa = cinematicQaEnabled && cinematicParams.get("ban-preview") === "1";
   const skipLaunchQa = cinematicQaEnabled && cinematicParams.get("skip-launch") === "1";
   const cinematicHold = cinematicQaEnabled && cinematicParams.get("hold") === "1";
   const cinematicPreviewName = cinematicQaEnabled
     ? String(cinematicParams.get("name") || "").trim()
     : "";
   const bridgeAvailable = Boolean(browserApi());
-  const [bootstrap, setBootstrap] = useState<BootstrapResult>(() => hubQa
-    ? hubPreviewBootstrap()
-    : loginQa
+  const [bootstrap, setBootstrap] = useState<BootstrapResult>(() => banQa
+    ? { authenticated: false, online: true, error: "globally_banned", ban: { reason: "Глобальная блокировка доступа", reference: "GB-042" } }
+    : hubQa
+      ? hubPreviewBootstrap()
+      : loginQa
       ? { authenticated: false, online: true, error: "login_required" }
       : {
           authenticated: false,
           online: bridgeAvailable,
           error: bridgeAvailable ? "loading" : "desktop_bridge_unavailable",
         });
-  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable && !hubQa && !loginQa);
+  const [bootstrapLoading, setBootstrapLoading] = useState(bridgeAvailable && !hubQa && !loginQa && !banQa);
   const [desktopState, setDesktopState] = useState<DesktopState>({
     activeService: atlasSettingsQa ? "atlas" : "home",
     loading: false,
@@ -582,7 +586,7 @@ export function App() {
   }, []);
 
   const loadBootstrap = useCallback(async () => {
-    if (hubQa || loginQa) return;
+    if (hubQa || loginQa || banQa) return;
     if (authTransaction.current) { bootstrapRefreshPending.current = true; return; }
     if (bootstrapInFlight.current) {
       // Cookie, resume and service-navigation events can arrive while an older
@@ -620,7 +624,7 @@ export function App() {
       setBootstrapLoading(false);
       if (bootstrapRefreshPending.current && !authTransaction.current) void loadBootstrap();
     }
-  }, [hubQa, loginQa]);
+  }, [hubQa, loginQa, banQa]);
 
   const loadOverlay = useCallback(async () => {
     const api = overlayApi();
@@ -636,7 +640,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (hubQa || loginQa) return;
+    if (hubQa || loginQa || banQa) return;
     void loadBootstrap();
     const api = browserApi();
     if (!api) return;
@@ -675,7 +679,7 @@ export function App() {
       window.clearInterval(refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [hubQa, loginQa, loadBootstrap]);
+  }, [hubQa, loginQa, banQa, loadBootstrap]);
 
   useEffect(() => {
     if (bootstrap.authenticated) void loadOverlay();
@@ -998,6 +1002,13 @@ export function App() {
     setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false);
     if (!(await browserApi()?.openCommunicate?.())) setToast("Communicate откроется отдельным окном в приложении Blackbird");
   };
+
+  if (desktopProduct.privateEdition && bootstrap.error === "globally_banned") {
+    return <BlackbirdBan reason={bootstrap.ban?.reason || "Решение администратора."}
+      reference={bootstrap.ban?.reference || "GB-—"}
+      onMinimize={() => void browserApi()?.minimize()}
+      onClose={() => void browserApi()?.close()}/>;
+  }
 
   const desktopClasses = [
     "desktop",

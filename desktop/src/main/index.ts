@@ -535,8 +535,8 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
     notificationStreamInitialized = true;
     if (desktopProduct.privateEdition) {
       for (const item of items.slice().reverse()) {
-        if (!item.read_at && item.kind.startsWith("orl:"))
-          notificationPopup?.show(desktopLocked ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
+        if (!item.read_at && (item.kind.startsWith("orl:") || item.kind === "screenban"))
+          notificationPopup?.show(desktopLocked && item.kind !== "screenban" ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
             shellPreferences.notificationSound, shellPreferences.reduceMotion);
       }
     }
@@ -550,8 +550,8 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
     // Operator messages are an explicit surface request, independent of the
     // adaptive Windows/in-app delivery choice. Never display their content on
     // a locked workstation.
-    if (desktopProduct.privateEdition && item.kind.startsWith("orl:")) {
-      notificationPopup?.show(desktopLocked ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
+    if (desktopProduct.privateEdition && (item.kind.startsWith("orl:") || item.kind === "screenban")) {
+      notificationPopup?.show(desktopLocked && item.kind !== "screenban" ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
         shellPreferences.notificationSound, shellPreferences.reduceMotion);
       continue;
     }
@@ -585,7 +585,21 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
 }
 
 async function pollNotifications(): Promise<void> {
-  if (notificationPollInFlight || !lastSuccessfulBootstrap || !desktopProduct.privateEdition) return;
+  if (notificationPollInFlight || !desktopProduct.privateEdition) return;
+  // A revoked session must be noticed even while the app is unfocused. Keep
+  // checking for an administrator's later unban without exposing old views.
+  if (lastKnownBan) {
+    notificationPollInFlight = true;
+    try {
+      const previous = lastKnownBan.reference;
+      const result = await bootstrap();
+      if (result.error !== "globally_banned" || result.ban?.reference !== previous)
+        mainWindow?.webContents.send("desktop:auth-changed");
+    } catch (error) { log.debug("Ban state refresh unavailable", error); }
+    finally { notificationPollInFlight = false; }
+    return;
+  }
+  if (!lastSuccessfulBootstrap) return;
   const revision = bootstrapRevision;
   const account = lastSuccessfulBootstrap.viewer.id;
   notificationPollInFlight = true;
@@ -595,6 +609,11 @@ async function pollNotifications(): Promise<void> {
       headers: { ...desktopIdentityHeaders(), Accept: "application/json" },
       signal: AbortSignal.timeout(6000),
     });
+    if (response.status === 423) {
+      const result = await bootstrap();
+      if (result.error === "globally_banned") mainWindow?.webContents.send("desktop:auth-changed");
+      return;
+    }
     if (!response.ok) return;
     const data = await response.json() as { viewer?: { id?: number }; items?: DesktopBootstrap["notifications"]["items"] };
     if (revision !== bootstrapRevision || data.viewer?.id !== account || !Array.isArray(data.items)) return;
@@ -906,6 +925,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       }
       if (response.status === 403 && desktopProduct.privateEdition) {
         if (current) {
+          lastKnownBan = undefined;
           lastSuccessfulBootstrap = undefined;
           lastSuccessfulBootstrapAt = undefined;
           clearServiceManifest();
@@ -939,6 +959,8 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
           lastKnownBan = decision;
           lastSuccessfulBootstrap = undefined;
           lastSuccessfulBootstrapAt = undefined;
+          communicateWindow?.close();
+          notificationPopup?.clear();
           clearServiceManifest();
           activeService = "home";
           serviceLoading = false;

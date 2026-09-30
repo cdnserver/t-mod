@@ -9,6 +9,16 @@ from persistence.core import _db_lock, connect, connect_readonly, utc_now_iso
 from persistence.profile_repository import normalize_profile_static
 
 
+# Reserved identity: no user can send as the service or reply to it. The
+# welcome message is a projection, not a forged row in private message storage.
+SERVICE_PARTNER_ID = 0
+SERVICE_WELCOME = (
+    "Добро пожаловать в Blackbird! Здесь можно общаться с участниками Товарищества "
+    "и делиться страницами сервисов. Найдите человека по персонажу и серверу, "
+    "чтобы начать личный диалог."
+)
+
+
 def preferences(guild_id: int, user_id: int) -> dict[str, bool]:
     with connect_readonly() as con:
         row = con.execute(
@@ -61,7 +71,15 @@ def list_conversations(guild_id: int, user_id: int) -> list[dict[str, Any]]:
             (guild_id, user_id, user_id),
         ).fetchall()
     seen: set[int] = set()
-    result = []
+    result = [{
+        "partner_id": SERVICE_PARTNER_ID,
+        "partner_name": "Товарищество",
+        "last_message": SERVICE_WELCOME,
+        "created_at": "",
+        "from_me": False,
+        "verified": True,
+        "system": True,
+    }]
     for row in rows:
         partner = int(row["recipient_id"] if row["sender_id"] == user_id else row["sender_id"])
         if partner in seen:
@@ -77,6 +95,11 @@ def list_conversations(guild_id: int, user_id: int) -> list[dict[str, Any]]:
 
 
 def conversation(guild_id: int, user_id: int, partner_id: int, *, limit: int = 80) -> list[dict[str, Any]]:
+    if partner_id == SERVICE_PARTNER_ID:
+        return [{
+            "id": 0, "sender_id": SERVICE_PARTNER_ID, "recipient_id": user_id,
+            "body": SERVICE_WELCOME, "created_at": "", "verified": True,
+        }]
     if user_id == partner_id:
         raise ValueError("communicate_self_invalid")
     with connect_readonly() as con:
