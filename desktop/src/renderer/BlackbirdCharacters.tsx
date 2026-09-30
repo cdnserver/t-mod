@@ -43,7 +43,7 @@ export function BlackbirdCharacters() {
     } finally { setBusy(false); }
   };
   return <div className="bb-character-settings">
-    <section className="bbs-group"><small>ВАША ИГРОВАЯ ЛИЧНОСТЬ</small><h2>Персонажи аккаунта</h2><p>Персонажи синхронизируются с T-Mod и доступны для Atlas Overlay. Статик и сервер используются для точного поиска в Communicate только после вашего согласия.</p>
+    <section className="bbs-group"><small>ВАША ИГРОВАЯ ЛИЧНОСТЬ</small><h2>Персонажи аккаунта</h2><p>Персонажи синхронизируются с T-Mod и доступны для Atlas Overlay. Поиск по серверу и статику зависит от публичности персонажа. По точному логину T-Mod или Discord ID вам можно написать всегда.</p>
       {!loaded && <p role="status">Загружаем персонажей…</p>}
       <div className="bb-character-list">{characters.map((character, index) => {
         const binding = bindings.find(item => Number(item.id) === Number(character.id));
@@ -58,7 +58,7 @@ export function BlackbirdCharacters() {
       {loaded && characters.length === 0 && !error && <p>Пока нет персонажей. Добавьте первого ниже.</p>}
     </section>
     {loaded && characters.length < 3 && <section className="bbs-group"><h2>Добавить персонажа</h2><div className="bb-character-add"><label>Имя персонажа<input value={nickname} maxLength={48} placeholder="Имя Фамилия" onChange={e => setNickname(e.target.value)}/></label><label>Статик<input value={staticId} maxLength={12} inputMode="numeric" placeholder="263345" onChange={e => setStaticId(e.target.value)}/></label><button disabled={busy || nickname.trim().length < 2 || !/^\d{1,12}$/.test(staticId)} onClick={() => void mutate({action:"add",nickname,static_id:staticId})}>Добавить персонажа</button></div></section>}
-    <section className="bbs-group"><h2>Как работает поиск</h2><p>Communicate ищет по связке «сервер + статик». Вы сами включаете видимость персонажа и отдельно разрешаете поиск в Communicate. Настройки голоса и оверлея — в разделе «Atlas Overlay».</p></section>
+    <section className="bbs-group"><h2>Как работает поиск</h2><p>Поиск по связке «сервер + статик» показывает только публичных персонажей, если вы не скрыли себя из поиска. Точный логин T-Mod и Discord ID доступны для личного сообщения независимо от этой настройки. Настройки голоса и оверлея — в разделе «Atlas Overlay».</p></section>
     {error && <p className="bbs-message" role="alert">{error} <button onClick={() => void refresh().catch(() => setError("Соединение пока недоступно."))}>Повторить</button></p>}
   </div>;
 }

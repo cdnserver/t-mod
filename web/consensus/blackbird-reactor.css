@@ -1,0 +1,174 @@
+/* Blackbird-only presentation for the existing personal Reactor workflows. */
+html.blackbird-reactor {
+  --bg: #111518;
+  --surface: #1b2226;
+  --surface-2: #222b30;
+  --line: #d9e8ec19;
+  --line-strong: #d9e8ec32;
+  --text: #ebf1f2;
+  --muted: #9babb1;
+  --mint: #bed5da;
+  --blue: #b6cad6;
+  --violet: #b3bcca;
+  --gold: #d3c3a5;
+  --red: #e3989f;
+  --font: "Manrope", "Segoe UI Variable", sans-serif;
+  --display: "Manrope", "Segoe UI Variable Display", sans-serif;
+  --reactor-rgb: 176, 202, 211;
+  background: var(--bg);
+}
+html.blackbird-reactor body { background: radial-gradient(ellipse at 55% -20%,#364b5425,transparent 58%),var(--bg); font-size: 15px; line-height: 1.55; }
+html.blackbird-reactor .portal-atmosphere { display: none; }
+html.blackbird-reactor .portal-shell { max-width: none; padding: 0 clamp(18px,2.6vw,42px) 65px; }
+html.blackbird-reactor .portal-header { min-height: 69px; padding: 0 4px; border-bottom: 1px solid #ffffff15; }
+html.blackbird-reactor .portal-brand { gap: 8px; text-decoration: none; }
+html.blackbird-reactor .portal-brand > span { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #b1d0d84c; border-radius: 7px; background: #bfdde313; color: #d6e9ec; font-size: 15px; }
+html.blackbird-reactor .portal-brand strong { font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
+html.blackbird-reactor .portal-brand small { margin-left: 6px; color: #8ba0a9; font-size: 11px; }
+html.blackbird-reactor .portal-header nav { gap: 2px; }
+html.blackbird-reactor .portal-header nav a,
+html.blackbird-reactor .portal-header nav button { min-height: 35px; border-radius: 7px; color: #a7b8be; font-size: 12px; }
+html.blackbird-reactor .portal-header nav a:hover,
+html.blackbird-reactor .portal-header nav button:hover { background: #ffffff0e; color: #f0f7f8; }
+html.blackbird-reactor .portal-app-frame { grid-template-columns: 226px minmax(0,1fr); gap: clamp(17px,2vw,30px); padding-top: 20px; align-items: start; }
+html.blackbird-reactor .portal-sidebar { top: 19px; max-height: calc(100vh - 45px); padding: 12px; border: 1px solid #ffffff16; border-radius: 12px; background: #192126; box-shadow: none; }
+html.blackbird-reactor .portal-person { margin-bottom: 10px; padding-bottom: 13px; }
+html.blackbird-reactor .portal-person > span { width: 39px; height: 39px; border-radius: 8px; background: #3c5058; border-color: #c7dce43b; font-size: 17px; }
+html.blackbird-reactor .portal-person strong { font-size: 13px; }
+html.blackbird-reactor .portal-person small,
+html.blackbird-reactor .portal-view-header small,
+html.blackbird-reactor .overview-heading small { color: #8b9da4; font-family: var(--font); font-size: 10px; letter-spacing: .09em; }
+html.blackbird-reactor .portal-section-nav { gap: 3px; }
+html.blackbird-reactor .portal-section-nav button { grid-template-columns: 29px minmax(0,1fr); min-height: 48px; padding: 7px 8px; border-radius: 7px; color: #aab8bd; }
+html.blackbird-reactor .portal-section-nav button:hover { background: #ffffff0b; color: #f0f7f8; }
+html.blackbird-reactor .portal-section-nav button.active { border-color: #a6cdd444; background: #bed7e014; color: #f2f7f8; }
+html.blackbird-reactor .portal-section-nav button > span { font-size: 16px; color: #b7d2da; }
+html.blackbird-reactor .portal-section-nav button b { font-size: 12px; font-weight: 600; }
+html.blackbird-reactor .portal-section-nav button small { color: #7f939b; font-size: 10px; }
+html.blackbird-reactor .portal-sidebar > footer { padding-top: 12px; }
+html.blackbird-reactor .portal-sidebar > footer a,
+html.blackbird-reactor .portal-sidebar > footer button { font-size: 11px; }
+html.blackbird-reactor .portal-app-frame > main { min-width: 0; }
+html.blackbird-reactor .portal-view-header { min-height: 63px; margin: 0 0 17px; align-items: center; }
+html.blackbird-reactor .portal-view-header h1 { margin-top: 2px; font-size: clamp(25px,2.7vw,34px); font-weight: 600; letter-spacing: -.045em; }
+html.blackbird-reactor .portal-view-header > span { color: #93a9af; font-size: 11px; }
+html.blackbird-reactor .portal-hero { min-height: 295px; gap: 24px; padding: 34px clamp(25px,3.5vw,55px); border: 1px solid #e2eff21b; border-radius: 13px; background: radial-gradient(ellipse at 100% 0%,#8da9b123,transparent 60%),linear-gradient(135deg,#202c32,#192126 76%); box-shadow: inset 0 1px #ffffff0b; }
+html.blackbird-reactor .portal-hero h1 { max-width: 660px; margin: 14px 0; font-size: clamp(34px,3.6vw,54px); font-weight: 500; line-height: 1.09; letter-spacing: -.05em; }
+html.blackbird-reactor .portal-hero-copy > p { max-width: 570px; color: #aebdc3; font-size: 14px; line-height: 1.7; }
+html.blackbird-reactor .portal-kicker { color: #a9c7ce; font-size: 10px; letter-spacing: .15em; }
+html.blackbird-reactor .portal-hero-actions button,
+html.blackbird-reactor .portal-primary { border-radius: 7px; font-size: 12px; font-weight: 700; }
+html.blackbird-reactor .portal-hero-actions button:first-child,
+html.blackbird-reactor .portal-primary { background: #c4dce2; color: #18252a; }
+html.blackbird-reactor .portal-hero-state { min-width: 185px; justify-items: end; }
+html.blackbird-reactor .portal-core,
+html.blackbird-reactor .portal-telemetry { display: none; }
+html.blackbird-reactor .portal-reactor-readout { min-width: 175px; padding: 17px 20px; border: 1px solid #cde2e638; border-radius: 9px; background: #e0f2f70b; text-align: left; }
+html.blackbird-reactor .portal-reactor-readout small { color: #819aa3; font-size: 9px; }
+html.blackbird-reactor .portal-reactor-readout strong { color: #d5e7e9; font-size: 13px; }
+html.blackbird-reactor .portal-overview { margin-top: 28px; }
+html.blackbird-reactor .overview-heading { margin-bottom: 17px; }
+html.blackbird-reactor .overview-heading h2 { font-size: clamp(24px,2.4vw,32px); font-weight: 500; letter-spacing: -.04em; }
+html.blackbird-reactor .overview-heading p { color: #9cabb0; font-size: 13px; }
+html.blackbird-reactor .overview-grid { gap: 12px; }
+html.blackbird-reactor .overview-grid > button { min-height: 140px; border: 1px solid #e5f3f419; border-radius: 10px; background: #1d262b; box-shadow: none; transition: border-color .22s,transform .22s,background .22s; }
+html.blackbird-reactor .overview-grid > button:hover { border-color: #bed8df66; background: #263238; transform: translateY(-2px); }
+html.blackbird-reactor .overview-grid strong { color: #edf4f5; font-size: clamp(20px,2.1vw,30px); }
+html.blackbird-reactor .overview-grid small { color: #91a5ad; font-size: 10px; }
+html.blackbird-reactor .portal-widget { min-height: 185px; border-color: #e4f2f419; border-radius: 10px; background: #1b2327; box-shadow: none; }
+html.blackbird-reactor .portal-widget::after { display: none; }
+html.blackbird-reactor .portal-widget > header > span { color: #8fa4ab; font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+html.blackbird-reactor .portal-widget h2,
+html.blackbird-reactor .portal-widget h3 { font-family: var(--font); font-weight: 600; }
+html.blackbird-reactor .portal-widget p,
+html.blackbird-reactor .portal-widget li { font-size: 13px; line-height: 1.6; }
+html.blackbird-reactor .portal-gate { background: radial-gradient(ellipse at 50% 5%,#49616a26,transparent 55%),#111518; }
+html.blackbird-reactor .portal-gate small { color: #9eb6bd; letter-spacing: .19em; }
+html.blackbird-reactor .portal-gate h1 { font-size: clamp(28px,4vw,46px); font-weight: 500; letter-spacing: -.055em; }
+html.blackbird-reactor .portal-loader { height: 72px; width: 72px; margin-bottom: 30px; }
+html.blackbird-reactor .portal-loader span { height: 54px; width: 54px; border-radius: 10px; border-color: #d6e9ec40; background: #bbd6de1a; color: #d5e7ec; font-size: 26px; }
+html.blackbird-reactor .portal-loader i { border-color: #d8e9eb27; }
+html.blackbird-reactor .portal-loader i::after { background: #d2e4e8; box-shadow: 0 0 16px #d2e4e8; }
+html.blackbird-reactor .portal-canvas { gap: 14px; padding-top: 16px; }
+html.blackbird-reactor .portal-widget { padding: clamp(20px,2vw,29px); }
+html.blackbird-reactor .portal-widget > header > b { border-color: #c7dfe549; color: #c4dbe0; font-size: 11px; }
+html.blackbird-reactor .identity-avatar { height: 62px; width: 62px; border-radius: 10px; border-color: #bed7de38; background: #b7d0d816; color: #d5e6e9; }
+html.blackbird-reactor .identity-main h2 { font-size: 23px; font-weight: 600; }
+html.blackbird-reactor .identity-main p,
+html.blackbird-reactor .identity-positions span { font-size: 13px; }
+html.blackbird-reactor .identity-positions span { background: #d9e9ec0c; border-color: #dceef01d; }
+html.blackbird-reactor .identity-note { font-size: 13px; }
+html.blackbird-reactor .treasury-widget,
+html.blackbird-reactor .editor-widget,
+html.blackbird-reactor .consensus-widget,
+html.blackbird-reactor .preparation-widget,
+html.blackbird-reactor .games-widget { background: #1b2327; }
+html.blackbird-reactor .treasury-balance strong { font-size: clamp(38px,4vw,54px); font-weight: 600; }
+html.blackbird-reactor .treasury-balance small,
+html.blackbird-reactor .editor-titlebar > div > small,
+html.blackbird-reactor .preparation-heading small { color: #b8cfd5; font-size: 11px; }
+html.blackbird-reactor .treasury-flow span,
+html.blackbird-reactor .treasury-balance > span,
+html.blackbird-reactor .treasury-widget footer small { font-size: 12px; }
+html.blackbird-reactor .legislation-heading h2,
+html.blackbird-reactor .editor-titlebar h2,
+html.blackbird-reactor .preparation-heading h2 { font-size: clamp(25px,2.6vw,35px); font-weight: 600; letter-spacing: -.045em; }
+html.blackbird-reactor .legislation-heading p,
+html.blackbird-reactor .editor-titlebar p,
+html.blackbird-reactor .preparation-heading p { font-size: 14px; }
+html.blackbird-reactor .legislation-search,
+html.blackbird-reactor .editor-form,
+html.blackbird-reactor .editor-preview { border-color: #dcecf023; border-radius: 9px; background: #141b1f; }
+html.blackbird-reactor .legislation-search input { font-size: 14px; }
+html.blackbird-reactor .bill-card { min-height: 190px; border-color: #dcecf022; border-radius: 9px; background: #202a2f; }
+html.blackbird-reactor .bill-card:hover { border-color: #b9d4dc6e; }
+html.blackbird-reactor .bill-card h3 { font-size: 16px; }
+html.blackbird-reactor .bill-card p,
+html.blackbird-reactor .bill-card footer { font-size: 12px; }
+html.blackbird-reactor .editor-empty,
+html.blackbird-reactor .editor-steps button,
+html.blackbird-reactor .editor-check,
+html.blackbird-reactor .preparation-row,
+html.blackbird-reactor .preparation-vote-grid button { border-color: #dcecf023; border-radius: 8px; background: #202a2f; }
+html.blackbird-reactor .editor-steps button.active,
+html.blackbird-reactor .preparation-vote-grid button.selected { border-color: #bad7de75; background: #bfdbe01a; }
+html.blackbird-reactor .editor-steps button.active > span { background: #c4dce2; color: #18252a; }
+html.blackbird-reactor .editor-form { padding: clamp(18px,2vw,28px); }
+html.blackbird-reactor .editor-pane label > span,
+html.blackbird-reactor .field-heading p,
+html.blackbird-reactor .editor-empty p,
+html.blackbird-reactor .preparation-row p { font-size: 13px; }
+html.blackbird-reactor .editor-pane input,
+html.blackbird-reactor .editor-pane textarea,
+html.blackbird-reactor .preparation-workspace textarea { font-size: 14px; border-color: #e1eff126; background: #263137; }
+html.blackbird-reactor .editor-pane input:focus,
+html.blackbird-reactor .editor-pane textarea:focus,
+html.blackbird-reactor .preparation-workspace textarea:focus { border-color: #b8d6dd8a; box-shadow: 0 0 0 3px #a6cdd51b; }
+html.blackbird-reactor .preview-paper { min-height: 390px; background: #1d272c; }
+html.blackbird-reactor .preview-paper p,
+html.blackbird-reactor .preparation-source > p:not(.preparation-privacy) { font-size: 14px; }
+html.blackbird-reactor .preparation-row h3 { font-size: 16px; }
+html.blackbird-reactor .preparation-row > button { border-color: #b9d6dc55; border-radius: 7px; background: #c1d9df1b; color: #deeff0; font-size: 12px; }
+html.blackbird-reactor .preparation-row > button:hover { background: #c4dce2; color: #18252a; }
+html.blackbird-reactor .preparation-dialog { max-width: min(1180px,calc(100vw - 32px)); }
+html.blackbird-reactor .preparation-source { background: #151d21; }
+html.blackbird-reactor .preparation-workspace { background: #202a2f; }
+html.blackbird-reactor .preparation-question { background: #1c252a; }
+html.blackbird-reactor .portal-notification { border-color: #dcecf022; border-radius: 8px; background: #202a2f; }
+html.blackbird-reactor .portal-notification strong { font-size: 13px; }
+html.blackbird-reactor .portal-notification small { font-size: 12px; }
+html.blackbird-reactor .portal-busy > div { border-radius: 10px; background: #1b2529; }
+html.blackbird-reactor .portal-toast { border-color: #c4dce270; border-radius: 7px; background: #24353b; color: #e0f1f2; font-size: 13px; }
+html.blackbird-reactor .portal-dialog { max-width: min(900px,calc(100vw - 40px)); border: 1px solid #d9eced39; border-radius: 12px; background: #1c2428; box-shadow: 0 35px 90px #0009; }
+html.blackbird-reactor .portal-dialog::backdrop { background: #020607bd; backdrop-filter: blur(5px); }
+html.blackbird-reactor input,
+html.blackbird-reactor textarea,
+html.blackbird-reactor select { min-height: 39px; border-color: #ffffff2a; border-radius: 7px; font-size: 14px; }
+html.blackbird-reactor button:focus-visible,
+html.blackbird-reactor a:focus-visible,
+html.blackbird-reactor input:focus-visible,
+html.blackbird-reactor textarea:focus-visible { outline: 2px solid #b7d9e3; outline-offset: 2px; }
+html.blackbird-reactor .desktop-recommendation { display: none !important; }
+@media(max-width:1120px){html.blackbird-reactor .portal-app-frame{grid-template-columns:190px minmax(0,1fr)}html.blackbird-reactor .portal-section-nav button small{display:none}html.blackbird-reactor .portal-hero-state{display:none}}
+@media(max-width:780px){html.blackbird-reactor .portal-shell{padding:0 15px 35px}html.blackbird-reactor .portal-header{flex-wrap:wrap;padding:10px 0}html.blackbird-reactor .portal-app-frame{grid-template-columns:1fr}html.blackbird-reactor .portal-sidebar{position:static;max-height:none}html.blackbird-reactor .portal-section-nav{grid-template-columns:repeat(2,minmax(0,1fr))}html.blackbird-reactor .portal-hero{padding:25px}}
+@media(prefers-reduced-motion:reduce){html.blackbird-reactor .portal-shell,html.blackbird-reactor .overview-grid>button{transition:none}}

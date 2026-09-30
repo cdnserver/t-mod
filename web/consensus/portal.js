@@ -1,6 +1,10 @@
 "use strict";
 
 (() => {
+  if (/\bBLACKBIRD\//i.test(navigator.userAgent)) {
+    document.documentElement.classList.add("blackbird-reactor");
+    document.title = "Личный Реактор — Blackbird";
+  }
   const labels = {
     identity: "Мой мандат",
     treasury: "Казна",

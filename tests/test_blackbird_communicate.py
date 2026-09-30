@@ -50,7 +50,8 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         self.assertIsNone(communicate.search_account(77, 200, "robert"))
         self.assertIsNone(communicate.search_account(77, 100, "100"))
         communicate.set_discoverable(77, 100, False)
-        self.assertIsNone(communicate.search_account(77, 200, "robert.account"))
+        self.assertEqual(communicate.search_account(77, 200, "robert.account")["user_id"], 100)
+        self.assertEqual(communicate.search_account(77, 200, "100")["user_id"], 100)
 
     def test_private_thread_and_rate_limit(self):
         with self.assertRaisesRegex(ValueError, "communicate_recipient_unavailable"):

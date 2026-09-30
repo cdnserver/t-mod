@@ -1,0 +1,83 @@
+:root { color-scheme: dark; }
+.bbc-page {
+  background: #101417;
+  color: #e9eff1;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+.bbc-shell {
+  position: relative;
+  border: 1px solid #ffffff12;
+  background: #111619;
+  animation: bbc-window-bloom .48s cubic-bezier(.16,1,.3,1) both;
+}
+.bbc-windowbar {
+  height: 54px;
+  padding: 0 8px 0 18px;
+  border-bottom: 1px solid #ffffff12;
+  background: linear-gradient(90deg,#1d252a,#161d21 54%,#1a2024);
+}
+.bbc-brand-glyph {
+  width: 30px; height: 30px;
+  border-color: #c2dce54d;
+  background: #afcdd711;
+  box-shadow: inset 0 1px #ffffff22;
+  color: #dbeaf0;
+}
+.bbc-windowbrand strong { font-size: 15px; font-weight: 600; letter-spacing: -.025em; }
+.bbc-windowbrand small { color: #8da2aa; font-size: 8px; letter-spacing: .14em; }
+.bbc-window-presence { display: flex; align-items: center; gap: 7px; margin-left: auto; margin-right: 15px; color: #829aa5; font-size: 9px; letter-spacing: .13em; }
+.bbc-window-presence i { width: 5px; height: 5px; border-radius: 50%; background: #9fc7b4; box-shadow: 0 0 11px #99cfad; }
+.bbc-layout { grid-template-columns: 258px minmax(0,1fr); }
+.bbc-directory { position: relative; border-right: 1px solid #ffffff12; background: linear-gradient(165deg,#1b2226,#171d21 43%,#161b1f); }
+.bbc-directory-head { height: 68px; padding: 11px 15px 8px 17px; }
+.bbc-directory-head small { color: #79909a; font-size: 9px; letter-spacing: .14em; }
+.bbc-directory-head strong { margin-top: 3px; font-size: 18px; letter-spacing: -.04em; }
+.bbc-directory-head button { width: 32px; height: 32px; border-radius: 8px; font-size: 23px; color: #d4e8ec; }
+.bbc-search {
+  position: absolute; top: 67px; left: 10px; right: 10px; z-index: 5;
+  max-height: calc(100% - 76px); overflow-y: auto;
+  margin: 0; padding: 13px; gap: 12px;
+  border: 1px solid #8fb4c75b; border-radius: 10px;
+  background: #222e34; box-shadow: 0 20px 45px #000a;
+}
+.bbc-search input { background: #151c20; }
+.bbc-search form button { background: #bad7e0; }
+.bbc-search-divider { color: #83a0ad; }
+.bbc-conversations { padding: 4px 8px 10px; }
+.bbc-conversations>button { min-height: 57px; padding: 9px 8px; border-radius: 8px; transition: background .2s, transform .22s; }
+.bbc-conversations>button:hover { background: #ffffff0d; transform: translateX(2px); }
+.bbc-conversations>button.selected { background: #b9d9e512; box-shadow: inset 2px 0 #bbdbe7; }
+.bbc-conversations b { width: 35px; height: 35px; border-radius: 9px; background: #29373d; color: #dbebef; }
+.bbc-conversations .system b { background: #3d4548; }
+.bbc-conversations strong { font-size: 13px; }
+.bbc-conversations small { max-width: 150px; font-size: 11px; }
+.bbc-conversations time { font-size: 10px; }
+.bbc-privacy { padding: 10px 15px; background: #171e22; }
+.bbc-privacy label { color: #92a9b1; font-size: 10px; }
+.bbc-chat { background: radial-gradient(ellipse at 60% 110%,#52718413,transparent 55%),#111619; }
+.bbc-chat>header { height: 68px; padding: 0 21px; background: #151c20bd; }
+.bbc-chat>header strong { font-size: 15px; }
+.bbc-chat>header small { font-size: 10px; letter-spacing: .12em; }
+.bbc-avatar { width: 37px; height: 37px; border-radius: 9px; background: linear-gradient(150deg,#45575c,#27353b); }
+.bbc-messages { gap: 12px; padding: 20px 22px 25px; scroll-behavior: smooth; }
+.bbc-messages article { max-width: min(80%,480px); padding: 11px 14px; border-radius: 12px 12px 12px 4px; background: #242e33; box-shadow: 0 7px 18px #0002; }
+.bbc-messages article.mine { border-color: #b0d5df36; background: #304149; }
+.bbc-messages article p { font-size: 14px; line-height: 1.55; }
+.bbc-messages article.official { background: linear-gradient(145deg,#293c43,#1e2b31); }
+.bbc-composer { margin: 0 15px; padding-left: 13px; border-color: #ffffff22; background: #202a2f; }
+.bbc-composer:focus-within { border-color: #9bc6d5; box-shadow: 0 0 0 3px #a0d0dd11; }
+.bbc-composer textarea { font-size: 14px; }
+.bbc-composer button { border-radius: 7px; }
+.bbc-composer-note { padding: 6px 17px 12px; color: #778e99; }
+.bbc-empty { max-width: 350px; }
+.bbc-empty b { color: #c3e2e9; text-shadow: 0 0 24px #a9d1e061; }
+.bbc-empty strong { font-size: 21px; font-weight: 500; }
+.bbc-empty p { font-size: 12px; }
+.bbc-start-chat { min-width: 150px; }
+.bbc-link-card { position: relative; overflow: hidden; border-radius: 11px; box-shadow: 0 11px 30px #0003; }
+.bbc-link-card::after { position: absolute; inset: auto 0 0; height: 1px; content: ""; background: linear-gradient(90deg,transparent,#d2e8ed7a,transparent); }
+.bbc-link-actions button { transition: color .2s; }
+.bbc-link-actions button:hover { color: white; }
+@keyframes bbc-window-bloom { from { opacity: 0; transform: translateY(9px) scale(.986); filter: blur(8px); } to { opacity: 1; transform: none; filter: none; } }
+@media (max-width: 760px) { .bbc-layout { grid-template-columns: 215px minmax(0,1fr); } .bbc-window-presence { display: none; } .bbc-messages article { max-width: 92%; } }
+@media (prefers-reduced-motion: reduce) { .bbc-shell,.bbc-conversations>button { animation: none; transition: none; } }

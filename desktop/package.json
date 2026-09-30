@@ -12,6 +12,7 @@
     "build:lumen": "node scripts/build-blackbird.mjs build",
     "build:blackbird": "node scripts/build-blackbird.mjs build",
     "preview": "electron-vite preview",
+    "preview:blackbird:web": "vite --config vite.preview.config.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:bundle": "node --check out/main/index.js && node --check out/preload/index.cjs",

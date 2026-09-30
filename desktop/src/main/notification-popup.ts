@@ -11,6 +11,8 @@ export class NotificationPopup {
   private reduced = false;
   private dismissalTimer?: ReturnType<typeof setTimeout>;
   private timedItemId?: number;
+  private corner: "bottom-right" | "bottom-left" | "top-right" | "top-left" = "bottom-right";
+  private toastDurationMs = 9_000;
   constructor(private directory: string, private onOpen: (item: DesktopNotification) => void, private bounds: () => Electron.Rectangle | undefined) {
     ipcMain.on("blackbird:notification-action", (event, action: unknown) => {
       if (event.sender.id !== this.window?.webContents.id) return;
@@ -27,6 +29,10 @@ export class NotificationPopup {
     this.queue = this.queue.slice(-8);
     if (!this.current) this.next();
   }
+  configure(corner: "bottom-right" | "bottom-left" | "top-right" | "top-left", durationSeconds: number) {
+    this.corner = corner;
+    this.toastDurationMs = durationSeconds * 1000;
+  }
   private next() {
     this.stopDismissalTimer();
     const next = this.queue.shift();
@@ -35,7 +41,7 @@ export class NotificationPopup {
     if (!this.current) { this.window?.hide(); return; }
     if (!this.window || this.window.isDestroyed()) {
       this.window = new BrowserWindow({ width: 430, height: 180, frame: false, resizable: false,
-        show: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, transparent: true,
+        show: false, alwaysOnTop: true, skipTaskbar: true, focusable: true, transparent: true,
         webPreferences: { preload: path.join(this.directory, "../preload/notification.cjs"),
           contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
       });
@@ -56,16 +62,22 @@ export class NotificationPopup {
     const mode = this.current.kind === "screenban" ? "screenban"
       : this.current.kind === "orl:fullscreen" ? "fullscreen"
       : this.current.kind === "orl:overlay" ? "overlay" : "toast";
-    const width = Math.min(mode === "overlay" ? 520 : 430, area.width - 24);
+    const width = Math.min(mode === "overlay" ? 520 : 360, area.width - 24);
+    // A 360 px toast wraps Russian copy onto two lines; leave enough room for
+    // the action footer instead of clipping it at Windows display scale >100%.
+    const height = mode === "overlay" ? 220 : 185;
+    const left = this.corner.endsWith("left");
+    const top = this.corner.startsWith("top");
     this.window.setBounds(mode === "fullscreen" || mode === "screenban" ? display.bounds : {
-      x: area.x + area.width - width - 14,
-      y: area.y + area.height - (mode === "overlay" ? 238 : 200),
+      x: left ? area.x + 14 : area.x + area.width - width - 14,
+      y: top ? area.y + 14 : area.y + area.height - height - 14,
       width,
-      height: mode === "overlay" ? 220 : 184,
+      height,
     });
-    this.window.setAlwaysOnTop(true, mode === "fullscreen" || mode === "screenban" || mode === "overlay" ? "screen-saver" : "floating", 1);
+    this.window.setAlwaysOnTop(true, "screen-saver", 1);
     this.window.setIgnoreMouseEvents(mode !== "toast", { forward: true });
-    this.window.webContents.send("blackbird:notification", { item: this.current, sound, reduced: this.reduced });
+    const durationMs = notificationHardLimitMs(this.current.kind, this.toastDurationMs);
+    this.window.webContents.send("blackbird:notification", { item: this.current, sound, reduced: this.reduced, durationMs });
     this.sound = false;
     this.window.showInactive();
     // The popup is click-through in fullscreen mode. Its renderer may receive
@@ -77,7 +89,7 @@ export class NotificationPopup {
       const itemId = this.current.id;
       this.dismissalTimer = setTimeout(() => {
         if (this.current?.id === itemId) this.next();
-      }, notificationHardLimitMs(this.current.kind));
+      }, durationMs);
     }
   }
   private stopDismissalTimer() {

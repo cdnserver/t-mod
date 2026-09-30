@@ -1425,6 +1425,7 @@ def create_consensus_web_app(
             "portal.css",
             "portal-theme.css",
             "portal-focus.css",
+            "blackbird-reactor.css",
             "portal.js",
             "ovr.css",
             "ovr.js",

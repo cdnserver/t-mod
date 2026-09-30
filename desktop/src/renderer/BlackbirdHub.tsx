@@ -19,6 +19,7 @@ interface BlackbirdHubProps {
   onEnterWorkspace?: (space:BlackbirdWorkspace) => Promise<void>;
   onOverlaySettings: () => void;
   onOpenNotifications: () => void;
+  onOpenMediaNetwork: () => void;
 }
 
 const senatePriority: ServiceId[] = ["reactor", "consensus", "tasks", "sgl", "ovr", "admin", "games"];
@@ -27,7 +28,7 @@ function clock(date: Date): string {
   return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-export function BlackbirdHub({ name, tier, online, notifications, access, overlayConfig, overlayAllowed, onOpen, onEnterWorkspace, onOverlaySettings, onOpenNotifications }: BlackbirdHubProps) {
+export function BlackbirdHub({ name, tier, online, notifications, access, overlayConfig, overlayAllowed, onOpen, onEnterWorkspace, onOverlaySettings, onOpenNotifications, onOpenMediaNetwork }: BlackbirdHubProps) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 20_000);
@@ -55,6 +56,7 @@ export function BlackbirdHub({ name, tier, online, notifications, access, overla
               <h1><span>Добро пожаловать в Blackbird,</span><strong>{greeting}.</strong></h1>
               <p className="bb3-hero-detail">Интеллект и сообщество. Ваши пространства всегда под рукой.</p>
             </div>
+            <button type="button" className="bb3-media-entry" onClick={onOpenMediaNetwork}><span className="bb3-media-symbol">✦</span><span><small>СЛЕДУЮЩЕЕ ПРОСТРАНСТВО</small><strong>Медиасеть</strong><em>Публичные профили и события сообщества · предварительный просмотр</em></span><b>Открыть →</b></button>
           </section>
 
           <section className="bb3-apps" aria-label="Рабочие пространства">

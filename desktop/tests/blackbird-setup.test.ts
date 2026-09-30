@@ -6,7 +6,8 @@ import type { DesktopShellPreferences } from "../src/shared/contracts";
 const preferences: DesktopShellPreferences = {
   introStyle: "letters", controlBar: "horizontal",
   preferredName: "", sidebarCollapsed: false, compactMode: false, reduceMotion: false, solidSurfaces: false,
-  serviceZoom: 1, idleLockMinutes: 10, lockSound: true, notificationDelivery: "both", notificationSound: true, updateChannel: "private",
+  serviceZoom: 1, idleLockMinutes: 10, lockSound: true, notificationDelivery: "both", notificationSound: true,
+  notificationCorner: "bottom-right", notificationDurationSeconds: 9, updateChannel: "private",
 };
 describe("Blackbird first-run identity gate", () => {
   const base = { name: "Роберт", preferences, onLogin: async () => ({ ok: false } as const), onComplete: () => {}, onLater: () => {} };

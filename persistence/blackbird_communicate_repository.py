@@ -1,4 +1,4 @@
-"""Opt-in character discovery and private Blackbird conversations."""
+"""Character discovery and private Blackbird conversations."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ SERVICE_PARTNER_ID = 0
 SERVICE_WELCOME = (
     "Добро пожаловать в Blackbird! Здесь можно общаться с участниками Товарищества "
     "и делиться страницами сервисов. Найдите человека по персонажу и серверу, "
-    "чтобы начать личный диалог."
+    "или по точному логину T-Mod / Discord ID, чтобы начать личный диалог."
 )
 
 
@@ -66,7 +66,12 @@ def search_character(guild_id: int, viewer_id: int, server_code: str, static_id:
 
 
 def search_account(guild_id: int, viewer_id: int, query: str) -> dict[str, Any] | None:
-    """Find an opted-in T-Mod account by its exact login or Discord ID."""
+    """Find any registered account by exact login or Discord ID.
+
+    The discovery switch controls character-based search only. It must not
+    silently make a registered user unreachable by someone who knows their
+    exact account identity.
+    """
     key = str(query or "").strip().lower()
     if not key or len(key) > 32 or not all(c.isascii() and (c.isalnum() or c in "._-") for c in key):
         raise ValueError("communicate_account_invalid")
@@ -76,14 +81,12 @@ def search_account(guild_id: int, viewer_id: int, query: str) -> dict[str, Any] 
                       w.login_display AS login, COALESCE(pc.static_id, '') AS static_id,
                       COALESCE(b.server_code, '') AS server_code
                FROM web_credentials w
-               LEFT JOIN blackbird_communicate_preferences p ON p.guild_id=w.guild_id
-                    AND p.user_id=w.user_id
                LEFT JOIN profile_characters pc ON pc.guild_id=w.guild_id
                     AND pc.user_id=w.user_id AND pc.position=1 AND pc.is_public=1
                LEFT JOIN atlas_character_bindings b ON b.guild_id=pc.guild_id
                     AND b.user_id=pc.user_id AND b.character_id=pc.id
                WHERE w.guild_id=? AND (w.login_key=? OR CAST(w.user_id AS TEXT)=?)
-                 AND w.user_id!=? AND COALESCE(p.discoverable, 1)=1
+                 AND w.user_id!=?
                LIMIT 1""",
             (guild_id, key, key, viewer_id),
         ).fetchone()

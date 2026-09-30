@@ -98,6 +98,8 @@ export interface DesktopShellPreferences {
   lockSound: boolean;
   notificationDelivery: "both" | "in-app" | "system" | "off";
   notificationSound: boolean;
+  notificationCorner: "bottom-right" | "bottom-left" | "top-right" | "top-left";
+  notificationDurationSeconds: number;
   updateChannel: "beta" | "dev" | "private";
 }
 

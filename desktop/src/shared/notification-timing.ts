@@ -6,6 +6,7 @@ export function notificationVisibilityMs(kind: string): number {
 
 // A toast may pause while the pointer is over it, but must never remain on
 // screen indefinitely if its renderer is throttled or stops responding.
-export function notificationHardLimitMs(kind: string): number {
-  return kind === "orl:toast" || kind === "preview" ? 30_000 : notificationVisibilityMs(kind);
+export function notificationHardLimitMs(kind: string, toastDurationMs = 9_000): number {
+  return kind === "screenban" || kind === "orl:fullscreen" || kind === "orl:overlay"
+    ? notificationVisibilityMs(kind) : toastDurationMs;
 }

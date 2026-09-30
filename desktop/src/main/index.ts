@@ -24,7 +24,6 @@ import log from "electron-log/main";
 import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import { NotificationPopup } from "./notification-popup";
-import { notificationChannel } from "../shared/notification-policy";
 import { csrfTokenFromAccountSnapshot } from "../shared/account-response";
 import { BootstrapProtocolError, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
@@ -100,6 +99,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   lockSound: true,
   notificationDelivery: "both",
   notificationSound: true,
+  notificationCorner: "bottom-right",
+  notificationDurationSeconds: 9,
   updateChannel: desktopProduct.updateChannel,
 };
 
@@ -518,10 +519,14 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
     idleLockMinutes: [0, 5, 10, 15, 30].includes(idleLockMinutes) ? idleLockMinutes : 10,
     lockSound: candidate.lockSound !== false,
-    notificationDelivery: ["both", "in-app", "system", "off"].includes(String(candidate.notificationDelivery))
-      ? candidate.notificationDelivery as DesktopShellPreferences["notificationDelivery"]
-      : "both",
+    notificationDelivery: candidate.notificationDelivery === "in-app" ? "both"
+      : ["both", "system", "off"].includes(String(candidate.notificationDelivery))
+        ? candidate.notificationDelivery as DesktopShellPreferences["notificationDelivery"] : "both",
     notificationSound: candidate.notificationSound !== false,
+    notificationCorner: ["bottom-right", "bottom-left", "top-right", "top-left"].includes(String(candidate.notificationCorner))
+      ? candidate.notificationCorner as DesktopShellPreferences["notificationCorner"] : "bottom-right",
+    notificationDurationSeconds: [6, 9, 12, 20].includes(Number(candidate.notificationDurationSeconds))
+      ? Number(candidate.notificationDurationSeconds) : 9,
     updateChannel: desktopProduct.privateEdition
       ? "private"
       : candidate.updateChannel === "dev" ? "dev" : "beta",
@@ -556,7 +561,7 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
       continue;
     }
     const channel = desktopProduct.privateEdition
-      ? notificationChannel(delivery, Boolean(mainWindow?.isFocused()))
+      ? delivery === "off" ? "none" : delivery === "system" ? "system" : "custom"
       : ["both", "system"].includes(delivery) ? "system" : "none";
     if (channel === "custom") {
       notificationPopup?.show(desktopLocked ? { ...item, title: "Новое событие", body: "Откройте Blackbird, чтобы прочитать." } : item, shellPreferences.notificationSound, shellPreferences.reduceMotion); continue;
@@ -657,6 +662,7 @@ async function markNotificationsRead(value: unknown): Promise<boolean> {
 function applyPreferences(value: unknown): DesktopShellPreferences {
   const previousChannel = shellPreferences.updateChannel;
   shellPreferences = normalizePreferences(value);
+  notificationPopup?.configure(shellPreferences.notificationCorner, shellPreferences.notificationDurationSeconds);
   positionViews();
   serviceView?.webContents.setZoomFactor(shellPreferences.serviceZoom);
   if (app.isPackaged && previousChannel !== shellPreferences.updateChannel) {
@@ -1261,10 +1267,9 @@ async function openCommunicateWindow(sharedUrl?: string): Promise<boolean> {
     return true;
   }
   pendingCommunicateShare = sharedUrl || "";
-  const owner = mainWindow;
   communicateWindow = new BrowserWindow({
-    width: 970, height: 660, minWidth: 760, minHeight: 520,
-    parent: owner || undefined, show: false, frame: false, backgroundColor: "#15191d",
+    width: 850, height: 610, minWidth: 700, minHeight: 500, center: true,
+    show: false, frame: false, autoHideMenuBar: true, backgroundColor: "#11161a",
     title: "Blackbird Communicate",
     webPreferences: { preload: path.join(bundleDirectory, "../preload/communicate.cjs"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
@@ -1726,6 +1731,7 @@ app.whenReady().then(async () => {
     if (target) void navigate(target);
     else mainWindow?.webContents.send("desktop:open-notifications");
   }, () => atlasOverlay?.getStatus().display || mainWindow?.getBounds());
+  notificationPopup?.configure(shellPreferences.notificationCorner, shellPreferences.notificationDurationSeconds);
   configureAutoUpdater();
   await createWindow();
   screen.on("display-added", () => atlasOverlay?.onDisplaysChanged());

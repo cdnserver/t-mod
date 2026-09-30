@@ -55,6 +55,7 @@ import blackbirdGames from "./assets/blackbird/games.png";
 import blackbirdTasks from "./assets/blackbird/tasks.png";
 import blackbirdAdmin from "./assets/blackbird/admin.png";
 import { BlackbirdHub } from "./BlackbirdHub";
+import { BlackbirdMediaNetwork } from "./BlackbirdMediaNetwork";
 import { BlackbirdLogin } from "./BlackbirdLogin";
 import { BlackbirdIdle } from "./BlackbirdIdle";
 import { AtlasUsage } from "./AtlasUsage";
@@ -96,6 +97,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
   lockSound: true,
   notificationDelivery: "both",
   notificationSound: true,
+  notificationCorner: "bottom-right",
+  notificationDurationSeconds: 9,
   updateChannel: desktopProduct.updateChannel,
 };
 
@@ -116,10 +119,14 @@ function loadPreferences(): DesktopShellPreferences {
         ? Number(stored.idleLockMinutes)
         : 10,
       lockSound: stored.lockSound !== false,
-      notificationDelivery: ["both", "in-app", "system", "off"].includes(String(stored.notificationDelivery))
-        ? stored.notificationDelivery as DesktopShellPreferences["notificationDelivery"]
-        : "both",
+      notificationDelivery: stored.notificationDelivery === "in-app" ? "both"
+        : ["both", "system", "off"].includes(String(stored.notificationDelivery))
+          ? stored.notificationDelivery as DesktopShellPreferences["notificationDelivery"] : "both",
       notificationSound: stored.notificationSound !== false,
+      notificationCorner: ["bottom-right", "bottom-left", "top-right", "top-left"].includes(String(stored.notificationCorner))
+        ? stored.notificationCorner as DesktopShellPreferences["notificationCorner"] : "bottom-right",
+      notificationDurationSeconds: [6, 9, 12, 20].includes(Number(stored.notificationDurationSeconds))
+        ? Number(stored.notificationDurationSeconds) : 9,
       updateChannel: desktopProduct.privateEdition
         ? "private"
         : stored.updateChannel === "dev" ? "dev" : "beta",
@@ -481,6 +488,7 @@ export function App() {
   });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa ? "atlas" : null);
+  const [mediaOpen, setMediaOpen] = useState(false);
   const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(null);
   const pendingWorkspace = useRef<BlackbirdWorkspace|null>(null);
   const workspaceIntroReady = useRef(true);
@@ -504,8 +512,9 @@ export function App() {
   },[finishWorkspaceIntro]);
   useLayoutEffect(() => {
     if (!desktopProduct.privateEdition) return;
-    if (!bootstrap.authenticated) { pendingWorkspace.current = null; setWorkspace(null); setWorkspaceIntro(null); }
+    if (!bootstrap.authenticated) { pendingWorkspace.current = null; setWorkspace(null); setWorkspaceIntro(null); setMediaOpen(false); }
     else if (desktopState.activeService !== "home") {
+      setMediaOpen(false);
       const next = workspaceForService(desktopState.activeService);
       if (pendingWorkspace.current) return;
       if (next && next !== workspace) beginWorkspaceIntro(next, true);
@@ -1136,7 +1145,7 @@ export function App() {
       </header>
 
       <main inert={settingsOpen || locked || Boolean(workspaceIntro)} className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
-        {atlasSettingsOpen ? (
+        {mediaOpen && desktopState.activeService === "home" ? <BlackbirdMediaNetwork name={userName} avatarUrl={bootstrap.data?.viewer.avatar_url} onBack={() => setMediaOpen(false)}/> : atlasSettingsOpen ? (
           <AtlasSettingsPage
             overlayConfig={overlayConfig}
             overlayCatalog={overlayCatalog}
@@ -1167,6 +1176,7 @@ export function App() {
             overlayAllowed={bootstrap.data?.atlas_overlay?.allowed === true}
             onOverlaySettings={openAtlasSettings}
             onOpenNotifications={() => setNotificationsOpen(true)}
+            onOpenMediaNetwork={() => setMediaOpen(true)}
           />
         ) : desktopState.error ? (
           <section className="service-error-stage">
@@ -1336,6 +1346,7 @@ function Home({
   overlayAllowed,
   onOverlaySettings,
   onOpenNotifications,
+  onOpenMediaNetwork,
 }: {
   name: string;
   bootstrap: BootstrapResult;
@@ -1351,6 +1362,7 @@ function Home({
   overlayAllowed: boolean;
   onOverlaySettings: () => void;
   onOpenNotifications: () => void;
+  onOpenMediaNetwork: () => void;
 }) {
   const [loginValue, setLoginValue] = useState("");
   const [pin, setPin] = useState("");
@@ -1470,6 +1482,7 @@ function Home({
         onEnterWorkspace={onEnterWorkspace}
         onOverlaySettings={onOverlaySettings}
         onOpenNotifications={onOpenNotifications}
+        onOpenMediaNetwork={onOpenMediaNetwork}
       />
     );
   }

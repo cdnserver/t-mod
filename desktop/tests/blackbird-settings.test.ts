@@ -8,7 +8,7 @@ import type { DesktopShellPreferences, DesktopUpdateState } from "../src/shared/
 
 vi.mock("../src/shared/product", () => ({ desktopProduct: { name:"BLACKBIRD", privateEdition:true } }));
 
-const preferences: DesktopShellPreferences = { introStyle:"letters", controlBar:"horizontal", preferredName:"Роберт", sidebarCollapsed:false, compactMode:false, reduceMotion:false, solidSurfaces:false, serviceZoom:1, idleLockMinutes:10, lockSound:true, notificationDelivery:"both", notificationSound:true, updateChannel:"private" };
+const preferences: DesktopShellPreferences = { introStyle:"letters", controlBar:"horizontal", preferredName:"Роберт", sidebarCollapsed:false, compactMode:false, reduceMotion:false, solidSurfaces:false, serviceZoom:1, idleLockMinutes:10, lockSound:true, notificationDelivery:"both", notificationSound:true, notificationCorner:"bottom-right", notificationDurationSeconds:9, updateChannel:"private" };
 const viewer = { id:42, name:"Роберт", display_name:"R. Smith | 123 | Роберт", account_tier:"administrator" as const, guild_member:true, administrator:true, sections:[] };
 const props = { preferences, defaults:preferences, viewer, name:"Роберт", online:true, updateState:{ phase:"idle", currentVersion:"1.0" } as DesktopUpdateState,
   atlas:createElement("div", {}, "Существующие настройки Atlas"), onChange:()=>{}, onClose:()=>{}, onReconnect:async()=>{}, onLock:()=>{}, onLogout:async()=>{}, onUpdate:()=>{}, onPreviewNotification:()=>{} };
