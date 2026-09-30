@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
 import type { DesktopNotification } from "../shared/contracts";
+import { notificationVisibilityMs } from "../shared/notification-timing";
 import mark from "./assets/blackbird/master.png";
 import "./notification.css";
 
@@ -38,8 +39,8 @@ function Popup() {
     }
   }), []);
   useEffect(() => {
-    if (!item || hover || preview) return;
-    const timer = setTimeout(() => window.blackbirdNotification?.action("dismiss"), item.kind === "screenban" ? 14_000 : item.kind === "orl:fullscreen" ? 11_000 : 9_000);
+    if (!item || preview || (item.kind === "orl:toast" && hover)) return;
+    const timer = setTimeout(() => window.blackbirdNotification?.action("dismiss"), notificationVisibilityMs(item.kind));
     return () => clearTimeout(timer);
   }, [item, hover, preview]);
   if (!item) return null;
@@ -52,7 +53,7 @@ function Popup() {
     </div><div className="bb-screenban-progress"/>
   </div>;
   const mode = item.kind === "orl:fullscreen" ? "fullscreen" : item.kind === "orl:overlay" ? "overlay" : "toast";
-  return <div className={`bb-popup-shell ${mode}`}><article key={item.id} className={`bb-popup ${item.severity} ${reduced ? "reduced" : ""}`} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+  return <div className={`bb-popup-shell ${mode}`}><article key={item.id} className={`bb-popup ${item.severity} ${reduced ? "reduced" : ""}`} onMouseEnter={() => { if (mode === "toast") setHover(true); }} onMouseLeave={() => setHover(false)}>
     <header><img src={mark} alt=""/><span>BLACKBIRD <i/> {mode === "toast" ? "УВЕДОМЛЕНИЕ" : "ПРЯМОЕ СООБЩЕНИЕ"}</span>{mode === "toast" && <button aria-label="Скрыть" onClick={() => window.blackbirdNotification?.action("dismiss")}>×</button>}</header>
     <button className="bb-popup-body" onClick={() => mode === "toast" && window.blackbirdNotification?.action("open")}><strong>{item.title}</strong><p>{item.body}</p>{mode === "toast" && <small>Открыть в Blackbird <b>↗</b></small>}</button>
   </article></div>;

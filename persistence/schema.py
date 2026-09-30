@@ -455,7 +455,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS blackbird_communicate_preferences (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                discoverable INTEGER NOT NULL DEFAULT 0 CHECK(discoverable IN (0, 1)),
+                discoverable INTEGER NOT NULL DEFAULT 1 CHECK(discoverable IN (0, 1)),
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(guild_id, user_id)
             );

@@ -25,7 +25,7 @@ def preferences(guild_id: int, user_id: int) -> dict[str, bool]:
             "SELECT discoverable FROM blackbird_communicate_preferences WHERE guild_id = ? AND user_id = ?",
             (guild_id, user_id),
         ).fetchone()
-    return {"discoverable": bool(row["discoverable"]) if row else False}
+    return {"discoverable": bool(row["discoverable"]) if row else True}
 
 
 def set_discoverable(guild_id: int, user_id: int, value: bool) -> dict[str, bool]:
@@ -53,12 +53,39 @@ def search_character(guild_id: int, viewer_id: int, server_code: str, static_id:
                FROM profile_characters pc
                JOIN atlas_character_bindings b ON b.guild_id=pc.guild_id
                     AND b.user_id=pc.user_id AND b.character_id=pc.id
-               JOIN blackbird_communicate_preferences p ON p.guild_id=pc.guild_id
-                    AND p.user_id=pc.user_id AND p.discoverable=1
+               JOIN web_credentials w ON w.guild_id=pc.guild_id AND w.user_id=pc.user_id
+               LEFT JOIN blackbird_communicate_preferences p ON p.guild_id=pc.guild_id
+                    AND p.user_id=pc.user_id
                WHERE pc.guild_id=? AND pc.static_id=? AND b.server_code=?
                  AND pc.is_public=1 AND pc.user_id!=? AND b.assignment_status!='revoked'
+                 AND COALESCE(p.discoverable, 1)=1
                LIMIT 1""",
             (guild_id, static, server, viewer_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def search_account(guild_id: int, viewer_id: int, query: str) -> dict[str, Any] | None:
+    """Find an opted-in T-Mod account by its exact login or Discord ID."""
+    key = str(query or "").strip().lower()
+    if not key or len(key) > 32 or not all(c.isascii() and (c.isalnum() or c in "._-") for c in key):
+        raise ValueError("communicate_account_invalid")
+    with connect_readonly() as con:
+        row = con.execute(
+            """SELECT w.user_id, COALESCE(pc.nickname, w.login_display) AS nickname,
+                      w.login_display AS login, COALESCE(pc.static_id, '') AS static_id,
+                      COALESCE(b.server_code, '') AS server_code
+               FROM web_credentials w
+               LEFT JOIN blackbird_communicate_preferences p ON p.guild_id=w.guild_id
+                    AND p.user_id=w.user_id
+               LEFT JOIN profile_characters pc ON pc.guild_id=w.guild_id
+                    AND pc.user_id=w.user_id AND pc.position=1 AND pc.is_public=1
+               LEFT JOIN atlas_character_bindings b ON b.guild_id=pc.guild_id
+                    AND b.user_id=pc.user_id AND b.character_id=pc.id
+               WHERE w.guild_id=? AND (w.login_key=? OR CAST(w.user_id AS TEXT)=?)
+                 AND w.user_id!=? AND COALESCE(p.discoverable, 1)=1
+               LIMIT 1""",
+            (guild_id, key, key, viewer_id),
         ).fetchone()
     return dict(row) if row else None
 
@@ -124,10 +151,10 @@ def send_message(guild_id: int, user_id: int, partner_id: int, body: str) -> dic
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         target = con.execute(
-            "SELECT discoverable FROM blackbird_communicate_preferences WHERE guild_id=? AND user_id=?",
+            "SELECT 1 FROM web_credentials WHERE guild_id=? AND user_id=?",
             (guild_id, partner_id),
         ).fetchone()
-        if not target or not bool(target["discoverable"]):
+        if not target:
             raise ValueError("communicate_recipient_unavailable")
         sent = con.execute(
             "SELECT COUNT(*) AS n FROM blackbird_communicate_messages WHERE guild_id=? AND sender_id=? AND created_at>=?",

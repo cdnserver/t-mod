@@ -28,23 +28,34 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         storage.DATABASE_FILE = self.old_database_file
         self.temp_dir.cleanup()
 
-    def test_character_search_is_exact_and_opt_in(self):
+    def test_character_search_is_exact_and_available_by_default(self):
         character = profile_repository.add_profile_character(77, 100, "Robert Example", "263345")
         atlas_repository.atlas_set_overlay_character(77, 100, character.id, server_code="phoenix-15", faction_code="lspd")
-        self.assertIsNone(communicate.search_character(77, 200, "phoenix-15", "263345"))
-        communicate.set_discoverable(77, 100, True)
+        web_auth_repository.configure_web_credential(77, 100, "robert", "12345678")
         found = communicate.search_character(77, 200, "phoenix-15", "263345")
         self.assertEqual(found["user_id"], 100)
         self.assertEqual(found["nickname"], "Robert Example")
         self.assertIsNone(communicate.search_character(77, 200, "phoenix-14", "263345"))
         self.assertIsNone(communicate.search_character(77, 100, "phoenix-15", "263345"))
+        communicate.set_discoverable(77, 100, False)
+        self.assertIsNone(communicate.search_character(77, 200, "phoenix-15", "263345"))
+        communicate.set_discoverable(77, 100, True)
         profile_repository.set_profile_character_visibility(77, 100, character.id, is_public=False)
         self.assertIsNone(communicate.search_character(77, 200, "phoenix-15", "263345"))
+
+    def test_exact_account_search_does_not_require_atlas_character(self):
+        web_auth_repository.configure_web_credential(77, 100, "Robert.Account", "12345678")
+        self.assertEqual(communicate.search_account(77, 200, "robert.account")["user_id"], 100)
+        self.assertEqual(communicate.search_account(77, 200, "100")["user_id"], 100)
+        self.assertIsNone(communicate.search_account(77, 200, "robert"))
+        self.assertIsNone(communicate.search_account(77, 100, "100"))
+        communicate.set_discoverable(77, 100, False)
+        self.assertIsNone(communicate.search_account(77, 200, "robert.account"))
 
     def test_private_thread_and_rate_limit(self):
         with self.assertRaisesRegex(ValueError, "communicate_recipient_unavailable"):
             communicate.send_message(77, 200, 100, "hello")
-        communicate.set_discoverable(77, 100, True)
+        web_auth_repository.configure_web_credential(77, 100, "robert", "12345678")
         result = communicate.send_message(77, 200, 100, "hello")
         self.assertEqual(communicate.conversation(77, 100, 200)[0]["id"], result["id"])
         self.assertEqual(communicate.conversation(77, 300, 200), [])
@@ -54,8 +65,7 @@ class BlackbirdCommunicateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "communicate_rate_limited"):
             communicate.send_message(77, 200, 100, "too many")
         communicate.set_discoverable(77, 100, False)
-        with self.assertRaisesRegex(ValueError, "communicate_recipient_unavailable"):
-            communicate.send_message(77, 200, 100, "opted out")
+        self.assertEqual(communicate.send_message(77, 300, 100, "still deliverable")["recipient_id"], 100)
 
     def test_verified_service_welcome_is_not_a_sendable_identity(self):
         service = communicate.list_conversations(77, 200)[0]

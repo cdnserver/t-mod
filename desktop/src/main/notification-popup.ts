@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, screen } from "electron";
 import path from "node:path";
 import type { DesktopNotification } from "../shared/contracts";
+import { notificationHardLimitMs } from "../shared/notification-timing";
 
 export class NotificationPopup {
   private window: BrowserWindow | null = null;
@@ -8,6 +9,8 @@ export class NotificationPopup {
   private current?: DesktopNotification;
   private sound = false;
   private reduced = false;
+  private dismissalTimer?: ReturnType<typeof setTimeout>;
+  private timedItemId?: number;
   constructor(private directory: string, private onOpen: (item: DesktopNotification) => void, private bounds: () => Electron.Rectangle | undefined) {
     ipcMain.on("blackbird:notification-action", (event, action: unknown) => {
       if (event.sender.id !== this.window?.webContents.id) return;
@@ -25,6 +28,7 @@ export class NotificationPopup {
     if (!this.current) this.next();
   }
   private next() {
+    this.stopDismissalTimer();
     const next = this.queue.shift();
     this.current = next?.item; this.sound = next?.sound ?? false;
     this.reduced = next?.reduced ?? false;
@@ -37,7 +41,7 @@ export class NotificationPopup {
       });
       this.window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       this.window.webContents.on("will-navigate", event => event.preventDefault());
-      this.window.on("closed", () => { this.window = null; this.current = undefined; });
+      this.window.on("closed", () => { this.stopDismissalTimer(); this.window = null; this.current = undefined; });
       const dev = process.env.ELECTRON_RENDERER_URL;
       const loading = dev ? this.window.loadURL(new URL("notification.html", dev).href)
         : this.window.loadFile(path.join(this.directory, "../renderer/notification.html"));
@@ -64,7 +68,23 @@ export class NotificationPopup {
     this.window.webContents.send("blackbird:notification", { item: this.current, sound, reduced: this.reduced });
     this.sound = false;
     this.window.showInactive();
+    // The popup is click-through in fullscreen mode. Its renderer may receive
+    // a mouse-enter without a matching mouse-leave (or be throttled by a game),
+    // so the main process owns an unconditional expiry as a safety boundary.
+    if (this.timedItemId !== this.current.id) {
+      this.stopDismissalTimer();
+      this.timedItemId = this.current.id;
+      const itemId = this.current.id;
+      this.dismissalTimer = setTimeout(() => {
+        if (this.current?.id === itemId) this.next();
+      }, notificationHardLimitMs(this.current.kind));
+    }
   }
-  clear() { this.queue = []; this.current = undefined; this.window?.hide(); }
+  private stopDismissalTimer() {
+    if (this.dismissalTimer) clearTimeout(this.dismissalTimer);
+    this.dismissalTimer = undefined;
+    this.timedItemId = undefined;
+  }
+  clear() { this.stopDismissalTimer(); this.queue = []; this.current = undefined; this.window?.hide(); }
   dispose() { this.clear(); this.window?.destroy(); }
 }

@@ -1829,8 +1829,12 @@ def register_reactor_web_routes(
                 result = await asyncio.to_thread(communicate_storage.set_discoverable, guild_id, principal.user_id,
                                                  raw_discoverable is True or raw_discoverable == "true")
             elif action == "search":
-                result = await asyncio.to_thread(communicate_storage.search_character, guild_id, principal.user_id,
-                                                 str(body.get("server_code") or ""), str(body.get("static_id") or ""))
+                if str(body.get("account_query") or "").strip():
+                    result = await asyncio.to_thread(communicate_storage.search_account, guild_id, principal.user_id,
+                                                     str(body.get("account_query") or ""))
+                else:
+                    result = await asyncio.to_thread(communicate_storage.search_character, guild_id, principal.user_id,
+                                                     str(body.get("server_code") or ""), str(body.get("static_id") or ""))
             elif action == "thread":
                 result = await asyncio.to_thread(communicate_storage.conversation, guild_id, principal.user_id,
                                                  int(body.get("partner_id") or 0))
