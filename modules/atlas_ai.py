@@ -4662,7 +4662,9 @@ def _retrieval_refusal_retry_payload(
     return payload
 
 
-def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
+def _grounded_refusal_fallback(
+    prepared: _AtlasAnswerRequest, *, previous_answer: str = ""
+) -> str:
     """Return retrieved primary evidence when both model attempts overlook it.
 
     Structured candidates are bounded article/chapter extracts produced by the
@@ -4678,13 +4680,16 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
     question = str(last_message.get("content") or "")
     requested_references = _atlas_requested_structured_references(question)
+    # A failed citation repair can still identify a precise provision by
+    # number. Read the actual clause, never repeat the model's invented text.
+    cited_references = _atlas_requested_structured_references(previous_answer)
     if _is_thematic_article_request(question):
         return ""
-    if requested_references:
+    if requested_references or cited_references:
         for index, source in enumerate(prepared.sources, 1):
             if not source.get("structured"):
                 continue
-            if str(source.get("reference") or "").strip() not in requested_references:
+            if str(source.get("reference") or "").strip() not in (requested_references | cited_references):
                 continue
             text = str(source.get("text") or "").strip()
             if len(text) < 20:
@@ -4696,6 +4701,33 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
             )
             # The answer itself is the useful part. Do not expose internal
             # RAG narration; keep provenance as a compact source marker.
+            return f"{text}\n\n[{index}, {label}]"
+
+    # With no named article, use a structured clause only when the question
+    # independently overlaps at least two of its meaningful legal terms.
+    # This keeps a semantic neighbour from becoming a fabricated citation.
+    query_terms, _query_phrases = _atlas_lexical_query_terms(question, list(prepared.sources))
+    meaningful_terms = {
+        term for term in query_terms
+        if len(term) >= 4 and term not in _ATLAS_RULE_GENERIC_TERMS
+    }
+    if len(meaningful_terms) >= 2:
+        for index, source in enumerate(prepared.sources, 1):
+            if not source.get("structured"):
+                continue
+            text = str(source.get("text") or "").strip()
+            if len(text) < 20:
+                continue
+            searchable = f"{str(source.get('title') or '')}\n{text}".casefold()
+            if sum(term.casefold() in searchable for term in meaningful_terms) < 2:
+                continue
+            reference = str(source.get("reference") or "").strip()
+            if not reference:
+                continue
+            label = next(
+                (str(item).strip() for item in source.get("pinpoints") or [] if str(item).strip()),
+                reference.replace(":", " ", 1),
+            )
             return f"{text}\n\n[{index}, {label}]"
 
     # Forum and handbook imports are not always split into numbered clauses.
@@ -4763,7 +4795,9 @@ def _grounded_refusal_fallback(prepared: _AtlasAnswerRequest) -> str:
     return ""
 
 
-def _provider_failure_fallback(prepared: _AtlasAnswerRequest) -> str:
+def _provider_failure_fallback(
+    prepared: _AtlasAnswerRequest, *, previous_answer: str = ""
+) -> str:
     """Return a useful local answer when the generative provider is down.
 
     The canonical store is authoritative.  For a legal request with a
@@ -4778,7 +4812,7 @@ def _provider_failure_fallback(prepared: _AtlasAnswerRequest) -> str:
     thematic = _deterministic_thematic_lookup(prepared)
     if thematic:
         return thematic
-    grounded = _grounded_refusal_fallback(prepared)
+    grounded = _grounded_refusal_fallback(prepared, previous_answer=previous_answer)
     if grounded:
         return grounded
     if prepared.intent in {"legal_analysis", "procedural_advice", "exact_lookup"}:
@@ -4828,7 +4862,7 @@ async def _repair_retrieval_refusal(
         # limit here must never turn an already successful retrieval into a
         # 5xx/504 for the user; use canonical evidence or the same concise
         # local fallback as the ordinary provider-failure path.
-        fallback = _provider_failure_fallback(prepared)
+        fallback = _provider_failure_fallback(prepared, previous_answer=clean)
         if not fallback:
             fallback = (
                 "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "
@@ -4851,7 +4885,7 @@ async def _repair_retrieval_refusal(
     # If the second model pass repeats the diagnostic (or returns an empty
     # payload), never return that diagnostic just because no excerpt happened
     # to meet the conservative overlap gate.
-    fallback = _provider_failure_fallback(prepared)
+    fallback = _provider_failure_fallback(prepared, previous_answer=repaired or clean)
     if not fallback:
         fallback = (
             "Опиши ситуацию конкретно: что произошло, где и кто участвовал. "

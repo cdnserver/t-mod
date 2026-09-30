@@ -1161,14 +1161,16 @@ class DeliveryOutboxDispatcherTests(TemporaryOutboxDatabase, unittest.IsolatedAs
                 delivery_worker(bot, idle_seconds=1, concurrency=4)
             )
             try:
-                await asyncio.wait_for(slow_started.wait(), timeout=1)
-                await asyncio.wait_for(all_fast_delivered.wait(), timeout=1)
+                # The full production suite runs under Docker build pressure;
+                # keep the ordering assertion, but allow scheduler jitter.
+                await asyncio.wait_for(slow_started.wait(), timeout=5)
+                await asyncio.wait_for(all_fast_delivered.wait(), timeout=5)
                 self.assertFalse(release_slow.is_set())
                 self.assertFalse(worker.done())
             finally:
                 bot.closed = True
                 release_slow.set()
-                await asyncio.wait_for(worker, timeout=1)
+                await asyncio.wait_for(worker, timeout=5)
 
         for item_id in [slow_id, *fast_ids]:
             self.assertEqual(storage.delivery_outbox_get(item_id)["status"], "delivered")  # type: ignore[index]
