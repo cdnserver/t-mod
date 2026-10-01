@@ -705,6 +705,7 @@ def register_reactor_web_routes(
     def viewer(principal: ConsensusWebPrincipal) -> dict[str, Any]:
         return {
             "id": int(principal.user_id),
+            "id_exact": str(principal.user_id),
             "name": str(principal.display_name),
             "administrator": bool(principal.administrator),
             "account_tier": str(principal.account_tier),
@@ -1812,7 +1813,11 @@ def register_reactor_web_routes(
             asyncio.to_thread(communicate_storage.preferences, guild_id, principal.user_id),
             asyncio.to_thread(communicate_storage.list_conversations, guild_id, principal.user_id),
         )
-        return web.json_response({"viewer": viewer(principal), "preferences": options, "conversations": conversations},
+        # Discord snowflakes exceed JavaScript's exact integer range. Keep
+        # every account identifier as a decimal string on this API boundary.
+        account_viewer = {**viewer(principal), "id": str(principal.user_id)}
+        conversation_list = [{**item, "partner_id": str(item["partner_id"])} for item in conversations]
+        return web.json_response({"viewer": account_viewer, "preferences": options, "conversations": conversation_list},
                                  headers={"Cache-Control": "private, no-store"})
 
     async def blackbird_communicate_update(request: web.Request) -> web.Response:
@@ -1854,6 +1859,13 @@ def register_reactor_web_routes(
                 raise ValueError("communicate_action_invalid")
         except (ValueError, TypeError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        if action == "search" and result is not None:
+            result = {**result, "user_id": str(result["user_id"])}
+        elif action == "thread":
+            result = [{**item, "sender_id": str(item["sender_id"]), "recipient_id": str(item["recipient_id"])}
+                      for item in result]
+        elif action == "send":
+            result = {**result, "sender_id": str(result["sender_id"]), "recipient_id": str(result["recipient_id"])}
         return web.json_response({"ok": True, "result": result}, headers={"Cache-Control": "private, no-store"})
 
     async def attention(request: web.Request) -> web.Response:

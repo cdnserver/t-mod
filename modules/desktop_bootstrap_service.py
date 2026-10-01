@@ -202,6 +202,7 @@ async def build_desktop_bootstrap_payload(
         "client_update": client_update,
         "viewer": {
             "id": int(principal.user_id),
+            "id_exact": str(principal.user_id),
             "name": preferred_name or str(principal.display_name),
             "display_name": str(principal.display_name),
             "avatar_url": avatar_url,

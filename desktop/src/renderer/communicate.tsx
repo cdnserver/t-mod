@@ -21,13 +21,12 @@ declare global {
 }
 
 function CommunicateWindow() {
-  const [context, setContext] = useState<{ viewerId: number; authenticated: boolean }>({ viewerId: import.meta.env.DEV ? 1 : 0, authenticated: false });
   const [share, setShare] = useState({ url: "", sequence: 0 });
   useEffect(() => {
-    void window.blackbirdCommunicate?.context().then(value => { setContext(value); if (value.sharedUrl) setShare(current => ({ url: value.sharedUrl, sequence: current.sequence + 1 })); });
+    void window.blackbirdCommunicate?.context().then(value => { if (value.sharedUrl) setShare(current => ({ url: value.sharedUrl, sequence: current.sequence + 1 })); });
     return window.blackbirdCommunicate?.onShare(url => setShare(current => ({ url, sequence: current.sequence + 1 })));
   }, []);
-  return <BlackbirdCommunicate servers={[]} viewerId={context.viewerId} onBack={() => void window.blackbirdCommunicate?.close()} sharedUrl={share.url} shareSequence={share.sequence}/>;
+  return <BlackbirdCommunicate servers={[]} onBack={() => void window.blackbirdCommunicate?.close()} sharedUrl={share.url} shareSequence={share.sequence}/>;
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><CommunicateWindow/></React.StrictMode>);

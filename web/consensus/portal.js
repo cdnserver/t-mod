@@ -260,7 +260,8 @@
       }
     });
     byId("portal-view-title").textContent = viewTitles[target];
-    document.title = `${viewTitles[target]} — Реактор T-Mod`;
+    document.title = `${viewTitles[target]} — ${document.documentElement.classList.contains("blackbird-reactor") ? "Blackbird" : "Реактор T-Mod"}`;
+    document.dispatchEvent(new CustomEvent("portal:view-activated", { detail: { view: target } }));
     if (push && location.hash !== `#${target}`) {
       history.pushState({ portalView: target }, "", `#${target}`);
     }

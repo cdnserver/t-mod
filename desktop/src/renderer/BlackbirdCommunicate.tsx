@@ -6,25 +6,34 @@ import "./blackbird-communicate.css";
 import "./blackbird-communicate-v2.css";
 import "./blackbird-communicate-v3.css";
 
-interface SearchResult { user_id: number; nickname: string; static_id: string; server_code: string; login?: string }
-interface Conversation { partner_id: number; partner_name: string; last_message: string; created_at: string; from_me: boolean; system?: boolean }
-interface ChatMessage { id: number; sender_id: number; recipient_id: number; body: string; created_at: string }
+interface SearchResult { user_id: string; nickname: string; static_id: string; server_code: string; login?: string }
+interface Conversation { partner_id: string; partner_name: string; last_message: string; created_at: string; from_me: boolean; system?: boolean }
+interface ChatMessage { id: number; sender_id: string; recipient_id: string; body: string; created_at: string }
 const WELCOME = "Добро пожаловать в Blackbird! Здесь можно общаться с участниками Товарищества и делиться страницами сервисов. Найдите человека по персонажу и серверу или по точному логину T-Mod / Discord ID, чтобы начать личный диалог.";
+const previewState = {
+  discoverable: true,
+  messages: [
+    { id: 1, sender_id: "2", recipient_id: "1", body: "Привет! Посмотри дело в Реакторе — https://reactor.tvr.lat/reactor/case/42", created_at: new Date().toISOString() },
+    { id: 2, sender_id: "1", recipient_id: "2", body: "Открою. Вечером обсудим детали.", created_at: new Date().toISOString() },
+  ] as ChatMessage[],
+};
 
 async function request(action: "communicate" | "communicate-update", data?: Record<string, string>): Promise<Record<string, unknown>> {
   if (import.meta.env.DEV && new URLSearchParams(location.search).get("preview") === "1" && !window.blackbirdCommunicate && !window.tmodDesktop) {
-    if (action === "communicate") return { preferences: { discoverable: true }, conversations: [
-      { partner_id: 0, partner_name: "Товарищество", last_message: WELCOME, created_at: "", from_me: false, system: true },
-      { partner_id: 2, partner_name: "Роберт", last_message: "Посмотри дело в Реакторе", created_at: new Date().toISOString(), from_me: false },
+    if (action === "communicate") return { viewer: { id: "1" }, preferences: { discoverable: previewState.discoverable }, conversations: [
+      { partner_id: "0", partner_name: "Товарищество", last_message: WELCOME, created_at: "", from_me: false, system: true },
+      { partner_id: "2", partner_name: "Роберт", last_message: previewState.messages.at(-1)?.body || "", created_at: previewState.messages.at(-1)?.created_at || "", from_me: previewState.messages.at(-1)?.sender_id === "1" },
     ] };
-    if (data?.action === "thread" && data.partner_id === "0") return { result: [{ id: 0, sender_id: 0, recipient_id: 1, body: WELCOME, created_at: "" }] };
-    if (data?.action === "thread") return { result: [
-      { id: 1, sender_id: 2, recipient_id: 1, body: "Привет! Посмотри дело в Реакторе — https://reactor.tvr.lat/reactor/case/42", created_at: new Date().toISOString() },
-      { id: 2, sender_id: 1, recipient_id: 2, body: "Открою. Вечером обсудим детали.", created_at: new Date().toISOString() },
-    ] };
-    if (data?.action === "search") return { result: { user_id: 2, nickname: "Роберт", static_id: data.static_id || "", server_code: data.server_code || "", login: data.account_query || "robert" } };
-    if (data?.action === "discoverability") return { result: { discoverable: data.discoverable === "true" } };
-    return { result: { id: Date.now(), sender_id: 1, recipient_id: 2, body: data?.message || "", created_at: new Date().toISOString() } };
+    if (data?.action === "thread" && data.partner_id === "0") return { result: [{ id: 0, sender_id: "0", recipient_id: "1", body: WELCOME, created_at: "" }] };
+    if (data?.action === "thread") return { result: [...previewState.messages] };
+    if (data?.action === "search") return { result: { user_id: "2", nickname: "Роберт", static_id: data.static_id || "", server_code: data.server_code || "", login: data.account_query || "robert" } };
+    if (data?.action === "discoverability") {
+      previewState.discoverable = data.discoverable === "true";
+      return { result: { discoverable: previewState.discoverable } };
+    }
+    const sent = { id: Date.now(), sender_id: "1", recipient_id: "2", body: data?.message || "", created_at: new Date().toISOString() };
+    previewState.messages.push(sent);
+    return { result: sent };
   }
   const result = window.blackbirdCommunicate
     ? await window.blackbirdCommunicate.request(action, data)
@@ -54,9 +63,10 @@ function MessageContent({ body }: { body: string }) {
   return <>{text && <p>{text}</p>}{card && <SharedLinkCard card={card}/>}</>;
 }
 
-export function BlackbirdCommunicate({ servers, viewerId, onBack, sharedUrl = "", shareSequence = 0 }: {
-  servers: AtlasOverlayServer[]; viewerId: number; onBack: () => void; sharedUrl?: string; shareSequence?: number;
+export function BlackbirdCommunicate({ servers, onBack, sharedUrl = "", shareSequence = 0 }: {
+  servers: AtlasOverlayServer[]; onBack: () => void; sharedUrl?: string; shareSequence?: number;
 }) {
+  const [viewerId, setViewerId] = useState("0");
   const [discoverable, setDiscoverable] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [server, setServer] = useState(servers[0]?.code || "phoenix-15");
@@ -64,7 +74,7 @@ export function BlackbirdCommunicate({ servers, viewerId, onBack, sharedUrl = ""
   const [accountQuery, setAccountQuery] = useState("");
   const [found, setFound] = useState<SearchResult>();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [partner, setPartner] = useState<number>();
+  const [partner, setPartner] = useState<string>();
   const [partnerName, setPartnerName] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -75,6 +85,8 @@ export function BlackbirdCommunicate({ servers, viewerId, onBack, sharedUrl = ""
   const refresh = useCallback(async () => {
     const data = await request("communicate");
     const next = (data.conversations || []) as Conversation[];
+    const viewer = data.viewer as { id?: string } | undefined;
+    if (viewer?.id) setViewerId(String(viewer.id));
     setDiscoverable(Boolean((data.preferences as { discoverable?: boolean } | undefined)?.discoverable));
     setConversations(next);
     setReady(true);
@@ -94,7 +106,7 @@ export function BlackbirdCommunicate({ servers, viewerId, onBack, sharedUrl = ""
       .then(data => { if (live) setMessages((data.result || []) as ChatMessage[]); })
       .catch(() => { if (live) setError("Не удалось обновить беседу."); });
     update();
-    const timer = partner === 0 ? undefined : window.setInterval(update, 8_000);
+    const timer = partner === "0" ? undefined : window.setInterval(update, 8_000);
     return () => { live = false; if (timer) window.clearInterval(timer); };
   }, [partner]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [messages.length, partner]);
@@ -108,8 +120,8 @@ export function BlackbirdCommunicate({ servers, viewerId, onBack, sharedUrl = ""
           "Операция не завершена. Проверьте подключение и попробуйте ещё раз.");
     } finally { setBusy(false); }
   };
-  const select = (id: number, name: string) => { setPartner(id); setPartnerName(name); setFound(undefined); setSearchOpen(false); };
-  const service = partner === 0;
+  const select = (id: string, name: string) => { setPartner(id); setPartnerName(name); setFound(undefined); setSearchOpen(false); };
+  const service = partner === "0";
   const displayName = conversations.find(item => item.partner_id === partner)?.partner_name || partnerName;
   const verified = <i className="bbc-verified" title="Официальный канал Товарищества" aria-label="Проверенный аккаунт">✓</i>;
   return <section className="bbc-page" aria-label="Blackbird Communicate"><div className="bbc-shell">

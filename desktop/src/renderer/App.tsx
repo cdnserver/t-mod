@@ -23,6 +23,7 @@ import type {
   ServiceId,
 } from "../shared/contracts";
 import { normalizeIntroStyle } from "../shared/shell-layout";
+import { accountIdentityKey } from "../shared/account-identity";
 import type {
   AtlasOverlayCatalog,
   AtlasOverlayConfig,
@@ -559,10 +560,12 @@ export function App() {
   useEffect(() => {
     if (!desktopProduct.privateEdition || !bootstrap.authenticated || !bootstrap.data) return;
     if ((hubQa || loginQa) && !setupQa) return;
-    const id = bootstrap.data.viewer.id;
-    try { setSetupOpen(setupQa || localStorage.getItem(`blackbird:setup:v1:${id}`) !== "complete"); }
+    const viewer = bootstrap.data.viewer;
+    const exactKey = `blackbird:setup:v1:${accountIdentityKey(viewer)}`;
+    const legacyKey = `blackbird:setup:v1:${viewer.id}`;
+    try { setSetupOpen(setupQa || (localStorage.getItem(exactKey) !== "complete" && localStorage.getItem(legacyKey) !== "complete")); }
     catch { setSetupOpen(true); }
-  }, [bootstrap.authenticated, bootstrap.data?.viewer.id, setupQa, hubQa, loginQa]);
+  }, [bootstrap.authenticated, bootstrap.data?.viewer.id, bootstrap.data?.viewer.id_exact, setupQa, hubQa, loginQa]);
   const dismissLaunch = useCallback(() => setLaunchVisible(false), []);
   const [locked, setLocked] = useState(cinematicQa === "lock");
   const [unlocking, setUnlocking] = useState(false);
@@ -1278,7 +1281,7 @@ export function App() {
         onLater={() => setSetupOpen(false)} onComplete={value => {
           if (!bootstrap.authenticated || !bootstrap.data) return;
           setPreferences(value);
-          if (!setupQa) { try { localStorage.setItem(`blackbird:setup:v1:${bootstrap.data.viewer.id}`, "complete"); } catch { /* Remains available next launch. */ } }
+          if (!setupQa) { try { localStorage.setItem(`blackbird:setup:v1:${accountIdentityKey(bootstrap.data.viewer)}`, "complete"); } catch { /* Remains available next launch. */ } }
           setSetupOpen(false);
         }}/>
       }

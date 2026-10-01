@@ -25,6 +25,8 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import { NotificationPopup } from "./notification-popup";
 import { csrfTokenFromAccountSnapshot } from "../shared/account-response";
+import { sameAccountIdentity } from "../shared/account-identity";
+import { readableNotificationIds, startupPopupNotifications } from "../shared/notification-reliability";
 import { BootstrapProtocolError, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
   isServiceId,
@@ -539,11 +541,9 @@ function syncNativeNotifications(items: DesktopBootstrap["notifications"]["items
     currentIds.forEach((id) => knownNotificationIds.add(id));
     notificationStreamInitialized = true;
     if (desktopProduct.privateEdition) {
-      for (const item of items.slice().reverse()) {
-        if (!item.read_at && (item.kind.startsWith("orl:") || item.kind === "screenban"))
-          notificationPopup?.show(desktopLocked && item.kind !== "screenban" ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
-            shellPreferences.notificationSound, shellPreferences.reduceMotion);
-      }
+      for (const item of startupPopupNotifications(items))
+        notificationPopup?.show(desktopLocked && item.kind !== "screenban" ? { ...item, kind: "orl:toast", title: "Новое событие", body: "Разблокируйте Blackbird, чтобы прочитать." } : item,
+          shellPreferences.notificationSound, shellPreferences.reduceMotion);
     }
     return;
   }
@@ -606,7 +606,7 @@ async function pollNotifications(): Promise<void> {
   }
   if (!lastSuccessfulBootstrap) return;
   const revision = bootstrapRevision;
-  const account = lastSuccessfulBootstrap.viewer.id;
+  const account = lastSuccessfulBootstrap.viewer;
   notificationPollInFlight = true;
   try {
     const response = await desktopSession().fetch("https://reactor.tvr.lat/api/reactor/notifications?unread=1", {
@@ -620,8 +620,8 @@ async function pollNotifications(): Promise<void> {
       return;
     }
     if (!response.ok) return;
-    const data = await response.json() as { viewer?: { id?: number }; items?: DesktopBootstrap["notifications"]["items"] };
-    if (revision !== bootstrapRevision || data.viewer?.id !== account || !Array.isArray(data.items)) return;
+    const data = await response.json() as { viewer?: { id: number; id_exact?: string }; items?: DesktopBootstrap["notifications"]["items"] };
+    if (revision !== bootstrapRevision || !sameAccountIdentity(account, data.viewer) || !Array.isArray(data.items)) return;
     const fresh = data.items.some(item => !knownNotificationIds.has(item.id));
     syncNativeNotifications(data.items);
     if (fresh) mainWindow?.webContents.send("desktop:auth-changed");
@@ -634,20 +634,20 @@ async function pollNotifications(): Promise<void> {
 
 async function markNotificationsRead(value: unknown): Promise<boolean> {
   if (!Array.isArray(value) || !lastSuccessfulBootstrap) return false;
-  const known = new Set(lastSuccessfulBootstrap.notifications.items.map(item => item.id));
-  const ids = [...new Set(value.filter((id): id is number => Number.isSafeInteger(id) && id > 0 && known.has(id)))].slice(0, 100);
+  const known = new Set([...knownNotificationIds, ...lastSuccessfulBootstrap.notifications.items.map(item => item.id)]);
+  const ids = readableNotificationIds(value, known);
   if (!ids.length) return false; // Empty IDs mean "all" on the server; never send them.
   const revision = bootstrapRevision;
-  const account = lastSuccessfulBootstrap.viewer.id;
+  const account = lastSuccessfulBootstrap.viewer;
   try {
     const host = "https://reactor.tvr.lat";
     const response = await desktopSession().fetch(`${host}/api/reactor/home`, {
       credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(7000),
     });
     if (!response.ok) return false;
-    const home = await response.json() as { viewer?: { id: number; csrf_token: string } };
+    const home = await response.json() as { viewer?: { id: number; id_exact?: string; csrf_token: string } };
     const viewer = home.viewer;
-    if (revision !== bootstrapRevision || !viewer || viewer.id !== account || !viewer.csrf_token) return false;
+    if (revision !== bootstrapRevision || !sameAccountIdentity(account, viewer) || !viewer?.csrf_token) return false;
     const update = await desktopSession().fetch(`${host}/api/reactor/notifications/read`, {
       method: "POST", credentials: "include", signal: AbortSignal.timeout(7000),
       headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": viewer.csrf_token },

@@ -51,6 +51,7 @@ export interface DesktopBootstrap {
   };
   viewer: {
     id: number;
+    id_exact?: string;
     name: string;
     display_name: string;
     avatar_url?: string | null;

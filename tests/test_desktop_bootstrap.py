@@ -254,6 +254,7 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(payload["client"]["private"])
             self.assertEqual(payload["viewer"]["id"], 42)
+            self.assertEqual(payload["viewer"]["id_exact"], "42")
         finally:
             await client.close()
 
