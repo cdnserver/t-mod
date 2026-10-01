@@ -321,7 +321,7 @@ if errorlevel 1 (
   exit /b 1
 )
 set CADDY_READY=0
-for /l %%i in (1,1,30) do (
+for /l %%i in (1,1,60) do (
   set CADDY_HEALTH=
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-caddy 2^>nul') do set CADDY_HEALTH=%%H
   if /I "!CADDY_HEALTH!"=="healthy" (
@@ -332,7 +332,7 @@ for /l %%i in (1,1,30) do (
 )
 :caddy_ready
 if not "%CADDY_READY%"=="1" (
-  call :fail "Caddy did not become healthy within 60 seconds"
+  call :fail "Caddy did not become healthy within 120 seconds"
   docker compose ps tmod-caddy
   docker compose logs --no-color --tail 80 tmod-caddy
   call :pause_if_interactive
@@ -354,7 +354,7 @@ rem Restart returns before Caddy has rejoined the Docker network. Wait for the
 rem new process and the freshly recreated tmod-web DNS record before exposing
 rem the release; otherwise the first login or checkout can receive HTTP 502.
 set CADDY_RESTART_READY=0
-for /l %%i in (1,1,30) do (
+for /l %%i in (1,1,60) do (
   set CADDY_HEALTH=
   for /f "delims=" %%H in ('docker inspect --format "{{.State.Health.Status}}" tmod-caddy 2^>nul') do set CADDY_HEALTH=%%H
   if /I "!CADDY_HEALTH!"=="healthy" (
@@ -365,7 +365,7 @@ for /l %%i in (1,1,30) do (
 )
 :caddy_restart_ready
 if not "%CADDY_RESTART_READY%"=="1" (
-  call :fail "Caddy did not recover after its network refresh"
+  call :fail "Caddy did not recover after its network refresh (120 seconds)"
   docker compose logs --no-color --tail 80 tmod-caddy
   call :pause_if_interactive
   exit /b 1

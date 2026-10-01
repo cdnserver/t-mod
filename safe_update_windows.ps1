@@ -593,7 +593,9 @@ catch {
             database_restored = $databaseRestored
             runtime_commit = $OldCommit
         }
-        exit 0
+        # The installed runtime is healthy, but the requested update failed.
+        # A zero exit status made callers report a successful deployment.
+        exit 70
     }
     catch {
         $rollbackFailure = "{0}: {1}" -f $_.Exception.GetType().Name, $_.Exception.Message
