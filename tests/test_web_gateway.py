@@ -54,6 +54,13 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"backend": "legacy", "total": 9})
 
         backend.router.add_get("/api/reactor/preparation", legacy_preparation)
+
+        async def legacy_admin_access(_: web.Request) -> web.Response:
+            return web.json_response(
+                {"backend": "legacy", "administrator": True, "sections": ["overview"]}
+            )
+
+        backend.router.add_get("/api/admin/access/self", legacy_admin_access)
         self.backend = TestServer(backend)
         await self.backend.start_server()
 
@@ -91,6 +98,18 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         api_backend.router.add_get(
             "/internal/reactor/preparation",
             api_preparation,
+        )
+
+        async def api_admin_access(request: web.Request) -> web.Response:
+            status = int(request.query.get("status") or 200)
+            return web.json_response(
+                {"backend": "api", "administrator": True, "sections": ["overview"]},
+                status=status,
+            )
+
+        api_backend.router.add_get(
+            "/internal/admin/access/self",
+            api_admin_access,
         )
         self.api_backend = TestServer(api_backend)
         await self.api_backend.start_server()
@@ -236,6 +255,26 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         payload = await response.json()
         self.assertEqual(payload, {"backend": "legacy", "total": 9})
+        self.assertEqual(response.headers["X-TMod-Backend"], "legacy-fallback")
+
+    async def test_admin_access_uses_standalone_api(self) -> None:
+        response = await self.gateway.get("/api/admin/access/self")
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload["backend"], "api")
+        self.assertTrue(payload["administrator"])
+        self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
+
+    async def test_admin_access_does_not_bypass_api_auth_failure(self) -> None:
+        response = await self.gateway.get("/api/admin/access/self?status=403")
+        self.assertEqual(response.status, 403)
+        self.assertEqual((await response.json())["backend"], "api")
+        self.assertEqual(response.headers["X-TMod-Backend"], "tmod-api")
+
+    async def test_admin_access_falls_back_only_on_api_failure(self) -> None:
+        response = await self.gateway.get("/api/admin/access/self?status=503")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["backend"], "legacy")
         self.assertEqual(response.headers["X-TMod-Backend"], "legacy-fallback")
 
     async def test_edge_reporter_requeues_batch_after_delivery_error(self) -> None:

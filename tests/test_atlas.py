@@ -53,6 +53,7 @@ from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
 from persistence import atlas_repository
 from persistence import atlas_forum_attachment_repository
+from persistence import atlas_job_repository
 from persistence.core import connect
 
 
@@ -4744,7 +4745,18 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
                         },
                     )
                     general_payload = await general_response.json()
-                    await asyncio.sleep(0.1)
+                    general_job = None
+                    for _ in range(100):
+                        general_job = atlas_job_repository.atlas_job_get(
+                            int(general_payload["job"]["id"])
+                        )
+                        if general_job and general_job["status"] in {
+                            "succeeded",
+                            "failed",
+                            "cancelled",
+                        }:
+                            break
+                        await asyncio.sleep(0.05)
 
             self.assertEqual(response.status, 202, payload)
             self.assertTrue(payload["queued"])
@@ -4756,6 +4768,8 @@ class AtlasWebSurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(general_response.status, 202, general_payload)
             self.assertTrue(general_payload["bulk"])
             self.assertIn("каждую тему", general_payload["message"])
+            self.assertIsNotNone(general_job)
+            self.assertEqual(general_job["status"], "succeeded", general_job)
             fetch_listing.assert_awaited_once_with(
                 "https://forum.majestic-rp.ru/forums/general-server-rules/"
             )

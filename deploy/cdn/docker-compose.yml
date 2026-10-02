@@ -1,0 +1,33 @@
+services:
+  tmod-cdn:
+    image: caddy:2.10.2-alpine
+    container_name: tmod-cdn
+    restart: unless-stopped
+    environment:
+      CDN_DOMAIN: "${CDN_DOMAIN:-cdn.tvr.lat}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${CDN_CONTENT_DIR:-/srv/tmod-cdn/content}:/srv/cdn:ro"
+      - "${CDN_LOG_DIR:-/srv/tmod-cdn/logs}:/var/log/caddy"
+      - "tmod-cdn-caddy-data:/data"
+      - "tmod-cdn-caddy-config:/config"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/cdn-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  tmod-cdn-caddy-data:
+  tmod-cdn-caddy-config:
+
