@@ -415,8 +415,11 @@ async def proxy(request: web.Request) -> web.StreamResponse:
         reason=upstream.reason,
         headers=response_headers,
     )
-    await response.prepare(request)
     try:
+        # Preparing the downstream response can itself fail when a browser,
+        # desktop client, or Caddy health probe disconnects.  Keep it inside
+        # the release guard so the pooled upstream connection is never leaked.
+        await response.prepare(request)
         try:
             async for chunk in upstream.content.iter_chunked(64 * 1024):
                 await response.write(chunk)
