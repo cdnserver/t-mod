@@ -42,8 +42,8 @@ export function ConsensusHall({ sessionKey, plenaryNumber, serviceReady, preview
 
   const phase = consensusHallPhase(snapshot, sessionKey);
   useEffect(() => {
-    if (phase === "ready" && serviceReady && !hold) setEntering(true);
-  }, [phase, serviceReady, hold]);
+    if (phase === "ready" && connected && serviceReady && !hold) setEntering(true);
+  }, [phase, connected, serviceReady, hold]);
   useEffect(() => {
     if (!entering) return;
     const timer = window.setTimeout(() => onEnterRef.current(), 1_800);
@@ -90,6 +90,6 @@ export function ConsensusHall({ sessionKey, plenaryNumber, serviceReady, preview
         <div><small>ЭТАП</small><strong>{snapshot?.sessionKey === sessionKey ? snapshot.stageLabel : "Ожидание"}</strong><span>{connected ? "Состояние обновляется автоматически" : "Восстанавливаем связь с залом"}</span></div>
       </div>}
     </main>
-    <footer className="bb-ch-bottom"><button type="button" className="bb-ch-quiet" onClick={onLeave}>Вернуться в Сенат <span>↗</span></button><span className="bb-ch-live"><i/>{connected ? "ЗАЛ НА СВЯЗИ" : "ПЕРЕПОДКЛЮЧЕНИЕ"}</span>{preview && phase === "waiting" ? <button type="button" className="bb-ch-primary" onClick={() => setSnapshot(previewSnapshot(sessionKey, plenaryNumber, "presentation"))}>Показать начало заседания <span>→</span></button> : <button type="button" className="bb-ch-primary" disabled={phase !== "ready" || entering} onClick={() => serviceReady ? setEntering(true) : onRetry()}>{entering ? "Переходим…" : phase === "ready" ? serviceReady ? "Открыть своё место" : "Повторить соединение" : "Ожидаем заседание"}<span>→</span></button>}</footer>
+    <footer className="bb-ch-bottom"><button type="button" className="bb-ch-quiet" onClick={onLeave}>Вернуться в Сенат <span>↗</span></button><span className="bb-ch-live"><i/>{connected ? "ЗАЛ НА СВЯЗИ" : "ПЕРЕПОДКЛЮЧЕНИЕ"}</span>{preview && phase === "waiting" ? <button type="button" className="bb-ch-primary" onClick={() => setSnapshot(previewSnapshot(sessionKey, plenaryNumber, "presentation"))}>Показать начало заседания <span>→</span></button> : <button type="button" className="bb-ch-primary" disabled={phase !== "ready" || entering || !connected} onClick={() => serviceReady ? setEntering(true) : onRetry()}>{entering ? "Переходим…" : phase === "ready" ? serviceReady ? "Открыть своё место" : "Повторить соединение" : "Ожидаем заседание"}<span>→</span></button>}</footer>
   </section>;
 }
