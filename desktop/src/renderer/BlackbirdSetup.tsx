@@ -16,7 +16,7 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
   onComplete(preferences: DesktopShellPreferences): void; onLater(): void;
 }) {
   const [step, setStep] = useState(authenticated ? 1 : 0);
-  const [draft, setDraft] = useState({ ...preferences, preferredName: preferences.preferredName || (authenticated ? name : "") });
+  const [draft, setDraft] = useState({ ...preferences, reduceMotion: false, preferredName: preferences.preferredName || (authenticated ? name : "") });
   const [credentials, setCredentials] = useState({ login: "", pin: "", code: "", challenge: "" });
   const [factor, setFactor] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -62,7 +62,7 @@ export function BlackbirdSetup({ authenticated, name, preferences, onLogin, onCo
         </>}
         {step === 1 && <><small>02 / ЛИЧНЫЕ НАСТРОЙКИ</small><h2>Как к вам обращаться?</h2><p>Это имя появится в приветствии и на экране блокировки. Оно не меняет имя вашего аккаунта.</p><label>Ваше имя<input maxLength={24} value={draft.preferredName} placeholder="Например, Роберт" onChange={event => setDraft(current => ({ ...current, preferredName: event.target.value }))}/></label>
           <label>Блокировка при бездействии<select value={draft.idleLockMinutes} onChange={event => setDraft(current => ({ ...current, idleLockMinutes: Number(event.target.value) }))}><option value={0}>Только вручную</option><option value={5}>Через 5 минут</option><option value={10}>Через 10 минут</option><option value={15}>Через 15 минут</option><option value={30}>Через 30 минут</option></select></label>
-          <label className="bb-setup-check"><input type="checkbox" checked={draft.reduceMotion} onChange={event => setDraft(current => ({ ...current, reduceMotion: event.target.checked }))}/><span>Уменьшить движение<small>Спокойные переходы и статичная Луна.</small></span></label>
+          <label className="bb-setup-check" aria-disabled="true"><input type="checkbox" checked={false} disabled/><span>Уменьшить движение · скоро<small>Настройка временно недоступна.</small></span></label>
         </>}
         {step === 2 && <><small>03 / УВЕДОМЛЕНИЯ</small><h2>Только нужное внимание.</h2><p>События остаются в центре уведомлений независимо от выбранного способа показа.</p><div className="bb-setup-delivery">{([
           ["both", "Карточки Blackbird", "Небольшое отдельное окно в углу экрана, даже если приложение в фоне."],

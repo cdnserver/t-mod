@@ -3007,6 +3007,32 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_blackbird_attendance_requires_owner_csrf_and_current_registration(self) -> None:
+        self.session.stage = "registration"
+        self.session.participants[4].confirmed = False
+        principal = self._principal(user_id=4)
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with (
+                patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+                patch("modules.consensus_web.consensus_coordinator.confirm_participant", return_value=True) as confirm,
+                patch("modules.tvrs_consensus_views.update_host_registration_message", AsyncMock()),
+            ):
+                denied = await client.post("/api/attendance", json={"session_key": "web-test"})
+                self.assertEqual(denied.status, 403)
+                headers = {"X-CSRF-Token": "csrf-test-token"}
+                stale = await client.post("/api/attendance", headers=headers, json={"session_key": "old"})
+                self.assertEqual(stale.status, 409)
+                accepted = await client.post("/api/attendance", headers=headers, json={"session_key": "web-test"})
+                self.assertEqual(accepted.status, 200)
+                self.assertTrue((await accepted.json())["confirmed"])
+                confirm.assert_called_once()
+                self.assertEqual(confirm.call_args.args[1], 4)
+        finally:
+            await client.close()
+
     async def test_simulation_is_selectable_without_masking_live_consensus(
         self,
     ) -> None:

@@ -27,6 +27,8 @@ describe("desktop service boundary", () => {
     expect(isTrustedTModUrl("javascript:alert(1)")).toBe(false);
     expect(TRUSTED_TMOD_HOSTS.has("atlas.tvr.lat")).toBe(true);
     expect(TRUSTED_TMOD_HOSTS.has("dash.tvr.lat")).toBe(true);
+    expect(TRUSTED_TMOD_HOSTS.has("senate.tvr.lat")).toBe(true);
+    expect(TRUSTED_TMOD_HOSTS.has("ap.finance.tvr.lat")).toBe(true);
   });
 
   it("recognizes only canonical T-Mod authentication routes", () => {

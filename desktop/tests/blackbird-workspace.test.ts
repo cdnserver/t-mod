@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { canEnterWorkspace, workspaceForService } from "../src/shared/workspaces";
+import { canEnterWorkspace, showSenateService, workspaceForService } from "../src/shared/workspaces";
 import { WorkspaceHome, WorkspaceIntro, WorkspaceNavigation } from "../src/renderer/BlackbirdWorkspace";
 import type { DesktopNotification } from "../src/shared/contracts";
 
@@ -33,7 +33,9 @@ describe("isolated Blackbird workspaces", () => {
   });
   it("disables unavailable services and switching to an ungranted space", () => {
     const html = renderToStaticMarkup(createElement(WorkspaceNavigation,{...nav,space:"senate",access:new Map([["reactor",{enabled:true,reason:null}]])}));
-    expect(html).toContain('title="Доступ не выдан"'); expect(html.match(/disabled=""/g)?.length).toBeGreaterThan(5);
+    expect(html).toContain('title="Доступ не выдан"'); expect(html.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
+    for (const id of ["tasks","ovr","admin"] as const) expect(showSenateService(id,new Map())).toBe(false);
+    expect(html).not.toContain("Общие задачи"); expect(html).not.toContain("Внешняя разведка"); expect(html).not.toContain("Ядерный реактор");
   });
   it.each(["atlas","senate"] as const)("provides a distinct %s landing page and skippable intro",space => {
     const html = renderToStaticMarkup(createElement(WorkspaceHome,{...home,space}));

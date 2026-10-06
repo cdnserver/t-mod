@@ -98,6 +98,7 @@ export const serviceById = Object.fromEntries(
 export const TRUSTED_TMOD_HOSTS = new Set([
   "tvr.lat",
   "home.tvr.lat",
+  "senate.tvr.lat",
   "reactor.tvr.lat",
   "consensus.tvr.lat",
   "atlas.tvr.lat",
@@ -107,6 +108,7 @@ export const TRUSTED_TMOD_HOSTS = new Set([
   "phx.tvr.lat",
   "log.global.tvr.lat",
   "zigmund.tvr.lat",
+  "ap.finance.tvr.lat",
 ]);
 
 export function isServiceId(value: unknown): value is ServiceId {

@@ -1,5 +1,9 @@
 appId: lat.tvr.technology.blackbird
 productName: BLACKBIRD
+protocols:
+  - name: BLACKBIRD service link
+    schemes:
+      - blackbird
 artifactName: BLACKBIRD-Private-${version}-${os}-${arch}.${ext}
 extraMetadata:
   name: blackbird-client

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { DesktopNotification, ServiceId } from "../shared/contracts";
 import type { BlackbirdWorkspace } from "../shared/workspaces";
-import { canEnterWorkspace, workspaceForService } from "../shared/workspaces";
+import { canEnterWorkspace, showSenateService, workspaceForService } from "../shared/workspaces";
 import { resolveNotificationServiceId } from "../shared/services";
 import atlas from "./assets/blackbird/atlas.png";
 import senate from "./assets/blackbird/consensus.png";
@@ -44,7 +44,7 @@ export function WorkspaceNavigation({ space, active, access, collapsed, online, 
     <div className="bbw-nav-top"><button title="Главная Blackbird" aria-label="Главная Blackbird" onClick={onHome}>↖<span>Blackbird</span></button><button aria-label={collapsed ? "Развернуть меню" : "Свернуть меню"} title={collapsed ? "Развернуть меню" : "Свернуть меню"} onClick={onToggle}>☰</button></div>
     <div className="bbw-nav-identity"><img src={space === "atlas" ? atlas : senate} alt=""/><div><small>РАБОЧЕЕ ПРОСТРАНСТВО</small><strong>{space === "atlas" ? "Atlas" : "Сенат"}</strong></div></div>
     <nav className="bbw-nav" aria-label="Разделы пространства"><button className={`bbw-nav-item ${active === "home" ? "active" : ""}`} aria-current={active === "home" ? "page" : undefined} title="Обзор пространства" onClick={onOverview}><b aria-hidden="true">◈</b><span>Обзор</span></button>
-      {space === "atlas" ? <><small>ИНТЕЛЛЕКТ</small>{menuItem("atlas")}<button className="bbw-nav-item" title="Настройки Atlas Overlay" disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><b aria-hidden="true">▱</b><span>Игровой оверлей</span></button></> : groups.map(group => <div key={group.title}><small>{group.title.toLocaleUpperCase()}</small>{group.ids.map(menuItem)}</div>)}
+      {space === "atlas" ? <><small>ИНТЕЛЛЕКТ</small>{menuItem("atlas")}<button className="bbw-nav-item" title="Настройки Atlas Overlay" disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><b aria-hidden="true">▱</b><span>Игровой оверлей</span></button></> : groups.map(group => { const visible = group.ids.filter(id => showSenateService(id, access)); return visible.length ? <div key={group.title}><small>{group.title.toLocaleUpperCase()}</small>{visible.map(menuItem)}</div> : null; })}
       <button className={`bbw-nav-item ${communicateOpen ? "active" : ""}`} aria-current={communicateOpen ? "page" : undefined} title="Blackbird Communicate" onClick={onCommunicate}><b aria-hidden="true">✧</b><span>Communicate</span></button>
     </nav>
     <footer><span className={`bbw-online ${online ? "online" : ""}`}><i/><span>{online ? "На связи" : "Восстанавливаем связь"}</span></span><button className="bbw-switch" disabled={!canEnterWorkspace(other,access)} title={`Перейти в ${other === "atlas" ? "Atlas" : "Сенат"}`} onClick={onSwitch}><img src={other === "atlas" ? atlas : senate} alt=""/><span>{other === "atlas" ? "Перейти в Atlas" : "Перейти в Сенат"}</span><b>↗</b></button></footer>
@@ -70,15 +70,15 @@ export function WorkspaceHome({ space, name, access, notifications, overlayEnabl
       <div className="bbw-atlas-tools"><button disabled={!access.get("atlas")?.enabled} onClick={onOverlay}><span>01 / В ИГРЕ</span><h2>Всегда рядом.</h2><p>Голос, оформление и управление оверлеем.</p><footer><i className={overlayEnabled ? "online" : ""}/>{overlayEnabled ? "Оверлей включён" : "Оверлей выключен"}<b>Настроить ↗</b></footer></button><button onClick={onNotifications}><span>02 / ВАШЕ ВНИМАНИЕ</span><h2>Ничего лишнего.</h2><p>Уведомления и история событий вашего аккаунта.</p><footer>Центр уведомлений<b>Открыть ↗</b></footer></button><button onClick={onCommunicate}><span>03 / ЛЮДИ</span><h2>Communicate.</h2><p>Найдите человека по серверу и статику. Продолжите разговор здесь.</p><footer>Личные диалоги<b>Открыть ↗</b></footer></button></div>
     </> : <>
       <div className="bbw-senate-hero"><small>УЧАСТВОВАТЬ. ОБСУЖДАТЬ. РЕШАТЬ.</small><h1>Сенат.<br/><span>Общее дело.</span></h1><p>{name}, ваше пространство участия в Товариществе.<br/>От личной инициативы до общего решения.</p><img src={senate} alt="" aria-hidden="true"/></div>
-      <section className="bbw-services" aria-label="Участие в Сенате">{card("reactor",true)}{card("consensus",true)}{card("tasks")}</section>
-      <section className="bbw-institutions"><header><h2>Институты и системы</h2><p>Возможности открываются в соответствии с вашим доступом.</p></header><div>{["sgl","ovr","games","admin"].map(id => card(id as Exclude<ServiceId,"home">))}</div></section>
+      <section className="bbw-services" aria-label="Участие в Сенате">{card("reactor",true)}{card("consensus",true)}{showSenateService("tasks", access) && card("tasks")}</section>
+      <section className="bbw-institutions"><header><h2>Институты и системы</h2><p>Возможности открываются в соответствии с вашим доступом.</p></header><div>{(["sgl","ovr","games","admin"] as const).filter(id => showSenateService(id, access)).map(id => card(id))}</div></section>
     </>}
     <section className="bbw-events"><header><h2>События пространства</h2><button onClick={onNotifications}>Все уведомления ↗</button></header>{events.length ? events.map(item => <button key={item.id} onClick={onNotifications}><i className={!item.read_at ? "unread" : ""}/><span><strong>{item.title}</strong><small>{item.body}</small></span><time>{new Date(item.created_at).toLocaleDateString("ru-RU",{day:"numeric",month:"short"})}</time></button>) : <p>Пока всё спокойно. Новые события появятся здесь.</p>}</section>
     <footer className="bbw-home-footer"><span>ТЕХНОЛОГИИ ТОВАРИЩЕСТВА</span><span>{space === "atlas" ? "INTELLIGENCE, WITH CONTEXT." : "ОДНО СООБЩЕСТВО. ОБЩИЙ РИТМ."}</span></footer></div>
   </section>;
 }
 
-export function WorkspaceIntro({ space, reduced, onComplete }: { space:BlackbirdWorkspace; reduced:boolean; onComplete:()=>void }) {
+export function WorkspaceIntro({ space, reduced, hold = false, onComplete }: { space:BlackbirdWorkspace; reduced:boolean; hold?:boolean; onComplete:()=>void }) {
   const skip = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement|null;
@@ -91,9 +91,10 @@ export function WorkspaceIntro({ space, reduced, onComplete }: { space:Blackbird
     return () => { window.removeEventListener("keydown",key,true); if (previous?.isConnected) previous.focus({preventScroll:true}); };
   },[onComplete]);
   useEffect(() => {
+    if (hold) return;
     const timer = window.setTimeout(onComplete,reduced ? 850 : 4600);
     return () => window.clearTimeout(timer);
-  },[space,reduced,onComplete]);
+  },[space,reduced,hold,onComplete]);
   return <section className={`bbw-intro space-${space} ${reduced ? "reduced" : ""}`} role="dialog" aria-modal="true" aria-label={`Переход в ${space === "atlas" ? "Atlas" : "Сенат"}`}>
     <div className="bbw-intro-scene bbw-cinematic" aria-hidden="true"><svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
       {space === "atlas" ? <>

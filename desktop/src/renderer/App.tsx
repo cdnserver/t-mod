@@ -13,6 +13,7 @@ import {
 } from "react";
 import type {
   BootstrapResult,
+  ConsensusRegistrationNotice,
   DesktopLoginCredentials,
   DesktopLoginResult,
   DesktopLockReason,
@@ -60,6 +61,10 @@ import { BlackbirdMediaNetwork } from "./BlackbirdMediaNetwork";
 import { BlackbirdLogin } from "./BlackbirdLogin";
 import { BlackbirdIdle } from "./BlackbirdIdle";
 import { AtlasUsage } from "./AtlasUsage";
+import { CommandConsole } from "./CommandConsole";
+import { ConsensusCall } from "./ConsensusCall";
+import { ConsensusHall } from "./ConsensusHall";
+import type { ConsoleCommand } from "../shared/command-console";
 import { BlackbirdSetup } from "./BlackbirdSetup";
 import { BlackbirdBan } from "./BlackbirdBan";
 import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
@@ -113,7 +118,7 @@ function loadPreferences(): DesktopShellPreferences {
       preferredName: typeof stored.preferredName === "string" ? stored.preferredName.slice(0, 24) : "",
       sidebarCollapsed: stored.sidebarCollapsed === true,
       compactMode: stored.compactMode === true,
-      reduceMotion: stored.reduceMotion === true,
+      reduceMotion: false,
       solidSurfaces: stored.solidSurfaces === true,
       serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
       idleLockMinutes: [0, 5, 10, 15, 30].includes(Number(stored.idleLockMinutes))
@@ -458,8 +463,9 @@ export function App() {
     || globalThis.location.hostname === "localhost";
   const cinematicParams = new URLSearchParams(globalThis.location.search);
   const cinematicQa = cinematicQaEnabled ? cinematicParams.get("cinematic") : null;
+  const visualQa = cinematicQaEnabled ? cinematicParams.get("visual") : null;
   const atlasSettingsQa = cinematicQaEnabled && cinematicParams.get("settings-preview") === "atlas";
-  const hubQa = cinematicQaEnabled && cinematicParams.get("hub-preview") === "1";
+  const hubQa = cinematicQaEnabled && (cinematicParams.get("hub-preview") === "1" || Boolean(visualQa));
   const loginQa = cinematicQaEnabled && cinematicParams.get("login-preview") === "1";
   const setupQa = cinematicQaEnabled && cinematicParams.get("setup-preview") === "1";
   const banQa = cinematicQaEnabled && cinematicParams.get("ban-preview") === "1";
@@ -488,13 +494,18 @@ export function App() {
     canGoForward: false,
   });
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa ? "atlas" : null);
+  const [consoleOpen, setConsoleOpen] = useState(visualQa === "console");
+  const [consensusRegistration, setConsensusRegistration] = useState<ConsensusRegistrationNotice | null>(visualQa === "consensus-call" ? { sessionKey: "preview", plenaryNumber: 16, csrfToken: "preview-only" } : null);
+  const consensusHallPreview = visualQa === "consensus-hall" || visualQa === "consensus-arrival";
+  const [consensusHall, setConsensusHall] = useState<{ sessionKey: string; plenaryNumber: number } | null>(consensusHallPreview ? { sessionKey: "preview", plenaryNumber: 16 } : null);
+  const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa || visualQa === "atlas" ? "atlas" : visualQa === "senate" ? "senate" : null);
   const [mediaOpen, setMediaOpen] = useState(false);
-  const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(null);
+  const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(visualQa === "intro-atlas" ? "atlas" : visualQa === "intro-senate" ? "senate" : null);
   const pendingWorkspace = useRef<BlackbirdWorkspace|null>(null);
   const workspaceIntroReady = useRef(true);
   const workspaceIntroFinished = useRef(false);
   const workspaceTransition = useRef(false);
+  const returningToHub = useRef(false);
   const beginWorkspaceIntro = useCallback((next:BlackbirdWorkspace, ready = false) => {
     pendingWorkspace.current = next;
     workspaceIntroReady.current = ready;
@@ -513,6 +524,12 @@ export function App() {
   },[finishWorkspaceIntro]);
   useLayoutEffect(() => {
     if (!desktopProduct.privateEdition) return;
+    if (consensusHall !== null) return;
+    if (returningToHub.current) {
+      if (desktopState.activeService === "home") { returningToHub.current = false; workspaceTransition.current = false; setWorkspace(null); }
+      return;
+    }
+    if (workspaceTransition.current) return;
     if (!bootstrap.authenticated) { pendingWorkspace.current = null; setWorkspace(null); setWorkspaceIntro(null); setMediaOpen(false); }
     else if (desktopState.activeService !== "home") {
       setMediaOpen(false);
@@ -521,10 +538,10 @@ export function App() {
       if (next && next !== workspace) beginWorkspaceIntro(next, true);
       else if (!next) setWorkspace(null);
     }
-  },[bootstrap.authenticated,desktopState.activeService,workspace,beginWorkspaceIntro]);
+  },[bootstrap.authenticated,desktopState.activeService,workspace,consensusHall,beginWorkspaceIntro]);
   const [query, setQuery] = useState("");
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(cinematicQaEnabled && cinematicParams.get("settings-preview") === "app" || desktopProduct.privateEdition && atlasSettingsQa);
+  const [notificationsOpen, setNotificationsOpen] = useState(visualQa === "notifications");
+  const [settingsOpen, setSettingsOpen] = useState(cinematicQaEnabled && cinematicParams.get("settings-preview") === "app" || desktopProduct.privateEdition && (atlasSettingsQa || visualQa === "settings"));
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(atlasSettingsQa ? "atlas" : "account");
   const [settingsRevision, setSettingsRevision] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -665,6 +682,11 @@ export function App() {
     });
     const unsubscribeAuth = api.onAuthChanged(loadBootstrap);
     const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
+    const unsubscribeConsole = api.onCommandConsole(() => setConsoleOpen(true));
+    const unsubscribeConsensus = api.onConsensusRegistration(notice => {
+      setSettingsOpen(false); setNotificationsOpen(false); setPaletteOpen(false); setConsoleOpen(false);
+      setConsensusRegistration(notice);
+    });
     const unsubscribeNotifications = api.onNotifications(() => {
       setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen(true);
     });
@@ -686,6 +708,8 @@ export function App() {
       unsubscribeState();
       unsubscribeAuth();
       unsubscribePalette();
+      unsubscribeConsole();
+      unsubscribeConsensus();
       unsubscribeNotifications();
       unsubscribeOverlaySettings();
       window.clearInterval(refresh);
@@ -793,7 +817,11 @@ export function App() {
         event.preventDefault();
         setPaletteOpen((open) => !open);
       }
+      if ((event.metaKey || event.ctrlKey) && (event.key === "`" || event.code === "Backquote")) {
+        event.preventDefault(); setConsoleOpen(open => !open);
+      }
       if (event.key === "Escape") {
+        if (consoleOpen) { setConsoleOpen(false); return; }
         if (profileOpen) { setProfileOpen(false); return; }
         setProfileOpen(false);
         setPaletteOpen(false);
@@ -815,8 +843,8 @@ export function App() {
   }, [paletteOpen]);
 
   useEffect(() => {
-    void browserApi()?.setShellOverlayOpen(paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || profileOpen || locked || setupOpen || launchVisible || Boolean(workspaceIntro));
-  }, [paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, profileOpen, locked, setupOpen, launchVisible, workspaceIntro]);
+    void browserApi()?.setShellOverlayOpen(Boolean(consensusHall) || Boolean(consensusRegistration) || consoleOpen || paletteOpen || notificationsOpen || settingsOpen || atlasSettingsOpen || profileOpen || locked || setupOpen || launchVisible || Boolean(workspaceIntro));
+  }, [consensusHall, consensusRegistration, consoleOpen, paletteOpen, notificationsOpen, settingsOpen, atlasSettingsOpen, profileOpen, locked, setupOpen, launchVisible, workspaceIntro]);
 
   useEffect(() => { setProfileOpen(false); }, [settingsOpen, notificationsOpen, atlasSettingsOpen, paletteOpen, locked, setupOpen, desktopState.activeService]);
 
@@ -837,6 +865,7 @@ export function App() {
   const activeDefinition = serviceById[desktopState.activeService];
 
   const selectService = async (serviceId: ServiceId) => {
+    if (serviceId === "home" && desktopProduct.privateEdition) { await exitWorkspaceToHub(); return; }
     const remote = serviceId === "home" ? undefined : access.get(serviceId);
     if (serviceId !== "home" && (!bootstrap.authenticated || !remote?.enabled)) return;
     setPaletteOpen(false);
@@ -856,6 +885,23 @@ export function App() {
     } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); }
   };
 
+  const exitWorkspaceToHub = async () => {
+    if (workspaceTransition.current) return;
+    workspaceTransition.current = true;
+    returningToHub.current = true;
+    pendingWorkspace.current = null;
+    workspaceIntroReady.current = true;
+    workspaceIntroFinished.current = false;
+    setWorkspaceIntro(null);
+    setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false); setProfileOpen(false);
+    try {
+      const api = browserApi();
+      const next = api ? await api.navigate("home") : { ...desktopState, activeService: "home" as const, loading: false, error: undefined };
+      setDesktopState(next);
+      setWorkspace(null);
+    } catch { returningToHub.current = false; workspaceTransition.current = false; setToast("Не удалось вернуться в хаб. Попробуйте ещё раз."); }
+  };
+
   const enterWorkspace = async (space:BlackbirdWorkspace, intro = true) => {
     if (!bootstrap.authenticated || !canEnterWorkspace(space,access) || workspaceTransition.current) return;
     workspaceTransition.current = true;
@@ -869,6 +915,18 @@ export function App() {
       if (!intro) { pendingWorkspace.current = null; setWorkspace(space); setWorkspaceIntro(null); }
     } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть пространство. Попробуйте ещё раз."); }
     finally { workspaceTransition.current = false; }
+  };
+  const executeConsoleCommand = (command: ConsoleCommand) => {
+    switch (command.kind) {
+      case "service": void selectService(command.id); break;
+      case "workspace": void enterWorkspace(command.id); break;
+      case "settings": setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen(true); break;
+      case "lock": lockNow(); break;
+      case "notifications": setNotificationsOpen(true); break;
+      case "bar": setPreferences(current => ({...current,controlBar:command.value})); break;
+      case "zoom": setPreferences(current => ({...current,serviceZoom:command.value})); break;
+      case "window": void (command.value === "minimize" ? browserApi()?.minimize() : browserApi()?.toggleMaximize()); break;
+    }
   };
 
   const notifications = bootstrap.data?.notifications.items || [];
@@ -1044,7 +1102,7 @@ export function App() {
       <div className="aurora" aria-hidden="true"><i/><i/><i/></div>
       {desktopProduct.privateEdition && workspace ? <WorkspaceNavigation
         space={workspace} active={desktopState.activeService} access={access} collapsed={preferences.sidebarCollapsed} online={bootstrap.online} inert={settingsOpen || locked || Boolean(workspaceIntro)}
-        onHome={() => void selectService("home")} onOverview={() => void enterWorkspace(workspace,false)} onSwitch={() => void enterWorkspace(workspace === "atlas" ? "senate" : "atlas")}
+        onHome={() => void exitWorkspaceToHub()} onOverview={() => void enterWorkspace(workspace,false)} onSwitch={() => void enterWorkspace(workspace === "atlas" ? "senate" : "atlas")}
         onOpen={selectService} onOverlay={openAtlasSettings} onCommunicate={() => void openCommunicate()} communicateOpen={false} onToggle={() => setPreferences(current => ({...current,sidebarCollapsed:!current.sidebarCollapsed}))}
       /> : <aside className="sidebar" inert={settingsOpen || locked}>
         <button
@@ -1108,7 +1166,7 @@ export function App() {
           <div className="surface-title"><span style={{ background: activeDefinition.accent }}/><strong>{workspace && desktopState.activeService === "home" ? workspace === "atlas" ? "Atlas" : "Сенат" : activeDefinition.title}</strong><small>{workspace && desktopState.activeService === "home" ? "Обзор пространства" : activeDefinition.eyebrow}</small></div>
         </div>
         <div className="top-actions">
-          {desktopProduct.privateEdition && <AtlasUsage authenticated={bootstrap.authenticated} onOpen={() => { setSettingsSection("billing"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }}/>}
+          {desktopProduct.privateEdition && <AtlasUsage authenticated={bootstrap.authenticated} previewOpen={visualQa === "atlas-usage"} onOpen={() => { setSettingsSection("billing"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }}/>}
           {browserApi() && (
             <button
               className={`update-pill ${updateState.phase}`}
@@ -1133,6 +1191,7 @@ export function App() {
           {desktopProduct.privateEdition && bootstrap.authenticated && <button className="circle-action bb-communicate-shortcut" onClick={() => void openCommunicate()} title="Blackbird Communicate" aria-label="Открыть Communicate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 5.5h16v11H9l-5 3V5.5Z"/><path d="M8 10h8M8 13h5"/></svg></button>}
           {desktopProduct.privateEdition && bootstrap.authenticated && desktopState.activeService !== "home" && <button className="circle-action" onClick={() => void browserApi()?.shareCurrentLink?.()} title="Поделиться страницей в Communicate" aria-label="Поделиться страницей в Communicate"><Icon name="link"/></button>}
           <button className={`circle-action ${settingsOpen ? "active" : ""}`} onClick={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen((open) => !open); }} title="Настройки приложения"><Icon name="settings"/></button>
+          {desktopProduct.privateEdition && <button className="circle-action bb-console-trigger" onClick={() => setConsoleOpen(true)} title="Консоль · Ctrl+`" aria-label="Открыть консоль"><Icon name="command"/></button>}
           {bootstrap.authenticated && bootstrap.data && <AccountMenu
             viewer={bootstrap.data.viewer} name={userName} open={profileOpen} onOpenChange={setProfileOpen}
             onSettings={() => { setNotificationsOpen(false); setAtlasSettingsOpen(false); setSettingsSection("account"); setSettingsRevision(value => value + 1); setSettingsOpen(true); }}
@@ -1247,6 +1306,44 @@ export function App() {
           onOpen={selectService}
         />
       )}
+      {consoleOpen && desktopProduct.privateEdition && <CommandConsole onClose={() => setConsoleOpen(false)} onCommand={executeConsoleCommand}/>}
+      {consensusRegistration && !locked && <ConsensusCall notice={consensusRegistration} onLater={() => setConsensusRegistration(null)} onConfirm={async () => {
+        if (visualQa === "consensus-call") {
+          setConsensusRegistration(null);
+          setConsensusHall({ sessionKey: consensusRegistration.sessionKey, plenaryNumber: consensusRegistration.plenaryNumber });
+          return true;
+        }
+        const confirmed = await browserApi()?.confirmConsensusRegistration(consensusRegistration) === true;
+        if (confirmed) {
+          setConsensusRegistration(null);
+          if (access.get("consensus")?.enabled) {
+            setConsensusHall({ sessionKey: consensusRegistration.sessionKey, plenaryNumber: consensusRegistration.plenaryNumber });
+            try {
+              const api = browserApi();
+              setDesktopState(api ? await api.openConsensusBallot() : current => ({...current,activeService:"consensus"}));
+            } catch { setToast("Зал ожидания открыт, но бюллетень пока недоступен. Blackbird повторит подключение."); }
+          } else setToast("Участие подтверждено. Контур Консенсуса появится после обновления доступа.");
+        }
+        return confirmed;
+      }}/>}
+      {consensusHall && !locked && <ConsensusHall sessionKey={consensusHall.sessionKey} plenaryNumber={consensusHall.plenaryNumber}
+        preview={consensusHallPreview || visualQa === "consensus-call"} hold={cinematicHold}
+        serviceReady={consensusHallPreview || visualQa === "consensus-call" || (desktopState.activeService === "consensus" && !desktopState.loading && !desktopState.error)}
+        onRetry={() => { void browserApi()?.openConsensusBallot().then(setDesktopState).catch(() => setToast("Не удалось подключиться к бюллетеню. Попробуйте ещё раз.")); }}
+        onEnter={() => {
+          pendingWorkspace.current = null;
+          setWorkspaceIntro(null);
+          setWorkspace("senate");
+          setConsensusHall(null);
+        }} onLeave={() => {
+        void (async () => {
+          const api = browserApi();
+          const state = await api?.navigate("home").catch(() => null) || { ...desktopState, activeService: "home" as const, loading: false };
+          setDesktopState(state);
+          setWorkspace("senate");
+          setConsensusHall(null);
+        })();
+      }}/>}
       {updateState.phase === "ready" && dismissedUpdate !== updateState.version && (
         <aside className="update-toast" role="status">
           <span className="update-toast-icon"><Icon name="download"/></span>
@@ -1275,7 +1372,7 @@ export function App() {
           onMinimize={() => void browserApi()?.minimize()}
         />
       )}
-      {workspaceIntro && !launchVisible && !locked && <WorkspaceIntro space={workspaceIntro} reduced={preferences.reduceMotion} onComplete={finishWorkspaceIntro}/>}
+      {workspaceIntro && !launchVisible && !locked && <WorkspaceIntro space={workspaceIntro} reduced={preferences.reduceMotion} hold={cinematicHold} onComplete={finishWorkspaceIntro}/>}
       {launchVisible && <CinematicLaunch name={userName} reduced={preferences.reduceMotion} introStyle={preferences.introStyle} hold={cinematicHold} onContinue={dismissLaunch} connectionReady={!bootstrapLoading}/>}
       {setupOpen && !launchVisible && <BlackbirdSetup authenticated={bootstrap.authenticated} name={userName} preferences={preferences} onLogin={login}
         onLater={() => setSetupOpen(false)} onComplete={value => {

@@ -30,6 +30,9 @@ from modules.consensus_core import (
 )
 from modules.consensus_health import assess_consensus_health
 from modules.consensus_runtime import active_sessions
+from modules.consensus_runtime import coordinator as consensus_coordinator, session_lock as consensus_session_lock
+from modules.consensus_service import ConsensusActor
+from modules.async_safety import run_blocking_cancellation_safe
 from modules.consensus_simulator import get_consensus_simulation
 from modules.consensus_web_auth import (
     ConsensusWebAuthError,
@@ -2014,6 +2017,40 @@ def create_consensus_web_app(
         response.headers["X-T-Mod-Cache"] = cache_state
         return response
 
+    async def attendance(request: web.Request) -> web.Response:
+        """Confirm only the signed-in senator's own place in the current session."""
+        principal, legacy_read_only = await authenticated_request(request)
+        if principal is None or legacy_read_only or not csrf_matches(request, principal):
+            return web.json_response({"error": "attendance_auth_required"}, status=403)
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_key = str(payload.get("session_key") or "") if isinstance(payload, dict) else ""
+        if not session_key or len(session_key) > 128:
+            return web.json_response({"error": "invalid_session"}, status=400)
+        async with consensus_session_lock(int(guild_id)):
+            session = active_sessions.get(int(guild_id))
+            if session is None or session.session_key != session_key:
+                return web.json_response({"error": "session_changed"}, status=409)
+            try:
+                changed = await run_blocking_cancellation_safe(
+                    consensus_coordinator.confirm_participant,
+                    session,
+                    int(principal.user_id),
+                    actor=ConsensusActor(int(principal.user_id), str(principal.display_name)),
+                )
+            except ConsensusStateError as exc:
+                return web.json_response({"error": "attendance_unavailable", "message": str(exc)}, status=409)
+        guild = bot.get_guild(int(guild_id))
+        if changed and guild is not None:
+            try:
+                from modules.tvrs_consensus_views import update_host_registration_message
+                await update_host_registration_message(bot, guild, session)
+            except Exception:
+                traceback.print_exc()
+        return web.json_response({"ok": True, "confirmed": True, "session_key": session_key})
+
     async def bills(request: web.Request) -> web.Response:
         principal, legacy_read_only = await public_consensus_request(request)
         requested_mode = (
@@ -2344,6 +2381,7 @@ def create_consensus_web_app(
     app.router.add_get("/api/tasks", tasks_api)
     app.router.add_post("/api/tasks", tasks_api)
     app.router.add_get("/api/state", state)
+    app.router.add_post("/api/attendance", attendance)
     app.router.add_get("/api/bills", bills)
     register_consensus_preparation_routes(
         app,

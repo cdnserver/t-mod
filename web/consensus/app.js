@@ -1901,7 +1901,6 @@ function renderExperience(data) {
   );
   const switcher = byId("experience-switch");
   switcher.hidden = !available;
-  if (!available) selectedExperience = "broadcast";
   if (!new Set(["broadcast", "ballot"]).has(selectedExperience)) {
     selectedExperience = "ballot";
   }

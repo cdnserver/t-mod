@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { LunarTexture } from "./LunarTexture";
-import { ConstellationClock } from "./ConstellationClock";
 import technologies from "./assets/blackbird/technologies-signature.png";
-import observatory from "./assets/blackbird/observatory-constellations-v1.png";
 import "./blackbird-idle.css";
 
-/** Blackbird's own calm observatory. No inherited T-Mod vault or spinning cube. */
+const stars = Array.from({ length: 42 }, (_, index) => ({
+  left: `${(index * 137.53 + 11) % 100}%`, top: `${(index * 73.19 + 17) % 94}%`,
+  size: index % 13 === 0 ? "2px" : "1px",
+  delay: `${(index * 1.73) % 11}s`,
+}));
+
+/** A cinematic pause, distinct from the old T-Mod vault and star-digit clock. */
 export function BlackbirdIdle({ name, reduced, unlocking, onMinimize }: { name: string; reduced: boolean; unlocking: boolean; onMinimize: () => void }) {
   const [now, setNow] = useState(() => new Date());
-  const skyImage = useRef<HTMLImageElement>(null);
-  const starflight = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const update = () => setNow(new Date());
     const timer = window.setInterval(update, 1000);
@@ -18,19 +20,17 @@ export function BlackbirdIdle({ name, reduced, unlocking, onMinimize }: { name: 
   }, []);
   const hour = now.getHours();
   const greeting = hour < 6 ? "Доброй ночи" : hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
+  const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
   return <section className={`bb-idle ${reduced ? "still" : ""} ${unlocking ? "leaving" : ""}`} aria-label="Blackbird · экран ожидания">
-    <div className="bbi-sky" aria-hidden="true"><img ref={skyImage} src={observatory} alt=""/></div>
-    <div className="bbi-horizon" aria-hidden="true"/>
-    <canvas ref={starflight} className="bbi-starflight" aria-hidden="true"/>
-    <svg className="bbi-meteors" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-      <path className="bbi-meteor-trail one" d="M-90 105 C330 172 720 278 1260 508"/>
-      <path className="bbi-meteor-trail two" d="M170 -110 C475 55 855 250 1310 542"/>
-      <path className="bbi-meteor-trail three" d="M-75 368 C340 352 790 418 1240 615"/>
-    </svg>
+    <div className="bbi-sky" aria-hidden="true">{stars.map((star, index) => <i key={index} style={{ left: star.left, top: star.top, width: star.size, height: star.size, animationDelay: star.delay }}/>)}</div>
+    <div className="bbi-halo" aria-hidden="true"/>
+    <svg className="bbi-orbits" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><path d="M-270 716 C174 82 752 -144 1555 217"/><path className="bbi-far-orbit" d="M-260 782 C344 205 964 157 1604 488"/><circle cx="1151" cy="116" r="2.2"/><circle cx="326" cy="475" r="1.5"/></svg>
+    <div className="bbi-traveler" aria-hidden="true"><i/><i/></div>
     <div className="bbi-moon" aria-hidden="true"><LunarTexture reduced={reduced}/></div>
-    <header><span>BLACKBIRD <i/> OBSERVATORY</span><button onClick={onMinimize} aria-label="Свернуть приложение">−</button></header>
-    <main><div className="bbi-date">{now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" })}</div><time dateTime={now.toISOString()}><ConstellationClock time={now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} reduced={reduced} skyImage={skyImage} starflight={starflight}/></time><div className="bbi-divider"/><h1>{greeting}{name ? `, ${name}` : ""}.</h1><p>Пусть следующая мысль будет ясной.</p></main>
+    <div className="bbi-moon-shadow" aria-hidden="true"/>
+    <header><span>BLACKBIRD <i/> ПАУЗА</span><button onClick={onMinimize} aria-label="Свернуть приложение">−</button></header>
+    <main><div className="bbi-scene-index">01 / МОМЕНТ ТИШИНЫ</div><div className="bbi-date">{now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" })}</div><time key={time} dateTime={now.toISOString()}>{time}</time><div className="bbi-divider"/><h1>{greeting}{name ? `, ${name}` : ""}.</h1><p>Вы на паузе. Ваше пространство остаётся рядом.</p></main>
     <div className="bbi-signature" aria-hidden="true"><img src={technologies} alt=""/></div>
-    <footer><span>Ваше пространство ждёт.</span><small>Нажмите клавишу, чтобы продолжить <b>↵</b></small></footer>
+    <footer><span><i/> СЕАНС ЗАЩИЩЁН</span><small>Нажмите любую клавишу <b>↵</b></small></footer>
   </section>;
 }

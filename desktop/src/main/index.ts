@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -12,6 +13,7 @@ import {
   screen,
   session,
   shell,
+  Tray,
   WebContentsView,
 } from "electron";
 import type { WebContents } from "electron";
@@ -36,6 +38,8 @@ import {
 } from "../shared/services";
 import type {
   BootstrapResult,
+  ConsensusRegistrationNotice,
+  ConsensusLiveSnapshot,
   DesktopBootstrap,
   DesktopLoginCredentials,
   DesktopLoginResult,
@@ -47,6 +51,8 @@ import type {
   ServiceId,
 } from "../shared/contracts";
 import { desktopProduct } from "../shared/product";
+import { parseServiceDeepLink, serviceForDeepLink } from "../shared/service-deep-link";
+import type { ServiceDeepLink } from "../shared/service-deep-link";
 import { normalizeIntroStyle, serviceBounds } from "../shared/shell-layout";
 
 const { autoUpdater } = electronUpdater;
@@ -107,8 +113,12 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let communicateWindow: BrowserWindow | null = null;
 let pendingCommunicateShare = "";
+let pendingServiceDeepLink: ServiceDeepLink | null = process.argv
+  .map((argument) => parseServiceDeepLink(argument, desktopProduct.protocol))
+  .find((link): link is ServiceDeepLink => link !== null) || null;
 let notificationPopup: NotificationPopup | undefined;
 let serviceView: WebContentsView | null = null;
 let activeService: ServiceId = "home";
@@ -117,6 +127,9 @@ let lastServiceError: string | undefined;
 let shellOverlayOpen = false;
 let updateTimer: ReturnType<typeof setInterval> | undefined;
 let notificationPollTimer: ReturnType<typeof setInterval> | undefined;
+let consensusPollTimer: ReturnType<typeof setInterval> | undefined;
+let consensusPollInFlight = false;
+let lastConsensusPromptKey = "";
 let notificationPollInFlight = false;
 let forcedUpdateInstallTimer: ReturnType<typeof setTimeout> | undefined;
 let idleLockTimer: ReturnType<typeof setInterval> | undefined;
@@ -342,6 +355,57 @@ function emitState(): void {
   }
 }
 
+async function pollConsensusRegistration(): Promise<void> {
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || consensusPollInFlight || desktopLocked || !mainWindow) return;
+  consensusPollInFlight = true;
+  try {
+    const response = await desktopSession().fetch("https://consensus.tvr.lat/api/state?mode=live&fresh=1", {
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return;
+    const state = await response.json() as { session?: { key?: string; stage?: string; plenary_number?: number }; viewer?: { id?: number; participant?: boolean; confirmed?: boolean; csrf_token?: string } };
+    if (state.viewer?.id !== lastSuccessfulBootstrap.viewer.id || state.session?.stage !== "registration" || !state.viewer.participant || state.viewer.confirmed || !state.viewer.csrf_token || !state.session.key) return;
+    const promptKey = `${state.viewer.id}:${state.session.key}`;
+    if (lastConsensusPromptKey === promptKey) return;
+    lastConsensusPromptKey = promptKey;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send("desktop:consensus-registration", {
+      sessionKey: state.session.key, plenaryNumber: Number(state.session.plenary_number) || 0, csrfToken: state.viewer.csrf_token,
+    } satisfies ConsensusRegistrationNotice);
+  } catch (error) { log.debug("Consensus registration poll unavailable", error); }
+  finally { consensusPollInFlight = false; }
+}
+
+async function readConsensusLiveState(): Promise<ConsensusLiveSnapshot | null> {
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap) return null;
+  try {
+    const response = await desktopSession().fetch("https://consensus.tvr.lat/api/state?mode=live&fresh=1", {
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as {
+      session?: { key?: string; plenary_number?: number; stage?: string; stage_label?: string; quorum?: { confirmed?: number; invited?: number; ready?: boolean }; current_bill?: { title?: string } } | null;
+      viewer?: { id?: number; confirmed?: boolean; ballot_available?: boolean };
+    };
+    if (data.viewer?.id !== lastSuccessfulBootstrap.viewer.id) return null;
+    const session = data.session;
+    return {
+      sessionKey: session?.key || null,
+      plenaryNumber: Number(session?.plenary_number) || 0,
+      stage: session?.stage || "idle",
+      stageLabel: session?.stage_label || "Ожидание",
+      confirmed: data.viewer.confirmed === true,
+      ballotAvailable: data.viewer.ballot_available === true,
+      confirmedCount: Number(session?.quorum?.confirmed) || 0,
+      invitedCount: Number(session?.quorum?.invited) || 0,
+      quorumReady: session?.quorum?.ready === true,
+      currentBillTitle: session?.current_bill?.title || null,
+    };
+  } catch (error) { log.debug("Consensus live state unavailable", error); return null; }
+}
+
 function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
   updateState = {
     ...updateState,
@@ -516,7 +580,7 @@ function normalizePreferences(value: unknown): DesktopShellPreferences {
     controlBar: candidate.controlBar === "vertical" ? "vertical" : "horizontal",
     sidebarCollapsed: candidate.sidebarCollapsed === true,
     compactMode: candidate.compactMode === true,
-    reduceMotion: candidate.reduceMotion === true,
+    reduceMotion: false,
     solidSurfaces: candidate.solidSurfaces === true,
     serviceZoom: [0.9, 1, 1.1].includes(zoom) ? zoom : 1,
     idleLockMinutes: [0, 5, 10, 15, 30].includes(idleLockMinutes) ? idleLockMinutes : 10,
@@ -702,6 +766,7 @@ function unlockDesktop(): boolean {
   desktopLocked = false;
   syncServiceVisibility();
   if (!shellOverlayOpen && serviceView?.getVisible()) serviceView.webContents.focus();
+  void openPendingServiceDeepLink();
   return true;
 }
 
@@ -794,7 +859,7 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
   });
 }
 
-async function navigate(serviceId: ServiceId): Promise<DesktopState> {
+async function navigate(serviceId: ServiceId, requestedUrl?: string): Promise<DesktopState> {
   if (!serviceView || !mainWindow) return state();
   clearServiceRetry();
   const retryAfterError = Boolean(lastServiceError);
@@ -817,7 +882,9 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
     emitState();
     return state();
   }
-  if (!target || !isTrustedTModUrl(target)) {
+  const requested = requestedUrl ? serviceForDeepLink(requestedUrl) : null;
+  if (!target || !isTrustedTModUrl(target) ||
+    (requestedUrl && requested?.serviceId !== serviceId)) {
     lastServiceError = "service_route_invalid";
     serviceLoading = false;
     syncServiceVisibility();
@@ -828,10 +895,11 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
   syncServiceVisibility();
   serviceLoading = true;
   emitState();
+  const destination = requested?.url || target;
   const current = serviceView.webContents.getURL();
-  if (current !== target || retryAfterError) {
+  if (current !== destination || retryAfterError) {
     try {
-      await serviceView.webContents.loadURL(target);
+      await serviceView.webContents.loadURL(destination);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!scheduleServiceRetry(-2, message)) {
@@ -846,6 +914,27 @@ async function navigate(serviceId: ServiceId): Promise<DesktopState> {
     emitState();
   }
   return state();
+}
+
+function receiveServiceDeepLink(value: string): void {
+  const parsed = parseServiceDeepLink(value, desktopProduct.protocol);
+  if (!parsed) return;
+  pendingServiceDeepLink = parsed;
+  void openPendingServiceDeepLink();
+}
+
+async function openPendingServiceDeepLink(): Promise<void> {
+  const link = pendingServiceDeepLink;
+  if (!link || !mainWindow || !serviceView || desktopLocked) return;
+  // Before login the link waits for a fresh service manifest. Once the
+  // account is known, a denied contour must show the existing access error
+  // instead of leaving the click apparently unanswered.
+  if (!lastSuccessfulBootstrap) return;
+  pendingServiceDeepLink = null;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  await navigate(link.serviceId, link.url);
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -1019,6 +1108,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         syncNativeNotifications(data.notifications.items || []);
         await applyAtlasOverlayBootstrapSafely(data.atlas_overlay);
         if (revision !== bootstrapRevision) return { authenticated: false, online: false, error: "session_superseded" };
+        queueMicrotask(() => void openPendingServiceDeepLink());
       }
       return {
         authenticated: true,
@@ -1380,6 +1470,22 @@ function registerIpc(): void {
     return true;
   });
   ipcMain.handle("desktop:lock", (event) => trusted(event) ? lockDesktop("manual") : false);
+  ipcMain.handle("desktop:consensus-confirm", async (event, input: unknown) => {
+    if (!trusted(event) || !lastSuccessfulBootstrap || !input || typeof input !== "object") return false;
+    const notice = input as Partial<ConsensusRegistrationNotice>;
+    if (typeof notice.sessionKey !== "string" || !notice.sessionKey || notice.sessionKey.length > 128 || typeof notice.csrfToken !== "string" || notice.csrfToken.length > 256) return false;
+    try {
+      const response = await desktopSession().fetch("https://consensus.tvr.lat/api/attendance", {
+        method: "POST", credentials: "include", signal: AbortSignal.timeout(12_000),
+        headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": notice.csrfToken },
+        body: JSON.stringify({ session_key: notice.sessionKey }),
+      });
+      return response.ok && (await response.json() as { confirmed?: boolean }).confirmed === true;
+    } catch (error) { log.warn("Consensus attendance confirmation unavailable", error); return false; }
+  });
+  ipcMain.handle("desktop:consensus-state", event => trusted(event) ? readConsensusLiveState() : null);
+  ipcMain.handle("desktop:consensus-ballot", event => trusted(event) && desktopProduct.privateEdition
+    ? navigate("consensus", "https://consensus.tvr.lat/?view=ballot") : state());
   ipcMain.handle("desktop:unlock", (event) => trusted(event) ? unlockDesktop() : false);
   ipcMain.handle("desktop:open-login", async (event) => {
     if (!trusted(event) || !serviceView) return state();
@@ -1411,7 +1517,9 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle("desktop:minimize", (event) => {
-    if (trusted(event)) mainWindow?.minimize();
+    if (!trusted(event)) return;
+    if (desktopProduct.privateEdition && tray) mainWindow?.hide();
+    else mainWindow?.minimize();
   });
   ipcMain.handle("desktop:maximize", (event) => {
     if (!trusted(event) || !mainWindow) return;
@@ -1520,6 +1628,23 @@ async function createWindow(): Promise<void> {
     },
   });
 
+  // The service renderer has its own media-query environment. Keep the
+  // application's animation policy independent of Windows accessibility flags.
+  if (desktopProduct.privateEdition) {
+    const contents = serviceView.webContents;
+    const enforceMotion = () => {
+      if (contents.isDestroyed()) return;
+      try {
+        if (!contents.debugger.isAttached()) contents.debugger.attach();
+        void contents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+        }).catch(error => log.warn("Service motion override unavailable", error));
+      } catch (error) { log.warn("Could not attach service motion policy", error); }
+    };
+    enforceMotion();
+    contents.on("did-finish-load", enforceMotion);
+  }
+
   secureContents(mainWindow.webContents, { local: true });
   secureContents(serviceView.webContents, { local: false });
   serviceView.webContents.setUserAgent(
@@ -1557,6 +1682,7 @@ async function createWindow(): Promise<void> {
 
   atlasOverlay = new AtlasOverlayController({
     networkSession: desktopSession,
+    openAtlas: async () => { await navigate("atlas"); },
     preloadPath: path.join(bundleDirectory, "../preload/overlay.cjs"),
     rendererUrl: process.env.ELECTRON_RENDERER_URL
       ? new URL("overlay.html", `${process.env.ELECTRON_RENDERER_URL}/`).toString()
@@ -1669,6 +1795,10 @@ async function createWindow(): Promise<void> {
       event.preventDefault();
       mainWindow?.webContents.send("desktop:command-palette");
     }
+    if ((input.control || input.meta) && (input.code === "Backquote" || input.key === "`")) {
+      event.preventDefault();
+      mainWindow?.webContents.send("desktop:command-console");
+    }
   });
 
   mainWindow.on("resize", positionViews);
@@ -1706,18 +1836,25 @@ const ownsInstanceLock = app.requestSingleInstanceLock();
 if (!ownsInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
+    for (const argument of commandLine) receiveServiceDeepLink(argument);
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
+  });
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    receiveServiceDeepLink(url);
   });
 }
 
 app.whenReady().then(async () => {
   if (!ownsInstanceLock) return;
   app.setAppUserModelId(desktopProduct.appId);
-  app.setAsDefaultProtocolClient(desktopProduct.protocol);
+  if (!app.setAsDefaultProtocolClient(desktopProduct.protocol)) {
+    log.warn(`${desktopProduct.protocol} URL protocol registration failed`);
+  }
   registerIpc();
   if (desktopProduct.privateEdition) notificationPopup = new NotificationPopup(bundleDirectory, item => {
     if (item.id > 0) void markNotificationsRead([item.id]);
@@ -1734,11 +1871,34 @@ app.whenReady().then(async () => {
   notificationPopup?.configure(shellPreferences.notificationCorner, shellPreferences.notificationDurationSeconds);
   configureAutoUpdater();
   await createWindow();
+  if (desktopProduct.privateEdition && process.platform === "win32") {
+    const icon = nativeImage.createFromPath(path.join(app.getAppPath(), "resources", "blackbird", "icon.ico"));
+    if (!icon.isEmpty()) {
+      tray = new Tray(icon);
+      tray.setToolTip("Blackbird · Технологии Товарищества");
+      const reveal = () => { if (mainWindow?.isMinimized()) mainWindow.restore(); mainWindow?.show(); mainWindow?.focus(); };
+      tray.on("double-click", reveal);
+      tray.setContextMenu(Menu.buildFromTemplate([
+        { label: "Открыть Blackbird", click: reveal },
+        { type: "separator" },
+        { label: "Atlas", click: () => { reveal(); void navigate("atlas"); } },
+        { label: "Сенат", click: () => { reveal(); void navigate("reactor"); } },
+        { label: "Заблокировать", click: () => { reveal(); lockDesktop("manual"); } },
+        { type: "separator" },
+        { label: "Проверить обновления", click: () => { void checkForUpdates(); } },
+        { label: "Выйти из Blackbird", click: () => app.quit() },
+      ]));
+    } else log.warn("Blackbird tray icon unavailable");
+  }
   screen.on("display-added", () => atlasOverlay?.onDisplaysChanged());
   screen.on("display-removed", () => atlasOverlay?.onDisplaysChanged());
   screen.on("display-metrics-changed", () => atlasOverlay?.onDisplaysChanged());
   startIdleLockMonitor();
   if (desktopProduct.privateEdition) notificationPollTimer = setInterval(() => void pollNotifications(), 6_000);
+  if (desktopProduct.privateEdition) {
+    consensusPollTimer = setInterval(() => void pollConsensusRegistration(), 12_000);
+    void pollConsensusRegistration();
+  }
   setUpdateState({});
 
   app.on("activate", () => {
@@ -1760,8 +1920,11 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  tray?.destroy();
+  tray = null;
   if (updateTimer) clearInterval(updateTimer);
   if (notificationPollTimer) clearInterval(notificationPollTimer);
+  if (consensusPollTimer) clearInterval(consensusPollTimer);
   if (idleLockTimer) clearInterval(idleLockTimer);
   if (authProjectionTimer) clearTimeout(authProjectionTimer);
   if (forcedUpdateInstallTimer) clearTimeout(forcedUpdateInstallTimer);

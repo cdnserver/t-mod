@@ -3,6 +3,8 @@ import type {
   BootstrapResult,
   DesktopLoginCredentials,
   DesktopLoginResult,
+  ConsensusRegistrationNotice,
+  ConsensusLiveSnapshot,
   DesktopLockReason,
   DesktopState,
   DesktopShellPreferences,
@@ -72,6 +74,19 @@ const api: TModDesktopApi = {
     ipcRenderer.on("desktop:command-palette", handler);
     return () => ipcRenderer.removeListener("desktop:command-palette", handler);
   },
+  onCommandConsole: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("desktop:command-console", handler);
+    return () => ipcRenderer.removeListener("desktop:command-console", handler);
+  },
+  onConsensusRegistration: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, notice: ConsensusRegistrationNotice) => listener(notice);
+    ipcRenderer.on("desktop:consensus-registration", handler);
+    return () => ipcRenderer.removeListener("desktop:consensus-registration", handler);
+  },
+  confirmConsensusRegistration: (notice: ConsensusRegistrationNotice) => ipcRenderer.invoke("desktop:consensus-confirm", notice) as Promise<boolean>,
+  consensusLiveState: () => ipcRenderer.invoke("desktop:consensus-state") as Promise<ConsensusLiveSnapshot | null>,
+  openConsensusBallot: () => ipcRenderer.invoke("desktop:consensus-ballot") as Promise<DesktopState>,
   onNotifications: listener => {
     const handler = () => listener();
     ipcRenderer.on("desktop:open-notifications", handler);

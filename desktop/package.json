@@ -48,6 +48,12 @@
     "generateUpdatesFilesForAllChannels": true,
     "appId": "lat.tvr.tmod.desktop",
     "productName": "T-Mod",
+    "protocols": [
+      {
+        "name": "T-Mod service link",
+        "schemes": ["tmod"]
+      }
+    ],
     "artifactName": "T-Mod-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release",

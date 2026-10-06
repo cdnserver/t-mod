@@ -1,6 +1,9 @@
 import type { ServiceId } from "./contracts";
 export type BlackbirdWorkspace = "atlas" | "senate";
 export const SENATE_SERVICES: ServiceId[] = ["reactor", "consensus", "tasks", "sgl", "ovr", "games", "admin"];
+export function showSenateService(id: ServiceId, access: Map<string, { enabled: boolean }>): boolean {
+  return !(["tasks", "ovr", "admin"] as ServiceId[]).includes(id) || access.get(id)?.enabled === true;
+}
 export function workspaceForService(id: ServiceId): BlackbirdWorkspace | null {
   return id === "home" ? null : id === "atlas" ? "atlas" : "senate";
 }

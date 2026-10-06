@@ -3,7 +3,6 @@ import {
   desktopCapturer,
   globalShortcut,
   screen,
-  shell,
   type Session,
 } from "electron";
 import { randomUUID } from "node:crypto";
@@ -245,6 +244,7 @@ interface AtlasBootstrapPayload {
 
 interface AtlasOverlayControllerOptions {
   networkSession: () => Session;
+  openAtlas: () => Promise<void>;
   preloadPath: string;
   rendererUrl?: string;
   rendererFile: string;
@@ -754,7 +754,7 @@ export class AtlasOverlayController {
   }
 
   async openAtlas(): Promise<void> {
-    await shell.openExternal("https://dash.tvr.lat/");
+    await this.options.openAtlas();
   }
 
   reportSpeech(active: boolean): void {

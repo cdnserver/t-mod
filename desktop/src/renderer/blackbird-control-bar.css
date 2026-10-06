@@ -1,6 +1,6 @@
 /* Matches native serviceBounds: 44px horizontal / 48px right-hand rail. */
 .desktop.edition-blackbird { --topbar:44px; --control-right:0px; }
-.edition-blackbird .topbar { padding:0 8px 0 12px; backdrop-filter:blur(18px); }
+.edition-blackbird .topbar { padding:0 8px 0 12px; background:linear-gradient(180deg,#1b1d21f5,#14161af6);border-bottom:1px solid #d7e5f51a;box-shadow:0 12px 24px #03040838;backdrop-filter:blur(24px); }
 .edition-blackbird .top-actions,.edition-blackbird .browser-tools { gap:0; }
 .edition-blackbird .browser-tools { -webkit-app-region:drag; }
 .edition-blackbird .browser-tools > button { -webkit-app-region:no-drag; }
@@ -19,6 +19,15 @@
 .bb-atlas-usage .bb-usage-track { stroke:#ffffff12;stroke-width:1.8; }
 .bb-atlas-usage .bb-usage-ring { stroke-width:1.8;transform:rotate(-90deg);transform-origin:center;transition:stroke-dasharray 1s ease; }
 .bb-atlas-usage.stale { opacity:.55; }
+.bb-atlas-usage-anchor{position:relative;-webkit-app-region:no-drag}
+.bb-atlas-usage:hover,.bb-atlas-usage[aria-expanded=true]{color:#e7f4ff;background:#b7d7f014;border-radius:9px}
+.bb-atlas-usage-popover{position:absolute;z-index:1200;top:39px;right:-12px;width:300px;padding:18px;color:#eaf2f8;background:linear-gradient(145deg,#222830,#161a20);border:1px solid #bed0df35;border-radius:16px;box-shadow:0 20px 60px #0009,0 0 0 1px #ffffff08;animation:bb-usage-arrive .3s cubic-bezier(.16,1,.3,1)}
+.bb-atlas-usage-popover header,.bb-atlas-usage-popover footer{display:flex;justify-content:space-between;align-items:center}
+.bb-atlas-usage-popover header span{font-size:10px;letter-spacing:.16em;color:#a9b9ca}.bb-atlas-usage-popover header button{border:0;background:none;color:#9eabb8;font-size:24px;cursor:pointer}
+.bb-atlas-usage-popover>strong{display:block;margin-top:26px;font-size:35px;font-weight:500;letter-spacing:-.05em;font-variant-numeric:tabular-nums}.bb-atlas-usage-popover>strong small{font-size:15px;color:#afc4d6;letter-spacing:0}
+.bb-atlas-usage-popover p{font-size:12px;color:#9aa8b7;margin:7px 0 20px}.bb-atlas-usage-bar{height:5px;border-radius:8px;background:#b7cfe71c;overflow:hidden}.bb-atlas-usage-bar i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#7ea5c5,#d8e8f8);transition:width .8s ease}
+.bb-atlas-usage-popover footer{margin-top:17px;font-size:11px;color:#9facb8}.bb-atlas-usage-popover footer button{border:0;background:none;color:#dceafa;cursor:pointer;font-size:11px}
+@keyframes bb-usage-arrive{from{opacity:0;transform:translateY(-8px) scale(.96);filter:blur(5px)}to{opacity:1;transform:none;filter:none}}
 .control-bar-vertical .bb-atlas-usage { flex-direction:column;gap:2px;padding:5px 0; }
 .reduce-motion .bb-history-button,.reduce-motion .bb-usage-ring { transition:none!important; }
 .edition-blackbird .circle-action,.edition-blackbird .browser-tools > button { width:30px; height:30px; border-radius:6px; }
@@ -37,6 +46,11 @@
 .edition-blackbird .bb-profile-trigger { padding:1px; }
 .edition-blackbird .bb-profile-menu { top:37px; }
 .edition-blackbird .topbar button:focus-visible { outline:2px solid #b8cde5; outline-offset:2px; }
+.edition-blackbird .topbar .circle-action,.edition-blackbird .browser-tools>.bb-history-button{color:#a9b6c1;border:1px solid transparent;transition:color .22s,border-color .22s,background .22s,transform .22s,opacity .22s,width .28s,height .28s,margin .28s}
+.edition-blackbird .topbar .circle-action:hover,.edition-blackbird .browser-tools>.bb-history-button:hover{color:#e9f2fa;background:#d3e6f317;border-color:#d3e6f326;transform:translateY(-1px)}
+.edition-blackbird .topbar .circle-action:active{transform:scale(.94)}
+.edition-blackbird .top-actions{padding-left:8px}.edition-blackbird .browser-tools{min-width:0}.edition-blackbird .surface-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.edition-blackbird .surface-title strong{font-weight:500;letter-spacing:.01em}
+.edition-blackbird .bb-console-trigger{color:#abc8d8}.edition-blackbird .bb-console-trigger:hover{color:#e2f7ff}
 .edition-blackbird .atlas-overlay-shortcut { min-width:30px; width:30px; height:30px; padding:0; justify-content:center; }
 .edition-blackbird .atlas-overlay-shortcut > span { display:none; }
 .edition-blackbird .bb-settings-page { right:var(--control-right); }
@@ -47,6 +61,7 @@
 .edition-blackbird.control-bar-vertical .surface-title,.edition-blackbird.control-bar-vertical .channel-badge { display:none; }
 .edition-blackbird.control-bar-vertical .top-actions { margin:12px 0 0; width:100%; flex:1; display:flex; align-items:center; flex-direction:column; gap:6px; }
 .edition-blackbird.control-bar-vertical .top-actions { gap:0; }
+.edition-blackbird.control-bar-vertical .bb-atlas-usage-popover{position:fixed;top:12px;right:58px}
 .edition-blackbird.control-bar-vertical .top-actions > button:not(.bb-dynamic-action),.edition-blackbird.control-bar-vertical .top-actions > .bb-profile-anchor { margin:6px 0 0; }
 .edition-blackbird.control-bar-vertical .top-actions > .bb-dynamic-action.shown { margin:6px 0 0; }
 .edition-blackbird.control-bar-vertical .top-actions > .bb-dynamic-action:not(.shown) { width:30px!important;height:0;transform:translateY(-6px); }

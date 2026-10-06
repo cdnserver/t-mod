@@ -86,6 +86,25 @@ export interface BootstrapResult {
   lastSuccessfulAt?: string;
 }
 
+export interface ConsensusRegistrationNotice {
+  sessionKey: string;
+  plenaryNumber: number;
+  csrfToken: string;
+}
+
+export interface ConsensusLiveSnapshot {
+  sessionKey: string | null;
+  plenaryNumber: number;
+  stage: string;
+  stageLabel: string;
+  confirmed: boolean;
+  ballotAvailable: boolean;
+  confirmedCount: number;
+  invitedCount: number;
+  quorumReady: boolean;
+  currentBillTitle: string | null;
+}
+
 export interface DesktopShellPreferences {
   introStyle: "letters" | "veil" | "light";
   controlBar: "horizontal" | "vertical";
@@ -201,6 +220,11 @@ export interface TModDesktopApi {
   onState(listener: (state: DesktopState) => void): () => void;
   onAuthChanged(listener: () => void): () => void;
   onCommandPalette(listener: () => void): () => void;
+  onCommandConsole(listener: () => void): () => void;
+  onConsensusRegistration(listener: (notice: ConsensusRegistrationNotice) => void): () => void;
+  confirmConsensusRegistration(notice: ConsensusRegistrationNotice): Promise<boolean>;
+  consensusLiveState(): Promise<ConsensusLiveSnapshot | null>;
+  openConsensusBallot(): Promise<DesktopState>;
   onNotifications(listener: () => void): () => void;
   onAtlasOverlaySettings(listener: () => void): () => void;
   onLockRequested(listener: (reason: DesktopLockReason) => void): () => void;
