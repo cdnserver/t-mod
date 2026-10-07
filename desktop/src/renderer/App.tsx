@@ -1151,7 +1151,7 @@ export function App() {
           <div className="identity-row">
           <button className="identity" onClick={() => bootstrap.authenticated ? void selectService("reactor") : void selectService("home")}>
             <span className="avatar">{userName.slice(0, 1).toUpperCase()}</span>
-            <span><strong>{bootstrap.authenticated ? userName : `Войти в ${desktopProduct.name}`}</strong><small>{bootstrap.data?.viewer.account_tier === "administrator" ? "Администратор" : bootstrap.data?.viewer.guild_member ? "Товарищество" : "Единый аккаунт"}</small></span>
+            <span><strong>{bootstrap.authenticated ? userName : `Войти в ${desktopProduct.name}`}</strong><small>{bootstrap.data?.viewer.account_tier === "administrator" ? "Администратор" : (bootstrap.data?.viewer.fellowship_member ?? bootstrap.data?.viewer.guild_member) ? "Товарищество" : "Единый аккаунт"}</small></span>
             <span className="identity-arrow">›</span>
           </button>
           {bootstrap.authenticated && <button className="logout-button" onClick={() => void logout()} title="Выйти из аккаунта"><Icon name="logout"/></button>}
@@ -1567,7 +1567,7 @@ function Home({
     );
   }
 
-  const tier = bootstrap.data?.viewer.administrator ? "Полный контур" : bootstrap.data?.viewer.guild_member ? "Контур Товарищества" : "Базовый контур";
+  const tier = bootstrap.data?.viewer.administrator ? "Полный контур" : (bootstrap.data?.viewer.fellowship_member ?? bootstrap.data?.viewer.guild_member) ? "Контур Товарищества" : "Базовый контур";
   if (desktopProduct.privateEdition) {
     return (
       <BlackbirdHub

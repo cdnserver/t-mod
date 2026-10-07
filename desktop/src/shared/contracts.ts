@@ -57,6 +57,7 @@ export interface DesktopBootstrap {
     avatar_url?: string | null;
     account_tier: "zero" | "member" | "administrator";
     guild_member: boolean;
+    fellowship_member?: boolean;
     administrator: boolean;
     sections: string[];
   };

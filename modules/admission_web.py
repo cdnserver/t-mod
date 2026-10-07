@@ -11,15 +11,31 @@ from typing import Any
 import discord
 from aiohttp import web
 
-from modules.admission import evaluate_answers, notify_ovr_desks, public_questions
+from modules.admission import (
+    ensure_fellowship_role,
+    evaluate_answers,
+    notify_chair_desks,
+    notify_ovr_desks,
+    public_questions,
+)
 from modules.consensus_web_auth import csrf_matches, resolve_principal
 from modules.delivery_runtime import wake_delivery_worker
-from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
+from modules.tvrs_config import TVRS_FELLOWSHIP_ROLE_ID, TVRS_SENATOR_ROLE_ID
+from modules.tvrs_presentation import is_chair
 from persistence import admission_repository as admission_storage
 from persistence import profile_repository as profile_storage
 
 
 logger = logging.getLogger(__name__)
+
+
+def _can_review(principal: Any) -> bool:
+    if bool(getattr(principal, "administrator", False)):
+        return True
+    member = getattr(principal, "member", None)
+    if member is None or not hasattr(member, "guild_permissions"):
+        return False
+    return bool(is_chair(member))
 
 
 def _character_payload(character: Any) -> dict[str, Any]:
@@ -67,6 +83,8 @@ def register_admission_web_routes(
             "characters": [],
             "csrf_token": None,
             "viewer": None,
+            "can_review": False,
+            "pending_reviews": [],
         }
         if principal is None:
             return web.json_response(payload)
@@ -86,10 +104,22 @@ def register_admission_web_routes(
             int(getattr(role, "id", 0) or 0)
             for role in getattr(principal.member, "roles", ())
         }
+        can_review = _can_review(principal)
+        pending_reviews = (
+            await asyncio.to_thread(
+                admission_storage.pending_leadership_applications,
+                int(guild_id),
+            )
+            if can_review
+            else []
+        )
         payload.update(
             {
                 "account_required": not bool(characters),
                 "already_senator": int(TVRS_SENATOR_ROLE_ID) in role_ids,
+                "already_member": int(TVRS_FELLOWSHIP_ROLE_ID) in role_ids,
+                "can_review": can_review,
+                "pending_reviews": pending_reviews,
                 "viewer": {
                     "id": int(principal.user_id),
                     "name": str(principal.display_name),
@@ -139,11 +169,41 @@ def register_admission_web_routes(
             int(getattr(role, "id", 0) or 0)
             for role in getattr(principal.member, "roles", ())
         }
-        if int(TVRS_SENATOR_ROLE_ID) in role_ids:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "invalid_payload", "message": "Форма повреждена."},
+                status=400,
+            )
+        # Cached v2 clients did not send the field and represented the Senate
+        # flow exclusively, so omission deliberately keeps the old behaviour.
+        application_kind = str(
+            body.get("application_kind") or "senate"
+        ).strip().lower()
+        if application_kind not in admission_storage.ADMISSION_KINDS:
+            return web.json_response(
+                {
+                    "error": "admission_kind_invalid",
+                    "message": "Выберите: Товарищество или Сенат Товарищества.",
+                },
+                status=400,
+            )
+        if application_kind == "senate" and int(TVRS_SENATOR_ROLE_ID) in role_ids:
             return web.json_response(
                 {
                     "error": "admission_already_senator",
                     "message": "У вас уже есть мандат сенатора Товарищества.",
+                },
+                status=409,
+            )
+        if application_kind == "community" and int(TVRS_FELLOWSHIP_ROLE_ID) in role_ids:
+            return web.json_response(
+                {
+                    "error": "admission_already_member",
+                    "message": "Вы уже являетесь участником Товарищества.",
                 },
                 status=409,
             )
@@ -161,16 +221,11 @@ def register_admission_web_routes(
                 status=409,
             )
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, TypeError):
-            body = None
-        if not isinstance(body, dict):
-            return web.json_response(
-                {"error": "invalid_payload", "message": "Форма повреждена."},
-                status=400,
+            answers, traits = (
+                evaluate_answers(body.get("answers"))
+                if application_kind == "senate"
+                else ({}, {})
             )
-        try:
-            answers, traits = evaluate_answers(body.get("answers"))
             detail = await asyncio.to_thread(
                 admission_storage.submit_application,
                 guild_id=int(guild_id),
@@ -183,6 +238,7 @@ def register_admission_web_routes(
                 motivation=str(body.get("motivation") or ""),
                 contribution=str(body.get("contribution") or ""),
                 availability=str(body.get("availability") or ""),
+                application_kind=application_kind,
             )
         except ValueError as exc:
             code = str(exc)
@@ -197,6 +253,7 @@ def register_admission_web_routes(
                 "admission_motivation_invalid": "Расскажите подробнее, почему хотите вступить.",
                 "admission_contribution_invalid": "Опишите, чем сможете быть полезны.",
                 "admission_availability_invalid": "Укажите вашу доступность.",
+                "admission_kind_invalid": "Выберите траекторию вступления.",
             }
             status = 409 if code == "admission_application_already_exists" else 400
             return web.json_response(
@@ -218,17 +275,94 @@ def register_admission_web_routes(
         guild = get_guild(int(guild_id)) if callable(get_guild) else None
         if guild is not None:
             try:
-                await notify_ovr_desks(guild, detail["application"])
+                if application_kind == "community":
+                    await notify_chair_desks(guild, detail["application"])
+                else:
+                    await notify_ovr_desks(guild, detail["application"])
             except Exception:  # noqa: BLE001 - application is already durable
-                logger.exception("Could not project Phoenix application to OVR desks")
+                logger.exception("Could not project Phoenix application to review desks")
         wake_delivery_worker()
         return web.json_response(response_payload, status=201)
+
+    async def review(request: web.Request) -> web.Response:
+        principal = await resolve_principal(request, bot, guild_id=int(guild_id))
+        if principal is None:
+            return web.json_response(
+                {"error": "admission_account_required", "message": "Требуется вход."},
+                status=401,
+            )
+        if not _can_review(principal):
+            return web.json_response(
+                {
+                    "error": "admission_chair_required",
+                    "message": "Решения по заявкам принимает Совет председателей.",
+                },
+                status=403,
+            )
+        if not csrf_matches(request, principal):
+            return web.json_response(
+                {"error": "csrf_failed", "message": "Сессия обновилась."},
+                status=403,
+            )
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "invalid_payload", "message": "Решение повреждено."},
+                status=400,
+            )
+        action = str(body.get("action") or "").strip().lower()
+        if action not in {"approve", "deny"}:
+            return web.json_response(
+                {"error": "admission_decision_invalid", "message": "Выберите решение."},
+                status=400,
+            )
+        try:
+            application, changed = await asyncio.to_thread(
+                admission_storage.record_leadership_decision,
+                int(body.get("application_id") or 0),
+                guild_id=int(guild_id),
+                approved=action == "approve",
+                actor_id=int(principal.user_id),
+                actor_display=str(principal.display_name),
+                note=str(body.get("note") or ""),
+            )
+        except ValueError as exc:
+            messages = {
+                "admission_decision_note_required": "Добавьте краткую мотивировку решения.",
+                "admission_application_not_found": "Заявка не найдена.",
+                "admission_leadership_kind_invalid": "Эта заявка относится к Сенату.",
+                "admission_leadership_transition_invalid": "Заявка уже рассмотрена.",
+            }
+            return web.json_response(
+                {"error": str(exc), "message": messages.get(str(exc), "Решение не сохранено.")},
+                status=409,
+            )
+        role_projected = False
+        guild = bot.get_guild(int(guild_id)) if callable(getattr(bot, "get_guild", None)) else None
+        if changed and action == "approve" and guild is not None:
+            try:
+                role_projected = await ensure_fellowship_role(guild, application)
+            except RuntimeError:
+                logger.exception("Fellowship role projection will be retried")
+        wake_delivery_worker()
+        return web.json_response(
+            {
+                "ok": True,
+                "changed": changed,
+                "role_projected": role_projected,
+                "application": application,
+            }
+        )
 
     app.router.add_get("/admission", index)
     app.router.add_get("/admission/", index)
     app.router.add_get("/admission-assets/{name}", asset)
     app.router.add_get("/api/admission", bootstrap)
     app.router.add_post("/api/admission", submit)
+    app.router.add_post("/api/admission/review", review)
 
 
 __all__ = ["register_admission_web_routes"]

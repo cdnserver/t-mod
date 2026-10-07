@@ -94,6 +94,82 @@ class AdmissionPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "admission_application_already_exists"):
             self.submit()
 
+    def test_community_application_bypasses_ovr_and_consensus(self) -> None:
+        detail = admission_storage.submit_application(
+            guild_id=77,
+            user_id=151,
+            user_display="Участник 151",
+            application_kind="community",
+            forum_url="",
+            characters=[{"nickname": "Kim Wexler", "static_id": "151151"}],
+            answers={},
+            traits={},
+            motivation="Хочу быть частью общего круга.",
+            contribution="Готова помогать участникам и проектам.",
+            availability="Несколько вечеров в неделю.",
+        )
+        application = detail["application"]
+        self.assertEqual(application["application_kind"], "community")
+        self.assertEqual(application["status"], "chair_review")
+        self.assertIsNone(application["ovr_case_id"])
+        self.assertEqual(len(admission_storage.pending_leadership_applications(77)), 1)
+        with storage.connect_readonly() as con:
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) AS n FROM ovr_cases").fetchone()["n"],
+                0,
+            )
+
+        approved, changed = admission_storage.record_leadership_decision(
+            application["id"],
+            guild_id=77,
+            approved=True,
+            actor_id=501,
+            actor_display="Председатель",
+            note="Кандидат соответствует формату Товарищества.",
+        )
+        self.assertTrue(changed)
+        self.assertEqual(approved["status"], "membership_approved")
+        self.assertEqual(admission_storage.pending_leadership_applications(77), [])
+        self.assertEqual(len(admission_storage.approved_community_applications(77)), 1)
+
+    def test_approved_community_member_can_open_senate_path(self) -> None:
+        first = admission_storage.submit_application(
+            guild_id=77,
+            user_id=152,
+            user_display="Участник 152",
+            application_kind="community",
+            forum_url="",
+            characters=[{"nickname": "Howard Hamlin", "static_id": "152152"}],
+            answers={},
+            traits={},
+            motivation="Хочу участвовать в жизни Товарищества.",
+            contribution="Готов помогать в общих задачах.",
+            availability="По выходным.",
+        )["application"]
+        admission_storage.record_leadership_decision(
+            first["id"], guild_id=77, approved=True, actor_id=501,
+            actor_display="Председатель", note="Вступление одобрено Советом.",
+        )
+        answers, traits = evaluate_answers(self.answers())
+        upgraded = admission_storage.submit_application(
+            guild_id=77,
+            user_id=152,
+            user_display="Участник 152",
+            application_kind="senate",
+            forum_url="https://forum.majestic-rp.ru/members/howard.152/",
+            characters=[{"nickname": "Howard Hamlin", "static_id": "152152"}],
+            answers=answers,
+            traits=traits,
+            motivation="Теперь готов принять ответственность сенаторского мандата.",
+            contribution="Готов работать с инициативами и участвовать в заседаниях.",
+            availability="По выходным и вечерами.",
+        )
+        self.assertEqual(upgraded["application"]["id"], first["id"])
+        self.assertEqual(upgraded["application"]["application_kind"], "senate")
+        self.assertEqual(upgraded["application"]["status"], "ovr_review")
+        self.assertIsNotNone(upgraded["application"]["ovr_case_id"])
+        self.assertEqual(len(upgraded["events"]), 3)
+
     def test_full_decision_chain_is_idempotent_and_preserves_references(self) -> None:
         application = self.submit()["application"]
         approved, changed = admission_storage.record_ovr_decision(
@@ -412,6 +488,45 @@ class AdmissionWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["account_required"])
         self.assertEqual(payload["viewer"]["tier"], "zero")
         self.assertEqual(payload["viewer"]["name"], "Новый пользователь")
+
+    async def test_chair_can_decide_community_application_without_ovr(self) -> None:
+        application = admission_storage.submit_application(
+            guild_id=77,
+            user_id=406,
+            user_display="Кандидат 406",
+            application_kind="community",
+            forum_url="",
+            characters=[{"nickname": "Mike Ehrmantraut", "static_id": "406406"}],
+            answers={}, traits={},
+            motivation="Хочу участвовать в жизни сообщества.",
+            contribution="Готов помогать в практических задачах.",
+            availability="По вечерам.",
+        )["application"]
+        principal = SimpleNamespace(
+            user_id=501,
+            display_name="Председатель",
+            account_tier="member",
+            csrf_token="csrf-chair",
+            administrator=True,
+            member=SimpleNamespace(roles=[]),
+        )
+        with patch(
+            "modules.admission_web.resolve_principal",
+            new=AsyncMock(return_value=principal),
+        ):
+            response = await self.client.post(
+                "/api/admission/review",
+                json={
+                    "application_id": application["id"],
+                    "action": "approve",
+                    "note": "Кандидат принят решением Совета председателей.",
+                },
+                headers={"X-CSRF-Token": "csrf-chair"},
+            )
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["changed"])
+        self.assertEqual(payload["application"]["status"], "membership_approved")
 
 
 if __name__ == "__main__":

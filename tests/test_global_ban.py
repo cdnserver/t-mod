@@ -13,6 +13,7 @@ from modules.consensus_admin_web import (
 )
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
+from modules.tvrs_config import TVRS_FELLOWSHIP_ROLE_ID
 from persistence import global_ban_repository as bans
 from persistence import web_auth_repository as credentials
 
@@ -130,7 +131,7 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
             id=20,
             display_name="Участник",
             guild_permissions=SimpleNamespace(administrator=False),
-            roles=[],
+            roles=[SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))],
         )
         self.principal = ConsensusWebPrincipal(
             user_id=20,

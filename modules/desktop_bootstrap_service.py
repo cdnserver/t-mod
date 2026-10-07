@@ -119,6 +119,7 @@ async def build_desktop_bootstrap_payload(
     client_update = desktop_update_policy(headers, edition=edition)
     update_required = bool(client_update["required"])
     guild_member = bool(principal.guild_member)
+    fellowship_member = bool(principal.fellowship_member)
     administrator = bool(principal.administrator)
 
     grants, overlay_context = await asyncio.gather(
@@ -143,7 +144,7 @@ async def build_desktop_bootstrap_payload(
     avatar_url = str(getattr(getattr(principal.member, "display_avatar", None), "url", "")) or None
     if avatar_url is None:
         avatar_url = await asyncio.to_thread(access_projection_storage.get_web_avatar_url, guild_id, principal.user_id)
-    if guild_member:
+    if fellowship_member:
         profile_snapshot = await asyncio.to_thread(
             profile_storage.get_profile_snapshot,
             int(guild_id),
@@ -208,18 +209,19 @@ async def build_desktop_bootstrap_payload(
             "avatar_url": avatar_url,
             "account_tier": str(principal.account_tier),
             "guild_member": guild_member,
+            "fellowship_member": fellowship_member,
             "administrator": administrator,
             "sections": granted_sections,
         },
         "device": installation or {"trusted": False},
         "services": [
-            service("reactor", "Мой Reactor", "https://home.tvr.lat/", enabled=guild_member, reason=member_reason),
+            service("reactor", "Мой Reactor", "https://home.tvr.lat/", enabled=fellowship_member, reason=member_reason),
             service("consensus", "Consensus", "https://consensus.tvr.lat/"),
             service("atlas", "Atlas", "https://dash.tvr.lat/", enabled=atlas_access, reason="Доступ к Atlas AI выдаётся администраторами."),
             service("sgl", "SGL", "https://sgl.tvr.lat/sgl"),
             service("ovr", "ОВР", "https://ovr.tvr.lat/ovr", enabled=ovr_access, reason="Портал открывается после ручной выдачи доступа."),
-            service("games", "T-Mod Games", "https://home.tvr.lat/games", enabled=guild_member, reason=member_reason),
-            service("tasks", "Общие задачи", "https://consensus.tvr.lat/tasks", enabled=guild_member, reason=member_reason),
+            service("games", "T-Mod Games", "https://home.tvr.lat/games", enabled=fellowship_member, reason=member_reason),
+            service("tasks", "Общие задачи", "https://consensus.tvr.lat/tasks", enabled=fellowship_member, reason=member_reason),
             service("admin", "Ядерный Reactor", "https://reactor.tvr.lat/admin", enabled=admin_access, reason="Нужен административный или секционный доступ."),
         ],
         "notifications": notification_payload,

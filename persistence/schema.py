@@ -2497,6 +2497,7 @@ def init_db() -> None:
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 user_display TEXT NOT NULL,
+                application_kind TEXT NOT NULL DEFAULT 'senate',
                 forum_url TEXT NOT NULL,
                 characters_json TEXT NOT NULL DEFAULT '[]',
                 answers_json TEXT NOT NULL DEFAULT '{}',
@@ -2514,6 +2515,7 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 ovr_decided_at TEXT,
+                leadership_decided_at TEXT,
                 consensus_decided_at TEXT,
                 UNIQUE(guild_id, user_id),
                 UNIQUE(ovr_case_id),
@@ -3104,6 +3106,17 @@ def init_db() -> None:
             "affiliations": "TEXT",
         }.items():
             _add_column_if_missing(con, "ovr_cases", column, definition)
+
+        # Existing Phoenix applications predate the Fellowship/Senate split.
+        # They are Senate applications by definition and must continue through
+        # OVR and Consensus unchanged after the migration.
+        for column, definition in {
+            "application_kind": "TEXT NOT NULL DEFAULT 'senate'",
+            "leadership_decided_at": "TEXT",
+        }.items():
+            _add_column_if_missing(
+                con, "membership_applications", column, definition
+            )
 
         _add_column_if_missing(
             con,

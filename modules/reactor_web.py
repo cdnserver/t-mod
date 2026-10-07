@@ -534,7 +534,7 @@ def register_reactor_web_routes(
         principal, legacy = await authenticate(request)
         if legacy or principal is None:
             raise web.HTTPSeeOther(location="/login?next=/ovr")
-        if not principal.guild_member:
+        if not principal.fellowship_member:
             raise web.HTTPForbidden(text="Портал ОВР доступен только участникам сервера.")
         if not await has_ovr_access(principal):
             raise web.HTTPForbidden(
@@ -549,12 +549,12 @@ def register_reactor_web_routes(
                 text=json.dumps({"error": "personal_login_required"}),
                 content_type="application/json",
             )
-        if not principal.guild_member:
+        if not principal.fellowship_member:
             raise web.HTTPForbidden(
                 text=json.dumps(
                     {
                         "error": "zero_account_reactor_forbidden",
-                        "message": "Нулевой аккаунт не имеет доступа к данным Товарищества.",
+                        "message": "Доступ к персональному Реактору открывается участникам Товарищества.",
                     },
                     ensure_ascii=False,
                 ),

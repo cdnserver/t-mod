@@ -28,7 +28,7 @@ export function AccountMenu({ viewer, name, open, onOpenChange, onSettings, onLo
   }}>
     <button ref={trigger} className="bb-profile-trigger" aria-label={`Профиль: ${name}`} aria-expanded={open} aria-controls="bb-account-menu" onClick={() => onOpenChange(!open)}><AccountAvatar name={name} url={viewer.avatar_url}/></button>
     {open && <section id="bb-account-menu" className="bb-profile-menu" aria-label="Меню аккаунта">
-      <header><strong>{name}</strong><small>{viewer.display_name}</small><small>{viewer.administrator ? "Администратор" : viewer.guild_member ? "Товарищество" : "Единый аккаунт"}</small></header>
+      <header><strong>{name}</strong><small>{viewer.display_name}</small><small>{viewer.administrator ? "Администратор" : (viewer.fellowship_member ?? viewer.guild_member) ? "Товарищество" : "Единый аккаунт"}</small></header>
       <button onClick={() => { onOpenChange(false); onSettings(); }}>Мой аккаунт и настройки</button>
       <button onClick={() => { onOpenChange(false); onLock(); }}>Заблокировать приложение</button>
       <button className="danger" disabled={busy} onClick={async () => {

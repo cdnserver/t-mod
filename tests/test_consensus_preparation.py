@@ -12,6 +12,7 @@ import storage
 from modules.consensus_preparation_artifacts import generate_preparation_pdf
 from modules.consensus_web import create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal
+from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
 
 
 class _PreparationStorageCase(unittest.TestCase):
@@ -187,7 +188,7 @@ class ConsensusPreparationWebTests(unittest.IsolatedAsyncioTestCase):
             id=user_id,
             display_name=f"Сенатор {user_id}",
             guild_permissions=SimpleNamespace(administrator=False),
-            roles=[],
+            roles=[SimpleNamespace(id=int(TVRS_SENATOR_ROLE_ID))],
         )
         return ConsensusWebPrincipal(
             user_id=user_id,

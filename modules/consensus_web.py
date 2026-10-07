@@ -43,6 +43,7 @@ from modules.consensus_web_auth import (
     consume_entry_ticket,
     create_session_token,
     csrf_matches,
+    member_has_fellowship_access,
     request_public_host,
     request_public_secure,
     resolve_principal,
@@ -1296,8 +1297,10 @@ def create_consensus_web_app(
 
     async def tasks_page(request: web.Request) -> web.StreamResponse:
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
-        if principal is None or not principal.guild_member:
+        if principal is None:
             raise web.HTTPSeeOther(location="/login?next=/tasks")
+        if not principal.fellowship_member:
+            raise web.HTTPSeeOther(location="/admission")
         return web.FileResponse(_ASSET_DIR / "tasks.html")
 
     async def banned_page(request: web.Request) -> web.StreamResponse:
@@ -1321,8 +1324,10 @@ def create_consensus_web_app(
 
     async def tasks_api(request: web.Request) -> web.Response:
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
-        if principal is None or not principal.guild_member:
+        if principal is None:
             return web.json_response({"error": "member_login_required"}, status=401)
+        if not principal.fellowship_member:
+            return web.json_response({"error": "fellowship_access_required"}, status=403)
         if request.method == "GET":
             tasks = await asyncio.to_thread(
                 legislation_storage.task_board,
@@ -1561,7 +1566,7 @@ def create_consensus_web_app(
             bot,
             guild_id=int(guild_id),
         )
-        if principal is not None and principal.guild_member:
+        if principal is not None and principal.fellowship_member:
             return principal, False
         supplied = _request_token(request)
         if supplied and hmac.compare_digest(supplied, _access_token()):
@@ -1611,6 +1616,11 @@ def create_consensus_web_app(
         )
         if destination == "/host" and mode == "simulation":
             destination = "/host?mode=simulation"
+        if (
+            destination in {"/reactor", "/games", "/tasks"}
+            and not member_has_fellowship_access(member)
+        ):
+            destination = "/admission"
         response = web.Response(
             status=302,
             headers={"Location": destination},
@@ -1693,6 +1703,12 @@ def create_consensus_web_app(
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': 'membership'})}"
             )
+        if (
+            member is not None
+            and next_path in {"/reactor", "/games", "/tasks"}
+            and not member_has_fellowship_access(member)
+        ):
+            next_path = "/admission"
 
         grants = await asyncio.to_thread(
             credential_storage.web_section_grants,
@@ -1875,6 +1891,13 @@ def create_consensus_web_app(
         )
         sections = {str(item["section"]) for item in grants}
         is_administrator = bool(member and member.guild_permissions.administrator)
+        if (
+            not desktop_client
+            and member is not None
+            and next_path in {"/reactor", "/games", "/tasks"}
+            and not member_has_fellowship_access(member)
+        ):
+            next_path = "/admission"
         if member is None and not desktop_client:
             if next_path in {"/admission", "/atlas-billing", "/account"}:
                 pass

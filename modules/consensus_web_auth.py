@@ -28,6 +28,13 @@ from urllib.parse import urlencode
 import discord
 from aiohttp import web
 
+from modules.tvrs_config import (
+    TVRS_CHAIR_ROLE_ID,
+    TVRS_COCHAIR_IDS,
+    TVRS_FELLOWSHIP_ROLE_ID,
+    TVRS_SENATOR_ROLE_ID,
+)
+
 from persistence import web_auth_repository as web_auth_storage
 
 from persistence import activity_repository as meta_storage
@@ -159,6 +166,29 @@ class ProjectedTModMember:
         return f"<@{int(self.id)}>"
 
 
+def member_has_fellowship_access(member: Any, *, user_id: int | None = None) -> bool:
+    """Return the durable Fellowship boundary for live and projected members."""
+
+    permissions = getattr(member, "guild_permissions", None)
+    if bool(getattr(permissions, "administrator", False)):
+        return True
+    resolved_user_id = int(user_id or getattr(member, "id", 0) or 0)
+    if resolved_user_id in TVRS_COCHAIR_IDS:
+        return True
+    role_ids = {
+        int(getattr(role, "id", 0) or 0)
+        for role in getattr(member, "roles", ())
+    }
+    return bool(
+        role_ids
+        & {
+            int(TVRS_FELLOWSHIP_ROLE_ID),
+            int(TVRS_SENATOR_ROLE_ID),
+            int(TVRS_CHAIR_ROLE_ID),
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ConsensusWebPrincipal:
     user_id: int
@@ -176,10 +206,19 @@ class ConsensusWebPrincipal:
         return not isinstance(self.member, TModAccountIdentity)
 
     @property
+    def fellowship_member(self) -> bool:
+        """Whether this identity belongs to the Fellowship access contour."""
+
+        return member_has_fellowship_access(
+            self.member,
+            user_id=int(self.user_id),
+        )
+
+    @property
     def account_tier(self) -> str:
         if self.administrator:
             return "administrator"
-        return "member" if self.guild_member else "zero"
+        return "member" if self.fellowship_member else "zero"
 
 
 class ConsensusWebAuthError(ValueError):
@@ -613,6 +652,7 @@ __all__ = [
     "create_session_token",
     "csrf_matches",
     "has_trusted_forwarded_host",
+    "member_has_fellowship_access",
     "request_public_host",
     "request_public_secure",
     "resolve_principal",

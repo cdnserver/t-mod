@@ -13,6 +13,7 @@ from modules.consensus_web_auth import (
     ConsensusWebPrincipal,
     TModAccountIdentity,
 )
+from modules.tvrs_config import TVRS_FELLOWSHIP_ROLE_ID
 from persistence import atlas_repository
 
 
@@ -26,6 +27,58 @@ class DesktopBootstrapTests(unittest.IsolatedAsyncioTestCase):
         principal = ConsensusWebPrincipal(user_id=42, guild_id=77, display_name="Member", csrf_token="test", member=ProjectedTModMember(id=42, display_name="Member", administrator=False))
         payload = await build_desktop_bootstrap_payload(headers={}, principal=principal, guild_id=77)
         self.assertEqual(payload["viewer"]["avatar_url"], url)
+
+    async def test_discord_presence_without_fellowship_role_stays_zero_tier(self) -> None:
+        from modules.desktop_bootstrap_service import build_desktop_bootstrap_payload
+        from modules.consensus_web_auth import ProjectedTModMember
+
+        principal = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Прихожанин",
+            csrf_token="test",
+            member=ProjectedTModMember(
+                id=42,
+                display_name="Прихожанин",
+                administrator=False,
+            ),
+        )
+        payload = await build_desktop_bootstrap_payload(
+            headers={}, principal=principal, guild_id=77
+        )
+        services = {item["id"]: item for item in payload["services"]}
+        self.assertTrue(payload["viewer"]["guild_member"])
+        self.assertFalse(payload["viewer"]["fellowship_member"])
+        self.assertEqual(payload["viewer"]["account_tier"], "zero")
+        self.assertFalse(services["reactor"]["enabled"])
+        self.assertFalse(services["games"]["enabled"])
+        self.assertFalse(services["tasks"]["enabled"])
+
+    async def test_fellowship_role_unlocks_member_contour_without_senate_vote(self) -> None:
+        from modules.desktop_bootstrap_service import build_desktop_bootstrap_payload
+        from modules.consensus_web_auth import ProjectedTModMember
+
+        principal = ConsensusWebPrincipal(
+            user_id=42,
+            guild_id=77,
+            display_name="Участник",
+            csrf_token="test",
+            member=ProjectedTModMember(
+                id=42,
+                display_name="Участник",
+                administrator=False,
+                role_ids=(int(TVRS_FELLOWSHIP_ROLE_ID),),
+            ),
+        )
+        payload = await build_desktop_bootstrap_payload(
+            headers={}, principal=principal, guild_id=77
+        )
+        services = {item["id"]: item for item in payload["services"]}
+        self.assertTrue(payload["viewer"]["fellowship_member"])
+        self.assertEqual(payload["viewer"]["account_tier"], "member")
+        self.assertTrue(services["reactor"]["enabled"])
+        self.assertTrue(services["games"]["enabled"])
+        self.assertTrue(services["tasks"]["enabled"])
 
     def setUp(self) -> None:
         self.old_data_dir = storage.DATA_DIR

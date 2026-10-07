@@ -17,8 +17,13 @@ from modules.delivery_runtime import register_delivery_handler, wake_delivery_wo
 from modules.discord_delivery import raise_classified_discord_error
 from modules.links import DISCORD_TVRS_LINK
 from modules.technical_log import log_technical_event
-from modules.tvrs_config import TVRS_MATERIALS_CHANNEL_ID
+from modules.tvrs_config import (
+    TVRS_COCHAIR_IDS,
+    TVRS_FELLOWSHIP_ROLE_ID,
+    TVRS_MATERIALS_CHANNEL_ID,
+)
 from modules.tvrs_delivery import TVRS_BILL_PUBLICATION_TOPIC
+from modules.tvrs_presentation import is_chair
 from persistence import activity_repository as meta_storage
 from persistence import admission_repository as admission_storage
 from persistence import reactor_repository as reactor_storage
@@ -310,6 +315,7 @@ def evaluate_answers(raw: Any) -> tuple[dict[str, str], dict[str, int]]:
 def _delivery_embed(payload: dict[str, Any], *, log: bool) -> discord.Embed:
     status = str(payload.get("status") or "ovr_review")
     colors = {
+        "chair_review": 0x8FA7D8,
         "ovr_review": 0xD5B56E,
         "ovr_approved": 0x77CFA5,
         "ovr_denied": 0xD7747D,
@@ -564,10 +570,102 @@ async def notify_ovr_desks(
     return len(recipient_ids)
 
 
+async def notify_chair_desks(
+    guild: discord.Guild,
+    application: dict[str, Any],
+) -> int:
+    """Create one durable Reactor alert for each chair reviewing Fellowship entry."""
+
+    recipient_ids = {
+        int(member.id)
+        for member in getattr(guild, "members", ())
+        if is_chair(member)
+        or bool(
+            getattr(getattr(member, "guild_permissions", None), "administrator", False)
+        )
+    }
+    recipient_ids.update(int(item) for item in TVRS_COCHAIR_IDS if int(item) > 0)
+    primary = next(iter(application.get("characters") or ()), {})
+    candidate = str(
+        primary.get("nickname")
+        or application.get("user_display")
+        or "Новый кандидат"
+    )
+    for user_id in sorted(recipient_ids):
+        await asyncio.to_thread(
+            reactor_storage.reactor_put_notification,
+            guild_id=int(guild.id),
+            user_id=int(user_id),
+            severity="info",
+            kind="community_admission",
+            title="Новая заявка в Товарищество",
+            body=(
+                f"{candidate} ожидает решения Совета председателей. "
+                "ОВР и пленарный консенсус для этой траектории не требуются."
+            ),
+            dedupe_key=f"community-admission:{int(application['id'])}",
+            route="https://phx.tvr.lat/admission#review",
+            source_key=f"admission:{int(application['id'])}",
+        )
+    return len(recipient_ids)
+
+
+async def ensure_fellowship_role(
+    guild: discord.Guild,
+    application: dict[str, Any],
+) -> bool:
+    """Idempotently project an approved Fellowship decision into Discord."""
+
+    role = guild.get_role(int(TVRS_FELLOWSHIP_ROLE_ID))
+    if role is None:
+        raise RuntimeError("admission_fellowship_role_missing")
+    user_id = int(application.get("user_id") or 0)
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.DiscordException as exc:
+            raise RuntimeError("admission_member_unavailable") from exc
+    if any(int(item.id) == int(role.id) for item in getattr(member, "roles", ())):
+        return False
+    try:
+        await member.add_roles(
+            role,
+            reason=(
+                "T-Mod Phoenix: заявка в Товарищество одобрена "
+                "Советом председателей"
+            ),
+        )
+    except discord.DiscordException as exc:
+        raise RuntimeError("admission_fellowship_role_delivery_failed") from exc
+    return True
+
+
 async def reconcile_admission_pipeline(
     bot: discord.Client, guild: discord.Guild
 ) -> int:
     changed = 0
+    approved_community = await asyncio.to_thread(
+        admission_storage.approved_community_applications,
+        int(guild.id),
+    )
+    for application in approved_community:
+        try:
+            changed += int(await ensure_fellowship_role(guild, application))
+        except RuntimeError as exc:
+            await log_technical_event(
+                bot,
+                guild,
+                title="Phoenix · роль Товарищества ожидает выдачи",
+                details=(
+                    f"Заявка: **{int(application['id'])}**\n"
+                    f"Пользователь: `{int(application['user_id'])}`\n"
+                    f"Причина: `{str(exc)}`"
+                ),
+                dedupe_key=f"community-role:{int(application['id'])}",
+                cooldown_seconds=600,
+                component="admission",
+            )
     stranded_decisions = await asyncio.to_thread(
         admission_storage.unreconciled_ovr_decisions,
         int(guild.id),
@@ -677,14 +775,15 @@ async def ensure_admission_public_panel(
         except discord.DiscordException:
             message = None
     embed = discord.Embed(
-        title="Стать сенатором · Phoenix №15",
+        title="Вступить в Товарищество · Phoenix №15",
         description=(
-            "Здесь начинается вступление именно в **Сенат Товарищества на "
+            "На единой странице можно выбрать один из двух путей: стать "
+            "**участником Товарищества** или получить **мандат Сената "
             "Majestic RP · Phoenix №15**.\n\n"
             "**Как подать заявку**\n"
             "1. Вступите на сервер Товарищества и откройте ЛС с T-Mod.\n"
             "2. Введите `/account`, придумайте логин и PIN, добавьте персонажа.\n"
-            "3. Нажмите **«Подать заявку»**, заполните анкету и короткий тест.\n\n"
+            "3. Нажмите **«Подать заявку»** и выберите подходящую траекторию.\n\n"
             "После отправки вы сможете следить за каждым этапом на той же странице. "
             "T-Mod лично сообщит обо всех решениях."
         ),
@@ -692,24 +791,25 @@ async def ensure_admission_public_panel(
         url=ADMISSION_PUBLIC_URL,
     )
     embed.add_field(
-        name="Что будет после заявки",
+        name="Товарищество",
         value=(
-            "ОВР проведёт проверку сроком до 48 часов. При допуске кандидатуру "
-            "рассмотрит пленарный консенсус, а итог придёт в ЛС."
+            "Короткую анкету рассматривает Совет председателей. Участник получает "
+            "доступ к общению и пространствам, но не голосует и не получает "
+            "сенатские преимущества."
         ),
         inline=False,
     )
     embed.add_field(
-        name="Важно",
+        name="Сенат Phoenix",
         value=(
-            "Решение ОВР окончательно. Без допуска кандидат не попадёт на "
-            "консенсус и не вступит в Сенат ни при каких обстоятельствах."
+            "Расширенная анкета проходит ОВР и пленарный консенсус. Решение ОВР "
+            "обязательно и окончательно."
         ),
         inline=False,
     )
     if ADMISSION_BANNER_URL:
         embed.set_image(url=ADMISSION_BANNER_URL)
-    embed.set_footer(text="T-Mod · Phoenix №15 · одна заявка на весь путь")
+    embed.set_footer(text="T-Mod · Phoenix №15 · один аккаунт, два пути")
     view = AdmissionPublicView(int(bot.user.id))
     if message is not None:
         await message.edit(embed=embed, view=view)
@@ -778,6 +878,8 @@ __all__ = [
     "TRAIT_LABELS",
     "ensure_membership_bill",
     "evaluate_answers",
+    "ensure_fellowship_role",
+    "notify_chair_desks",
     "notify_ovr_desks",
     "process_ovr_decision",
     "public_questions",

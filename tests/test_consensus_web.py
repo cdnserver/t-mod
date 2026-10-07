@@ -55,6 +55,7 @@ from modules.consensus_web_control import (
     execute_consensus_web_command,
 )
 from modules.tvrs_discussion import publish_discussion_message
+from modules.tvrs_config import TVRS_FELLOWSHIP_ROLE_ID
 
 
 def _participant(user_id: int, block: str | None = None) -> LiveParticipant:
@@ -1035,6 +1036,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_ovr_portal_requires_manual_section_grant(self) -> None:
         regular_member = self._principal(user_id=2)
         regular_member.member.guild_permissions.administrator = False
+        regular_member.member.roles = [
+            SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))
+        ]
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         async with TestClient(TestServer(app)) as client:
             with patch(
@@ -1117,6 +1121,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_ovr_report_requires_matching_password_and_returns_encrypted_pdf(self) -> None:
         principal = self._principal(user_id=12)
         principal.member.guild_permissions.administrator = False
+        principal.member.roles = [
+            SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))
+        ]
         storage.web_set_section_grant(
             77,
             12,
@@ -1724,6 +1731,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
     async def test_member_reactor_exposes_revisioned_bill_workspace_api(self) -> None:
         principal = self._principal(user_id=42)
         principal.member.guild_permissions.administrator = False
+        principal.member.roles = [
+            SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))
+        ]
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         client = TestClient(TestServer(app))
         await client.start_server()
@@ -1905,7 +1915,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             id=42,
             display_name="Оператор",
             guild_permissions=SimpleNamespace(administrator=False),
-            roles=[],
+            roles=[SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))],
         )
         guild = SimpleNamespace(
             id=77,

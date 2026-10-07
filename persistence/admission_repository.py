@@ -12,7 +12,10 @@ from persistence.outbox_repository import delivery_outbox_enqueue_in_connection
 
 
 ADMISSION_DELIVERY_TOPIC = "tmod.admission.delivery.v1"
-ADMISSION_OPEN_STATUSES = frozenset({"ovr_review", "ovr_approved", "consensus_queued"})
+ADMISSION_KINDS = frozenset({"community", "senate"})
+ADMISSION_OPEN_STATUSES = frozenset(
+    {"chair_review", "ovr_review", "ovr_approved", "consensus_queued"}
+)
 ADMISSION_TERMINAL_STATUSES = frozenset(
     {"ovr_denied", "membership_approved", "membership_denied"}
 )
@@ -43,8 +46,10 @@ def _clean_text(
     return text
 
 
-def _forum_url(value: Any) -> str:
+def _forum_url(value: Any, *, required: bool = True) -> str:
     url = str(value or "").strip()
+    if not url and not required:
+        return ""
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or len(url) > 1000:
         raise ValueError("admission_forum_url_invalid")
@@ -143,6 +148,7 @@ def _enqueue_projection(
         "user_display": str(application.get("user_display") or "Кандидат"),
         "event": str(event),
         "status": str(application.get("status") or "ovr_review"),
+        "application_kind": str(application.get("application_kind") or "senate"),
         "title": str(title)[:200],
         "body": str(body)[:3500],
         "case_number": int(case_number) if case_number else None,
@@ -176,13 +182,19 @@ def submit_application(
     motivation: str,
     contribution: str,
     availability: str,
+    application_kind: str = "senate",
 ) -> dict[str, Any]:
+    clean_kind = str(application_kind or "").strip().lower()
+    if clean_kind not in ADMISSION_KINDS:
+        raise ValueError("admission_kind_invalid")
     clean_characters = _characters(characters)
-    if not isinstance(answers, dict) or not answers:
+    if clean_kind == "senate" and (not isinstance(answers, dict) or not answers):
         raise ValueError("admission_answers_invalid")
-    if not isinstance(traits, dict) or not traits:
+    if clean_kind == "senate" and (not isinstance(traits, dict) or not traits):
         raise ValueError("admission_traits_invalid")
-    clean_forum = _forum_url(forum_url)
+    clean_answers = answers if isinstance(answers, dict) else {}
+    clean_traits = traits if isinstance(traits, dict) else {}
+    clean_forum = _forum_url(forum_url, required=clean_kind == "senate")
     clean_display = _clean_text(
         user_display,
         minimum=2,
@@ -191,7 +203,7 @@ def submit_application(
     )
     clean_motivation = _clean_text(
         motivation,
-        minimum=20,
+        minimum=10 if clean_kind == "community" else 20,
         maximum=2000,
         code="admission_motivation_invalid",
     )
@@ -219,7 +231,7 @@ def submit_application(
     )
     trait_line = ", ".join(
         f"{str(key)}: {int(value)}%"
-        for key, value in traits.items()
+        for key, value in clean_traits.items()
         if isinstance(value, (int, float))
     )
     additional = (
@@ -236,33 +248,107 @@ def submit_application(
             "SELECT * FROM membership_applications WHERE guild_id = ? AND user_id = ?",
             (int(guild_id), int(user_id)),
         ).fetchone()
-        if existing is not None:
+        upgrading = bool(
+            existing is not None
+            and str(existing["application_kind"] or "senate") == "community"
+            and str(existing["status"] or "") == "membership_approved"
+            and clean_kind == "senate"
+        )
+        if existing is not None and not upgrading:
             con.commit()
             raise ValueError("admission_application_already_exists")
-        inserted = con.execute(
-            """
-            INSERT INTO membership_applications(
-                guild_id, user_id, user_display, forum_url, characters_json,
-                answers_json, traits_json, motivation, contribution,
-                availability, status, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ovr_review', ?, ?)
-            """,
-            (
-                int(guild_id),
-                int(user_id),
-                clean_display,
-                clean_forum,
-                _json(clean_characters),
-                _json(answers),
-                _json(traits),
-                clean_motivation,
-                clean_contribution,
-                clean_availability,
-                now,
-                now,
-            ),
-        )
-        application_id = int(inserted.lastrowid)
+        initial_status = "chair_review" if clean_kind == "community" else "ovr_review"
+        if upgrading:
+            application_id = int(existing["id"])
+            revision = int(existing["revision"] or 1) + 1
+            con.execute(
+                """
+                UPDATE membership_applications
+                SET application_kind = 'senate', user_display = ?, forum_url = ?,
+                    characters_json = ?, answers_json = ?, traits_json = ?,
+                    motivation = ?, contribution = ?, availability = ?,
+                    status = 'ovr_review', ovr_case_id = NULL,
+                    submitted_bill_id = NULL, submitted_bill_number = NULL,
+                    decision_note = NULL, consensus_result = NULL,
+                    ovr_decided_at = NULL, leadership_decided_at = NULL,
+                    consensus_decided_at = NULL, revision = ?, updated_at = ?
+                WHERE id = ? AND revision = ?
+                """,
+                (
+                    clean_display,
+                    clean_forum,
+                    _json(clean_characters),
+                    _json(clean_answers),
+                    _json(clean_traits),
+                    clean_motivation,
+                    clean_contribution,
+                    clean_availability,
+                    revision,
+                    now,
+                    application_id,
+                    int(existing["revision"] or 1),
+                ),
+            )
+        else:
+            inserted = con.execute(
+                """
+                INSERT INTO membership_applications(
+                    guild_id, user_id, user_display, application_kind,
+                    forum_url, characters_json, answers_json, traits_json,
+                    motivation, contribution, availability, status,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(guild_id),
+                    int(user_id),
+                    clean_display,
+                    clean_kind,
+                    clean_forum,
+                    _json(clean_characters),
+                    _json(clean_answers),
+                    _json(clean_traits),
+                    clean_motivation,
+                    clean_contribution,
+                    clean_availability,
+                    initial_status,
+                    now,
+                    now,
+                ),
+            )
+            application_id = int(inserted.lastrowid)
+
+        if clean_kind == "community":
+            _event(
+                con,
+                guild_id=guild_id,
+                application_id=application_id,
+                actor_id=user_id,
+                actor_display=clean_display,
+                action="community_submitted",
+                from_status=None,
+                to_status="chair_review",
+                note="Заявка передана Совету председателей.",
+                now=now,
+            )
+            row = con.execute(
+                "SELECT * FROM membership_applications WHERE id = ?",
+                (application_id,),
+            ).fetchone()
+            _enqueue_projection(
+                con,
+                application=dict(row),
+                event="community_submitted",
+                title="Заявка в Товарищество зарегистрирована",
+                body=(
+                    "Совет председателей получил вашу заявку. Решение будет "
+                    "принято без пленарного консенсуса и появится на этой странице."
+                ),
+                now=now,
+            )
+            con.commit()
+            return application_detail(guild_id, user_id)
+
         latest = con.execute(
             "SELECT MAX(case_number) AS n FROM ovr_cases WHERE guild_id = ?",
             (int(guild_id),),
@@ -355,10 +441,14 @@ def submit_application(
             application_id=application_id,
             actor_id=user_id,
             actor_display=clean_display,
-            action="submitted",
-            from_status=None,
+            action="senate_upgrade" if upgrading else "submitted",
+            from_status="membership_approved" if upgrading else None,
             to_status="ovr_review",
-            note=f"Создано расследование ОВР-{case_number:03d}.",
+            note=(
+                f"Открыта сенатская траектория и расследование ОВР-{case_number:03d}."
+                if upgrading
+                else f"Создано расследование ОВР-{case_number:03d}."
+            ),
             now=now,
         )
         row = con.execute(
@@ -421,6 +511,134 @@ def application_for_case(case_id: int, *, guild_id: int) -> dict[str, Any] | Non
             (int(guild_id), int(case_id)),
         ).fetchone()
     return _row_payload(row) if row is not None else None
+
+
+def pending_leadership_applications(
+    guild_id: int, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Return the Fellowship applications awaiting a chair decision."""
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM membership_applications
+            WHERE guild_id = ? AND application_kind = 'community'
+              AND status = 'chair_review'
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (int(guild_id), max(1, min(int(limit), 300))),
+        ).fetchall()
+    return [_row_payload(row) for row in rows]
+
+
+def approved_community_applications(
+    guild_id: int, *, limit: int = 300
+) -> list[dict[str, Any]]:
+    """Return approved Fellowship identities for idempotent role projection."""
+
+    with connect_readonly() as con:
+        rows = con.execute(
+            """
+            SELECT * FROM membership_applications
+            WHERE guild_id = ? AND application_kind = 'community'
+              AND status = 'membership_approved'
+            ORDER BY updated_at ASC, id ASC
+            LIMIT ?
+            """,
+            (int(guild_id), max(1, min(int(limit), 1000))),
+        ).fetchall()
+    return [_row_payload(row) for row in rows]
+
+
+def record_leadership_decision(
+    application_id: int,
+    *,
+    guild_id: int,
+    approved: bool,
+    actor_id: int,
+    actor_display: str,
+    note: str,
+) -> tuple[dict[str, Any], bool]:
+    clean_note = _clean_text(
+        note,
+        minimum=5,
+        maximum=5000,
+        code="admission_decision_note_required",
+    )
+    target = "membership_approved" if approved else "membership_denied"
+    now = utc_now_iso()
+    with _db_lock, connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM membership_applications WHERE id = ? AND guild_id = ?",
+            (int(application_id), int(guild_id)),
+        ).fetchone()
+        if row is None:
+            raise ValueError("admission_application_not_found")
+        if str(row["application_kind"] or "senate") != "community":
+            raise ValueError("admission_leadership_kind_invalid")
+        if str(row["status"] or "") == target:
+            con.commit()
+            return _row_payload(row), False
+        if str(row["status"] or "") != "chair_review":
+            raise ValueError("admission_leadership_transition_invalid")
+        revision = int(row["revision"] or 1) + 1
+        con.execute(
+            """
+            UPDATE membership_applications
+            SET status = ?, decision_note = ?, leadership_decided_at = ?,
+                revision = ?, updated_at = ?
+            WHERE id = ? AND revision = ?
+            """,
+            (
+                target,
+                clean_note,
+                now,
+                revision,
+                now,
+                int(application_id),
+                int(row["revision"] or 1),
+            ),
+        )
+        _event(
+            con,
+            guild_id=guild_id,
+            application_id=application_id,
+            actor_id=actor_id,
+            actor_display=actor_display,
+            action="leadership_approved" if approved else "leadership_denied",
+            from_status="chair_review",
+            to_status=target,
+            note=clean_note,
+            now=now,
+        )
+        updated_row = con.execute(
+            "SELECT * FROM membership_applications WHERE id = ?",
+            (int(application_id),),
+        ).fetchone()
+        updated = dict(updated_row)
+        _enqueue_projection(
+            con,
+            application=updated,
+            event="leadership_approved" if approved else "leadership_denied",
+            title=(
+                "Совет председателей принял вас в Товарищество"
+                if approved
+                else "Совет председателей рассмотрел вашу заявку"
+            ),
+            body=(
+                "Заявка одобрена. Доступ участника Товарищества будет активирован "
+                "автоматически. Право голоса в Сенате и сенатские преимущества "
+                "в этот статус не входят."
+                if approved
+                else "Заявка в Товарищество отклонена. Мотивировка решения "
+                "сохранена в личной карточке."
+            ),
+            now=now,
+        )
+        con.commit()
+    return _row_payload(updated_row), True
 
 
 def record_ovr_decision(
@@ -765,14 +983,18 @@ def record_consensus_result(
 
 __all__ = [
     "ADMISSION_DELIVERY_TOPIC",
+    "ADMISSION_KINDS",
     "ADMISSION_OPEN_STATUSES",
     "ADMISSION_TERMINAL_STATUSES",
     "application_detail",
     "application_for_case",
+    "approved_community_applications",
     "approved_without_bill",
     "link_consensus_bill",
     "pending_consensus_results",
+    "pending_leadership_applications",
     "record_consensus_result",
+    "record_leadership_decision",
     "record_ovr_decision",
     "submit_application",
     "unreconciled_ovr_decisions",

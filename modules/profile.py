@@ -24,7 +24,12 @@ from modules.error_inbox import capture_runtime_event
 from modules.profile_notifications import PROFILE_TIMEZONE_NAME
 from modules.voice_control_service import VoiceDiagnosticResult, get_voice_control
 from modules.profile_voice import ProfileMicrophoneView, profile_microphone_embed
-from modules.tvrs_config import TVRS_SENATOR_ROLE_ID
+from modules.tvrs_config import (
+    TVRS_CHAIR_ROLE_ID,
+    TVRS_COCHAIR_IDS,
+    TVRS_FELLOWSHIP_ROLE_ID,
+    TVRS_SENATOR_ROLE_ID,
+)
 
 
 PROFILE_COLOR = 0x5865F2
@@ -39,6 +44,7 @@ PROFILE_ROLE_HIERARCHY = (
     (1488207163879985233, "🛡️", "Администратор", "Администрирование сообщества"),
     (1499717656276635778, "🏛️", "Сопредседатель", "Руководство Товариществом"),
     (1500563715622174881, "📜", "Сенатор Товарищества", "Участие в управлении"),
+    (1557387535376719902, "✦", "Участник Товарищества", "Участие в жизни сообщества"),
     (1500567343703527607, "🚔", "Сотрудник силовой фракции", "Служба в силовой структуре"),
     (1500567401580990484, "⚖️", "Судья / прокурор", "Судебная или прокурорская должность"),
     (1500488424191295518, "💼", "Представитель Бюро SGL", "Работа от имени Бюро"),
@@ -63,6 +69,26 @@ PROFILE_DM_INFO = {
     "dm_finance": ("💰", "Финансы"),
     "dm_system": ("🤖", "Системные"),
 }
+
+
+def _has_fellowship_access(member: Any | None) -> bool:
+    """Keep Discord account controls aligned with the web access boundary."""
+
+    if member is None or not hasattr(member, "guild_permissions"):
+        return False
+    if bool(getattr(member.guild_permissions, "administrator", False)):
+        return True
+    if int(member.id) in TVRS_COCHAIR_IDS:
+        return True
+    role_ids = {int(role.id) for role in getattr(member, "roles", ())}
+    return bool(
+        role_ids
+        & {
+            int(TVRS_FELLOWSHIP_ROLE_ID),
+            int(TVRS_SENATOR_ROLE_ID),
+            int(TVRS_CHAIR_ROLE_ID),
+        }
+    )
 PROFILE_ERROR_MESSAGES = {
     "profile_nickname_invalid": "Ник должен содержать от 2 до 48 символов.",
     "profile_static_invalid": "Статик должен состоять из 1–12 цифр.",
@@ -1097,6 +1123,8 @@ def _tmod_account_embed(
     user: discord.abc.User,
     characters: list[Any],
     credential: Any | None,
+    *,
+    fellowship_member: bool = False,
 ) -> discord.Embed:
     active = bool(credential)
     embed = discord.Embed(
@@ -1115,7 +1143,11 @@ def _tmod_account_embed(
     )
     embed.add_field(
         name="Уровень",
-        value="Нулевой пользователь" if not isinstance(user, discord.Member) else "Участник T-Mod",
+        value=(
+            "Участник Товарищества"
+            if fellowship_member
+            else "Базовый T-Mod аккаунт"
+        ),
         inline=True,
     )
     embed.add_field(
@@ -1132,8 +1164,10 @@ def _tmod_account_embed(
         value=f"Логин: `{credential.login}`" if credential else "Логин и PIN / пароль ещё не заданы",
         inline=False,
     )
-    if not isinstance(user, discord.Member):
-        embed.set_footer(text="Нулевой уровень не открывает Товарищество и персональный Reactor")
+    if not fellowship_member:
+        embed.set_footer(
+            text="Вступить в Товарищество или его Сенат можно через портал Phoenix"
+        )
     return embed
 
 
@@ -1149,14 +1183,20 @@ async def _edit_tmod_account(
     )
     guild = interaction.client.get_guild(int(guild_id))
     account_user = guild.get_member(int(requester_id)) if guild is not None else None
+    fellowship_member = _has_fellowship_access(account_user)
     await interaction.edit_original_response(
-        embed=_tmod_account_embed(account_user or interaction.user, characters, credential),
+        embed=_tmod_account_embed(
+            account_user or interaction.user,
+            characters,
+            credential,
+            fellowship_member=fellowship_member,
+        ),
         view=TModAccountView(
             guild_id,
             requester_id,
             characters,
             credential,
-            fellowship_member=isinstance(account_user, discord.Member),
+            fellowship_member=fellowship_member,
             onboarding_required=bool(getattr(profile, "directory_required", False)),
         ),
         allowed_mentions=discord.AllowedMentions.none(),
@@ -2486,15 +2526,14 @@ async def deliver_due_member_onboarding_reminders(
                     error="member_unavailable",
                 )
                 continue
-        role_ids = {int(role.id) for role in getattr(member, "roles", [])}
-        if member.bot or TVRS_SENATOR_ROLE_ID not in role_ids:
+        if member.bot or not _has_fellowship_access(member):
             await asyncio.to_thread(
                 storage.record_member_onboarding_reminder,
                 guild.id,
                 user_id,
                 attempted_at=attempted_at,
                 delivered=False,
-                error="senator_role_missing",
+                error="fellowship_role_missing",
             )
             continue
         delivered, error = await send_member_onboarding_reminder(
@@ -2647,11 +2686,16 @@ def setup_profile(
     ) -> None:
         before_roles = {int(role.id) for role in before.roles}
         after_roles = {int(role.id) for role in after.roles}
+        access_roles = {
+            int(role_id)
+            for role_id in (TVRS_FELLOWSHIP_ROLE_ID, TVRS_SENATOR_ROLE_ID)
+            if int(role_id) > 0
+        }
         if (
-            TVRS_SENATOR_ROLE_ID <= 0
-            or TVRS_SENATOR_ROLE_ID in before_roles
-            or TVRS_SENATOR_ROLE_ID not in after_roles
-            or after.bot
+            after.bot
+            or not access_roles
+            or bool(before_roles & access_roles)
+            or not bool(after_roles & access_roles)
         ):
             return
         _, newly_required = await asyncio.to_thread(

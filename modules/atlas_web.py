@@ -736,7 +736,7 @@ def register_atlas_web_routes(
         require_desktop_client(request)
         selected = await principal(request)
         await require_atlas(selected)
-        if not selected.guild_member:
+        if not selected.fellowship_member:
             raise web.HTTPForbidden(
                 text=json.dumps(
                     {
