@@ -48,6 +48,28 @@ _PANEL_META_PREFIX = "admission:public-panel:v1"
 _reconcile_task: asyncio.Task[Any] | None = None
 
 
+def _is_legacy_admission_panel(message: Any, bot_user_id: int) -> bool:
+    """Recognise the pre-split public panel when its stored message id is absent."""
+
+    author_id = int(getattr(getattr(message, "author", None), "id", 0) or 0)
+    if author_id != int(bot_user_id):
+        return False
+    parts = [str(getattr(message, "content", "") or "")]
+    for embed in getattr(message, "embeds", ()) or ():
+        parts.extend(
+            (
+                str(getattr(embed, "title", "") or ""),
+                str(getattr(embed, "description", "") or ""),
+            )
+        )
+    text = " ".join(parts).casefold()
+    return "phoenix" in text and (
+        "вступить в сенат" in text
+        or "стать сенатор" in text
+        or "вступить в товарищество" in text
+    )
+
+
 ADMISSION_QUESTIONS: tuple[dict[str, Any], ...] = (
     {
         "id": "mistake",
@@ -774,6 +796,15 @@ async def ensure_admission_public_panel(
             message = await channel.fetch_message(int(raw_id))
         except discord.DiscordException:
             message = None
+    if message is None and callable(getattr(channel, "history", None)):
+        try:
+            async for candidate in channel.history(limit=100):
+                if _is_legacy_admission_panel(candidate, int(bot.user.id)):
+                    message = candidate
+                    break
+        except discord.DiscordException:
+            # Missing history permission must not prevent a fresh public panel.
+            message = None
     embed = discord.Embed(
         title="Вступить в Товарищество · Phoenix №15",
         description=(
@@ -813,6 +844,7 @@ async def ensure_admission_public_panel(
     view = AdmissionPublicView(int(bot.user.id))
     if message is not None:
         await message.edit(embed=embed, view=view)
+        await asyncio.to_thread(meta_storage.set_meta_value, key, str(message.id))
         return
     sent = await channel.send(
         embed=embed,

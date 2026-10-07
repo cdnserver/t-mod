@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from modules.admission import (
     ADMISSION_QUESTIONS,
     AdmissionPublicView,
+    _is_legacy_admission_panel,
     ensure_membership_bill,
     evaluate_answers,
     notify_ovr_desks,
@@ -43,6 +44,30 @@ class AdmissionPipelineTests(unittest.TestCase):
             str(question["id"]): str(question["options"][0][0])
             for question in ADMISSION_QUESTIONS
         }
+
+    def test_legacy_public_panel_is_recognised_for_in_place_upgrade(self) -> None:
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=55),
+            content="",
+            embeds=[
+                SimpleNamespace(
+                    title="Стать сенатором · Phoenix №15",
+                    description="Подайте заявку на вступление в Сенат.",
+                )
+            ],
+        )
+        self.assertTrue(_is_legacy_admission_panel(message, 55))
+        self.assertFalse(_is_legacy_admission_panel(message, 56))
+        self.assertFalse(
+            _is_legacy_admission_panel(
+                SimpleNamespace(
+                    author=SimpleNamespace(id=55),
+                    content="Обычное сообщение Phoenix",
+                    embeds=[],
+                ),
+                55,
+            )
+        )
 
     def submit(self, *, user_id: int = 101) -> dict:
         answers, traits = evaluate_answers(self.answers())
