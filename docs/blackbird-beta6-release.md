@@ -18,7 +18,13 @@
 
 Updating source is not enough: rebuild/recreate the affected backend containers. Restarting old images alone does not load new source. No production containers were restarted by this release task.
 
-## Auto-update activation: intentionally pending
+## Auto-update activation
+
+Activated on 2026-10-08 after the owner confirmed the backend rebuild. The deployed checkout was `44f085a`; normalized SHA-256 hashes of four running backend modules matched this checkout. Gateway, bot API and API readiness checks succeeded. The installer and blockmap were copied and verified before an atomic replacement of `latest.yml`; the beta.5 manifest was retained as a timestamped backup.
+
+The feed now advertises `1.3.6-beta.6`. Installed, signed-in Blackbird clients check on launch and every 30 minutes, download in the background, and install on application exit. Actual end-user installation is not verified by this deployment record.
+
+### Activation procedure retained for recovery/reference
 
 The owner explicitly requested activation **after their backend restart**. Do not advance the feed before that confirmation and a health check.
 
