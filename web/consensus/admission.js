@@ -21,7 +21,7 @@
   };
 
   const show = (id, visible) => { const element = byId(id); if (element) element.hidden = !visible; };
-  const surfaces = ["account-gate", "senator-card", "status-card", "form-shell"];
+  const surfaces = ["loading-card", "account-gate", "senator-card", "status-card", "form-shell"];
   function selectSurface(activeId) {
     surfaces.forEach((id) => show(id, id === activeId));
   }
@@ -30,6 +30,8 @@
     state.viewer = authenticated ? payload.viewer : null;
     show("top-login", !authenticated);
     show("account-chip", authenticated);
+    byId("path-account-action").href = authenticated ? "#application" : "/register?next=/admission";
+    byId("path-account-action").textContent = authenticated ? "Аккаунт подключён ✓" : "Создать аккаунт ↗";
     if (authenticated) {
       byId("account-name").textContent = payload.viewer.name || "T-Mod Account";
     }
@@ -46,11 +48,13 @@
       byId("gate-title").innerHTML = "Завершите игровую<br>идентичность";
       byId("gate-copy").textContent = "Вы уже авторизованы. Чтобы подать заявление в Сенат Phoenix, добавьте в /account хотя бы одного персонажа с ником и статиком — повторно входить не нужно.";
       byId("discord-account-action").textContent = "Добавить персонажа в Discord";
+      byId("discord-account-action").href = "https://discord.com/users/1500495112638038246";
     } else {
       byId("gate-eyebrow").textContent = "ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ";
-      byId("gate-title").innerHTML = "Сначала — ваш<br>T-Mod аккаунт";
+      byId("gate-title").innerHTML = "Начнём с вашего<br>аккаунта.";
       byId("gate-copy").textContent = "Он связывает заявку с вами, защищает от повторной подачи и позволяет получать решения ОВР и консенсуса лично.";
-      byId("discord-account-action").textContent = "Открыть T-Mod в Discord";
+      byId("discord-account-action").textContent = "Создать аккаунт →";
+      byId("discord-account-action").href = "/register?next=/admission";
     }
     selectSurface("account-gate");
   }
@@ -69,7 +73,7 @@
   }
   async function api(path, options = {}) {
     const response = await fetch(path, {
-      cache: "no-store", credentials: "same-origin", ...options,
+      cache: "no-store", credentials: "same-origin", signal: AbortSignal.timeout(15000), ...options,
       headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json", "X-CSRF-Token": state.csrf } : {}), ...(options.headers || {}) },
     });
     let payload = {};
@@ -159,18 +163,32 @@
   }
 
   async function bootstrap({ silent = false } = {}) {
+    if (!silent) {
+      selectSurface("loading-card");
+      show("retry-bootstrap", false);
+      byId("loading-card").querySelector("strong").textContent = "Открываем вашу личную заявку";
+      byId("loading-card").querySelector("p").textContent = "Проверяем аккаунт и историю заявления";
+      byId("loading-card").querySelector(".loader").hidden = false;
+    }
     try {
       const payload = await api("/api/admission"); state.csrf = payload.csrf_token || ""; state.questions = payload.questions || [];
       renderIdentity(payload);
       if (!silent) show("loading-card", false);
-      if (!payload.authenticated || payload.account_required) { renderAccountGate(payload); return; }
+      if (!payload.authenticated) { renderAccountGate(payload); return; }
       if (payload.already_senator) { selectSurface("senator-card"); return; }
       if (payload.application) { renderStatus(payload.application, payload.events || []); return; }
+      if (payload.account_required) { renderAccountGate(payload); return; }
       if (!silent || byId("form-shell").hidden) {
         state.characters = payload.characters || [];
         byId("characters").replaceChildren(...(state.characters.length ? state.characters : [{}]).map(characterRow)); renumberCharacters(); renderQuestions(); selectSurface("form-shell"); setStep(0);
       }
-    } catch (error) { if (!silent) { show("loading-card", false); show("account-gate", true); } toast(error.message, "error"); }
+    } catch (error) { if (!silent) {
+      selectSurface("loading-card");
+      byId("loading-card").querySelector("strong").textContent = "Не удалось загрузить личную заявку";
+      byId("loading-card").querySelector("p").textContent = "Это не означает, что аккаунт отсутствует. Повторите подключение.";
+      byId("loading-card").querySelector(".loader").hidden = true;
+      show("retry-bootstrap", true);
+    } toast(error.name === "TimeoutError" ? "Сервер отвечает дольше обычного. Повторите подключение." : error.message, "error"); }
   }
 
   byId("add-character").addEventListener("click", () => { if (byId("characters").children.length >= 3) return; byId("characters").append(characterRow()); renumberCharacters(); });
@@ -188,6 +206,7 @@
     finally { state.busy = false; byId("submit-form").disabled = false; byId("submit-form").textContent = "Зафиксировать и передать в ОВР"; }
   });
 
+  byId("retry-bootstrap").addEventListener("click", () => bootstrap());
   bootstrap();
   setInterval(() => { if (state.application && document.visibilityState === "visible") bootstrap({ silent: true }); }, 30000);
 })();

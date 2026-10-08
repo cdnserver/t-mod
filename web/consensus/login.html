@@ -1,147 +1,39 @@
 <!doctype html>
 <html lang="ru">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#07090a">
-    <style>html,body{background:#07090a;color:#f4f2eb}</style>
-    <title>T-Mod Account — единый вход</title>
-    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-    <meta name="description" content="Единый защищённый аккаунт для сервисов T-Mod.">
-    <link rel="stylesheet" href="/assets/fonts.css">
-    <link rel="stylesheet" href="/assets/login.css?v=2">
-    <script src="/assets/login.js?v=3" defer></script>
-  </head>
-  <body>
-    <div class="auth-atmosphere" aria-hidden="true">
-      <div class="aurora aurora-one"></div>
-      <div class="aurora aurora-two"></div>
-      <div class="orbit orbit-one"></div>
-      <div class="orbit orbit-two"></div>
-      <i class="auth-star star-one"></i><i class="auth-star star-two"></i><i class="auth-star star-three"></i>
-    </div>
-    <main class="login-shell">
-      <section class="identity-panel">
-        <header class="identity-header">
-          <a class="identity-brand" href="/">
-            <span>T</span>
-            <span><strong>T·ID</strong><small>Единая личность T-Mod</small></span>
-          </a>
-          <span class="identity-live"><i></i> СИСТЕМА ДОСТУПНА</span>
-        </header>
-        <div class="identity-copy">
-          <p>T-MOD ECOSYSTEM · ACCESS</p>
-          <h1>Одна личность.<br><em>Вся экосистема.</em></h1>
-          <span>
-            Reactor, Consensus, Atlas, SGL и T-Mod Games узнают вас через один
-            защищённый аккаунт — без отдельных регистраций и потерянного контекста.
-          </span>
-        </div>
-        <div class="ecosystem-map" aria-label="Сервисы единого аккаунта">
-          <span class="ecosystem-core">T</span>
-          <span class="service service-reactor">REACTOR</span>
-          <span class="service service-atlas">ATLAS</span>
-          <span class="service service-consensus">CONSENSUS</span>
-          <span class="service service-sgl">SGL</span>
-        </div>
-        <section class="community-card">
-          <span class="community-symbol">✦</span>
-          <div>
-            <small>ЕЩЁ НЕТ T-MOD ACCOUNT?</small>
-            <strong>Начните в Discord Товарищества</strong>
-            <p>Вступите на сервер, откройте ЛС с T-Mod и используйте <code>/account</code>. Веб-доступ можно создать даже на нулевом уровне.</p>
-          </div>
-          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Вступить <span>↗</span></a>
-        </section>
-      </section>
-
-      <section class="credential-panel" aria-labelledby="login-title">
-        <div class="credential-topline">
-          <span>SECURE GATEWAY</span>
-          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Discord Товарищества ↗</a>
-        </div>
-        <div class="credential-head">
-          <span class="credential-mark" aria-hidden="true">T</span>
-          <p>ЗАЩИЩЁННАЯ СЕССИЯ · T·ID</p>
-          <h2 id="login-title">С возвращением.</h2>
-          <span>Войдите по логину и PIN из 8 цифр или паролю. Настроить любой способ входа можно через <b>/account</b>. Дополнительный код пока используется только в Blackbird.</span>
-        </div>
-        <form id="credential-form" action="/auth/login" method="post">
-          <label>
-            <span>Логин</span>
-            <input
-              id="credential-login"
-              name="login"
-              type="text"
-              minlength="3"
-              maxlength="32"
-              pattern="[A-Za-z0-9._-]{3,32}"
-              autocomplete="username"
-              autocapitalize="none"
-              spellcheck="false"
-              required
-              autofocus
-              placeholder="ваш.логин"
-            >
-          </label>
-          <label>
-            <span>PIN или пароль</span>
-            <span class="pin-field">
-              <input
-                id="credential-pin"
-                name="pin"
-                type="password"
-                minlength="1"
-                maxlength="128"
-                autocomplete="current-password"
-                required
-                placeholder="••••••••"
-              >
-              <button id="pin-visibility" type="button" aria-label="Показать PIN">◉</button>
-            </span>
-          </label>
-          <output id="login-feedback" class="login-feedback" aria-live="polite" hidden></output>
-          <label id="factor-field" hidden><span id="factor-label">Код подтверждения</span><input name="code" type="password" autocomplete="one-time-code" maxlength="32" id="factor-code"></label>
-          <input name="challenge" type="hidden" id="factor-challenge">
-          <button class="login-submit" type="submit">
-            <span>ВОЙТИ В T-MOD</span><i>→</i>
-          </button>
-        </form>
-        <details id="telegram-login" class="telegram-login">
-          <summary><span>🔐</span><span><b>Войти через Telegram</b><small>Одноразовый код вместо постоянного PIN</small></span><i>＋</i></summary>
-          <div class="telegram-login-body">
-            <p>В привязанном Telegram-боте нажмите <b>«Код входа в T‑Mod»</b>. Код действует 5 минут и используется один раз.</p>
-            <form id="telegram-login-form" action="/auth/telegram" method="post">
-              <label>
-                <span>Временный код · 8 цифр</span>
-                <input
-                  id="telegram-login-code"
-                  name="code"
-                  type="text"
-                  minlength="8"
-                  maxlength="8"
-                  pattern="[0-9]{8}"
-                  inputmode="numeric"
-                  autocomplete="one-time-code"
-                  required
-                  placeholder="00000000"
-                >
-              </label>
-              <button class="login-submit telegram-login-submit" type="submit"><span>ПРОДОЛЖИТЬ</span><i>→</i></button>
-            </form>
-          </div>
-        </details>
-        <div id="login-context" class="login-context" aria-live="polite">
-          <i></i><span><b>Единая сессия</b><small>После входа вернём вас в выбранный сервис.</small></span>
-        </div>
-        <footer class="credential-footer">
-          <span>Нет данных для входа?</span>
-          <a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noreferrer">Вступить в Discord и создать аккаунт <i>↗</i></a>
-          <a href="https://tvr.lat/legal">Конфиденциальность и условия <i>↗</i></a>
-        </footer>
-      </section>
-    </main>
-    <script src="/assets/global-log-client.js" defer></script>
-  </body>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111214">
+  <title>Аккаунт · Технологии Товарищества</title>
+  <meta name="description" content="Единый аккаунт Технологий Товарищества. Вход и создание аккаунта с подтверждением Discord.">
+  <link rel="icon" href="/assets/favicon.svg"><link rel="stylesheet" href="/assets/blackbird-public.css?v=1"><link rel="stylesheet" href="/assets/login.css?v=blackbird-1">
+  <script src="/assets/login.js?v=blackbird-1" defer></script>
+</head>
+<body>
+  <header class="auth-header"><a class="public-brand" href="https://tvr.lat"><span class="public-sigil" aria-hidden="true">Т</span><span>Технологии Товарищества<small>Единый аккаунт</small></span></a><a class="subtle-link" href="/admission">Товарищество на Phoenix ↗</a></header>
+  <main class="login-shell">
+    <section class="identity-panel">
+      <p class="eyebrow">ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО</p>
+      <h1>Свои люди.<br>Общие возможности.</h1>
+      <p class="identity-lead">Один аккаунт для Blackbird и сервисов Товарищества. Ваши персонажи, общение и инструменты — вместе, без повторной настройки.</p>
+      <div class="identity-illustration" aria-hidden="true"><div class="identity-grid"></div><span class="identity-ring ring-a"></span><span class="identity-ring ring-b"></span><span class="identity-ring ring-c"></span><span class="identity-center">Т<span></span></span><i class="identity-point point-a"></i><i class="identity-point point-b"></i></div>
+      <div class="identity-details"><div><span>01</span><strong>Привязан к вам</strong><p>Discord подтверждает владельца аккаунта. Персонажи дополняют вашу игровую идентичность.</p></div><div><span>02</span><strong>Без лишних барьеров</strong><p>Для создания аккаунта не нужен мандат сенатора или уровень в Товариществе.</p></div></div>
+    </section>
+    <section class="credential-panel" aria-labelledby="login-title">
+      <div class="credential-topline"><span>АККАУНТ ТОВАРИЩЕСТВА</span><span class="auth-lock" aria-label="Защищённый вход"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></div>
+      <div class="credential-head"><h2 id="login-title">Рады видеть вас.</h2><p>Войдите в аккаунт, чтобы продолжить.</p></div>
+      <form id="credential-form" action="/auth/login" method="post">
+        <label class="field"><span>Логин</span><input id="credential-login" name="login" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="Ваш логин"></label>
+        <label class="field"><span>PIN или пароль</span><span class="pin-field"><input id="credential-pin" name="pin" type="password" minlength="1" maxlength="128" autocomplete="current-password" required placeholder="Введите PIN или пароль"><button id="pin-visibility" type="button" aria-label="Показать PIN или пароль">◉</button></span></label>
+        <output id="login-feedback" class="inline-feedback login-feedback" aria-live="polite" hidden></output>
+        <label id="factor-field" class="field" hidden><span id="factor-label">Код подтверждения</span><input name="code" type="password" autocomplete="one-time-code" maxlength="32" id="factor-code"></label><input name="challenge" type="hidden" id="factor-challenge">
+        <button class="login-submit button primary" type="submit"><span>Войти в аккаунт</span><i aria-hidden="true">→</i></button>
+      </form>
+      <details id="telegram-login" class="telegram-login"><summary><span>Войти с кодом Telegram</span><i aria-hidden="true">＋</i></summary><div class="telegram-login-body"><p>Если Telegram уже привязан, запросите в боте «Код входа в T-Mod». Одноразовый код действует 5 минут.</p><form id="telegram-login-form" action="/auth/telegram" method="post"><label class="field"><span>Код из Telegram</span><input id="telegram-login-code" name="code" type="text" minlength="8" maxlength="8" pattern="[0-9]{8}" inputmode="numeric" autocomplete="one-time-code" required placeholder="8 цифр"></label><button class="login-submit button primary" type="submit"><span>Продолжить</span><i aria-hidden="true">→</i></button></form></div></details>
+      <div id="login-context" class="login-context" aria-live="polite"><i></i><span><b>Вернёмся туда, где вы остановились</b><small>После входа откроется выбранный сервис.</small></span></div>
+      <div class="create-account"><span>Впервые здесь?</span><a id="create-account-link" class="button quiet" href="/register">Создать аккаунт <span aria-hidden="true">↗</span></a><small>Несколько шагов. Понадобится ваш Discord.</small></div>
+      <footer class="credential-footer"><span>Не получается войти?</span><a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noopener noreferrer">Помощь в Discord ↗</a><small>Логин и способ входа также можно настроить командой /account. Дополнительное подтверждение входа пока действует в Blackbird.</small></footer>
+    </section>
+  </main>
+  <footer class="public-footer auth-footer"><span>Технологии Товарищества</span><nav><a href="https://tvr.lat/legal">Условия и конфиденциальность</a><a href="https://tvr.lat">На главную ↗</a></nav></footer>
+  <script src="/assets/global-log-client.js" defer></script>
+</body>
 </html>

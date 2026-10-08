@@ -1321,7 +1321,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(response.status, 200)
-            self.assertIn("T-Mod Account", await response.text())
+            self.assertIn('id="credential-form"', await response.text())
         finally:
             await client.close()
 
@@ -1418,13 +1418,20 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             login_page = await client.get("/login")
             self.assertEqual(login_page.status, 200)
             login_text = await login_page.text()
-            self.assertIn("T·ID", login_text)
+            self.assertIn("Технологии Товарищества", login_text)
+            self.assertIn('id="create-account-link"', login_text)
             self.assertIn('name="pin"', login_text)
             self.assertIn('id="telegram-login"', login_text)
             self.assertIn('id="telegram-login-code"', login_text)
             login_script = await client.get("/assets/login.js")
             self.assertEqual(login_script.status, 200)
             self.assertIn('location.hash === "#telegram-login"', await login_script.text())
+            registration_page = await client.get("/register?next=/admission")
+            self.assertEqual(registration_page.status, 200)
+            self.assertIn('id="wizard-form"', await registration_page.text())
+            for asset in ("register.js", "register.css", "blackbird-public.css", "ibm-plex-sans-cyrillic-400-normal.woff2"):
+                response = await client.get("/assets/" + asset)
+                self.assertEqual(response.status, 200, asset)
 
             host_redirect = await client.get("/host", allow_redirects=False)
             self.assertEqual(host_redirect.status, 303)
