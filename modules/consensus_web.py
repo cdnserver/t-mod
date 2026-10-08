@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -217,7 +218,6 @@ _runtime_token: str | None = None
 _failed_auth: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
 _login_failures: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=30))
 _command_rate: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=80))
-_command_receipts: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 
 
 def _access_token() -> str:
@@ -860,6 +860,7 @@ async def build_consensus_web_state(
             "authenticated": principal is not None,
             "legacy_read_only": bool(legacy_read_only),
             "id": int(principal.user_id) if principal else None,
+            "id_exact": str(principal.user_id) if principal else None,
             "name": (
                 str(principal.display_name)
                 if principal
@@ -1224,12 +1225,15 @@ def create_consensus_web_app(
             request,
             expected_guild_id=int(guild_id),
         )
+        device_fingerprint = str(request.headers.get("X-TMod-Device-Fingerprint") or "")
+        hardware_fingerprint = str(request.headers.get("X-TMod-Hardware-Fingerprint") or "")
         ban = await asyncio.to_thread(
             global_ban_storage.get_desktop_installation_ban,
             int(guild_id),
             desktop_token,
-            str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
-        ) if desktop_token else None
+            device_fingerprint,
+            hardware_fingerprint,
+        ) if desktop_token or device_fingerprint or hardware_fingerprint else None
         if identity is not None:
             ban = ban or await asyncio.to_thread(
                 global_ban_storage.get_global_ban,
@@ -1242,6 +1246,7 @@ def create_consensus_web_app(
             # Shared devices must not disclose another account's ban reason.
             ban = {
                 **ban,
+                "user_id": 0,
                 "reason": "Доступ с этой установки T-Mod Desktop ограничен.",
             }
         request[_GLOBAL_BAN_REQUEST_KEY] = ban
@@ -1262,7 +1267,7 @@ def create_consensus_web_app(
                 or legal_access
             )
             if not allowed:
-                if request.path.startswith("/api/") or desktop_token:
+                if request.path.startswith("/api/") or desktop_token or device_fingerprint or hardware_fingerprint:
                     return web.json_response(
                         {
                             "error": "globally_banned",
@@ -1271,6 +1276,7 @@ def create_consensus_web_app(
                             "reference": f"GB-{int(ban.get('revision') or 1):03d}",
                         },
                         status=423,
+                        headers={"Cache-Control": "no-store"},
                     )
                 raise web.HTTPSeeOther(location="/banned")
         return await handler(request)
@@ -1285,6 +1291,11 @@ def create_consensus_web_app(
         ttl_seconds=1.5,
         max_stale_seconds=15,
     )
+    # Per application, account session and request. Never share cached personal
+    # projections between guilds or between two signed-in sessions.
+    command_receipts: dict[tuple[int, str, str], tuple[float, str, bytes]] = {}
+    receipt_locks: dict[tuple[int, str, str], asyncio.Lock] = {}
+    receipt_users: dict[tuple[int, str, str], int] = defaultdict(int)
 
     async def index(_: web.Request) -> web.FileResponse:
         return web.FileResponse(_ASSET_DIR / "index.html")
@@ -1309,7 +1320,7 @@ def create_consensus_web_app(
     async def banned_state(request: web.Request) -> web.Response:
         ban = request.get(_GLOBAL_BAN_REQUEST_KEY)
         if ban is None:
-            return web.json_response({"active": False})
+            return web.json_response({"active": False}, headers={"Cache-Control": "no-store"})
         return web.json_response(
             {
                 "active": True,
@@ -1317,7 +1328,8 @@ def create_consensus_web_app(
                 "reason": str(ban.get("reason") or "Причина не указана."),
                 "issued_at": ban.get("issued_at"),
                 "reference": f"GB-{int(ban.get('revision') or 1):03d}",
-            }
+            },
+            headers={"Cache-Control": "no-store"},
         )
 
     async def tasks_api(request: web.Request) -> web.Response:
@@ -1520,6 +1532,11 @@ def create_consensus_web_app(
                 and request.path != "/api/desktop/v1/bootstrap"
                 and not request.path.startswith("/api/desktop/v1/updates/blackbird/")
                 and not request.path.startswith("/api/account/")
+                # Blackbird social features are available to every registered
+                # account. This does not grant any Senate/Reactor data access.
+                and request.path not in {"/api/blackbird/communicate", "/api/blackbird/media",
+                                         "/api/reactor/notifications", "/api/reactor/notifications/read"}
+                and not request.path.startswith(("/api/blackbird/communicate/", "/api/blackbird/media/"))
             ):
                 raise web.HTTPForbidden(
                     text=json.dumps(
@@ -1870,6 +1887,7 @@ def create_consensus_web_app(
                 platform=str(request.headers.get("X-TMod-Desktop-Platform") or ""),
                 app_version=str(request.headers.get("X-TMod-Desktop-Version") or ""),
                 device_fingerprint=str(request.headers.get("X-TMod-Device-Fingerprint") or ""),
+                hardware_fingerprint=str(request.headers.get("X-TMod-Hardware-Fingerprint") or ""),
             )
         guild = bot.get_guild(int(guild_id))
         member = guild.get_member(int(result.credential.user_id)) if guild is not None else None
@@ -2280,14 +2298,39 @@ def create_consensus_web_app(
                 },
                 status=400,
             )
+        try:
+            fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_payload"}, status=400)
+        receipt_key = (int(principal.user_id), str(principal.csrf_token), idempotency_key)
+        lock = receipt_locks.setdefault(receipt_key, asyncio.Lock())
+        receipt_users[receipt_key] += 1
+        try:
+            # Two retries arriving together must not both execute before the
+            # first receipt is stored. Unrelated requests have independent locks.
+            async with lock:
+                return await execute_receipted_command(principal, body, receipt_key, fingerprint)
+        finally:
+            receipt_users[receipt_key] -= 1
+            if not receipt_users[receipt_key]:
+                receipt_users.pop(receipt_key, None)
+                receipt_locks.pop(receipt_key, None)
+
+    async def execute_receipted_command(
+        principal: ConsensusWebPrincipal,
+        body: dict[str, Any],
+        receipt_key: tuple[int, str, str],
+        fingerprint: str,
+    ) -> web.Response:
         now = time.monotonic()
-        for key, (expires_at, _) in list(_command_receipts.items()):
+        for key, (expires_at, _, _) in list(command_receipts.items()):
             if expires_at <= now:
-                _command_receipts.pop(key, None)
-        receipt_key = (int(principal.user_id), idempotency_key)
-        cached = _command_receipts.get(receipt_key)
+                command_receipts.pop(key, None)
+        cached = command_receipts.get(receipt_key)
         if cached is not None:
-            return web.json_response(cached[1])
+            if cached[1] != fingerprint:
+                return web.json_response({"error": "idempotency_conflict", "message": "Этот запрос уже использован для другой команды. Обновите панель и повторите действие."}, status=409)
+            return web.Response(body=cached[2], content_type="application/json", headers={"Cache-Control": "private, no-store"})
         try:
             revision = int(body.get("revision") or 0)
             bill_id = body.get("bill_id")
@@ -2364,8 +2407,11 @@ def create_consensus_web_app(
             ),
         }
         state_cache.invalidate()
-        _command_receipts[receipt_key] = (now + 300.0, response_payload)
-        return web.json_response(response_payload)
+        response = web.json_response(response_payload, headers={"Cache-Control": "private, no-store"})
+        if len(command_receipts) >= 2048:
+            command_receipts.pop(next(iter(command_receipts)))
+        command_receipts[receipt_key] = (time.monotonic() + 300.0, fingerprint, bytes(response.body or b""))
+        return response
 
     app.router.add_get("/", index)
     app.router.add_get("/ecosystem", ecosystem_page)

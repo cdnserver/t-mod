@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,11 +177,22 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
                 return_value=(10, 20),
             ):
                 protected = await client.get("/api/state")
+                protected_preview = await client.get("/api/blackbird/communicate/preview?url=https://consensus.tvr.lat/bills/1")
+                social_statuses = [
+                    (await client.get(path)).status for path in (
+                        "/api/blackbird/communicate", "/api/blackbird/media",
+                        "/api/blackbird/media/assets/20/avatar",
+                        "/api/blackbird/communicate/attachments/test-attachment",
+                        "/api/reactor/notifications",
+                    )
+                ]
                 page = await client.get("/banned")
                 state = await client.get("/api/banned")
                 logout = await client.get("/auth/logout", allow_redirects=False)
                 payload = await state.json()
         self.assertEqual(protected.status, 423)
+        self.assertEqual(protected_preview.status, 423)
+        self.assertEqual(social_statuses, [423] * 5)
         self.assertEqual(page.status, 200)
         self.assertEqual(logout.status, 303)
         self.assertEqual(logout.headers["Location"], "/banned")
@@ -209,9 +221,97 @@ class GlobalBanWebTests(unittest.IsolatedAsyncioTestCase):
                 allow_redirects=False,
             )
             payload = await response.json()
+            state_response = await client.get(
+                "/api/banned",
+                headers={"X-TMod-Install-Token": token},
+            )
+            state = await state_response.json()
         self.assertEqual(response.status, 423)
         self.assertEqual(payload["error"], "globally_banned")
+        self.assertIn("no-store", response.headers["Cache-Control"])
+        self.assertTrue(state["active"])
+        self.assertEqual(state["user_id"], "")
+        self.assertIn("no-store", state_response.headers["Cache-Control"])
         self.assertEqual(payload["reason"], "Доступ с этой установки T-Mod Desktop ограничен.")
+
+    async def test_known_banned_device_blocks_alt_login_without_install_token(self) -> None:
+        fingerprint = "a" * 64
+        bans.bind_desktop_installation(
+            10, 20, "B" * 43, platform="win32", device_fingerprint=fingerprint
+        )
+        bans.issue_global_ban(
+            10, 20,
+            reason="Критическое нарушение правил",
+            actor_id=99,
+            actor_display="Администратор",
+        )
+        app = create_consensus_web_app(self.bot, guild_id=10)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/auth/login?client=desktop",
+                headers={"X-TMod-Device-Fingerprint": fingerprint},
+                data={"login": "alt.user", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            payload = await response.json()
+        self.assertEqual(response.status, 423)
+        self.assertEqual(payload["error"], "globally_banned")
+
+    async def test_hardware_binding_survives_new_installation_and_os_identifier(self) -> None:
+        hardware = "c" * 64
+        bans.bind_desktop_installation(
+            10, 20, "B" * 43, platform="win32",
+            device_fingerprint="a" * 64, hardware_fingerprint=hardware,
+        )
+        bans.issue_global_ban(
+            10, 20,
+            reason="Критическое нарушение правил",
+            actor_id=99,
+            actor_display="Администратор",
+        )
+        app = create_consensus_web_app(self.bot, guild_id=10)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/auth/login?client=desktop",
+                headers={
+                    "X-TMod-Install-Token": "Z" * 43,
+                    "X-TMod-Device-Fingerprint": "d" * 64,
+                    "X-TMod-Hardware-Fingerprint": hardware,
+                },
+                data={"login": "alt.user", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            payload = await response.json()
+        self.assertEqual(response.status, 423)
+        self.assertEqual(payload["error"], "globally_banned")
+
+    async def test_existing_reactor_event_stream_stops_after_global_ban(self) -> None:
+        admin = ConsensusWebPrincipal(
+            user_id=20,
+            guild_id=10,
+            display_name="Администратор",
+            csrf_token="csrf-token",
+            member=SimpleNamespace(
+                id=20,
+                display_name="Администратор",
+                guild_permissions=SimpleNamespace(administrator=True),
+                roles=[],
+            ),  # type: ignore[arg-type]
+        )
+        app = create_consensus_web_app(self.bot, guild_id=10)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            with patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=admin)):
+                response = await client.get("/api/admin/reactor/events/stream")
+                self.assertEqual(response.status, 200)
+                await response.content.readuntil(b"\n\n")
+                bans.issue_global_ban(
+                    10, 20,
+                    reason="Критическое нарушение правил",
+                    actor_id=99,
+                    actor_display="Администратор",
+                )
+                await asyncio.wait_for(response.content.read(), timeout=6)
+                self.assertTrue(response.content.at_eof())
 
     async def test_consensus_task_board_requires_member_and_supports_updates(self) -> None:
         app = create_consensus_web_app(self.bot, guild_id=10)  # type: ignore[arg-type]

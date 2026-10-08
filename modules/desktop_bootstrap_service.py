@@ -115,6 +115,7 @@ async def build_desktop_bootstrap_payload(
         platform=str(headers.get("X-TMod-Desktop-Platform") or ""),
         app_version=str(headers.get("X-TMod-Desktop-Version") or ""),
         device_fingerprint=str(headers.get("X-TMod-Device-Fingerprint") or ""),
+        hardware_fingerprint=str(headers.get("X-TMod-Hardware-Fingerprint") or ""),
     )
     client_update = desktop_update_policy(headers, edition=edition)
     update_required = bool(client_update["required"])
