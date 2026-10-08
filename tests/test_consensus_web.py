@@ -3114,6 +3114,9 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         consensus_coordinator.save(self.session, "session_created")
         principal = self._principal(user_id=4)
         principal.member.guild_permissions.administrator = False
+        # A real senator is a fellowship member, not an unprivileged Discord
+        # guest. The public broadcast intentionally omits guest identity.
+        principal.member.roles = [SimpleNamespace(id=int(TVRS_FELLOWSHIP_ROLE_ID))]
         app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
         headers = {"X-CSRF-Token": principal.csrf_token}
         with (
