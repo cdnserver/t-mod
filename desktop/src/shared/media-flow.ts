@@ -6,6 +6,27 @@ export class MediaReadGate {
   invalidate(): void { this.revision++; }
 }
 
+/** Account-scoped LRU: browsing profiles must not retain every binary forever. */
+export class MediaAssetCache<T> {
+  private readonly entries = new Map<string, Promise<T>>();
+  constructor(private readonly limit = 24) {
+    if (!Number.isInteger(limit) || limit < 1) throw new RangeError("invalid_media_cache_limit");
+  }
+  load(key: string, loader: () => Promise<T>): Promise<T> {
+    const cached = this.entries.get(key);
+    if (cached) {
+      this.entries.delete(key); this.entries.set(key, cached);
+      return cached;
+    }
+    const pending = Promise.resolve().then(loader);
+    this.entries.set(key, pending);
+    while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value!);
+    // An evicted request can fail after a replacement was installed for this key.
+    void pending.catch(() => { if (this.entries.get(key) === pending) this.entries.delete(key); });
+    return pending;
+  }
+}
+
 export function mergeMediaPosts<T extends { id: number }>(current: T[], incoming: T[]): T[] {
   return [...new Map([...current, ...incoming].map(post => [post.id, post])).values()].sort((a, b) => b.id - a.id);
 }

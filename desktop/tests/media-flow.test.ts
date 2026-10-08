@@ -1,5 +1,42 @@
-import { describe, expect, it } from "vitest";
-import { MediaComposers, MediaReadGate, isPublishedMediaPost, mergeMediaPosts } from "../src/shared/media-flow";
+import { describe, expect, it, vi } from "vitest";
+import { MediaAssetCache, MediaComposers, MediaReadGate, isPublishedMediaPost, mergeMediaPosts } from "../src/shared/media-flow";
+
+describe("Media asset memory budget", () => {
+  it("shares simultaneous requests and evicts the least recently used image", async () => {
+    const cache = new MediaAssetCache<number>(2);
+    const loader = vi.fn(async () => 1);
+    const first = cache.load("a", loader);
+    expect(cache.load("a", loader)).toBe(first);
+    await first; expect(loader).toHaveBeenCalledOnce();
+    await cache.load("b", async () => 2);
+    expect(cache.load("a", loader)).toBe(first);
+    await cache.load("c", async () => 3);
+    const reload = vi.fn(async () => 4);
+    expect(await cache.load("b", reload)).toBe(4);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+  it("retries failures without retaining rejected image bytes", async () => {
+    const cache = new MediaAssetCache<number>();
+    await expect(cache.load("a", async () => { throw Error("offline"); })).rejects.toThrow("offline");
+    expect(await cache.load("a", async () => 2)).toBe(2);
+  });
+  it("a late failure cannot evict a replacement with the same key", async () => {
+    const cache = new MediaAssetCache<number>(1);
+    let reject!: (reason: Error) => void;
+    const old = cache.load("a", () => new Promise<number>((_, fail) => { reject = fail; }));
+    await cache.load("b", async () => 2);
+    const replacement = cache.load("a", async () => 3);
+    reject(Error("late")); await expect(old).rejects.toThrow("late");
+    expect(cache.load("a", async () => 4)).toBe(replacement);
+    expect(await replacement).toBe(3);
+  });
+  it("keeps accounts isolated and rejects invalid budgets", async () => {
+    expect(() => new MediaAssetCache(0)).toThrow();
+    const alice = new MediaAssetCache<number>(), bob = new MediaAssetCache<number>();
+    await alice.load("photo", async () => 1);
+    expect(await bob.load("photo", async () => 2)).toBe(2);
+  });
+});
 
 describe("Media Network request coordination", () => {
   it("ignores an old profile or feed response after navigation and unmount", () => {

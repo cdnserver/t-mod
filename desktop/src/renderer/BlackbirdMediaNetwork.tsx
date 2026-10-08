@@ -1,14 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { trustedDiscordAvatar } from "./AccountAvatar";
 import { describeSharedLink } from "../shared/communicate-links";
-import { MediaComposers, MediaReadGate, isPublishedMediaPost, mergeMediaPosts } from "../shared/media-flow";
+import { MediaAssetCache, MediaComposers, MediaReadGate, isPublishedMediaPost, mergeMediaPosts } from "../shared/media-flow";
 import "./blackbird-media-network.css";
 
 interface Profile { user_id: string; display_name: string; bio: string; cover_theme: string; is_public: boolean; avatar_revision?: string | null; cover_revision?: string | null }
 interface Post { id: number; author_id: string; display_name: string; kind: "post" | "rollback"; body: string; source_url: string; created_at: string; avatar_revision?: string | null }
 type Tab = "feed" | "people" | "rollback";
 type MediaImage = { bytes: Uint8Array; mimeType: string; revision: string } | null;
-const MediaImageCache = createContext<Map<string, Promise<MediaImage>> | null>(null);
+const MediaImageCache = createContext<MediaAssetCache<MediaImage> | null>(null);
 const demoProfile: Profile = { user_id: "1", display_name: "Роберт", bio: "Идеи превращаются в системы.", cover_theme: "orbit", is_public: true };
 const demoFeed: Post[] = [{ id: 1, author_id: "1", display_name: "Роберт", kind: "post", body: "Добро пожаловать в Медиасеть Blackbird. Профиль появляется здесь только с согласия владельца.", source_url: "", created_at: new Date().toISOString() }];
 
@@ -35,12 +35,8 @@ function useProfileImage(userId: string, kind: "avatar" | "cover", revision?: st
     let live = true;
     let objectUrl = "";
     const key = `${userId}:${kind}:${revision}`;
-    let pending = cache?.get(key);
-    if (!pending) {
-      pending = window.tmodDesktop.mediaAsset(userId, kind);
-      cache?.set(key, pending);
-      void pending.catch(() => { if (cache && cache.get(key) === pending) cache.delete(key); });
-    }
+    const loader = () => window.tmodDesktop!.mediaAsset!(userId, kind);
+    const pending = cache ? cache.load(key, loader) : loader();
     void pending.then(asset => {
       if (!live || !asset || asset.revision !== revision) return;
       objectUrl = URL.createObjectURL(new Blob([asset.bytes as BlobPart], { type: asset.mimeType }));
@@ -109,7 +105,7 @@ export function BlackbirdMediaNetwork({ name, avatarUrl, onBack }: { name: strin
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState("");
-  const imageCache = useMemo(() => new Map<string, Promise<MediaImage>>(), [viewerId]);
+  const imageCache = useMemo(() => new MediaAssetCache<MediaImage>(), [viewerId]);
   const avatarFileRef = useRef<HTMLInputElement>(null);
   const coverFileRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
