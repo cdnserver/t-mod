@@ -27,6 +27,10 @@ import type {
 
 const api: TModDesktopApi = {
   accountRequest: (action, data) => ipcRenderer.invoke("desktop:account-request", action, data),
+  mediaAsset: (userId, kind) => ipcRenderer.invoke("desktop:media-asset", userId, kind),
+  mediaUpload: (kind, bytes) => ipcRenderer.invoke("desktop:media-upload", kind, bytes),
+  mediaRemove: kind => ipcRenderer.invoke("desktop:media-remove", kind),
+  openSharedLink: url => ipcRenderer.invoke("desktop:open-shared-link", url),
   openBilling: () => ipcRenderer.invoke("desktop:billing-open"),
   bootstrap: () => ipcRenderer.invoke("desktop:bootstrap") as Promise<BootstrapResult>,
   login: (credentials: DesktopLoginCredentials) =>

@@ -36,6 +36,25 @@ describe("authenticated bootstrap mirror selection", () => {
     const result = await selectBootstrapCandidate([parseBootstrapResponse(new Response(null, { status: 403 })), parseBootstrapResponse(new Response(null, { status: 504 }))]);
     expect(result.response.status).toBe(403);
   });
+  it("does not accept a stale healthy mirror when the other endpoint reports a ban", async () => {
+    const delayedBan = new Promise<Awaited<ReturnType<typeof valid>>>(resolve =>
+      setTimeout(() => void parseBootstrapResponse(new Response(null, { status: 423 })).then(resolve), 30));
+    const result = await selectBootstrapCandidate([valid(), delayedBan]);
+    expect(result.response.status).toBe(423);
+    expect(result.data).toBeUndefined();
+  });
+  it("applies an authoritative ban without waiting for a stalled mirror", async () => {
+    const stalled = new Promise<Awaited<ReturnType<typeof valid>>>(() => {});
+    const ban = parseBootstrapResponse(new Response(null, { status: 423 }));
+    const result = await Promise.race([
+      selectBootstrapCandidate([stalled, ban]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ban_waited_for_mirror")), 100)),
+    ]);
+    expect(result.response.status).toBe(423);
+  });
+  it("rejects an empty mirror set instead of leaving the caller pending", async () => {
+    await expect(selectBootstrapCandidate([])).rejects.toThrow("bootstrap_unavailable");
+  });
   it("distinguishes a broken protocol from a network outage", async () => {
     await expect(selectBootstrapCandidate([parseBootstrapResponse(Response.json({ protocol_version: 1 })), Promise.reject(new Error("timeout"))])).rejects.toBeInstanceOf(BootstrapProtocolError);
   });

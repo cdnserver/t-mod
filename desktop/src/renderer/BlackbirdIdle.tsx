@@ -10,7 +10,7 @@ const stars = Array.from({ length: 42 }, (_, index) => ({
 }));
 
 /** A cinematic pause, distinct from the old T-Mod vault and star-digit clock. */
-export function BlackbirdIdle({ name, reduced, unlocking, onMinimize }: { name: string; reduced: boolean; unlocking: boolean; onMinimize: () => void }) {
+export function BlackbirdIdle({ name, reduced, unlocking, checking = false, error = false, onMinimize }: { name: string; reduced: boolean; unlocking: boolean; checking?: boolean; error?: boolean; onMinimize: () => void }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const update = () => setNow(new Date());
@@ -31,6 +31,6 @@ export function BlackbirdIdle({ name, reduced, unlocking, onMinimize }: { name: 
     <header><span>BLACKBIRD <i/> ПАУЗА</span><button onClick={onMinimize} aria-label="Свернуть приложение">−</button></header>
     <main><div className="bbi-scene-index">01 / МОМЕНТ ТИШИНЫ</div><div className="bbi-date">{now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" })}</div><time key={time} dateTime={now.toISOString()}>{time}</time><div className="bbi-divider"/><h1>{greeting}{name ? `, ${name}` : ""}.</h1><p>Вы на паузе. Ваше пространство остаётся рядом.</p></main>
     <div className="bbi-signature" aria-hidden="true"><img src={technologies} alt=""/></div>
-    <footer><span><i/> СЕАНС ЗАЩИЩЁН</span><small>Нажмите любую клавишу <b>↵</b></small></footer>
+    <footer><span><i/> СЕАНС ЗАЩИЩЁН</span><small className={error ? "bbi-unlock-error" : ""}>{checking ? "Проверяем доступ…" : error ? "Нет связи или доступ закрыт. Нажмите клавишу для повтора." : "Нажмите любую клавишу"} {!checking && <b>↵</b>}</small></footer>
   </section>;
 }

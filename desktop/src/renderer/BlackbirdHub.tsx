@@ -56,7 +56,7 @@ export function BlackbirdHub({ name, tier, online, notifications, access, overla
               <h1><span>Добро пожаловать в Blackbird,</span><strong>{greeting}.</strong></h1>
               <p className="bb3-hero-detail">Интеллект и сообщество. Ваши пространства всегда под рукой.</p>
             </div>
-            <button type="button" className="bb3-media-entry" onClick={onOpenMediaNetwork}><span className="bb3-media-symbol">✦</span><span><small>СЛЕДУЮЩЕЕ ПРОСТРАНСТВО</small><strong>Медиасеть</strong><em>Публичные профили и события сообщества · предварительный просмотр</em></span><b>Открыть →</b></button>
+            <button type="button" className="bb3-media-entry" onClick={onOpenMediaNetwork}><span className="bb3-media-symbol">✦</span><span><small>ПРОСТРАНСТВО СООБЩЕСТВА</small><strong>Медиасеть</strong><em>Профили, поиск людей, публикации и откаты</em></span><b>Открыть →</b></button>
           </section>
 
           <section className="bb3-apps" aria-label="Рабочие пространства">

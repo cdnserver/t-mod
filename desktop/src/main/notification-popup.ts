@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, screen } from "electron";
+import { app, BrowserWindow, ipcMain, screen } from "electron";
 import path from "node:path";
 import type { DesktopNotification } from "../shared/contracts";
 import { notificationHardLimitMs } from "../shared/notification-timing";
@@ -43,7 +43,8 @@ export class NotificationPopup {
       this.window = new BrowserWindow({ width: 430, height: 180, frame: false, resizable: false,
         show: false, alwaysOnTop: true, skipTaskbar: true, focusable: true, transparent: true,
         webPreferences: { preload: path.join(this.directory, "../preload/notification.cjs"),
-          contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
+          contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false,
+          devTools: !app.isPackaged },
       });
       this.window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       this.window.webContents.on("will-navigate", event => event.preventDefault());

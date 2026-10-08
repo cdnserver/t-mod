@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Blackbird.Setup</AssemblyName>
+    <ApplicationIcon>../../resources/blackbird/icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>embedded</DebugType>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Blackbird.Setup.Core/Blackbird.Setup.Core.csproj" />
+    <Resource Include="../../resources/blackbird/icon.png" Link="Assets/bird.png" />
+    <Resource Include="../../src/renderer/assets/blackbird/technologies-signature.png" Link="Assets/technologies.png" />
+    <EmbeddedResource Include="../Generated/payload.zip" LogicalName="Blackbird.Payload" Condition="Exists('../Generated/payload.zip')" />
+    <EmbeddedResource Include="../Generated/manifest.json" LogicalName="Blackbird.Manifest" Condition="Exists('../Generated/manifest.json')" />
+  </ItemGroup>
+  <Target Name="RequirePayloadForPublish" BeforeTargets="Publish">
+    <Error Condition="!Exists('../Generated/payload.zip') Or !Exists('../Generated/manifest.json')" Text="Build the verified Blackbird payload before publishing the installer." />
+  </Target>
+</Project>

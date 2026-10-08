@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   desktopCapturer,
   globalShortcut,
@@ -317,6 +318,7 @@ export class AtlasOverlayController {
   private config: AtlasOverlayConfig = { ...DEFAULT_ATLAS_OVERLAY_CONFIG };
   private catalog: AtlasOverlayCatalog = { characters: [], servers: [], factions: [] };
   private projection?: AtlasOverlayBootstrapProjection;
+  private locked = false;
   private csrfToken = "";
   private activeRequest?: AbortController;
   private activeRequestId?: string;
@@ -517,6 +519,20 @@ export class AtlasOverlayController {
     );
   }
 
+  setLocked(locked: boolean): void {
+    if (this.locked === locked) return;
+    this.locked = locked;
+    if (locked) {
+      this.cancel();
+      this.stopGameDetection();
+      this.stopCraftPolling();
+      this.hide();
+    } else if (this.projection?.allowed && this.config.enabled) {
+      this.syncGameDetection();
+      this.scheduleCraftPoll(0);
+    }
+  }
+
   async applyBootstrap(projection: AtlasOverlayBootstrapProjection | undefined): Promise<void> {
     if (!projection) {
       this.csrfToken = "";
@@ -543,7 +559,7 @@ export class AtlasOverlayController {
       }
     }
     const selected = this.catalog.characters.find((item) => item.id === this.config.characterId);
-    if (this.config.characterId && !selected) {
+    if (projection && this.config.characterId && !selected) {
       this.config = { ...this.config, characterId: null, characterName: "" };
       this.activeThreadId = undefined;
       await this.persistConfig();
@@ -551,7 +567,7 @@ export class AtlasOverlayController {
       this.config = { ...this.config, characterName: selected.name };
       await this.persistConfig();
     }
-    if (!projection?.allowed) {
+    if (!projection?.allowed || this.locked) {
       this.cancel();
       this.stopGameDetection();
       this.hide();
@@ -640,7 +656,7 @@ export class AtlasOverlayController {
     if (previous.workspaceMode !== next.workspaceMode && this.craftSnapshot) {
       this.emit({ type: "crafts", snapshot: this.craftSnapshot });
     }
-    if (next.enabled && this.projection?.allowed) {
+    if (next.enabled && this.projection?.allowed && !this.locked) {
       await this.ensureWindow();
       this.scheduleCraftPoll(0);
       if (!this.foregroundProbe) {
@@ -790,6 +806,7 @@ export class AtlasOverlayController {
   }
 
   private guardReady(): string | undefined {
+    if (this.locked) return "atlas_overlay_locked";
     if (!this.config.enabled) return "atlas_overlay_disabled";
     if (!this.projection?.allowed) return "atlas_overlay_access_required";
     if (!this.config.characterId) return "atlas_overlay_character_required";
@@ -830,6 +847,7 @@ export class AtlasOverlayController {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
+        devTools: !app.isPackaged,
         backgroundThrottling: false,
         // Audio returned by Atlas is delivered after a background network
         // stream, not a renderer click.  Permit that trusted overlay document
@@ -1516,6 +1534,7 @@ export class AtlasOverlayController {
 
   private shouldKeepIdleVisible(): boolean {
     return Boolean(
+      !this.locked &&
       this.config.enabled &&
       this.projection?.allowed &&
       (this.config.showGameStatus || this.config.workspaceMode !== "assistant") &&
@@ -1525,6 +1544,7 @@ export class AtlasOverlayController {
 
   private shouldKeepCalibrationVisible(): boolean {
     return Boolean(
+      !this.locked &&
       this.config.enabled &&
       this.projection?.allowed &&
       this.config.calibrationMode &&
@@ -1541,7 +1561,7 @@ export class AtlasOverlayController {
   private syncGameDetection(): void {
     this.stopGameDetection();
     this.hide();
-    if (!this.config.enabled || !this.projection?.allowed) {
+    if (this.locked || !this.config.enabled || !this.projection?.allowed) {
       return;
     }
     if (process.platform !== "win32") {
@@ -1554,6 +1574,7 @@ export class AtlasOverlayController {
   private startForegroundProbe(): void {
     if (
       this.foregroundProbe ||
+      this.locked ||
       !this.config.enabled ||
       !this.projection?.allowed ||
       process.platform !== "win32"

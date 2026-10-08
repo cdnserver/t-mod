@@ -27,7 +27,11 @@ import electronUpdater from "electron-updater";
 import { AtlasOverlayController } from "./atlas-overlay-controller";
 import { NotificationPopup } from "./notification-popup";
 import { csrfTokenFromAccountSnapshot } from "../shared/account-response";
-import { sameAccountIdentity } from "../shared/account-identity";
+import { requestAccount } from "./account-request";
+import { readBoundedBytes } from "./bounded-response";
+import { downloadCommunicateAttachment, uploadCommunicateAttachment } from "./communicate-transfer";
+import { accountIdentityKey, sameAccountIdentity } from "../shared/account-identity";
+import { ConsensusInvitationGate, consensusAttendanceConfirmed, consensusViewerMatches } from "../shared/consensus-flow";
 import { readableNotificationIds, startupPopupNotifications } from "../shared/notification-reliability";
 import { BootstrapProtocolError, isFreshLoginProjection, loginPayloadError, parseBootstrapResponse, selectBootstrapCandidate } from "../shared/auth-network";
 import {
@@ -51,11 +55,16 @@ import type {
   ServiceId,
 } from "../shared/contracts";
 import { desktopProduct } from "../shared/product";
+import { enableInteractionSurfaces } from "./interaction-surface";
 import { parseServiceDeepLink, serviceForDeepLink } from "../shared/service-deep-link";
 import type { ServiceDeepLink } from "../shared/service-deep-link";
 import { normalizeIntroStyle, serviceBounds } from "../shared/shell-layout";
+import { normalizeHardwareUuid } from "../shared/device-identity";
+import { mayCompleteUnlock, ProtectedAccessGate } from "../shared/protected-access";
+import { navigationWasAborted, ServiceNavigation } from "../shared/service-navigation";
 
 const { autoUpdater } = electronUpdater;
+if (desktopProduct.privateEdition) enableInteractionSurfaces();
 
 // The startup signature is part of the local application shell and must not
 // depend on a first click in Chromium. Remote service views remain muted by
@@ -115,6 +124,8 @@ const DEFAULT_PREFERENCES: DesktopShellPreferences = {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let communicateWindow: BrowserWindow | null = null;
+let communicateOpening: Promise<boolean> | undefined;
+let communicateContextReady = false;
 let pendingCommunicateShare = "";
 let pendingServiceDeepLink: ServiceDeepLink | null = process.argv
   .map((argument) => parseServiceDeepLink(argument, desktopProduct.protocol))
@@ -129,16 +140,26 @@ let updateTimer: ReturnType<typeof setInterval> | undefined;
 let notificationPollTimer: ReturnType<typeof setInterval> | undefined;
 let consensusPollTimer: ReturnType<typeof setInterval> | undefined;
 let consensusPollInFlight = false;
-let lastConsensusPromptKey = "";
+const consensusInvitations = new ConsensusInvitationGate();
 let notificationPollInFlight = false;
 let forcedUpdateInstallTimer: ReturnType<typeof setTimeout> | undefined;
 let idleLockTimer: ReturnType<typeof setInterval> | undefined;
 let desktopLockReason: DesktopLockReason = "manual";
 let desktopLocked = false;
+let lockedServiceDestination: string | undefined;
+let unlockInFlight: Promise<boolean | "login_required"> | undefined;
+let serviceClearInFlight: Promise<void> | undefined;
 let serviceManifest = new Map<Exclude<ServiceId, "home">, DesktopService>();
 let lastSuccessfulBootstrap: DesktopBootstrap | undefined;
 let lastKnownBan: BootstrapResult["ban"];
 let bootstrapRevision = 0;
+let desktopLockRevision = 0;
+const protectedAccess = new ProtectedAccessGate(() => ({
+  revision: bootstrapRevision,
+  accountId: lastSuccessfulBootstrap ? accountIdentityKey(lastSuccessfulBootstrap.viewer) : null,
+  locked: desktopLocked,
+  banned: Boolean(lastKnownBan),
+}));
 let loginInFlight = false;
 let loginAbortController: AbortController | undefined;
 let bootstrapInFlight: {
@@ -153,7 +174,8 @@ let authProjectionTimer: ReturnType<typeof setTimeout> | undefined;
 let authCookieObserverInstalled = false;
 let desktopInstallToken = "";
 let desktopDeviceFingerprint = "";
-let lastMainFrameHttpStatus = 0;
+let desktopHardwareFingerprint = "";
+const serviceNavigation = new ServiceNavigation();
 let atlasOverlay: AtlasOverlayController | undefined;
 let updateState: DesktopUpdateState = {
   phase: app.isPackaged ? "idle" : "development",
@@ -262,25 +284,39 @@ async function buildDesktopDeviceFingerprint(): Promise<string> {
   }
 }
 
+async function buildDesktopHardwareFingerprint(): Promise<string> {
+  if (process.platform !== "win32") return "";
+  try {
+    const output = await execFileText("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID",
+    ]);
+    const uuid = normalizeHardwareUuid(output);
+    if (!uuid) return "";
+    return createHash("sha256")
+      .update(`tmod-desktop-smbios-v1\0${uuid}`, "utf8")
+      .digest("hex");
+  } catch (error) {
+    log.warn("Hardware binding unavailable; continuing with installation and OS identifiers", error);
+    return "";
+  }
+}
+
 function desktopIdentityHeaders(): Record<string, string> {
-  return desktopInstallToken
-    ? {
-        "X-TMod-Install-Token": desktopInstallToken,
-        "X-TMod-Desktop-Platform": process.platform,
-        "X-TMod-Desktop-Version": app.getVersion(),
-        "X-TMod-Desktop-Edition": desktopProduct.edition,
-        ...(desktopDeviceFingerprint
-          ? { "X-TMod-Device-Fingerprint": desktopDeviceFingerprint }
-          : {}),
-      }
-    : {
-        "X-TMod-Desktop-Version": app.getVersion(),
-        "X-TMod-Desktop-Edition": desktopProduct.edition,
-      };
+  return {
+    ...(desktopInstallToken ? { "X-TMod-Install-Token": desktopInstallToken } : {}),
+    ...(desktopDeviceFingerprint ? { "X-TMod-Device-Fingerprint": desktopDeviceFingerprint } : {}),
+    ...(desktopHardwareFingerprint ? { "X-TMod-Hardware-Fingerprint": desktopHardwareFingerprint } : {}),
+    "X-TMod-Desktop-Platform": process.platform,
+    "X-TMod-Desktop-Version": app.getVersion(),
+    "X-TMod-Desktop-Edition": desktopProduct.edition,
+  };
 }
 
 function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {}): void {
   if (options.sessionRemoved) {
+    protectedAccess.revoke();
+    communicateWindow?.close();
     bootstrapRevision += 1;
     lastSuccessfulBootstrap = undefined;
     lastSuccessfulBootstrapAt = undefined;
@@ -292,7 +328,9 @@ function scheduleAuthProjectionRefresh(options: { sessionRemoved?: boolean } = {
     activeService = "home";
     serviceLoading = false;
     lastServiceError = undefined;
+    clearServiceRetry();
     syncServiceVisibility();
+    clearSensitiveServiceView();
     emitState();
   }
   if (authProjectionTimer) clearTimeout(authProjectionTimer);
@@ -342,6 +380,7 @@ function state(): DesktopState {
     lockReason: desktopLockReason,
     activeService,
     loading: serviceLoading,
+    serviceReady: serviceNavigation.ready && activeService !== "home" && !desktopLocked && !lastKnownBan,
     canGoBack: Boolean(serviceView?.webContents.navigationHistory.canGoBack()),
     canGoForward: Boolean(serviceView?.webContents.navigationHistory.canGoForward()),
     url: serviceView?.webContents.getURL() || undefined,
@@ -356,40 +395,60 @@ function emitState(): void {
 }
 
 async function pollConsensusRegistration(): Promise<void> {
-  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || consensusPollInFlight || desktopLocked || !mainWindow) return;
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || consensusPollInFlight || desktopLocked || lastKnownBan || !mainWindow) return;
   consensusPollInFlight = true;
+  const observation = consensusInvitations.observe();
+  const lease = protectedAccess.capture();
+  const revision = bootstrapRevision;
+  const accountId = accountIdentityKey(lastSuccessfulBootstrap.viewer);
   try {
     const response = await desktopSession().fetch("https://consensus.tvr.lat/api/state?mode=live&fresh=1", {
-      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(8_000),
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(8_000)]),
     });
+    lease.assertCurrent();
+    refreshAccountAfterDeniedResponse(response.status);
     if (!response.ok) return;
-    const state = await response.json() as { session?: { key?: string; stage?: string; plenary_number?: number }; viewer?: { id?: number; participant?: boolean; confirmed?: boolean; csrf_token?: string } };
-    if (state.viewer?.id !== lastSuccessfulBootstrap.viewer.id || state.session?.stage !== "registration" || !state.viewer.participant || state.viewer.confirmed || !state.viewer.csrf_token || !state.session.key) return;
-    const promptKey = `${state.viewer.id}:${state.session.key}`;
-    if (lastConsensusPromptKey === promptKey) return;
-    lastConsensusPromptKey = promptKey;
+    const state = await response.json() as { session?: { key?: string; stage?: string; plenary_number?: number }; viewer?: { id?: number; id_exact?: string; participant?: boolean; confirmed?: boolean; csrf_token?: string; ballot_available?: boolean } };
+    lease.assertCurrent();
+    const session = state.session;
+    const viewer = state.viewer;
+    if (revision !== bootstrapRevision || !lastSuccessfulBootstrap || desktopLocked || lastKnownBan ||
+        !consensusViewerMatches(viewer, lastSuccessfulBootstrap.viewer) || !viewer?.participant ||
+        !session?.key || (!viewer.confirmed && !viewer.csrf_token)) return;
+    if (session.stage === "finished" || session.stage === "cancelled") return;
+    if (!viewer.confirmed && session.stage !== "registration") return;
+    if (!consensusInvitations.accept(accountId, session.key, viewer.confirmed === true, observation)) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.send("desktop:consensus-registration", {
-      sessionKey: state.session.key, plenaryNumber: Number(state.session.plenary_number) || 0, csrfToken: state.viewer.csrf_token,
+      sessionKey: session.key, plenaryNumber: Number(session.plenary_number) || 0,
+      csrfToken: viewer.csrf_token || "", confirmed: viewer.confirmed === true,
     } satisfies ConsensusRegistrationNotice);
   } catch (error) { log.debug("Consensus registration poll unavailable", error); }
   finally { consensusPollInFlight = false; }
 }
 
 async function readConsensusLiveState(): Promise<ConsensusLiveSnapshot | null> {
-  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap) return null;
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || desktopLocked || lastKnownBan) return null;
+  const lease = protectedAccess.capture();
+  const revision = bootstrapRevision;
+  const accountId = accountIdentityKey(lastSuccessfulBootstrap.viewer);
   try {
     const response = await desktopSession().fetch("https://consensus.tvr.lat/api/state?mode=live&fresh=1", {
-      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(8_000),
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(8_000)]),
     });
+    lease.assertCurrent();
+    refreshAccountAfterDeniedResponse(response.status);
     if (!response.ok) return null;
     const data = await response.json() as {
       session?: { key?: string; plenary_number?: number; stage?: string; stage_label?: string; quorum?: { confirmed?: number; invited?: number; ready?: boolean }; current_bill?: { title?: string } } | null;
-      viewer?: { id?: number; confirmed?: boolean; ballot_available?: boolean };
+      viewer?: { id?: number; id_exact?: string; confirmed?: boolean; ballot_available?: boolean };
     };
-    if (data.viewer?.id !== lastSuccessfulBootstrap.viewer.id) return null;
+    lease.assertCurrent();
+    if (!data.viewer) return null;
+    if (revision !== bootstrapRevision || !lastSuccessfulBootstrap || desktopLocked || lastKnownBan ||
+        !consensusViewerMatches(data.viewer, lastSuccessfulBootstrap.viewer)) return null;
     const session = data.session;
     return {
       sessionKey: session?.key || null,
@@ -697,7 +756,8 @@ async function pollNotifications(): Promise<void> {
 }
 
 async function markNotificationsRead(value: unknown): Promise<boolean> {
-  if (!Array.isArray(value) || !lastSuccessfulBootstrap) return false;
+  if (!Array.isArray(value) || !lastSuccessfulBootstrap || desktopLocked || lastKnownBan) return false;
+  const lease = protectedAccess.capture();
   const known = new Set([...knownNotificationIds, ...lastSuccessfulBootstrap.notifications.items.map(item => item.id)]);
   const ids = readableNotificationIds(value, known);
   if (!ids.length) return false; // Empty IDs mean "all" on the server; never send them.
@@ -706,17 +766,22 @@ async function markNotificationsRead(value: unknown): Promise<boolean> {
   try {
     const host = "https://reactor.tvr.lat";
     const response = await desktopSession().fetch(`${host}/api/reactor/home`, {
-      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.timeout(7000),
+      credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(7000)]),
     });
+    lease.assertCurrent();
+    refreshAccountAfterDeniedResponse(response.status);
     if (!response.ok) return false;
     const home = await response.json() as { viewer?: { id: number; id_exact?: string; csrf_token: string } };
     const viewer = home.viewer;
+    lease.assertCurrent();
     if (revision !== bootstrapRevision || !sameAccountIdentity(account, viewer) || !viewer?.csrf_token) return false;
     const update = await desktopSession().fetch(`${host}/api/reactor/notifications/read`, {
-      method: "POST", credentials: "include", signal: AbortSignal.timeout(7000),
+      method: "POST", credentials: "include", signal: AbortSignal.any([lease.signal, AbortSignal.timeout(7000)]),
       headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": viewer.csrf_token },
       body: JSON.stringify({ ids }),
     });
+    lease.assertCurrent();
+    refreshAccountAfterDeniedResponse(update.status);
     if (!update.ok) return false;
     mainWindow?.webContents.send("desktop:auth-changed");
     return true;
@@ -748,26 +813,84 @@ function applyPreferences(value: unknown): DesktopShellPreferences {
   return shellPreferences;
 }
 
+function clearSensitiveServiceView(): void {
+  serviceNavigation.begin();
+  clearServiceRetry();
+  if (!serviceView || serviceView.webContents.isDestroyed()) return;
+  serviceView.webContents.stop();
+  const clearing = serviceView.webContents.loadURL("about:blank")
+    .catch(error => log.warn("Could not clear a protected service view", error))
+    .then(() => undefined);
+  serviceClearInFlight = clearing;
+  void clearing.finally(() => {
+    if (serviceClearInFlight === clearing) serviceClearInFlight = undefined;
+  });
+}
+
 function lockDesktop(reason: DesktopLockReason): boolean {
-  if (desktopLocked || !mainWindow || mainWindow.isDestroyed()) return desktopLocked;
+  if (!mainWindow || mainWindow.isDestroyed()) return desktopLocked;
+  desktopLockRevision++;
+  protectedAccess.revoke();
+  if (desktopLocked) return true;
+  const currentUrl = serviceView?.webContents.getURL();
+  lockedServiceDestination = currentUrl && activeService !== "home" && serviceForDeepLink(currentUrl)?.serviceId === activeService
+    ? currentUrl : undefined;
   desktopLocked = true;
   communicateWindow?.close();
+  atlasOverlay?.setLocked(true);
   desktopLockReason = reason;
   notificationPopup?.clear();
+  clearServiceRetry();
+  serviceLoading = false;
   syncServiceVisibility();
+  clearSensitiveServiceView();
   mainWindow.webContents.send("desktop:lock-requested", reason);
   emitState();
   if (mainWindow.isFocused()) mainWindow.webContents.focus();
   return true;
 }
 
-function unlockDesktop(): boolean {
-  if (!desktopLocked) return true;
-  desktopLocked = false;
-  syncServiceVisibility();
-  if (!shellOverlayOpen && serviceView?.getVisible()) serviceView.webContents.focus();
-  void openPendingServiceDeepLink();
-  return true;
+function unlockDesktop(): Promise<boolean | "login_required"> {
+  if (lastKnownBan) return Promise.resolve(false);
+  if (!desktopLocked) return Promise.resolve(true);
+  if (unlockInFlight) return unlockInFlight;
+  unlockInFlight = (async () => {
+    const lockRevision = desktopLockRevision;
+    if (desktopProduct.privateEdition) {
+      const fresh = await bootstrap();
+      if (lockRevision !== desktopLockRevision) return false;
+      if (!fresh.authenticated || !fresh.online || !fresh.data || lastKnownBan) {
+        mainWindow?.webContents.send("desktop:auth-changed");
+        if (fresh.online && ["login_required", "private_access_required"].includes(String(fresh.error))) {
+          lockedServiceDestination = undefined;
+          activeService = "home";
+          desktopLocked = false;
+          syncServiceVisibility();
+          emitState();
+          return "login_required";
+        }
+        return false;
+      }
+    }
+    const currentContext = () => ({ lockRevision: desktopLockRevision, sessionRevision: bootstrapRevision,
+      accountId: lastSuccessfulBootstrap ? accountIdentityKey(lastSuccessfulBootstrap.viewer) : null });
+    const context = currentContext();
+    // A lock may still be unloading the previous page. Wait before restoring it,
+    // otherwise the late about:blank navigation can replace the unlocked service.
+    if (serviceClearInFlight) await serviceClearInFlight;
+    if (!mayCompleteUnlock(context, currentContext(), Boolean(lastKnownBan))) return false;
+    const destination = lockedServiceDestination;
+    lockedServiceDestination = undefined;
+    desktopLocked = false;
+    atlasOverlay?.setLocked(false);
+    if (activeService !== "home") await navigate(activeService, destination);
+    else { syncServiceVisibility(); emitState(); }
+    if (desktopLocked || !mayCompleteUnlock(context, currentContext(), Boolean(lastKnownBan))) return false;
+    if (!shellOverlayOpen && serviceView?.getVisible()) serviceView.webContents.focus();
+    void openPendingServiceDeepLink();
+    return true;
+  })().finally(() => { unlockInFlight = undefined; });
+  return unlockInFlight;
 }
 
 function startIdleLockMonitor(): void {
@@ -787,29 +910,31 @@ function clearServiceRetry(resetAttempt = true): void {
 }
 
 function scheduleServiceRetry(code: number, description: string): boolean {
-  if (!serviceView || activeService === "home") return false;
+  if (!serviceView || activeService === "home" || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || !serviceNavigation.destination) return false;
+  // Electron reports one failure through both did-fail-load and loadURL's
+  // rejected promise. They must not consume two retry slots.
+  if (serviceRetryTimer) return true;
   const retryable = code >= 500 || RETRYABLE_NETWORK_ERRORS.has(code);
   const delay = SERVICE_RETRY_DELAYS[serviceRetryAttempt];
   if (!retryable || delay === undefined) return false;
   clearServiceRetry(false);
   serviceRetryAttempt += 1;
+  serviceNavigation.ready = false;
+  const ticket = serviceNavigation.ticket;
+  const lease = protectedAccess.capture();
   serviceLoading = true;
   lastServiceError = undefined;
   syncServiceVisibility();
   emitState();
   serviceRetryTimer = setTimeout(() => {
     serviceRetryTimer = undefined;
-    const target = serviceManifest.get(activeService as Exclude<ServiceId, "home">)?.url;
-    if (!target || !serviceView) return;
-    void serviceView.webContents.loadURL(target).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error || description);
-      if (!scheduleServiceRetry(code, message)) {
-        serviceLoading = false;
-        lastServiceError = message;
-        syncServiceVisibility();
-        emitState();
-      }
-    });
+    if (!serviceNavigation.current(ticket) || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) return;
+    // A periodic bootstrap may refresh the same account while this timer
+    // waits. Scope invalidation handles lock/logout; an identity check keeps
+    // healthy refreshes from silently stranding the loading indicator.
+    try { if (protectedAccess.capture().accountId !== lease.accountId) return; } catch { return; }
+    // Keep the ballot/case/article URL, not the service's landing page.
+    void loadServiceDestination(ticket, description);
   }, delay);
   return true;
 }
@@ -819,7 +944,10 @@ function syncServiceVisibility(): void {
   serviceView.setVisible(
     !shellOverlayOpen &&
     !desktopLocked &&
+    !lastKnownBan &&
+    Boolean(lastSuccessfulBootstrap) &&
     activeService !== "home" &&
+    (!desktopProduct.privateEdition || serviceNavigation.ready) &&
     !lastServiceError,
   );
 }
@@ -830,9 +958,22 @@ function isAtlasOverlaySettingsUrl(value: string): boolean {
 
 function secureContents(contents: WebContents, options: { local: boolean }): void {
   const { local } = options;
+  if (desktopProduct.privateEdition && app.isPackaged) {
+    contents.on("devtools-opened", () => contents.closeDevTools());
+    contents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown") return;
+      const key = input.key.toLowerCase();
+      if (key === "f12" || ((input.control || input.meta) && (
+        (input.shift && ["i", "j", "c", "k"].includes(key)) ||
+        (input.alt && ["i", "j", "c"].includes(key)) ||
+        key === "u"
+      ))) event.preventDefault();
+    });
+  }
   contents.on("will-attach-webview", (event) => event.preventDefault());
   contents.setWindowOpenHandler(({ url }) => {
     if (local) return { action: "deny" };
+    if (desktopProduct.privateEdition && (desktopLocked || lastKnownBan || !lastSuccessfulBootstrap)) return { action: "deny" };
     if (isAtlasOverlaySettingsUrl(url)) {
       mainWindow?.webContents.send("desktop:open-atlas-overlay-settings");
       return { action: "deny" };
@@ -845,6 +986,10 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
     return { action: "deny" };
   });
   contents.on("will-navigate", (event, url) => {
+    if (!local && desktopProduct.privateEdition && (desktopLocked || lastKnownBan || !lastSuccessfulBootstrap)) {
+      event.preventDefault();
+      return;
+    }
     if (!local && !isTrustedTModUrl(url)) {
       event.preventDefault();
     }
@@ -860,13 +1005,22 @@ function secureContents(contents: WebContents, options: { local: boolean }): voi
 }
 
 async function navigate(serviceId: ServiceId, requestedUrl?: string): Promise<DesktopState> {
-  if (!serviceView || !mainWindow) return state();
+  if (!serviceView || !mainWindow || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) return state();
+  const reuseCurrentDocument = activeService === serviceId && serviceNavigation.ready;
+  const ticket = serviceNavigation.begin();
+  const lease = protectedAccess.capture();
+  clearServiceRetry();
+  if (serviceClearInFlight) await serviceClearInFlight;
+  if (!serviceNavigation.current(ticket)) return state();
+  try { lease.assertCurrent(); } catch { return state(); }
+  if (!serviceView || !mainWindow || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) return state();
   clearServiceRetry();
   const retryAfterError = Boolean(lastServiceError);
   activeService = serviceId;
   lastServiceError = undefined;
 
   if (serviceId === "home") {
+    serviceView.webContents.stop();
     serviceLoading = false;
     syncServiceVisibility();
     emitState();
@@ -892,28 +1046,38 @@ async function navigate(serviceId: ServiceId, requestedUrl?: string): Promise<De
     return state();
   }
 
-  syncServiceVisibility();
-  serviceLoading = true;
-  emitState();
   const destination = requested?.url || target;
+  serviceNavigation.redirect(destination);
+  serviceLoading = true;
+  syncServiceVisibility();
+  emitState();
   const current = serviceView.webContents.getURL();
-  if (current !== destination || retryAfterError) {
-    try {
-      await serviceView.webContents.loadURL(destination);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!scheduleServiceRetry(-2, message)) {
-        lastServiceError = message;
-        serviceLoading = false;
-        syncServiceVisibility();
-        emitState();
-      }
-    }
+  if (current !== destination || retryAfterError || !reuseCurrentDocument || serviceView.webContents.isLoadingMainFrame()) {
+    await loadServiceDestination(ticket);
   } else {
+    serviceNavigation.finish(current, !isTModAuthenticationUrl(current));
     serviceLoading = false;
+    syncServiceVisibility();
     emitState();
   }
   return state();
+}
+
+async function loadServiceDestination(ticket: number, fallback = "service_load_failed"): Promise<void> {
+  if (!serviceView || !serviceNavigation.current(ticket)) return;
+  const attempt = serviceNavigation.startAttempt();
+  try { await serviceView.webContents.loadURL(serviceNavigation.destination); }
+  catch (error) {
+    if (!serviceNavigation.currentAttempt(ticket, attempt) || navigationWasAborted(error) ||
+      desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || activeService === "home") return;
+    const message = error instanceof Error ? error.message : String(error || fallback);
+    if (!lastServiceError && !scheduleServiceRetry(-2, message)) {
+      lastServiceError = message;
+      serviceLoading = false;
+      syncServiceVisibility();
+      emitState();
+    }
+  }
 }
 
 function receiveServiceDeepLink(value: string): void {
@@ -925,7 +1089,7 @@ function receiveServiceDeepLink(value: string): void {
 
 async function openPendingServiceDeepLink(): Promise<void> {
   const link = pendingServiceDeepLink;
-  if (!link || !mainWindow || !serviceView || desktopLocked) return;
+  if (!link || !mainWindow || !serviceView || desktopLocked || lastKnownBan) return;
   // Before login the link waits for a fresh service manifest. Once the
   // account is known, a denied contour must show the existing access error
   // instead of leaving the click apparently unanswered.
@@ -941,6 +1105,23 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function discardAccountProjection(): void {
+  protectedAccess.revoke();
+  lastSuccessfulBootstrap = undefined;
+  lastSuccessfulBootstrapAt = undefined;
+  clearServiceManifest();
+  clearServiceRetry();
+  activeService = "home";
+  serviceLoading = false;
+  lastServiceError = undefined;
+  communicateWindow?.close();
+  notificationPopup?.clear();
+  atlasOverlay?.setLocked(true);
+  syncServiceVisibility();
+  clearSensitiveServiceView();
+  emitState();
+}
+
 function bootstrapUnavailable(error: string): BootstrapResult {
   if (lastKnownBan) {
     return {
@@ -949,6 +1130,12 @@ function bootstrapUnavailable(error: string): BootstrapResult {
       error: "globally_banned",
       ban: lastKnownBan,
     };
+  }
+  if (desktopProduct.privateEdition) {
+    // Blackbird never treats a cached account projection as current access.
+    // If authorization cannot be checked, close the live service surface.
+    discardAccountProjection();
+    return { authenticated: false, online: false, error };
   }
   if (lastSuccessfulBootstrap) {
     return {
@@ -990,8 +1177,8 @@ async function fetchBootstrapCandidate() {
       },
       signal: AbortSignal.timeout(BOOTSTRAP_TIMEOUT_MS),
     });
-    // A dead contour must not delay a healthy mirror. Promise.any resolves as
-    // soon as one endpoint returns an authoritative response.
+    // A ban wins immediately. Healthy identity waits for the bounded mirror
+    // checks so a stale projection cannot override another endpoint's denial.
     return parseBootstrapResponse(response);
   });
   return selectBootstrapCandidate(requests);
@@ -1010,21 +1197,31 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       const current = revision === bootstrapRevision;
       if (response.status === 401) {
         if (current) {
+          protectedAccess.revoke();
           lastKnownBan = undefined;
+          atlasOverlay?.setLocked(desktopLocked);
           lastSuccessfulBootstrap = undefined;
+          communicateWindow?.close();
+          notificationPopup?.clear();
           clearServiceManifest();
           reconcileActiveServiceAccess();
+          clearSensitiveServiceView();
           await applyAtlasOverlayBootstrapSafely(undefined);
         }
         return { authenticated: false, online: true, error: "login_required" };
       }
       if (response.status === 403 && desktopProduct.privateEdition) {
         if (current) {
+          protectedAccess.revoke();
           lastKnownBan = undefined;
+          atlasOverlay?.setLocked(desktopLocked);
           lastSuccessfulBootstrap = undefined;
           lastSuccessfulBootstrapAt = undefined;
+          communicateWindow?.close();
+          notificationPopup?.clear();
           clearServiceManifest();
           reconcileActiveServiceAccess();
+          clearSensitiveServiceView();
           await applyAtlasOverlayBootstrapSafely(undefined);
         }
         let reason = "access_denied";
@@ -1051,7 +1248,9 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         }
         if (revision !== bootstrapRevision) return { authenticated: false, online: false, error: "session_superseded" };
         if (current) {
+          protectedAccess.revoke();
           lastKnownBan = decision;
+          atlasOverlay?.setLocked(true);
           lastSuccessfulBootstrap = undefined;
           lastSuccessfulBootstrapAt = undefined;
           communicateWindow?.close();
@@ -1060,7 +1259,10 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
           activeService = "home";
           serviceLoading = false;
           lastServiceError = undefined;
+          clearServiceRetry();
+          pendingServiceDeepLink = null;
           syncServiceVisibility();
+          clearSensitiveServiceView();
           await applyAtlasOverlayBootstrapSafely(undefined);
           emitState();
         }
@@ -1072,6 +1274,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
         };
       }
       if (!response.ok) {
+        if (current && desktopProduct.privateEdition) discardAccountProjection();
         return {
           authenticated: false,
           online: true,
@@ -1080,10 +1283,7 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       }
       const data = candidate.data!;
       if (data.protocol_version !== 1 || !Array.isArray(data.services)) {
-        if (current) {
-          clearServiceManifest();
-          reconcileActiveServiceAccess();
-        }
+        if (current) discardAccountProjection();
         return {
           authenticated: false,
           online: true,
@@ -1092,10 +1292,21 @@ async function performBootstrap(revision: number): Promise<BootstrapResult> {
       }
       if (current) {
         applyClientUpdatePolicy(data);
+        if (lastSuccessfulBootstrap && !sameAccountIdentity(lastSuccessfulBootstrap.viewer, data.viewer)) {
+          protectedAccess.revoke();
+          communicateWindow?.close();
+          notificationPopup?.clear();
+          notificationStreamInitialized = false;
+          knownNotificationIds.clear();
+          activeService = "home";
+          serviceLoading = false;
+          clearSensitiveServiceView();
+          syncServiceVisibility();
+        }
         lastKnownBan = undefined;
+        atlasOverlay?.setLocked(desktopLocked);
         if (!applyServiceManifest(data)) {
-          clearServiceManifest();
-          reconcileActiveServiceAccess();
+          discardAccountProjection();
           return {
             authenticated: false,
             online: true,
@@ -1173,6 +1384,7 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
   }
   // Invalidate an older periodic bootstrap before changing the session. This
   // closes the race where its delayed 401 overwrote a successful login.
+  protectedAccess.revoke();
   bootstrapRevision += 1;
   const revision = bootstrapRevision;
   // Cached identity is useful for an outage, never as proof of a new login.
@@ -1181,6 +1393,15 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
   notificationStreamInitialized = false;
   knownNotificationIds.clear();
   notificationPopup?.clear();
+  if (desktopProduct.privateEdition) {
+    clearServiceManifest();
+    clearServiceRetry();
+    activeService = "home";
+    serviceLoading = false;
+    syncServiceVisibility();
+    clearSensitiveServiceView();
+    emitState();
+  }
   try {
     const form = new URLSearchParams({ login: loginValue, pin });
     if (credentials.code) form.set("code", credentials.code.slice(0, 32));
@@ -1272,13 +1493,27 @@ async function performLogin(credentials: DesktopLoginCredentials, cancellation: 
 }
 
 async function logout(): Promise<boolean> {
+  protectedAccess.revoke();
   loginAbortController?.abort();
   communicateWindow?.close();
   if (desktopProduct.privateEdition) autoUpdater.requestHeaders = null;
   notificationPopup?.clear();
   notificationStreamInitialized = false;
   knownNotificationIds.clear();
+  consensusInvitations.reset();
   bootstrapRevision += 1;
+  // Revoke the old account's live content before the remote logout or cookie
+  // cleanup can stall. The local surface must never remain interactive.
+  lastSuccessfulBootstrap = undefined;
+  lastSuccessfulBootstrapAt = undefined;
+  clearServiceManifest();
+  clearServiceRetry();
+  activeService = "home";
+  serviceLoading = false;
+  lastServiceError = undefined;
+  syncServiceVisibility();
+  clearSensitiveServiceView();
+  emitState();
   try {
     await desktopSession().fetch(LOGOUT_URL, {
       redirect: "manual",
@@ -1294,41 +1529,135 @@ async function logout(): Promise<boolean> {
   } catch {
     return false;
   }
-  clearServiceManifest();
   await applyAtlasOverlayBootstrapSafely(undefined);
-  lastSuccessfulBootstrap = undefined;
-  lastSuccessfulBootstrapAt = undefined;
-  activeService = "home";
-  serviceLoading = false;
-  lastServiceError = undefined;
-  syncServiceVisibility();
-  emitState();
   return true;
 }
 
+function accountRequestDependencies(): Parameters<typeof requestAccount>[0] {
+  return {
+    access: protectedAccess, viewer: () => lastSuccessfulBootstrap?.viewer,
+    fetch: (url, init) => desktopSession().fetch(url, init), headers: desktopIdentityHeaders,
+    onDenied: refreshAccountAfterDeniedResponse,
+    onMismatch: () => { void bootstrap().then(() => mainWindow?.webContents.send("desktop:auth-changed")).catch(error => log.debug("Account identity refresh unavailable", error)); },
+  };
+}
+
 async function accountRequest(action: string, data?: Record<string, string>): Promise<Record<string, unknown>> {
-  const blackbirdAction = action.startsWith("characters") || action.startsWith("communicate");
-  const host = blackbirdAction ? "https://reactor.tvr.lat" : "https://tvr.lat";
-  const endpoint = blackbirdAction ? `/api/blackbird/${action.split("-")[0]}`
-    : `/api/account/${action === "billing" ? "billing" : "security"}`;
+  return requestAccount(accountRequestDependencies(), action, data);
+}
+
+function refreshAccountAfterDeniedResponse(status: number): void {
+  if (status !== 401 && status !== 423) return;
+  void bootstrap().then(() => {
+    if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send("desktop:auth-changed");
+  }).catch(error => log.debug("Access projection refresh unavailable", error));
+}
+
+type MediaAssetKind = "avatar" | "cover";
+function validMediaAssetKind(value: unknown): value is MediaAssetKind {
+  return value === "avatar" || value === "cover";
+}
+
+async function mediaAsset(userId: unknown, kind: unknown): Promise<{ bytes: Uint8Array; mimeType: string; revision: string } | null> {
+  if (!desktopProduct.privateEdition || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap ||
+      typeof userId !== "string" || !/^\d{1,22}$/.test(userId) || !validMediaAssetKind(kind)) throw new Error("access_locked");
+  const lease = protectedAccess.capture();
   const revision = bootstrapRevision;
-  const snapshot = await desktopSession().fetch(`${host}${endpoint}`, {
-    credentials: "include", headers: desktopIdentityHeaders(), signal: AbortSignal.timeout(12_000),
+  const response = await desktopSession().fetch(`https://reactor.tvr.lat/api/blackbird/media/assets/${userId}/${kind}`, {
+    credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "image/webp" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(15_000)]),
   });
-  if (!snapshot.ok) throw new Error(snapshot.status === 401 ? "session_expired" : "account_unavailable");
-  const result = await snapshot.json() as Record<string, unknown>;
-  if (revision !== bootstrapRevision) throw new Error("session_changed");
-  if (action !== "update" && !action.endsWith("-update")) return result;
-  const csrfToken = csrfTokenFromAccountSnapshot(result);
-  if (!data || typeof data !== "object" || Array.isArray(data) || JSON.stringify(data).length > 4096 || typeof csrfToken !== "string") throw new Error("invalid_request");
-  const response = await desktopSession().fetch(`${host}${endpoint}`, {
-    method: "POST", credentials: "include", headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-    body: JSON.stringify(data), signal: AbortSignal.timeout(20_000),
+  lease.assertCurrent();
+  refreshAccountAfterDeniedResponse(response.status);
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    if (response.status === 423) void bootstrap();
+    throw new Error("media_asset_unavailable");
+  }
+  const bytes = await readBoundedBytes(response, 2 * 1024 * 1024, lease.signal);
+  lease.assertCurrent();
+  if (bytes.length > 2 * 1024 * 1024 || revision !== bootstrapRevision || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) throw new Error("access_locked");
+  return { bytes, mimeType: "image/webp", revision: (response.headers.get("ETag") || "").replaceAll('"', "") };
+}
+
+async function mediaAssetWrite(kind: unknown, raw: unknown, remove = false): Promise<{ revision: string } | boolean> {
+  if (!desktopProduct.privateEdition || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || !validMediaAssetKind(kind)) throw new Error("access_locked");
+  if (!remove && !(raw instanceof Uint8Array || raw instanceof ArrayBuffer)) throw new Error("media_asset_invalid");
+  const bytes = remove ? undefined : raw instanceof ArrayBuffer ? Buffer.from(raw) : Buffer.from(raw as Uint8Array);
+  if (bytes && (!bytes.length || bytes.length > 8 * 1024 * 1024)) throw new Error("media_asset_size_invalid");
+  const lease = protectedAccess.capture();
+  const revision = bootstrapRevision;
+  const snapshot = await desktopSession().fetch("https://reactor.tvr.lat/api/blackbird/media", {
+    credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(12_000)]),
   });
-  const body = await response.json() as Record<string, unknown>;
-  if (revision !== bootstrapRevision) throw new Error("session_changed");
-  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "account_unavailable");
-  return body;
+  lease.assertCurrent();
+  refreshAccountAfterDeniedResponse(snapshot.status);
+  if (!snapshot.ok) {
+    if (snapshot.status === 423) void bootstrap();
+    throw new Error("media_unavailable");
+  }
+  const context = await snapshot.json() as Record<string, unknown>;
+  const viewer = context.viewer as { id?: string } | undefined;
+  const csrfToken = csrfTokenFromAccountSnapshot(context);
+  lease.assertCurrent();
+  if (revision !== bootstrapRevision || !lastSuccessfulBootstrap || viewer?.id !== accountIdentityKey(lastSuccessfulBootstrap.viewer) || !csrfToken) throw new Error("session_changed");
+  const response = await desktopSession().fetch(`https://reactor.tvr.lat/api/blackbird/media/assets/${kind}`, {
+    method: remove ? "DELETE" : "POST", credentials: "include", signal: AbortSignal.any([lease.signal, AbortSignal.timeout(30_000)]),
+    headers: { ...desktopIdentityHeaders(), "X-CSRF-Token": csrfToken, ...(remove ? {} : { "Content-Type": "application/octet-stream" }) },
+    ...(bytes ? { body: bytes } : {}),
+  });
+  lease.assertCurrent();
+  refreshAccountAfterDeniedResponse(response.status);
+  if (response.status === 423) void bootstrap();
+  let payload: Record<string, unknown> = {};
+  try {
+    const value: unknown = await response.json();
+    if (value && typeof value === "object" && !Array.isArray(value)) payload = value as Record<string, unknown>;
+    else if (response.ok) throw new Error("media_response_invalid");
+  } catch {
+    if (response.ok) throw new Error("media_response_invalid");
+    // A gateway's 500/504 or login page may be HTML, not a JSON response.
+  }
+  lease.assertCurrent();
+  if (revision !== bootstrapRevision || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) throw new Error("session_changed");
+  if (!response.ok) throw new Error(String(payload.error || "media_asset_failed"));
+  return remove ? payload.removed === true : { revision: String(payload.revision || "") };
+}
+
+async function communicateUpload(input: unknown): Promise<Record<string, unknown>> {
+  return uploadCommunicateAttachment(accountRequestDependencies(), input);
+}
+
+async function communicateAttachment(id: unknown): Promise<{ bytes: Uint8Array; mimeType: string; filename: string }> {
+  return downloadCommunicateAttachment(accountRequestDependencies(), id);
+}
+
+async function communicateLinkPreview(value: unknown): Promise<Record<string, string> | null> {
+  if (desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || !validExternalLink(value)) return null;
+  const lease = protectedAccess.capture();
+  const revision = bootstrapRevision;
+  const viewerId = accountIdentityKey(lastSuccessfulBootstrap.viewer);
+  const url = new URL("https://reactor.tvr.lat/api/blackbird/communicate/preview");
+  url.searchParams.set("url", value);
+  const response = await desktopSession().fetch(url.href, {
+    credentials: "include", headers: { ...desktopIdentityHeaders(), Accept: "application/json" }, signal: AbortSignal.any([lease.signal, AbortSignal.timeout(8_000)]),
+  });
+  lease.assertCurrent();
+  refreshAccountAfterDeniedResponse(response.status);
+  if (!response.ok) {
+    if (response.status === 423) void bootstrap();
+    return null;
+  }
+  const payload = await response.json() as { result?: Record<string, unknown> | null };
+  lease.assertCurrent();
+  if (revision !== bootstrapRevision || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap ||
+      viewerId !== accountIdentityKey(lastSuccessfulBootstrap.viewer)) return null;
+  const result = payload.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const clean: Record<string, string> = {};
+  for (const key of ["title", "detail", "resource", "status"]) {
+    if (typeof result[key] === "string") clean[key] = result[key].slice(0, 300);
+  }
+  return clean.title ? clean : null;
 }
 
 function shareableLink(url: string): string | null {
@@ -1345,32 +1674,75 @@ function shareableLink(url: string): string | null {
 
 function validExternalLink(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 2048) return false;
-  try { return ["http:", "https:"].includes(new URL(value).protocol); }
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  }
   catch { return false; }
 }
 
-async function openCommunicateWindow(sharedUrl?: string): Promise<boolean> {
-  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || desktopLocked) return false;
-  if (communicateWindow && !communicateWindow.isDestroyed()) {
-    communicateWindow.show(); communicateWindow.focus();
-    if (sharedUrl) communicateWindow.webContents.send("blackbird:share-link", sharedUrl);
+async function openSharedLink(value: unknown): Promise<boolean> {
+  if (desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || !validExternalLink(value)) return false;
+  const target = serviceForDeepLink(value);
+  if (target) {
+    const result = await navigate(target.serviceId, target.url);
+    if (result.error || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) return false;
+    if (mainWindow?.isMinimized()) mainWindow.restore();
+    mainWindow?.show(); mainWindow?.focus();
     return true;
   }
+  await shell.openExternal(value);
+  return true;
+}
+
+async function openCommunicateWindow(sharedUrl?: string): Promise<boolean> {
+  if (!desktopProduct.privateEdition || !lastSuccessfulBootstrap || desktopLocked || lastKnownBan) return false;
+  if (communicateWindow && !communicateWindow.isDestroyed()) {
+    if (sharedUrl) {
+      if (communicateContextReady) communicateWindow.webContents.send("blackbird:share-link", sharedUrl);
+      else pendingCommunicateShare = [pendingCommunicateShare, sharedUrl].filter(Boolean).join("\n");
+    }
+    if (communicateOpening) return communicateOpening;
+    communicateWindow.show(); communicateWindow.focus();
+    return true;
+  }
+  const lease = protectedAccess.capture();
+  communicateContextReady = false;
   pendingCommunicateShare = sharedUrl || "";
-  communicateWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 850, height: 610, minWidth: 700, minHeight: 500, center: true,
     show: false, frame: false, autoHideMenuBar: true, backgroundColor: "#11161a",
     title: "Blackbird Communicate",
     webPreferences: { preload: path.join(bundleDirectory, "../preload/communicate.cjs"), contextIsolation: true,
-      nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false },
+      nodeIntegration: false, sandbox: true, webSecurity: true, backgroundThrottling: false,
+      devTools: !(desktopProduct.privateEdition && app.isPackaged) },
   });
-  secureContents(communicateWindow.webContents, { local: true });
-  communicateWindow.on("closed", () => { communicateWindow = null; });
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
-  if (rendererUrl) await communicateWindow.loadURL(new URL("communicate.html", rendererUrl).href);
-  else await communicateWindow.loadFile(path.join(bundleDirectory, "../renderer/communicate.html"));
-  communicateWindow.show(); communicateWindow.focus();
-  return true;
+  communicateWindow = window;
+  secureContents(window.webContents, { local: true });
+  window.on("closed", () => {
+    if (communicateWindow !== window) return;
+    communicateWindow = null; communicateContextReady = false; communicateOpening = undefined; pendingCommunicateShare = "";
+  });
+  const opening = (async () => {
+    try {
+      const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+      if (rendererUrl) await window.loadURL(new URL("communicate.html", rendererUrl).href);
+      else await window.loadFile(path.join(bundleDirectory, "../renderer/communicate.html"));
+      if (communicateWindow !== window || window.isDestroyed() || lease.signal.aborted || desktopLocked || lastKnownBan ||
+          !lastSuccessfulBootstrap || accountIdentityKey(lastSuccessfulBootstrap.viewer) !== lease.accountId) {
+        if (!window.isDestroyed()) window.close();
+        return false;
+      }
+      window.show(); window.focus();
+      return true;
+    } catch (error) {
+      log.warn("Communicate window could not open", error);
+      if (!window.isDestroyed()) window.close();
+      return false;
+    } finally { if (communicateWindow === window) communicateOpening = undefined; }
+  })();
+  communicateOpening = opening;
+  return opening;
 }
 
 function registerIpc(): void {
@@ -1379,7 +1751,7 @@ function registerIpc(): void {
   const trustedOverlay = (event: Electron.IpcMainInvokeEvent): boolean =>
     Boolean(atlasOverlay?.ownsSender(event.sender.id));
   const trustedOverlayOrShell = (event: Electron.IpcMainInvokeEvent): boolean =>
-    trusted(event) || trustedOverlay(event);
+    !desktopLocked && !lastKnownBan && (trusted(event) || trustedOverlay(event));
 
   ipcMain.handle("desktop:bootstrap", (event) =>
     trusted(event)
@@ -1393,10 +1765,23 @@ function registerIpc(): void {
   );
   ipcMain.handle("desktop:logout", (event) => trusted(event) ? logout() : false);
   ipcMain.handle("desktop:account-request", async (event, action: unknown, data: unknown) => {
-    if (!trusted(event) || !["security", "billing", "update", "characters", "characters-update", "communicate", "communicate-update"].includes(String(action))) throw new Error("untrusted_request");
+    if (!trusted(event) || !["security", "billing", "update", "characters", "characters-update", "communicate", "communicate-update", "media", "media-update"].includes(String(action))) throw new Error("untrusted_request");
     return accountRequest(String(action), data as Record<string, string> | undefined);
   });
+  ipcMain.handle("desktop:media-asset", (event, userId: unknown, kind: unknown) => {
+    if (!trusted(event)) throw new Error("untrusted_request");
+    return mediaAsset(userId, kind);
+  });
+  ipcMain.handle("desktop:media-upload", (event, kind: unknown, bytes: unknown) => {
+    if (!trusted(event)) throw new Error("untrusted_request");
+    return mediaAssetWrite(kind, bytes) as Promise<{ revision: string }>;
+  });
+  ipcMain.handle("desktop:media-remove", (event, kind: unknown) => {
+    if (!trusted(event)) throw new Error("untrusted_request");
+    return mediaAssetWrite(kind, undefined, true) as Promise<boolean>;
+  });
   const trustedCommunicate = (event: Electron.IpcMainInvokeEvent) => Boolean(communicateWindow && event.sender.id === communicateWindow.webContents.id);
+  ipcMain.handle("desktop:open-shared-link", (event, value: unknown) => trusted(event) ? openSharedLink(value) : false);
   ipcMain.handle("desktop:communicate-open", event => trusted(event) ? openCommunicateWindow() : false);
   ipcMain.handle("desktop:communicate-share", event => {
     if (!trusted(event) || !serviceView) return false;
@@ -1405,22 +1790,33 @@ function registerIpc(): void {
   });
   ipcMain.handle("blackbird:communicate-context", event => {
     if (!trustedCommunicate(event)) throw new Error("untrusted_request");
+    if (desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) throw new Error("access_locked");
+    communicateContextReady = true;
     const sharedUrl = pendingCommunicateShare;
     pendingCommunicateShare = "";
-    return { viewerId: lastSuccessfulBootstrap?.viewer.id || 0, authenticated: Boolean(lastSuccessfulBootstrap), sharedUrl };
+    return { viewerId: lastSuccessfulBootstrap ? accountIdentityKey(lastSuccessfulBootstrap.viewer) : "0", authenticated: Boolean(lastSuccessfulBootstrap), sharedUrl };
   });
   ipcMain.handle("blackbird:communicate-request", (event, action: unknown, data: unknown) => {
     if (!trustedCommunicate(event) || !["communicate", "communicate-update"].includes(String(action))) throw new Error("untrusted_request");
     return accountRequest(String(action), data as Record<string, string> | undefined);
   });
+  ipcMain.handle("blackbird:communicate-upload", (event, input: unknown) => {
+    if (!trustedCommunicate(event)) throw new Error("untrusted_request");
+    return communicateUpload(input);
+  });
+  ipcMain.handle("blackbird:communicate-attachment", (event, id: unknown) => {
+    if (!trustedCommunicate(event)) throw new Error("untrusted_request");
+    return communicateAttachment(id);
+  });
+  ipcMain.handle("blackbird:communicate-link-preview", (event, url: unknown) => {
+    if (!trustedCommunicate(event)) throw new Error("untrusted_request");
+    return communicateLinkPreview(url);
+  });
   ipcMain.handle("blackbird:communicate-close", event => { if (trustedCommunicate(event)) communicateWindow?.close(); });
   ipcMain.handle("blackbird:communicate-minimize", event => { if (trustedCommunicate(event)) communicateWindow?.minimize(); });
-  ipcMain.handle("blackbird:communicate-open-link", (event, value: unknown) => {
-    if (!trustedCommunicate(event) || !validExternalLink(value)) return false;
-    void shell.openExternal(value); return true;
-  });
+  ipcMain.handle("blackbird:communicate-open-link", (event, value: unknown) => trustedCommunicate(event) ? openSharedLink(value) : false);
   ipcMain.handle("blackbird:communicate-copy-link", (event, value: unknown) => {
-    if (!trustedCommunicate(event) || !validExternalLink(value)) return false;
+    if (!trustedCommunicate(event) || desktopLocked || lastKnownBan || !validExternalLink(value)) return false;
     clipboard.writeText(value); return true;
   });
   ipcMain.handle("desktop:billing-open", async event => {
@@ -1440,9 +1836,9 @@ function registerIpc(): void {
       body: "Так будут появляться ваши уведомления. Нажмите, чтобы открыть приложение.", route: null, read_at: null, created_at: new Date().toISOString() }, shellPreferences.notificationSound, shellPreferences.reduceMotion);
     return true;
   });
-  ipcMain.handle("desktop:notifications-read", (event, ids: unknown) => trusted(event) ? markNotificationsRead(ids) : false);
+  ipcMain.handle("desktop:notifications-read", (event, ids: unknown) => trusted(event) && !desktopLocked && !lastKnownBan ? markNotificationsRead(ids) : false);
   ipcMain.handle("desktop:navigate", (event, serviceId: unknown) => {
-    if (!trusted(event) || !isServiceId(serviceId)) return state();
+    if (!trusted(event) || desktopLocked || lastKnownBan || !isServiceId(serviceId)) return state();
     return navigate(serviceId);
   });
   ipcMain.handle("desktop:shell-overlay", (event, open: unknown) => {
@@ -1456,14 +1852,14 @@ function registerIpc(): void {
     trusted(event) ? applyPreferences(preferences) : DEFAULT_PREFERENCES,
   );
   ipcMain.handle("desktop:copy-current-link", (event) => {
-    if (!trusted(event) || !serviceView) return false;
+    if (!trusted(event) || !serviceView || desktopLocked || lastKnownBan) return false;
     const url = serviceView.webContents.getURL();
     if (!isTrustedTModUrl(url)) return false;
     clipboard.writeText(url);
     return true;
   });
   ipcMain.handle("desktop:open-current-link", (event) => {
-    if (!trusted(event) || !serviceView) return false;
+    if (!trusted(event) || !serviceView || desktopLocked || lastKnownBan) return false;
     const url = serviceView.webContents.getURL();
     if (!isTrustedTModUrl(url)) return false;
     void shell.openExternal(url);
@@ -1471,24 +1867,37 @@ function registerIpc(): void {
   });
   ipcMain.handle("desktop:lock", (event) => trusted(event) ? lockDesktop("manual") : false);
   ipcMain.handle("desktop:consensus-confirm", async (event, input: unknown) => {
-    if (!trusted(event) || !lastSuccessfulBootstrap || !input || typeof input !== "object") return false;
+    if (!trusted(event) || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap || !input || typeof input !== "object") return false;
     const notice = input as Partial<ConsensusRegistrationNotice>;
     if (typeof notice.sessionKey !== "string" || !notice.sessionKey || notice.sessionKey.length > 128 || typeof notice.csrfToken !== "string" || notice.csrfToken.length > 256) return false;
+    const revision = bootstrapRevision;
+    const accountId = accountIdentityKey(lastSuccessfulBootstrap.viewer);
     try {
+      const lease = protectedAccess.capture();
       const response = await desktopSession().fetch("https://consensus.tvr.lat/api/attendance", {
-        method: "POST", credentials: "include", signal: AbortSignal.timeout(12_000),
+        method: "POST", credentials: "include", signal: AbortSignal.any([lease.signal, AbortSignal.timeout(12_000)]),
         headers: { ...desktopIdentityHeaders(), "Content-Type": "application/json", "X-CSRF-Token": notice.csrfToken },
         body: JSON.stringify({ session_key: notice.sessionKey }),
       });
-      return response.ok && (await response.json() as { confirmed?: boolean }).confirmed === true;
+      lease.assertCurrent();
+      refreshAccountAfterDeniedResponse(response.status);
+      const confirmed = response.ok && consensusAttendanceConfirmed(await response.json(), notice.sessionKey!);
+      lease.assertCurrent();
+      const accepted = confirmed && revision === bootstrapRevision && !desktopLocked && !lastKnownBan &&
+        Boolean(lastSuccessfulBootstrap && accountIdentityKey(lastSuccessfulBootstrap.viewer) === accountId);
+      if (accepted) consensusInvitations.confirmed(accountId, notice.sessionKey!);
+      return accepted;
     } catch (error) { log.warn("Consensus attendance confirmation unavailable", error); return false; }
   });
-  ipcMain.handle("desktop:consensus-state", event => trusted(event) ? readConsensusLiveState() : null);
-  ipcMain.handle("desktop:consensus-ballot", event => trusted(event) && desktopProduct.privateEdition
+  ipcMain.handle("desktop:consensus-state", event => trusted(event) && !desktopLocked && !lastKnownBan ? readConsensusLiveState() : null);
+  ipcMain.handle("desktop:consensus-ballot", event => trusted(event) && !desktopLocked && !lastKnownBan && desktopProduct.privateEdition
     ? navigate("consensus", "https://consensus.tvr.lat/?view=ballot") : state());
   ipcMain.handle("desktop:unlock", (event) => trusted(event) ? unlockDesktop() : false);
   ipcMain.handle("desktop:open-login", async (event) => {
-    if (!trusted(event) || !serviceView) return state();
+    if (!trusted(event) || !serviceView || desktopLocked || lastKnownBan) return state();
+    const ticket = serviceNavigation.begin(LOGIN_URL);
+    if (serviceClearInFlight) await serviceClearInFlight;
+    if (!serviceView || desktopLocked || lastKnownBan || !serviceNavigation.current(ticket)) return state();
     clearServiceRetry();
     activeService = "reactor";
     syncServiceVisibility();
@@ -1498,8 +1907,9 @@ function registerIpc(): void {
     return state();
   });
   ipcMain.handle("desktop:reload", (event) => {
-    if (!trusted(event) || !serviceView) return;
+    if (!trusted(event) || !serviceView || desktopLocked || lastKnownBan || !lastSuccessfulBootstrap) return;
     clearServiceRetry();
+    serviceNavigation.begin(serviceView.webContents.getURL());
     lastServiceError = undefined;
     serviceLoading = true;
     syncServiceVisibility();
@@ -1507,12 +1917,12 @@ function registerIpc(): void {
     serviceView.webContents.reload();
   });
   ipcMain.handle("desktop:back", (event) => {
-    if (trusted(event) && serviceView?.webContents.navigationHistory.canGoBack()) {
+    if (trusted(event) && !desktopLocked && !lastKnownBan && lastSuccessfulBootstrap && serviceView?.webContents.navigationHistory.canGoBack()) {
       serviceView.webContents.navigationHistory.goBack();
     }
   });
   ipcMain.handle("desktop:forward", (event) => {
-    if (trusted(event) && serviceView?.webContents.navigationHistory.canGoForward()) {
+    if (trusted(event) && !desktopLocked && !lastKnownBan && lastSuccessfulBootstrap && serviceView?.webContents.navigationHistory.canGoForward()) {
       serviceView.webContents.navigationHistory.goForward();
     }
   });
@@ -1594,6 +2004,7 @@ async function createWindow(): Promise<void> {
   log.info(`Creating ${desktopProduct.fullName} window`);
   desktopInstallToken = await loadOrCreateDesktopInstallToken();
   desktopDeviceFingerprint = await buildDesktopDeviceFingerprint();
+  desktopHardwareFingerprint = await buildDesktopHardwareFingerprint();
   const { workArea } = screen.getPrimaryDisplay();
   const width = Math.min(workArea.width, Math.max(960, Math.round(workArea.width * .96)));
   const height = Math.min(workArea.height, Math.max(640, Math.round(workArea.height * .94)));
@@ -1615,6 +2026,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
       webSecurity: true,
       backgroundThrottling: false,
+      devTools: !(desktopProduct.privateEdition && app.isPackaged),
     },
   });
   serviceView = new WebContentsView({
@@ -1625,6 +2037,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
+      devTools: !(desktopProduct.privateEdition && app.isPackaged),
     },
   });
 
@@ -1738,19 +2151,38 @@ async function createWindow(): Promise<void> {
   syncServiceVisibility();
   positionViews();
 
-  serviceView.webContents.on("did-start-loading", () => {
-    lastMainFrameHttpStatus = 0;
+  const navigationActive = () => activeService !== "home" && !desktopLocked && !lastKnownBan &&
+    Boolean(serviceNavigation.destination) && (!desktopProduct.privateEdition || Boolean(lastSuccessfulBootstrap));
+  serviceView.webContents.on("did-start-navigation", details => {
+    if (!details.isMainFrame || !navigationActive() || !isTrustedTModUrl(details.url)) return;
+    if (details.isSameDocument) {
+      serviceNavigation.redirect(details.url);
+      emitState();
+      return;
+    }
+    if (!serviceNavigation.matches(details.url)) {
+      clearServiceRetry();
+      serviceNavigation.begin(details.url);
+      const route = serviceForDeepLink(details.url);
+      if (route) activeService = route.serviceId;
+    }
+    serviceNavigation.ready = false;
+    serviceNavigation.status = 0;
     serviceLoading = true;
     lastServiceError = undefined;
     syncServiceVisibility();
     emitState();
   });
+  serviceView.webContents.on("did-redirect-navigation", details => {
+    if (!details.isMainFrame || !navigationActive() || !isTrustedTModUrl(details.url)) return;
+    serviceNavigation.redirect(details.url);
+  });
   serviceView.webContents.on("did-stop-loading", () => {
-    if (serviceRetryTimer) return;
-    if (lastMainFrameHttpStatus >= 500) {
-      if (scheduleServiceRetry(lastMainFrameHttpStatus, `HTTP ${lastMainFrameHttpStatus}`)) return;
+    if (!navigationActive() || serviceRetryTimer || serviceView?.webContents.isLoadingMainFrame()) return;
+    if (serviceNavigation.status >= 500) {
+      if (scheduleServiceRetry(serviceNavigation.status, `HTTP ${serviceNavigation.status}`)) return;
       serviceLoading = false;
-      lastServiceError = `service_http_${lastMainFrameHttpStatus}`;
+      lastServiceError = `service_http_${serviceNavigation.status}`;
       syncServiceVisibility();
       emitState();
       return;
@@ -1763,15 +2195,21 @@ async function createWindow(): Promise<void> {
     }
   });
   serviceView.webContents.on("did-finish-load", () => {
-    if (lastMainFrameHttpStatus >= 500) return;
+    if (!navigationActive() || serviceRetryTimer || lastServiceError || serviceNavigation.status >= 500) return;
+    const url = serviceView?.webContents.getURL() || "";
+    if (!serviceNavigation.matches(url)) return;
     clearServiceRetry();
     serviceLoading = false;
-    lastServiceError = undefined;
+    serviceNavigation.finish(url, !desktopProduct.privateEdition || !isTModAuthenticationUrl(url));
+    lastServiceError = serviceNavigation.ready ? undefined : serviceNavigation.status >= 400
+      ? `service_http_${serviceNavigation.status}` : "login_required";
     syncServiceVisibility();
     emitState();
   });
-  serviceView.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
+  serviceView.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame || code === -3) return;
+    if (!navigationActive() || !serviceNavigation.matches(url)) return;
+    serviceNavigation.ready = false;
     if (scheduleServiceRetry(code, description)) return;
     serviceLoading = false;
     lastServiceError = description || `load_error_${code}`;
@@ -1779,10 +2217,11 @@ async function createWindow(): Promise<void> {
     emitState();
   });
   serviceView.webContents.on("did-navigate", (_event, url, httpResponseCode) => {
-    lastMainFrameHttpStatus = Number(httpResponseCode || 0);
+    if (!navigationActive() || !serviceNavigation.matches(url)) return;
+    serviceNavigation.status = Number(httpResponseCode || 0);
     if (
-      lastMainFrameHttpStatus === 401 ||
-      lastMainFrameHttpStatus === 423 ||
+      serviceNavigation.status === 401 ||
+      serviceNavigation.status === 423 ||
       isTModAuthenticationUrl(url)
     ) {
       scheduleAuthProjectionRefresh();

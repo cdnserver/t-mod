@@ -13,6 +13,7 @@ import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
 import { App } from "./App";
 import { desktopProduct } from "../shared/product";
+import { installInteractionSurface } from "../shared/interaction-surface";
 import "./styles.css";
 import "./cinematics.css";
 import "./lumen.css";
@@ -27,6 +28,7 @@ import "./blackbird-control-bar.css";
 import "./blackbird-workspace.css";
 
 document.title = desktopProduct.fullName;
+if (desktopProduct.privateEdition) installInteractionSurface();
 // Blackbird has its own explicit accessibility preference. Windows' global
 // animation switch must not silently override the client's chosen appearance.
 if (desktopProduct.privateEdition) document.documentElement.dataset.motionPolicy = "app";

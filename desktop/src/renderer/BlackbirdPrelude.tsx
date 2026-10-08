@@ -13,9 +13,9 @@ const signatureCells = [
 ];
 
 /** Publisher ident, not a loading dialog. The real launch scene loads beneath it. */
-export function BlackbirdPrelude({ reduced, exiting, blackPause = false, preparation, introStyle = "letters" }: { reduced: boolean; exiting: boolean; blackPause?: boolean; preparation: ReturnType<typeof preloadSummary>; introStyle?: IntroStyle }) {
+export function BlackbirdPrelude({ reduced, exiting, blackPause = false, banTone = false, preparation, introStyle = "letters" }: { reduced: boolean; exiting: boolean; blackPause?: boolean; banTone?: boolean; preparation: ReturnType<typeof preloadSummary>; introStyle?: IntroStyle }) {
   const maskId = `bb-ident-${useId().replace(/:/g, "")}`;
-  return <div className={`bb-prelude ident-${introStyle} ${reduced ? "reduced" : ""} ${exiting ? "exiting" : ""} ${blackPause ? "black-pause" : ""}`} aria-label="Технологии Товарищества">
+  return <div className={`bb-prelude ident-${introStyle} ${reduced ? "reduced" : ""} ${exiting ? "exiting" : ""} ${blackPause ? "black-pause" : ""} ${banTone ? "ban-tone" : ""}`} aria-label="Технологии Товарищества">
     <div className="bb-prelude-depth" aria-hidden="true"><i/><b/></div>
     <div className="bb-prelude-stars" aria-hidden="true"/>
     <div className="bb-prelude-signature" aria-hidden="true">

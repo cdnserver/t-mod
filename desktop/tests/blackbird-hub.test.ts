@@ -38,12 +38,14 @@ describe("login connection display", () => {
     expect(html).not.toContain("Восстанавливаем соединение");
   });
 });
-describe("media network preview", () => {
-  it("is a local-only placeholder without publishing account data", () => {
+describe("media network", () => {
+  it("loads privately and does not expose account data before the authenticated response", () => {
     const html = renderToStaticMarkup(createElement(BlackbirdMediaNetwork, { name: "<Роберт>", avatarUrl: null, onBack: () => {} }));
     expect(html).toContain("Медиасеть");
-    expect(html).toContain("ничего из вашего аккаунта не опубликовано");
-    expect(html).toContain("&lt;Роберт&gt;");
+    expect(html).toContain("ПРИВАТНЫЙ ПРОФИЛЬ");
+    expect(html).toContain("Открываем Медиасеть");
+    expect(html).toContain("Люди");
+    expect(html).toContain("Откаты");
     expect(html).not.toContain("<Роберт>");
     expect(html).not.toContain("Опубликовать");
   });

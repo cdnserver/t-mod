@@ -19,4 +19,20 @@ describe("Blackbird observatory", () => {
     expect(main).toContain("backgroundThrottling: false"); expect(main).toContain('mainWindow.on("restore", emitState)');
     expect(main).toContain("locked: desktopLocked");
   });
+  it("shows access verification and a recoverable error on the pause scene", () => {
+    const verifying = renderToStaticMarkup(createElement(BlackbirdIdle, { name: "Роберт", reduced: false, unlocking: false, checking: true, onMinimize: () => {} }));
+    const unavailable = renderToStaticMarkup(createElement(BlackbirdIdle, { name: "Роберт", reduced: false, unlocking: false, error: true, onMinimize: () => {} }));
+    expect(verifying).toContain("Проверяем доступ");
+    expect(unavailable).toContain("Нет связи или доступ закрыт");
+  });
+  it("unloads protected pages before logout and waits before restoring a service", () => {
+    const main = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    const logout = main.slice(main.indexOf("async function logout()"), main.indexOf("async function accountRequest("));
+    const unlock = main.slice(main.indexOf("function unlockDesktop()"), main.indexOf("function startIdleLockMonitor()"));
+    const navigation = main.slice(main.indexOf("async function navigate("), main.indexOf("function shareableLink("));
+    expect(logout.indexOf("clearSensitiveServiceView()")).toBeLessThan(logout.indexOf("await desktopSession().fetch(LOGOUT_URL"));
+    expect(unlock).toContain("if (serviceClearInFlight) await serviceClearInFlight");
+    expect(unlock).toContain('return "login_required"');
+    expect(navigation).toContain("if (serviceClearInFlight) await serviceClearInFlight");
+  });
 });

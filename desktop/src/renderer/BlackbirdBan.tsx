@@ -1,5 +1,23 @@
+import { useEffect, useState } from "react";
+import { BlackbirdPrelude } from "./BlackbirdPrelude";
 import blackbirdMaster from "./assets/blackbird/master.png";
 import "./blackbird-ban.css";
+
+export function BlackbirdBanSequence(props: Parameters<typeof BlackbirdBan>[0] & { introStyle?: "letters" | "veil" | "light" }) {
+  const [phase, setPhase] = useState<"ident" | "dissolve" | "decision">("ident");
+  useEffect(() => {
+    const dissolve = window.setTimeout(() => setPhase("dissolve"), 8_800);
+    const decision = window.setTimeout(() => setPhase("decision"), 10_450);
+    return () => { window.clearTimeout(dissolve); window.clearTimeout(decision); };
+  }, []);
+  return <div className="bb-ban-sequence">
+    <BlackbirdBan {...props}/>
+    {phase !== "decision" && (
+      <BlackbirdPrelude banTone reduced={false} exiting={phase === "dissolve"}
+        preparation={{ ready: true, progress: 1, label: "Всё готово", degraded: false }} introStyle={props.introStyle}/>
+    )}
+  </div>;
+}
 
 export function BlackbirdBan({
   reason,

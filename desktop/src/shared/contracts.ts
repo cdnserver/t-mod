@@ -90,6 +90,7 @@ export interface ConsensusRegistrationNotice {
   sessionKey: string;
   plenaryNumber: number;
   csrfToken: string;
+  confirmed?: boolean;
 }
 
 export interface ConsensusLiveSnapshot {
@@ -160,6 +161,8 @@ export interface DesktopState {
   lockReason?: DesktopLockReason;
   activeService: ServiceId;
   loading: boolean;
+  /** Native main-frame readiness, not merely the absence of a spinner. */
+  serviceReady?: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   url?: string;
@@ -190,7 +193,11 @@ export interface DesktopUpdateState {
 }
 
 export interface TModDesktopApi {
-  accountRequest?(action: "security" | "billing" | "update" | "characters" | "characters-update" | "communicate" | "communicate-update", data?: Record<string, string>): Promise<Record<string, unknown>>;
+  accountRequest?(action: "security" | "billing" | "update" | "characters" | "characters-update" | "communicate" | "communicate-update" | "media" | "media-update", data?: Record<string, string>): Promise<Record<string, unknown>>;
+  mediaAsset?(userId: string, kind: "avatar" | "cover"): Promise<{ bytes: Uint8Array; mimeType: string; revision: string } | null>;
+  mediaUpload?(kind: "avatar" | "cover", bytes: Uint8Array): Promise<{ revision: string }>;
+  mediaRemove?(kind: "avatar" | "cover"): Promise<boolean>;
+  openSharedLink?(url: string): Promise<boolean>;
   openBilling?(): Promise<boolean>;
   bootstrap(): Promise<BootstrapResult>;
   login(credentials: DesktopLoginCredentials): Promise<DesktopLoginResult>;
@@ -210,7 +217,7 @@ export interface TModDesktopApi {
   previewNotification(): Promise<boolean>;
   markNotificationsRead(ids: number[]): Promise<boolean>;
   lock(): Promise<boolean>;
-  unlock(): Promise<boolean>;
+  unlock(): Promise<boolean | "login_required">;
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;

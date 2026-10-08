@@ -25,6 +25,8 @@ import type {
 } from "../shared/contracts";
 import { normalizeIntroStyle } from "../shared/shell-layout";
 import { accountIdentityKey } from "../shared/account-identity";
+import { NavigationIntent } from "../shared/service-navigation";
+import { consensusBallotLoaded } from "../shared/consensus-flow";
 import type {
   AtlasOverlayCatalog,
   AtlasOverlayConfig,
@@ -66,7 +68,7 @@ import { ConsensusCall } from "./ConsensusCall";
 import { ConsensusHall } from "./ConsensusHall";
 import type { ConsoleCommand } from "../shared/command-console";
 import { BlackbirdSetup } from "./BlackbirdSetup";
-import { BlackbirdBan } from "./BlackbirdBan";
+import { BlackbirdBanSequence } from "./BlackbirdBan";
 import { BlackbirdSettings, type SettingsSection } from "./BlackbirdSettings";
 import { AccountMenu } from "./AccountMenu";
 import { WorkspaceHome, WorkspaceNavigation, WorkspaceIntro } from "./BlackbirdWorkspace";
@@ -499,13 +501,15 @@ export function App() {
   const consensusHallPreview = visualQa === "consensus-hall" || visualQa === "consensus-arrival";
   const [consensusHall, setConsensusHall] = useState<{ sessionKey: string; plenaryNumber: number } | null>(consensusHallPreview ? { sessionKey: "preview", plenaryNumber: 16 } : null);
   const [workspace, setWorkspace] = useState<BlackbirdWorkspace|null>(atlasSettingsQa || visualQa === "atlas" ? "atlas" : visualQa === "senate" ? "senate" : null);
-  const [mediaOpen, setMediaOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(cinematicQaEnabled && cinematicParams.get("media-preview") === "1");
   const [workspaceIntro, setWorkspaceIntro] = useState<BlackbirdWorkspace|null>(visualQa === "intro-atlas" ? "atlas" : visualQa === "intro-senate" ? "senate" : null);
   const pendingWorkspace = useRef<BlackbirdWorkspace|null>(null);
   const workspaceIntroReady = useRef(true);
   const workspaceIntroFinished = useRef(false);
   const workspaceTransition = useRef(false);
   const returningToHub = useRef(false);
+  const navigationIntent = useRef(new NavigationIntent());
+  const navigationAccount = useRef(bootstrap.data ? accountIdentityKey(bootstrap.data.viewer) : "");
   const beginWorkspaceIntro = useCallback((next:BlackbirdWorkspace, ready = false) => {
     pendingWorkspace.current = next;
     workspaceIntroReady.current = ready;
@@ -585,7 +589,20 @@ export function App() {
   }, [bootstrap.authenticated, bootstrap.data?.viewer.id, bootstrap.data?.viewer.id_exact, setupQa, hubQa, loginQa]);
   const dismissLaunch = useCallback(() => setLaunchVisible(false), []);
   const [locked, setLocked] = useState(cinematicQa === "lock");
+  useLayoutEffect(() => {
+    const account = bootstrap.data ? accountIdentityKey(bootstrap.data.viewer) : "";
+    const accountChanged = account !== navigationAccount.current;
+    navigationAccount.current = account;
+    if (bootstrap.authenticated && !bootstrap.ban && !locked && !accountChanged) return;
+    navigationIntent.current.begin();
+    workspaceTransition.current = false;
+    returningToHub.current = false;
+    pendingWorkspace.current = null;
+    setWorkspaceIntro(null);
+  }, [bootstrap.authenticated, bootstrap.ban, bootstrap.data?.viewer.id, bootstrap.data?.viewer.id_exact, locked]);
   const [unlocking, setUnlocking] = useState(false);
+  const [unlockChecking, setUnlockChecking] = useState(false);
+  const [unlockError, setUnlockError] = useState(false);
   const [lockReason, setLockReason] = useState<DesktopLockReason>("idle");
   const searchRef = useRef<HTMLInputElement>(null);
   const bootstrapInFlight = useRef(false);
@@ -676,6 +693,7 @@ export function App() {
     const unsubscribeState = api.onState(value => {
       setDesktopState(value);
       if (value.locked) {
+        navigationIntent.current.begin();
         setLocked(true); setLockReason(value.lockReason || "idle");
         setSettingsOpen(false); setNotificationsOpen(false); setAtlasSettingsOpen(false); setPaletteOpen(false);
       }
@@ -684,8 +702,18 @@ export function App() {
     const unsubscribePalette = api.onCommandPalette(() => setPaletteOpen(true));
     const unsubscribeConsole = api.onCommandConsole(() => setConsoleOpen(true));
     const unsubscribeConsensus = api.onConsensusRegistration(notice => {
+      const ticket = navigationIntent.current.begin();
       setSettingsOpen(false); setNotificationsOpen(false); setPaletteOpen(false); setConsoleOpen(false);
-      setConsensusRegistration(notice);
+      if (notice.confirmed) {
+        setConsensusRegistration(null);
+        setConsensusHall({ sessionKey: notice.sessionKey, plenaryNumber: notice.plenaryNumber });
+        void api.setShellOverlayOpen(true).then(() => {
+          if (!navigationIntent.current.current(ticket)) return;
+          return api.openConsensusBallot().then(value => {
+            if (navigationIntent.current.current(ticket)) setDesktopState(value);
+          });
+        }).catch(() => { if (navigationIntent.current.current(ticket)) setToast("Восстанавливаем соединение с Консенсусом."); });
+      } else setConsensusRegistration(notice);
     });
     const unsubscribeNotifications = api.onNotifications(() => {
       setSettingsOpen(false); setAtlasSettingsOpen(false); setNotificationsOpen(true);
@@ -722,6 +750,14 @@ export function App() {
   }, [bootstrap.authenticated, bootstrap.data?.generated_at, loadOverlay]);
 
   useEffect(() => {
+    if (visualQa === "consensus-call" || consensusHallPreview) return;
+    if (bootstrap.error === "login_required" || bootstrap.ban) {
+      setConsensusRegistration(null);
+      setConsensusHall(null);
+    }
+  }, [bootstrap.error, bootstrap.ban, consensusHallPreview, visualQa]);
+
+  useEffect(() => {
     if (bootstrap.online) return;
     const refresh = window.setInterval(() => {
       if (document.visibilityState === "visible") void loadBootstrap();
@@ -752,6 +788,8 @@ export function App() {
       setAtlasSettingsOpen(false);
       setLockReason(reason);
       setUnlocking(false);
+      setUnlockChecking(false);
+      setUnlockError(false);
       setLocked(true);
     });
     return () => {
@@ -765,7 +803,13 @@ export function App() {
     const api = browserApi();
     if (!locked || unlockInFlight.current || !api) return;
     unlockInFlight.current = true;
+    setUnlockChecking(true);
+    setUnlockError(false);
     void api.unlock().then((ok) => {
+      if (ok === "login_required") {
+        setBootstrap({ authenticated: false, online: true, error: "login_required" });
+        setDesktopState(current => ({ ...current, activeService: "home", loading: false, error: undefined }));
+      }
       if (ok !== false) {
         setUnlocking(true);
         playVaultSound("unlock", preferences.lockSound);
@@ -774,9 +818,12 @@ export function App() {
           setUnlocking(false);
           unlockTimer.current = undefined;
         }, preferences.reduceMotion ? 80 : 920);
-      }
+      } else setUnlockError(true);
+    }).catch(() => {
+      setUnlockError(true);
     }).finally(() => {
       unlockInFlight.current = false;
+      setUnlockChecking(false);
     });
   }, [locked, preferences.lockSound, preferences.reduceMotion]);
 
@@ -790,6 +837,8 @@ export function App() {
         if (unlockTimer.current) window.clearTimeout(unlockTimer.current);
         setLockReason("manual");
         setUnlocking(false);
+        setUnlockChecking(false);
+        setUnlockError(false);
         setLocked(true);
       }
     });
@@ -868,6 +917,7 @@ export function App() {
     if (serviceId === "home" && desktopProduct.privateEdition) { await exitWorkspaceToHub(); return; }
     const remote = serviceId === "home" ? undefined : access.get(serviceId);
     if (serviceId !== "home" && (!bootstrap.authenticated || !remote?.enabled)) return;
+    const ticket = navigationIntent.current.begin();
     setPaletteOpen(false);
     setNotificationsOpen(false);
     setSettingsOpen(false);
@@ -879,14 +929,21 @@ export function App() {
     }
     const api = browserApi();
     try {
-      if (api) setDesktopState(await api.navigate(serviceId));
+      if (api && desktopProduct.privateEdition && pendingWorkspace.current) await api.setShellOverlayOpen(true);
+      if (!navigationIntent.current.current(ticket)) return;
+      if (api) {
+        const value = await api.navigate(serviceId);
+        if (!navigationIntent.current.current(ticket)) return;
+        setDesktopState(value);
+      }
       else setDesktopState((current) => ({ ...current, activeService: serviceId }));
       markWorkspaceIntroReady();
-    } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); }
+    } catch { if (navigationIntent.current.current(ticket)) { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть раздел. Попробуйте ещё раз."); } }
   };
 
   const exitWorkspaceToHub = async () => {
-    if (workspaceTransition.current) return;
+    if (returningToHub.current) return;
+    const ticket = navigationIntent.current.begin();
     workspaceTransition.current = true;
     returningToHub.current = true;
     pendingWorkspace.current = null;
@@ -897,24 +954,33 @@ export function App() {
     try {
       const api = browserApi();
       const next = api ? await api.navigate("home") : { ...desktopState, activeService: "home" as const, loading: false, error: undefined };
+      if (!navigationIntent.current.current(ticket)) return;
+      if (next.activeService !== "home" || next.locked) throw new Error("hub_navigation_incomplete");
       setDesktopState(next);
       setWorkspace(null);
-    } catch { returningToHub.current = false; workspaceTransition.current = false; setToast("Не удалось вернуться в хаб. Попробуйте ещё раз."); }
+    } catch { if (navigationIntent.current.current(ticket)) { returningToHub.current = false; workspaceTransition.current = false; setToast("Не удалось вернуться в хаб. Попробуйте ещё раз."); } }
   };
 
   const enterWorkspace = async (space:BlackbirdWorkspace, intro = true) => {
     if (!bootstrap.authenticated || !canEnterWorkspace(space,access) || workspaceTransition.current) return;
+    const ticket = navigationIntent.current.begin();
     workspaceTransition.current = true;
     setPaletteOpen(false); setNotificationsOpen(false); setSettingsOpen(false); setAtlasSettingsOpen(false); setProfileOpen(false);
     if (intro) beginWorkspaceIntro(space);
     try {
       const api = browserApi();
-      if (api) setDesktopState(await api.navigate("home"));
+      if (api) {
+        if (intro) await api.setShellOverlayOpen(true);
+        if (!navigationIntent.current.current(ticket)) return;
+        const value = await api.navigate("home");
+        if (!navigationIntent.current.current(ticket)) return;
+        setDesktopState(value);
+      }
       else setDesktopState(current => ({...current,activeService:"home",loading:false,error:undefined}));
       if (intro) markWorkspaceIntroReady();
       if (!intro) { pendingWorkspace.current = null; setWorkspace(space); setWorkspaceIntro(null); }
-    } catch { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть пространство. Попробуйте ещё раз."); }
-    finally { workspaceTransition.current = false; }
+    } catch { if (navigationIntent.current.current(ticket)) { pendingWorkspace.current = null; setWorkspaceIntro(null); setToast("Не удалось открыть пространство. Попробуйте ещё раз."); } }
+    finally { if (navigationIntent.current.current(ticket)) workspaceTransition.current = false; }
   };
   const executeConsoleCommand = (command: ConsoleCommand) => {
     switch (command.kind) {
@@ -1023,6 +1089,8 @@ export function App() {
     setProfileOpen(false);
     setSettingsOpen(false);
     setAtlasSettingsOpen(false);
+    setConsensusRegistration(null);
+    setConsensusHall(null);
     setBootstrap({ authenticated: false, online: true, error: "login_required" });
     setDesktopState((current) => ({ ...current, activeService: "home", error: undefined }));
     return true;
@@ -1074,7 +1142,8 @@ export function App() {
   };
 
   if (desktopProduct.privateEdition && bootstrap.error === "globally_banned") {
-    return <BlackbirdBan reason={bootstrap.ban?.reason || "Решение администратора."}
+    return <BlackbirdBanSequence key={bootstrap.ban?.reference || "global-ban"} introStyle={preferences.introStyle}
+      reason={bootstrap.ban?.reason || "Решение администратора."}
       reference={bootstrap.ban?.reference || "GB-—"}
       onMinimize={() => void browserApi()?.minimize()}
       onClose={() => void browserApi()?.close()}/>;
@@ -1207,7 +1276,7 @@ export function App() {
       </header>
 
       <main inert={settingsOpen || locked || Boolean(workspaceIntro)} className={`content ${desktopState.activeService !== "home" ? "service-open" : ""} ${atlasSettingsOpen ? "atlas-settings-open" : ""}`}>
-        {mediaOpen && desktopState.activeService === "home" ? <BlackbirdMediaNetwork name={userName} avatarUrl={bootstrap.data?.viewer.avatar_url} onBack={() => setMediaOpen(false)}/> : atlasSettingsOpen ? (
+        {mediaOpen && bootstrap.authenticated && !locked && !bootstrap.ban && desktopState.activeService === "home" ? <BlackbirdMediaNetwork key={bootstrap.data ? accountIdentityKey(bootstrap.data.viewer) : "preview"} name={userName} avatarUrl={bootstrap.data?.viewer.avatar_url} onBack={() => setMediaOpen(false)}/> : atlasSettingsOpen ? (
           <AtlasSettingsPage
             overlayConfig={overlayConfig}
             overlayCatalog={overlayCatalog}
@@ -1307,42 +1376,56 @@ export function App() {
         />
       )}
       {consoleOpen && desktopProduct.privateEdition && <CommandConsole onClose={() => setConsoleOpen(false)} onCommand={executeConsoleCommand}/>}
-      {consensusRegistration && !locked && <ConsensusCall notice={consensusRegistration} onLater={() => setConsensusRegistration(null)} onConfirm={async () => {
+      {consensusRegistration && !locked && <ConsensusCall key={consensusRegistration.sessionKey} notice={consensusRegistration} onLater={() => { navigationIntent.current.begin(); setConsensusRegistration(null); }} onConfirm={async () => {
+        const ticket = navigationIntent.current.begin();
         if (visualQa === "consensus-call") {
           setConsensusRegistration(null);
           setConsensusHall({ sessionKey: consensusRegistration.sessionKey, plenaryNumber: consensusRegistration.plenaryNumber });
           return true;
         }
         const confirmed = await browserApi()?.confirmConsensusRegistration(consensusRegistration) === true;
+        if (!navigationIntent.current.current(ticket)) return false;
         if (confirmed) {
           setConsensusRegistration(null);
           if (access.get("consensus")?.enabled) {
             setConsensusHall({ sessionKey: consensusRegistration.sessionKey, plenaryNumber: consensusRegistration.plenaryNumber });
             try {
               const api = browserApi();
-              setDesktopState(api ? await api.openConsensusBallot() : current => ({...current,activeService:"consensus"}));
-            } catch { setToast("Зал ожидания открыт, но бюллетень пока недоступен. Blackbird повторит подключение."); }
+              if (api) {
+                await api.setShellOverlayOpen(true);
+                if (!navigationIntent.current.current(ticket)) return false;
+                const value = await api.openConsensusBallot();
+                if (!navigationIntent.current.current(ticket)) return false;
+                setDesktopState(value);
+              }
+            } catch { if (navigationIntent.current.current(ticket)) setToast("Зал ожидания открыт, но бюллетень пока недоступен. Повторите подключение в зале."); }
           } else setToast("Участие подтверждено. Контур Консенсуса появится после обновления доступа.");
         }
         return confirmed;
       }}/>}
-      {consensusHall && !locked && <ConsensusHall sessionKey={consensusHall.sessionKey} plenaryNumber={consensusHall.plenaryNumber}
+      {consensusHall && !locked && <ConsensusHall key={consensusHall.sessionKey} sessionKey={consensusHall.sessionKey} plenaryNumber={consensusHall.plenaryNumber}
         preview={consensusHallPreview || visualQa === "consensus-call"} hold={cinematicHold}
-        serviceReady={consensusHallPreview || visualQa === "consensus-call" || (desktopState.activeService === "consensus" && !desktopState.loading && !desktopState.error)}
-        onRetry={() => { void browserApi()?.openConsensusBallot().then(setDesktopState).catch(() => setToast("Не удалось подключиться к бюллетеню. Попробуйте ещё раз.")); }}
+        serviceReady={consensusHallPreview || visualQa === "consensus-call" || consensusBallotLoaded(desktopState)}
+        onRetry={() => {
+          const ticket = navigationIntent.current.begin();
+          void browserApi()?.openConsensusBallot().then(value => {
+            if (navigationIntent.current.current(ticket)) setDesktopState(value);
+          }).catch(() => { if (navigationIntent.current.current(ticket)) setToast("Не удалось подключиться к бюллетеню. Попробуйте ещё раз."); });
+        }}
         onEnter={() => {
           pendingWorkspace.current = null;
           setWorkspaceIntro(null);
           setWorkspace("senate");
           setConsensusHall(null);
-        }} onLeave={() => {
-        void (async () => {
+        }} onLeave={async () => {
+          const ticket = navigationIntent.current.begin();
           const api = browserApi();
-          const state = await api?.navigate("home").catch(() => null) || { ...desktopState, activeService: "home" as const, loading: false };
+          const state = api ? await api.navigate("home") : { ...desktopState, activeService: "home" as const, loading: false };
+          if (!navigationIntent.current.current(ticket)) return;
+          if (state.activeService !== "home" || state.locked) throw new Error("hall_navigation_incomplete");
           setDesktopState(state);
           setWorkspace("senate");
           setConsensusHall(null);
-        })();
       }}/>}
       {updateState.phase === "ready" && dismissedUpdate !== updateState.version && (
         <aside className="update-toast" role="status">
@@ -1364,7 +1447,7 @@ export function App() {
         }}
       />
       {locked && (
-        desktopProduct.privateEdition ? <BlackbirdIdle name={userName} reduced={preferences.reduceMotion} unlocking={unlocking} onMinimize={() => void browserApi()?.minimize()}/> : <VaultScreen
+        desktopProduct.privateEdition ? <BlackbirdIdle name={userName} reduced={preferences.reduceMotion} unlocking={unlocking} checking={unlockChecking} error={unlockError} onMinimize={() => void browserApi()?.minimize()}/> : <VaultScreen
           name={userName}
           reason={lockReason}
           reduced={preferences.reduceMotion}

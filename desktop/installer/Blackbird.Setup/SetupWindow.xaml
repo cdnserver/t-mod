@@ -1,0 +1,41 @@
+<Window x:Class="Blackbird.Setup.SetupWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Blackbird — установка" Width="900" Height="580" MinWidth="900" MinHeight="580" ResizeMode="NoResize" WindowStyle="None"
+        WindowStartupLocation="CenterScreen" Background="#111215" Foreground="#F0EDF4" FontFamily="Segoe UI" UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
+        Loaded="WindowLoaded" Closing="WindowClosing">
+  <WindowChrome.WindowChrome><WindowChrome CaptionHeight="0" ResizeBorderThickness="0" CornerRadius="14" GlassFrameThickness="0" /></WindowChrome.WindowChrome>
+  <Grid x:Name="Scene" ClipToBounds="True">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="340" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+    <Grid Grid.Column="0" IsHitTestVisible="False" ClipToBounds="True">
+      <Grid.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#1F1D27" /><GradientStop Offset="1" Color="#111215" /></LinearGradientBrush></Grid.Background>
+      <Ellipse Width="460" Height="460" Margin="-245,80,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Stroke="#3B3545" StrokeThickness="1">
+        <Ellipse.Fill><RadialGradientBrush GradientOrigin="0.8,0.1" Center="0.8,0.1" RadiusX="0.9" RadiusY="0.9"><GradientStop Color="#47424F" /><GradientStop Offset="0.3" Color="#26242C" /><GradientStop Offset="1" Color="#101114" /></RadialGradientBrush></Ellipse.Fill>
+      </Ellipse>
+      <Ellipse x:Name="Orbit" Width="490" Height="230" Stroke="#514859" StrokeThickness="0.7" Opacity="0.5" Margin="-150,190,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" RenderTransformOrigin="0.5,0.5">
+        <Ellipse.RenderTransform><RotateTransform Angle="-28" /></Ellipse.RenderTransform>
+      </Ellipse>
+      <Image Source="Assets/bird.png" Width="240" Height="240" Opacity="0.9" HorizontalAlignment="Center" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
+      <Ellipse Width="3" Height="3" Fill="#D7CBEA" Margin="270,180,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" />
+      <Ellipse Width="2" Height="2" Fill="#82758D" Margin="238,422,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" />
+      <StackPanel Margin="30,0,25,35" VerticalAlignment="Bottom"><TextBlock Text="BLACKBIRD" FontSize="24" FontWeight="Light" /><TextBlock Text="Ваше пространство. Ваши технологии." FontSize="12" Foreground="#9E94AC" Margin="0,9,0,0" /></StackPanel>
+    </Grid>
+    <Border Grid.ColumnSpan="2" Height="48" VerticalAlignment="Top" Background="Transparent" MouseLeftButtonDown="DragWindow">
+      <Grid><Image Height="22" Width="290" Margin="22,0,0,0" HorizontalAlignment="Left" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"><Image.Source><CroppedBitmap Source="Assets/technologies.png" SourceRect="30,290,2110,140" /></Image.Source></Image>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0" VerticalAlignment="Center"><Button Content="−" Padding="10,4" Background="Transparent" Click="Minimize" AutomationProperties.Name="Свернуть" /><Button x:Name="CloseButton" Content="×" Padding="10,4" Background="Transparent" Click="CloseWindow" AutomationProperties.Name="Закрыть" /></StackPanel>
+      </Grid>
+    </Border>
+    <StackPanel x:Name="ContentPanel" Grid.Column="1" Margin="46,93,44,0" VerticalAlignment="Top">
+      <TextBlock x:Name="Eyebrow" Text="УСТАНОВКА КЛИЕНТА" FontSize="11" Foreground="#ACA0BC" />
+      <TextBlock x:Name="Heading" Text="Добро пожаловать&#x0a;в Blackbird." FontSize="34" FontWeight="Light" LineHeight="42" Margin="0,15,0,16" />
+      <TextBlock x:Name="Description" Text="Atlas, Сенат и ваши люди — в одном приложении. Установите клиент и продолжите с единым аккаунтом Технологий Товарищества." FontSize="14" Foreground="#ABA5B4" TextWrapping="Wrap" LineHeight="23" />
+      <Border x:Name="LocationPanel" Background="#1C1C22" CornerRadius="12" Padding="15,12" Margin="0,23,0,18">
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Папка приложения" FontSize="11" Foreground="#8C8496" /><TextBlock x:Name="LocationLabel" FontSize="12" Margin="0,6,9,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" /></StackPanel><Button x:Name="BrowseButton" Grid.Column="1" Content="Изменить" Padding="9,6" Background="Transparent" FontSize="12" Click="ChooseDirectory" /></Grid>
+      </Border>
+      <CheckBox x:Name="DesktopShortcut" Content="Ярлык на рабочем столе" IsChecked="True" />
+      <TextBlock x:Name="ErrorText" Visibility="Collapsed" Foreground="#E5A4AD" FontSize="13" LineHeight="20" TextWrapping="Wrap" Margin="0,12,0,0" />
+    </StackPanel>
+    <Grid Grid.Column="1" Margin="46,0,44,30" VerticalAlignment="Bottom">
+      <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,0,0,64"><Grid><TextBlock x:Name="StageLabel" FontSize="12" /><TextBlock x:Name="PercentLabel" FontSize="12" HorizontalAlignment="Right" Foreground="#B5A8C7" /></Grid><ProgressBar x:Name="ProgressLine" Height="3" Margin="0,10,0,10" Maximum="1" Background="#29252F" Foreground="#C0ADD8" BorderThickness="0" /><TextBlock x:Name="DetailLabel" FontSize="11" Foreground="#98909F" TextWrapping="Wrap" /></StackPanel>
+      <Grid VerticalAlignment="Bottom"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock x:Name="Footnote" Text="Без прав администратора.&#x0a;Аккаунт и личные настройки сохраняются." Foreground="#8B8395" FontSize="11" LineHeight="18" VerticalAlignment="Center" /><Button x:Name="ActionButton" Grid.Column="1" Content="Установить  →" Background="#C3B3DD" Foreground="#221D2A" Click="PrimaryAction" /></Grid>
+    </Grid>
+  </Grid>
+</Window>

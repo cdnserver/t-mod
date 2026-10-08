@@ -6,6 +6,11 @@
   pointer-events: none;
 }
 .bb-prelude.exiting { animation: bb-prelude-release 2.4s cubic-bezier(.4,0,.2,1) both; }
+.bb-prelude.ban-tone::after{content:"";position:absolute;inset:0;z-index:4;background:radial-gradient(ellipse at 50% 50%,#50121d56,#16070d85 65%,#170509b8);pointer-events:none;animation:bb-ban-ident-tone 8.8s cubic-bezier(.22,.61,.36,1) both}
+.bb-prelude.ban-tone .bb-prelude-signature{animation:bb-prelude-arrive 1.8s ease both,bb-ban-ident-signature 8.8s ease both}
+.bb-prelude.ban-tone .bb-prelude-light{background:linear-gradient(105deg,transparent,#d88189aa,transparent);background-size:300% 100%}
+@keyframes bb-ban-ident-tone{0%,42%{opacity:0}70%{opacity:.48}100%{opacity:1}}
+@keyframes bb-ban-ident-signature{0%,42%{filter:none}100%{filter:sepia(1) saturate(3) hue-rotate(305deg) brightness(.67)}}
 .bb-prelude-stars { position: absolute; inset: 0; opacity: .28; background:
   radial-gradient(circle at 13% 23%, #8195a8 0 .6px, transparent 1.2px),
   radial-gradient(circle at 79% 29%, #8195a8 0 .8px, transparent 1.5px),

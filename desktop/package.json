@@ -21,7 +21,8 @@
     "package:blackbird": "node scripts/build-blackbird.mjs package",
     "dist": "pnpm build && electron-builder",
     "dist:lumen": "node scripts/build-blackbird.mjs dist",
-    "dist:blackbird": "node scripts/build-blackbird.mjs dist"
+    "dist:blackbird": "node scripts/build-blackbird.mjs dist",
+    "dist:blackbird:custom": "node scripts/build-blackbird.mjs custom"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans": "5.3.0",

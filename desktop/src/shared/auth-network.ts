@@ -44,21 +44,35 @@ export async function parseBootstrapResponse(response: Response): Promise<Bootst
   return { response, data };
 }
 
-// A valid JSON projection wins, not simply the first HTTP 200 (proxy login/HTML).
-// Explicit access denials remain authoritative if all healthy checks fail.
+// A ban from either first-party endpoint must win over a stale healthy mirror.
+// Both requests have a short deadline in the main process, so this does not
+// keep a denied session open while a second contour is still responding.
 export async function selectBootstrapCandidate(requests: Promise<BootstrapCandidate>[]): Promise<BootstrapCandidate> {
-  const healthy = Promise.any(requests.map(async request => {
-    const candidate = await request;
-    if (!candidate.data) throw new Error("bootstrap_denied");
-    return candidate;
-  }));
-  // Requests already have a hard deadline. Do not discard a valid session just
-  // because one contour rejects its cookie before the other has responded.
-  try { return await healthy.catch(() => Promise.any(requests)); }
-  catch (error) {
-    if (error instanceof AggregateError && error.errors.some(item => item instanceof BootstrapProtocolError)) {
-      throw new BootstrapProtocolError("desktop_protocol_invalid");
-    }
-    throw error;
-  }
+  if (!requests.length) throw new Error("bootstrap_unavailable");
+  return new Promise((resolve, reject) => {
+    const settled: PromiseSettledResult<BootstrapCandidate>[] = new Array(requests.length);
+    let remaining = requests.length;
+    let finished = false;
+    const complete = (index: number, result: PromiseSettledResult<BootstrapCandidate>) => {
+      settled[index] = result; remaining--;
+      if (finished) return;
+      // A ban is already authoritative: a stalled mirror must not postpone it.
+      if (result.status === "fulfilled" && result.value.response.status === 423) {
+        finished = true; resolve(result.value); return;
+      }
+      if (remaining) return;
+      finished = true;
+      const candidates = settled.flatMap(item => item.status === "fulfilled" ? [item.value] : []);
+      const healthy = candidates.find(candidate => candidate.data);
+      if (healthy) { resolve(healthy); return; }
+      if (candidates.length) { resolve(candidates[0]); return; }
+      if (settled.some(item => item.status === "rejected" && item.reason instanceof BootstrapProtocolError))
+        reject(new BootstrapProtocolError("desktop_protocol_invalid"));
+      else reject(new Error("bootstrap_unavailable"));
+    };
+    requests.forEach((request, index) => void request.then(
+      value => complete(index, { status: "fulfilled", value }),
+      reason => complete(index, { status: "rejected", reason }),
+    ));
+  });
 }

@@ -11,3 +11,6 @@
 @keyframes bb-ban-content-in{from{opacity:0;transform:translate3d(-18px,14px,0);filter:blur(8px)}to{opacity:1;transform:none;filter:none}}@keyframes bb-ban-eclipse-rise{from{opacity:0;transform:translate(5%, -48%) scale(.94)}to{opacity:1;transform:translate(0,-50%) scale(1)}}@keyframes bb-ban-stars{to{background-position:251px 197px,-337px 263px,403px -311px,-541px 401px}}@keyframes bb-ban-twinkle{50%{opacity:.38;transform:scale(.7)}}@keyframes bb-ban-orbit{to{transform:rotate(342deg) scaleY(.43)}}
 @media(max-width:800px){.bb-ban-eclipse{left:42%;top:42%;width:100vw;opacity:.6}.bb-ban-content{width:100%;padding:90px 30px 80px}.bb-ban-content h1{font-size:clamp(50px,9vw,78px)}.bb-ban-content>p{max-width:500px}.bb-ban-footer{padding:20px 28px}.bb-ban-footer small{display:none}}
 @media(prefers-reduced-motion:reduce){.blackbird-ban:before,.bb-ban-sky i,.bb-ban-eclipse,.bb-ban-eclipse span,.bb-ban-content,.bb-ban-eyebrow span,.bb-ban-footer i{animation:none}}
+.bb-ban-sequence{position:fixed;inset:0;z-index:2000;overflow:hidden;background:#030105}
+.bb-ban-sequence>.blackbird-ban{position:absolute;inset:0;width:100%;height:100%}
+.bb-ban-sequence>.bb-prelude.exiting{animation-duration:1.65s}
