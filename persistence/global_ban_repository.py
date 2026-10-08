@@ -71,6 +71,7 @@ def bind_desktop_installation(
     platform: str = "",
     app_version: str = "",
     device_fingerprint: str = "",
+    hardware_fingerprint: str = "",
 ) -> dict[str, Any] | None:
     """Bind an authenticated account to a pseudonymous Desktop install.
 
@@ -88,6 +89,7 @@ def bind_desktop_installation(
     clean_version = str(app_version or "").strip()[:40]
     installation_ref = f"TD-{token_hash[:12].upper()}"
     device_hash = _desktop_device_hash(device_fingerprint)
+    hardware_hash = _desktop_device_hash(hardware_fingerprint)
     with _db_lock, connect() as con:
         con.execute("BEGIN IMMEDIATE")
         con.execute(
@@ -123,7 +125,7 @@ def bind_desktop_installation(
             """,
             (int(guild_id), token_hash, int(user_id), now, now),
         )
-        if device_hash is not None:
+        for binding_hash in {device_hash, hardware_hash} - {None}:
             con.execute(
                 """
                 INSERT INTO desktop_device_accounts(
@@ -132,7 +134,7 @@ def bind_desktop_installation(
                 ON CONFLICT(guild_id, device_hash, user_id) DO UPDATE SET
                     last_seen_at = excluded.last_seen_at
                 """,
-                (int(guild_id), device_hash, int(user_id), now, now),
+                (int(guild_id), binding_hash, int(user_id), now, now),
             )
         linked = con.execute(
             """
@@ -147,7 +149,7 @@ def bind_desktop_installation(
         "installation_ref": installation_ref,
         "account_count": int(linked["account_count"] if linked else 1),
         "trusted": True,
-        "hardware_bound": device_hash is not None,
+        "hardware_bound": device_hash is not None or hardware_hash is not None,
     }
 
 
@@ -155,11 +157,13 @@ def get_desktop_installation_ban(
     guild_id: int,
     token: str,
     device_fingerprint: str = "",
+    hardware_fingerprint: str = "",
 ) -> dict[str, Any] | None:
     """Resolve an active decision already linked to this Desktop install."""
 
     token_hash = _desktop_token_hash(token)
     device_hash = _desktop_device_hash(device_fingerprint)
+    hardware_hash = _desktop_device_hash(hardware_fingerprint)
     value = None
     with connect_readonly() as con:
         if token_hash is not None:
@@ -177,17 +181,18 @@ def get_desktop_installation_ban(
                 """,
                 (int(guild_id), token_hash),
             ).fetchone()
-        if value is None and device_hash is not None:
+        device_hashes = list({device_hash, hardware_hash} - {None})
+        if value is None and device_hashes:
             value = con.execute(
                 """
                 SELECT gb.*, NULL AS installation_ref
                 FROM desktop_device_accounts dda
                 JOIN global_bans gb ON gb.user_id = dda.user_id
-                WHERE dda.guild_id = ? AND dda.device_hash = ? AND gb.active = 1
+                WHERE dda.guild_id = ? AND dda.device_hash IN (?, ?) AND gb.active = 1
                 ORDER BY gb.updated_at DESC
                 LIMIT 1
                 """,
-                (int(guild_id), device_hash),
+                (int(guild_id), device_hashes[0], device_hashes[-1]),
             ).fetchone()
     return _row(value)
 

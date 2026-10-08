@@ -78,6 +78,7 @@ from persistence import atlas_search_repository as search_storage
 from persistence import activity_repository as activity_storage
 from persistence import craft_repository as craft_storage
 from persistence import web_auth_repository as web_auth_storage
+from persistence import global_ban_repository as global_ban_storage
 
 
 AuthenticatedRequest = Callable[
@@ -1499,10 +1500,29 @@ def register_atlas_web_routes(
         )
         await response.prepare(request)
         connected = True
+        access_revoked = False
+        next_access_check = 0.0
+
+        async def ban_active(*, force: bool = False) -> bool:
+            nonlocal access_revoked, next_access_check
+            if access_revoked:
+                return True
+            now = time.monotonic()
+            if not force and now < next_access_check:
+                return False
+            next_access_check = now + 1.0
+            access_revoked = await asyncio.to_thread(
+                global_ban_storage.is_globally_banned,
+                int(guild_id), int(selected.user_id),
+            )
+            return access_revoked
 
         async def emit(event: dict[str, Any]) -> None:
             nonlocal connected
             if not connected:
+                return
+            if await ban_active(force=event.get("type") in {"done", "error"}):
+                connected = False
                 return
             try:
                 data = "data:" + json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n\n"
@@ -1538,6 +1558,12 @@ def register_atlas_web_routes(
                 latency_mode=latency_mode,
                 screen_context=screen_context,
             )
+            if await ban_active(force=True):
+                try:
+                    await response.write_eof()
+                except (ConnectionError, RuntimeError):
+                    pass
+                return response
             if thread_id is None:
                 thread_id = await asyncio.to_thread(
                     storage.atlas_create_thread,

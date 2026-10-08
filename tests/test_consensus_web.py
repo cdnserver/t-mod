@@ -19,7 +19,8 @@ from modules.consensus_core import (
     LiveParticipant,
     LiveResult,
 )
-from modules.consensus_runtime import active_sessions
+from modules.consensus_runtime import active_sessions, coordinator as consensus_coordinator
+from modules.consensus_service import ConsensusActor
 from modules.consensus_simulator import (
     ConsensusSimulation,
     clear_consensus_simulation,
@@ -300,6 +301,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(state["viewer"]["authenticated"])
+        self.assertEqual(state["viewer"]["id_exact"], str(self._principal().user_id))
         self.assertTrue(state["viewer"]["leader"])
         self.assertIn("leader_vote", state["capabilities"])
         self.assertIn("set_timer", state["capabilities"])
@@ -1711,6 +1713,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(public.status, 200)
             public_payload = await public.json()
             self.assertFalse(public_payload["viewer"]["authenticated"])
+            self.assertIsNone(public_payload["viewer"]["id_exact"])
             self.assertEqual(public_payload["session"]["participants"], [])
 
             with patch(
@@ -1983,6 +1986,56 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(atlas_payload["viewer"]["account_tier"], "zero")
         self.assertEqual(protected.status, 200)
         self.assertFalse(protected_payload["viewer"]["authenticated"])
+
+    async def test_non_guild_blackbird_login_opens_social_features_not_senate(self) -> None:
+        storage.configure_web_credential(77, 4242, "blackbird.user", "12345678")
+        storage.configure_web_credential(77, 4343, "chat.friend", "12345678")
+        bot = SimpleNamespace(get_guild=lambda _guild_id: None)
+        app = create_consensus_web_app(bot, guild_id=77)  # type: ignore[arg-type]
+        async with TestClient(TestServer(app)) as client:
+            accepted = await client.post(
+                "/auth/login?client=desktop&next=/reactor",
+                headers={"X-TMod-Desktop-Edition": "blackbird"},
+                data={"login": "blackbird.user", "pin": "12345678"},
+                allow_redirects=False,
+            )
+            self.assertEqual(accepted.status, 200)
+            self.assertTrue((await accepted.json())["ok"])
+            snapshot = await client.get("/api/blackbird/communicate")
+            self.assertEqual(snapshot.status, 200)
+            csrf = (await snapshot.json())["viewer"]["csrf_token"]
+            headers = {"X-CSRF-Token": csrf}
+            for path in ("/api/reactor/home", "/api/blackbird/characters"):
+                denied = await client.get(path)
+                self.assertEqual(denied.status, 403)
+                self.assertEqual((await denied.json())["error"], "zero_account_scope")
+            sent = await client.post("/api/blackbird/communicate", headers=headers,
+                                     json={"action": "send", "partner_id": "4343", "message": "На связи"})
+            self.assertEqual(sent.status, 200)
+            attachment = await client.post("/api/blackbird/communicate/attachments",
+                headers={**headers, "Content-Type": "application/octet-stream",
+                         "X-Blackbird-Partner": "4343", "X-Blackbird-Filename": "note.txt"}, data=b"Local test")
+            self.assertEqual(attachment.status, 200)
+            attachment_id = (await attachment.json())["result"]["attachment"]["id"]
+            downloaded = await client.get(f"/api/blackbird/communicate/attachments/{attachment_id}")
+            self.assertEqual(downloaded.status, 200)
+            self.assertEqual(await downloaded.read(), b"Local test")
+            self.assertEqual((await client.get("/api/blackbird/media")).status, 200)
+            profile = await client.post("/api/blackbird/media", headers=headers,
+                json={"action": "profile", "display_name": "Пользователь Blackbird", "is_public": True})
+            self.assertEqual(profile.status, 200)
+            post = await client.post("/api/blackbird/media", headers=headers,
+                json={"action": "post", "kind": "post", "body": "Первая публикация"})
+            self.assertEqual(post.status, 200)
+            # Notification records belong to the signed-in account, not the
+            # guild. A non-member must receive and acknowledge their own ones.
+            notice_id = storage.reactor_put_notification(guild_id=77, user_id=4242, severity="info",
+                kind="communicate", title="Новое сообщение", body="Откройте чат", dedupe_key="social-login-test")
+            notices = await client.get("/api/reactor/notifications?unread=1")
+            self.assertEqual(notices.status, 200)
+            self.assertIn(notice_id, [item["id"] for item in (await notices.json())["items"]])
+            read = await client.post("/api/reactor/notifications/read", headers=headers, json={"ids": [notice_id]})
+            self.assertEqual(read.status, 200)
 
     async def test_three_bad_pins_warn_owner_and_require_discord_reset(self) -> None:
         storage.add_profile_character(77, 42, "Operator Test", "42001")
@@ -3049,6 +3102,78 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(confirm.call_args.args[1], 4)
         finally:
             await client.close()
+
+    async def test_blackbird_registration_to_result_uses_real_durable_business_state(self) -> None:
+        # Only Discord message projections are mocked. Attendance, votes,
+        # finalization, the session ledger and HTTP permissions stay real.
+        self.session.stage = "registration"
+        self.session.current_bill = None
+        self.session.votes.clear()
+        self.session.revision = 0
+        self.session.participants[4].confirmed = False
+        consensus_coordinator.save(self.session, "session_created")
+        principal = self._principal(user_id=4)
+        principal.member.guild_permissions.administrator = False
+        app = create_consensus_web_app(self.bot, guild_id=77)  # type: ignore[arg-type]
+        headers = {"X-CSRF-Token": principal.csrf_token}
+        with (
+            patch("modules.consensus_web.resolve_principal", AsyncMock(return_value=principal)),
+            patch("modules.tvrs_consensus_views.update_host_registration_message", AsyncMock()),
+            patch("modules.consensus_web_control.update_host_vote_message", AsyncMock()),
+            patch("modules.tvrs_decision.update_public_consensus_card", AsyncMock()),
+            patch("modules.tvrs_decision.edit_session_host_message", AsyncMock()),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                state_url = "/api/state?mode=live&fresh=1"
+                initial = await (await client.get(state_url)).json()
+                self.assertFalse(initial["viewer"]["confirmed"])
+                self.assertFalse(initial["viewer"]["can_vote"])
+                attendance = {"session_key": self.session.session_key}
+                first = await client.post("/api/attendance", headers=headers, json=attendance)
+                self.assertEqual(first.status, 200)
+                revision = self.session.revision
+                retry = await client.post("/api/attendance", headers=headers, json=attendance)
+                self.assertEqual(retry.status, 200)
+                self.assertEqual(self.session.revision, revision)
+                waiting = await (await client.get(state_url)).json()
+                self.assertEqual(waiting["session"]["stage"], "registration")
+                self.assertTrue(waiting["viewer"]["confirmed"])
+                self.assertFalse(waiting["viewer"]["can_vote"])
+                persisted = storage.tvrs_consensus_active_sessions(77)[0]
+                self.assertTrue(next(p for p in persisted["participants"] if p["user_id"] == 4)["confirmed"])
+
+                actor = ConsensusActor(1, "Ведущий")
+                consensus_coordinator.present_bill_atomically(self.session,
+                    storage.tvrs_get_bill_dict_by_id(self.bill.id), actor=actor, deliveries=[])
+                presentation = await (await client.get(state_url)).json()
+                self.assertEqual(presentation["session"]["stage"], "presentation")
+                self.assertTrue(presentation["viewer"]["ballot_available"])
+                self.assertFalse(presentation["viewer"]["can_vote"])
+                consensus_coordinator.open_voting(self.session, actor=actor, deliveries=[])
+                for user_id in (1, 2, 3):
+                    consensus_coordinator.cast_vote(self.session, user_id, "yes")
+                voting = await (await client.get(state_url)).json()
+                self.assertTrue(voting["viewer"]["can_vote"])
+                payload = {"mode": "live", "action": "participant_vote",
+                           "session_key": self.session.session_key, "revision": self.session.revision,
+                           "bill_id": self.bill.id, "payload": {"vote": "yes"}}
+                vote_headers = {**headers, "X-Idempotency-Key": "blackbird-flow-real-vote"}
+                stale = await client.post("/api/command", headers=vote_headers, json={**payload, "bill_id": self.bill.id + 1})
+                self.assertEqual(stale.status, 409, await stale.text())
+                self.assertNotIn(4, self.session.votes)
+                voted = await client.post("/api/command", headers=vote_headers, json=payload)
+                self.assertEqual(voted.status, 200, await voted.text())
+                final = (await voted.json())["state"]
+                self.assertEqual(final["session"]["stage"], "after_result")
+                self.assertFalse(final["viewer"]["can_vote"])
+                self.assertEqual(self.session.results[0].status, "accepted")
+                self.assertEqual(storage.tvrs_get_bill_dict_by_id(self.bill.id)["status"], "accepted")
+                persisted = storage.tvrs_consensus_active_sessions(77)[0]
+                self.assertEqual(persisted["stage"], "after_result")
+                self.assertEqual(persisted["results"][0]["votes"]["4"], "yes")
+                events = storage.tvrs_consensus_events(self.session.session_key)
+                self.assertEqual(sum(e["event_type"] == "participant_confirmed" for e in events), 1)
+                self.assertEqual(sum(e["event_type"] == "vote_finalized" for e in events), 1)
 
     async def test_simulation_is_selectable_without_masking_live_consensus(
         self,

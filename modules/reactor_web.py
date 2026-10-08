@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import discord
 from aiohttp import web
@@ -56,6 +56,7 @@ from modules.ovr_artifacts import (
     generate_investigation_report,
 )
 from modules.technical_log import log_technical_event
+from modules.communicate_link_preview import document_preview, resource_reference
 from modules.admission import process_ovr_decision
 from modules.reactor_legislation import (
     ReactorLegislationError,
@@ -76,6 +77,8 @@ from modules.desktop_bootstrap_service import (
     build_desktop_bootstrap_payload,
 )
 from persistence import blackbird_communicate_repository as communicate_storage
+from persistence import blackbird_media_repository as media_storage
+from persistence import global_ban_repository as global_ban_storage
 from persistence import activity_repository as activity_storage
 from persistence import atlas_repository as atlas_storage
 from persistence import admin_dashboard_repository as dashboard_storage
@@ -542,13 +545,22 @@ def register_reactor_web_routes(
             )
         return web.FileResponse(asset_dir / "ovr.html")
 
-    async def personal_request(request: web.Request) -> ConsensusWebPrincipal:
+    async def blackbird_account_request(request: web.Request) -> ConsensusWebPrincipal:
+        """Social features require an account, not Senate guild membership.
+
+        Authentication/middleware still own session and global-ban checks; this helper
+        must not replace the stronger personal_request on Senate data routes.
+        """
         principal, legacy = await authenticate(request)
         if legacy or principal is None:
             raise web.HTTPUnauthorized(
                 text=json.dumps({"error": "personal_login_required"}),
                 content_type="application/json",
             )
+        return principal
+
+    async def personal_request(request: web.Request) -> ConsensusWebPrincipal:
+        principal = await blackbird_account_request(request)
         if not principal.fellowship_member:
             raise web.HTTPForbidden(
                 text=json.dumps(
@@ -1826,6 +1838,8 @@ def register_reactor_web_routes(
             raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
         body = await json_body(request, principal)
         action = str(body.get("action") or "")
+        has_more = False
+        has_newer = False
         try:
             if action == "discoverability":
                 raw_discoverable = body.get("discoverable")
@@ -1841,11 +1855,20 @@ def register_reactor_web_routes(
                     result = await asyncio.to_thread(communicate_storage.search_character, guild_id, principal.user_id,
                                                      str(body.get("server_code") or ""), str(body.get("static_id") or ""))
             elif action == "thread":
+                after_id = int(body.get("after_id") or 0)
                 result = await asyncio.to_thread(communicate_storage.conversation, guild_id, principal.user_id,
-                                                 int(body.get("partner_id") or 0))
+                                                 int(body.get("partner_id") or 0), limit=81,
+                                                 before_id=int(body.get("before_id") or 0), after_id=after_id)
+                if after_id:
+                    has_newer = len(result) > 80
+                    result = result[:80]
+                else:
+                    has_more = len(result) > 80
+                    result = result[-80:]
             elif action == "send":
                 result = await asyncio.to_thread(communicate_storage.send_message, guild_id, principal.user_id,
-                                                 int(body.get("partner_id") or 0), str(body.get("message") or ""))
+                                                 int(body.get("partner_id") or 0), str(body.get("message") or ""),
+                                                 client_nonce=str(body.get("client_nonce") or ""))
                 try:
                     await asyncio.to_thread(
                         reactor_storage.reactor_put_notification,
@@ -1866,7 +1889,189 @@ def register_reactor_web_routes(
                       for item in result]
         elif action == "send":
             result = {**result, "sender_id": str(result["sender_id"]), "recipient_id": str(result["recipient_id"])}
-        return web.json_response({"ok": True, "result": result}, headers={"Cache-Control": "private, no-store"})
+        return web.json_response({"ok": True, "result": result, **({"has_more": has_more, "has_newer": has_newer} if action == "thread" else {})},
+                                 headers={"Cache-Control": "private, no-store"})
+
+    async def blackbird_communicate_preview(request: web.Request) -> web.Response:
+        principal, legacy = await authenticate(request)
+        if legacy or principal is None:
+            raise web.HTTPUnauthorized(text='{"error":"personal_login_required"}', content_type="application/json")
+        url = str(request.query.get("url") or "")
+        reference = resource_reference(url)
+        result = None
+        if reference is not None:
+            ovr_allowed = bool(principal.guild_member and reference[0] == "ovr" and await has_ovr_access(principal))
+            result = await asyncio.to_thread(
+                document_preview, int(guild_id), int(principal.user_id), url,
+                can_read_ovr=ovr_allowed,
+                can_moderate_bills=bool(principal.guild_member and can_moderate_bills(principal)),
+            )
+        return web.json_response({"result": result}, headers={"Cache-Control": "private, no-store"})
+
+    async def blackbird_communicate_attachment_upload(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        if not csrf_matches(request, principal):
+            return web.json_response({"error": "csrf_failed"}, status=403)
+        if request.content_type != "application/octet-stream":
+            return web.json_response({"error": "communicate_attachment_type_invalid"}, status=415)
+        try:
+            partner_id = int(request.headers.get("X-Blackbird-Partner") or 0)
+            filename = unquote(request.headers.get("X-Blackbird-Filename") or "", errors="strict")
+            caption = unquote(request.headers.get("X-Blackbird-Caption") or "", errors="strict")
+            payload = bytearray()
+            async for chunk in request.content.iter_chunked(64 * 1024):
+                if len(payload) + len(chunk) > communicate_storage.MAX_ATTACHMENT_BYTES:
+                    raise ValueError("communicate_attachment_size_invalid")
+                payload.extend(chunk)
+            result = await asyncio.to_thread(
+                communicate_storage.send_attachment_message,
+                int(guild_id), int(principal.user_id), partner_id, filename, bytes(payload), caption,
+                client_nonce=str(request.headers.get("X-Blackbird-Nonce") or ""),
+            )
+        except (UnicodeError, ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc) or "communicate_attachment_invalid"}, status=400)
+        try:
+            await asyncio.to_thread(
+                reactor_storage.reactor_put_notification,
+                guild_id=guild_id, user_id=int(result["recipient_id"]), severity="info", kind="communicate",
+                title="Новое сообщение в Blackbird", body="Откройте Communicate, чтобы прочитать сообщение.",
+                dedupe_key=f"communicate:{result['id']}", source_key=f"user:{principal.user_id}",
+            )
+        except Exception:
+            logging.exception("Communicate notification failed after attachment %s was saved", result["id"])
+        return web.json_response(
+            {"ok": True, "result": {**result, "sender_id": str(result["sender_id"]), "recipient_id": str(result["recipient_id"])}},
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    async def blackbird_communicate_attachment_download(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        attachment_id = str(request.match_info.get("attachment_id") or "")
+        try:
+            saved = await asyncio.to_thread(
+                communicate_storage.read_attachment,
+                int(guild_id), int(principal.user_id), attachment_id,
+            )
+        except (FileNotFoundError, ValueError):
+            saved = None
+        if saved is None:
+            raise web.HTTPNotFound()
+        metadata, payload = saved
+        filename = str(metadata["filename"])
+        return web.Response(
+            body=payload,
+            content_type=str(metadata["mime_type"]),
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Blackbird-Filename": quote(filename, safe=""),
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            },
+        )
+
+    async def blackbird_media(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        profile, timeline = await asyncio.gather(
+            asyncio.to_thread(media_storage.own_profile, guild_id, principal.user_id, principal.display_name),
+            asyncio.to_thread(media_storage.feed, guild_id, principal.user_id, limit=31),
+        )
+        return web.json_response(
+            {"viewer": {"id": str(principal.user_id), "csrf_token": str(principal.csrf_token)},
+             "profile": profile, "feed": timeline[:30], "has_more": len(timeline) > 30},
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    async def blackbird_media_update(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        body = await json_body(request, principal)
+        action = str(body.get("action") or "")
+        has_more = False
+        try:
+            if action == "profile":
+                visible = body.get("is_public")
+                if type(visible) is not bool and visible not in ("true", "false"):
+                    raise ValueError("media_profile_invalid")
+                result = await asyncio.to_thread(
+                    media_storage.save_profile, guild_id, principal.user_id,
+                    str(body.get("display_name") or ""), str(body.get("bio") or ""),
+                    str(body.get("cover_theme") or "orbit"), visible is True or visible == "true",
+                )
+            elif action == "search":
+                result = await asyncio.to_thread(
+                    media_storage.search_profiles, guild_id, principal.user_id, str(body.get("query") or ""),
+                )
+            elif action == "profile_view":
+                result = await asyncio.to_thread(
+                    media_storage.public_profile, guild_id, principal.user_id, int(body.get("user_id") or 0),
+                )
+            elif action == "profile_posts":
+                author_id = int(body.get("user_id") or 0)
+                if author_id <= 0:
+                    raise ValueError("media_profile_invalid")
+                result = await asyncio.to_thread(
+                    media_storage.profile_posts, guild_id, principal.user_id, author_id,
+                    before_id=int(body["before_id"]) if body.get("before_id") else None, limit=31,
+                )
+                has_more, result = len(result) > 30, result[:30]
+            elif action == "feed":
+                result = await asyncio.to_thread(
+                    media_storage.feed, guild_id, principal.user_id,
+                    kind=str(body.get("kind") or "all"), before_id=int(body["before_id"]) if body.get("before_id") else None,
+                    limit=31,
+                )
+                has_more, result = len(result) > 30, result[:30]
+            elif action == "post":
+                result = await asyncio.to_thread(
+                    media_storage.create_post, guild_id, principal.user_id,
+                    str(body.get("kind") or "post"), str(body.get("body") or ""), str(body.get("source_url") or ""),
+                    client_nonce=str(body.get("client_nonce") or ""),
+                )
+            elif action == "delete":
+                result = await asyncio.to_thread(media_storage.delete_post, guild_id, principal.user_id, int(body.get("post_id") or 0))
+            else:
+                raise ValueError("media_action_invalid")
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, headers={"Cache-Control": "private, no-store"})
+        return web.json_response({"ok": True, "result": result, "has_more": has_more}, headers={"Cache-Control": "private, no-store"})
+
+    async def blackbird_media_asset(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        kind = str(request.match_info.get("kind") or "")
+        try:
+            user_id = int(request.match_info.get("user_id") or 0)
+        except (ValueError, TypeError):
+            raise web.HTTPNotFound() from None
+        saved = await asyncio.to_thread(media_storage.read_asset, guild_id, principal.user_id, user_id, kind)
+        if saved is None:
+            raise web.HTTPNotFound()
+        mime_type, content, revision = saved
+        return web.Response(
+            body=content, content_type=mime_type,
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "ETag": f'"{revision}"'},
+        )
+
+    async def blackbird_media_asset_update(request: web.Request) -> web.Response:
+        principal = await blackbird_account_request(request)
+        if not csrf_matches(request, principal):
+            return web.json_response({"error": "csrf_failed"}, status=403)
+        kind = str(request.match_info.get("kind") or "")
+        try:
+            if request.method == "DELETE":
+                removed = await asyncio.to_thread(media_storage.delete_asset, guild_id, principal.user_id, kind)
+                return web.json_response({"ok": True, "removed": removed}, headers={"Cache-Control": "private, no-store"})
+            if request.content_type != "application/octet-stream":
+                return web.json_response({"error": "media_asset_type_invalid"}, status=415)
+            if request.content_length is not None and request.content_length > media_storage.MAX_ASSET_UPLOAD_BYTES:
+                return web.json_response({"error": "media_asset_size_invalid"}, status=413)
+            payload = bytearray()
+            async for chunk in request.content.iter_chunked(64 * 1024):
+                if len(payload) + len(chunk) > media_storage.MAX_ASSET_UPLOAD_BYTES:
+                    return web.json_response({"error": "media_asset_size_invalid"}, status=413)
+                payload.extend(chunk)
+            revision = await asyncio.to_thread(media_storage.save_asset, guild_id, principal.user_id, kind, bytes(payload))
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400, headers={"Cache-Control": "private, no-store"})
+        return web.json_response({"ok": True, "revision": revision}, headers={"Cache-Control": "private, no-store"})
 
     async def attention(request: web.Request) -> web.Response:
         principal = await admin_request(request)
@@ -1969,7 +2174,7 @@ def register_reactor_web_routes(
         return web.json_response({"viewer": viewer(principal), "items": items})
 
     async def event_stream(request: web.Request) -> web.StreamResponse:
-        await admin_request(request)
+        principal = await admin_request(request)
         try:
             cursor = max(0, int(request.query.get("after") or 0))
         except (TypeError, ValueError):
@@ -1987,6 +2192,11 @@ def register_reactor_web_routes(
         try:
             await response.write(b"retry: 3000\n\n")
             for tick in range(1800):
+                if await asyncio.to_thread(
+                    global_ban_storage.is_globally_banned,
+                    int(guild_id), int(principal.user_id),
+                ):
+                    break
                 items = await asyncio.to_thread(
                     reactor_storage.reactor_event_feed,
                     int(guild_id),
@@ -2414,6 +2624,14 @@ def register_reactor_web_routes(
     app.router.add_post("/api/blackbird/characters", blackbird_characters_update)
     app.router.add_get("/api/blackbird/communicate", blackbird_communicate)
     app.router.add_post("/api/blackbird/communicate", blackbird_communicate_update)
+    app.router.add_get("/api/blackbird/communicate/preview", blackbird_communicate_preview)
+    app.router.add_post("/api/blackbird/communicate/attachments", blackbird_communicate_attachment_upload)
+    app.router.add_get("/api/blackbird/communicate/attachments/{attachment_id}", blackbird_communicate_attachment_download)
+    app.router.add_get("/api/blackbird/media", blackbird_media)
+    app.router.add_post("/api/blackbird/media", blackbird_media_update)
+    app.router.add_get("/api/blackbird/media/assets/{user_id}/{kind}", blackbird_media_asset)
+    app.router.add_post("/api/blackbird/media/assets/{kind}", blackbird_media_asset_update)
+    app.router.add_delete("/api/blackbird/media/assets/{kind}", blackbird_media_asset_update)
     app.router.add_get("/api/admin/reactor/attention", attention)
     app.router.add_get("/api/admin/reactor/health", health)
     app.router.add_get("/api/admin/reactor/search", search)

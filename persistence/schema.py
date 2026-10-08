@@ -482,6 +482,8 @@ def init_db() -> None:
                 recipient_id INTEGER NOT NULL,
                 body TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                client_nonce TEXT,
+                client_payload_hash TEXT,
                 CHECK(sender_id != recipient_id)
             );
 
@@ -490,6 +492,70 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_blackbird_communicate_inbox
             ON blackbird_communicate_messages(guild_id, recipient_id, id DESC);
+
+            CREATE TABLE IF NOT EXISTS blackbird_communicate_attachments (
+                id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                sender_id INTEGER NOT NULL,
+                recipient_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL UNIQUE,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                byte_size INTEGER NOT NULL,
+                content BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_communicate_attachment_access
+            ON blackbird_communicate_attachments(guild_id, sender_id, recipient_id);
+
+            CREATE TABLE IF NOT EXISTS blackbird_media_profiles (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL,
+                search_key TEXT NOT NULL,
+                bio TEXT NOT NULL DEFAULT '',
+                cover_theme TEXT NOT NULL DEFAULT 'orbit',
+                is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_media_profiles_public
+            ON blackbird_media_profiles(guild_id, is_public, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_media_profiles_search
+            ON blackbird_media_profiles(guild_id, is_public, search_key);
+
+            CREATE TABLE IF NOT EXISTS blackbird_media_assets (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('avatar', 'cover')),
+                mime_type TEXT NOT NULL,
+                content BLOB NOT NULL,
+                byte_size INTEGER NOT NULL,
+                revision TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id, kind)
+            );
+
+            CREATE TABLE IF NOT EXISTS blackbird_media_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('post', 'rollback')),
+                body TEXT NOT NULL,
+                source_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_media_posts_feed
+            ON blackbird_media_posts(guild_id, kind, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_blackbird_media_posts_author
+            ON blackbird_media_posts(guild_id, author_id, id DESC);
 
             CREATE TABLE IF NOT EXISTS atlas_projects (
                 code TEXT PRIMARY KEY,
@@ -3159,6 +3225,18 @@ def init_db() -> None:
         )
         _add_column_if_missing(con, "global_bans", "source_user_id", "INTEGER")
         _add_column_if_missing(con, "desktop_installations", "device_hash", "TEXT")
+        _add_column_if_missing(con, "blackbird_communicate_messages", "client_nonce", "TEXT")
+        _add_column_if_missing(con, "blackbird_communicate_messages", "client_payload_hash", "TEXT")
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_blackbird_communicate_nonce "
+            "ON blackbird_communicate_messages(guild_id, sender_id, client_nonce)"
+        )
+        _add_column_if_missing(con, "blackbird_media_posts", "client_nonce", "TEXT")
+        _add_column_if_missing(con, "blackbird_media_posts", "client_payload_hash", "TEXT")
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_blackbird_media_nonce "
+            "ON blackbird_media_posts(guild_id, author_id, client_nonce)"
+        )
         _add_column_if_missing(
             con,
             "tvrs_consensus_sessions",
