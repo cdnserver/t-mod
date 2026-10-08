@@ -385,6 +385,7 @@ class AdmissionQuestionTests(unittest.TestCase):
             labels,
             ["Подать заявку", "Создать аккаунт", "Вступить в Discord"],
         )
+        self.assertTrue(view.children[1].url.endswith("/register?next=/admission"))
 
 
 class AdmissionWebTests(unittest.IsolatedAsyncioTestCase):

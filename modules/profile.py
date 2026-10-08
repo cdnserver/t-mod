@@ -17,6 +17,7 @@ from discord.ext import commands
 
 from persistence import profile_context as storage
 from persistence import web_auth_repository as web_auth_storage
+from persistence import account_registration_repository as registration_storage
 from persistence import voice_control_context as voice_storage
 from modules.technical_log import log_technical_event
 from modules.control_center_runtime import resolve_registered_channel
@@ -2607,6 +2608,46 @@ def setup_profile(
             return await guild.fetch_member(int(user_id))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return None
+
+    @bot.tree.command(name="master", description="Подтвердить Discord в мастере создания аккаунта Товарищества")
+    @app_commands.describe(code="Код с вашей страницы создания аккаунта")
+    @app_commands.checks.cooldown(5, 60, key=lambda interaction: interaction.user.id)
+    async def registration_master(interaction: discord.Interaction, code: str) -> None:
+        web_guild = str(os.getenv("CONSENSUS_WEB_GUILD_ID", "")).strip()
+        selected_guild_id = int(web_guild) if web_guild.isdigit() else account_guild_id(interaction)
+        if selected_guild_id is None:
+            await interaction.response.send_message("Система подключается. Повторите позже.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        from modules.account_registration_web import verified_discord_member
+        from aiohttp import web
+        try:
+            await verified_discord_member(bot, selected_guild_id, int(interaction.user.id))
+        except (ValueError, web.HTTPException):
+            await interaction.edit_original_response(content="Сначала вступите в Discord Товарищества. Если вы уже участник, повторите через минуту.")
+            return
+
+        class ConfirmPairing(discord.ui.View):
+            @discord.ui.button(label="Это мой мастер — подтвердить", style=discord.ButtonStyle.primary)
+            async def confirm(self, click: discord.Interaction, button: discord.ui.Button) -> None:
+                if click.user.id != interaction.user.id:
+                    await click.response.send_message("Это подтверждение предназначено другому пользователю.", ephemeral=True)
+                    return
+                await click.response.defer(ephemeral=True)
+                try:
+                    await verified_discord_member(bot, selected_guild_id, int(click.user.id))
+                    await asyncio.to_thread(registration_storage.claim_registration, selected_guild_id, int(click.user.id), code, str(click.user.display_name))
+                except ValueError as exc:
+                    messages = {"registration_account_exists": "У вас уже есть аккаунт. Используйте /account или войдите на сайте.",
+                                "registration_blocked": "Создание аккаунта недоступно. Обратитесь к администрации."}
+                    await click.edit_original_response(content=messages.get(str(exc), "Код истёк, уже использован или не подошёл. Получите новый на сайте."), view=None)
+                except web.HTTPException:
+                    await click.edit_original_response(content="Discord временно недоступен. Повторите команду позже.", view=None)
+                else:
+                    await click.edit_original_response(content="Discord подтверждён. Вернитесь на свою страницу мастера — она продолжит настройку автоматически. Пароль вводите только на сайте, не в чате.", view=None)
+                self.stop()
+
+        await interaction.edit_original_response(content="**Вы сами открыли мастер на сайте Технологий Товарищества?**\nПодтверждение разрешит этой странице создать аккаунт, связанный с вашим Discord. Не подтверждайте коды из чужих сообщений, даже от знакомых. Если код получен на вашей странице, нажмите кнопку ниже.", view=ConfirmPairing(timeout=180))
 
     @bot.tree.command(name="account", description="Открыть единый аккаунт и персонажей T-Mod")
     @app_commands.describe(user="Участник, чей аккаунт нужно посмотреть")

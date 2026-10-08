@@ -7,7 +7,7 @@
     busy: false, application: null, viewer: null, alreadyMember: false,
     canReview: false, pendingReviews: [],
   };
-  const surfaces = ["account-gate", "senator-card", "route-choice", "status-card", "review-panel", "form-shell"];
+  const surfaces = ["loading-card", "account-gate", "senator-card", "route-choice", "status-card", "review-panel", "form-shell"];
   const eventCopy = {
     community_submitted: "Заявка передана Совету председателей",
     leadership_approved: "Совет председателей одобрил вступление",
@@ -36,7 +36,7 @@
   }
   async function api(path, options = {}) {
     const response = await fetch(path, {
-      cache: "no-store", credentials: "same-origin", ...options,
+      cache: "no-store", credentials: "same-origin", signal: AbortSignal.timeout(15000), ...options,
       headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json", "X-CSRF-Token": state.csrf } : {}), ...(options.headers || {}) },
     });
     let payload = {}; try { payload = await response.json(); } catch { payload = {}; }
@@ -48,6 +48,8 @@
     const authenticated = Boolean(payload.authenticated && payload.viewer);
     state.viewer = authenticated ? payload.viewer : null;
     show("top-login", !authenticated); show("account-chip", authenticated);
+    byId("path-account-action").href = authenticated ? "#application" : "/register?next=/admission";
+    byId("path-account-action").textContent = authenticated ? "Аккаунт подключён ✓" : "Создать аккаунт ↗";
     if (authenticated) byId("account-name").textContent = payload.viewer.name || "T-Mod Account";
     state.canReview = Boolean(payload.can_review);
     state.pendingReviews = payload.pending_reviews || [];
@@ -73,11 +75,13 @@
       byId("gate-title").innerHTML = "Завершите игровую<br>идентичность";
       byId("gate-copy").textContent = "Вы уже авторизованы. Добавьте в /account хотя бы одного персонажа — повторно входить не нужно.";
       byId("discord-account-action").textContent = "Добавить персонажа в Discord";
+      byId("discord-account-action").href = "https://discord.com/users/1500495112638038246";
     } else {
       byId("gate-eyebrow").textContent = "ШАГ НОЛЬ · ИДЕНТИЧНОСТЬ";
-      byId("gate-title").innerHTML = "Сначала — ваш<br>T-Mod аккаунт";
+      byId("gate-title").innerHTML = "Начнём с вашего<br>аккаунта.";
       byId("gate-copy").textContent = "Он связывает персонажей, заявку, решения председателей, ОВР и уведомления лично с вами.";
-      byId("discord-account-action").textContent = "Открыть T-Mod в Discord";
+      byId("discord-account-action").textContent = "Создать аккаунт →";
+      byId("discord-account-action").href = "/register?next=/admission";
     }
     selectSurface("account-gate");
   }
@@ -116,6 +120,9 @@
     if (!['community', 'senate'].includes(kind)) return;
     if (kind === "community" && state.alreadyMember) return toast("Вы уже состоите в Товариществе. Доступна сенатская траектория.", "error");
     state.kind = kind;
+    // An approved community application must not pull an in-progress Senate
+    // upgrade back into its status card on the next background refresh.
+    state.application = null;
     const community = kind === "community";
     show("test-step-button", !community); show("forum-field", !community);
     byId("forum-url").required = !community;
@@ -210,6 +217,8 @@
   }
 
   function renderReviewPanel() {
+    const notes = new Map([...byId("review-list").querySelectorAll(".chair-application")]
+      .map((card) => [String(card.dataset.id), card.querySelector("textarea").value]));
     byId("review-count").textContent = String(state.pendingReviews.length).padStart(2, "0");
     const list = byId("review-list"); list.replaceChildren();
     if (!state.pendingReviews.length) {
@@ -220,6 +229,7 @@
       const people = (application.characters || []).map((item) => `${escapeHtml(item.nickname)} · #${escapeHtml(item.static_id)}`).join("<br>");
       card.innerHTML = `<header><span>TVR-${String(application.id).padStart(4, "0")}</span><time>${escapeHtml(formatMoment(application.created_at))}</time></header><h3>${escapeHtml(application.user_display)}</h3><p class="candidate-characters">${people}</p><dl><div><dt>Мотивация</dt><dd>${escapeHtml(application.motivation || "—")}</dd></div><div><dt>Вклад</dt><dd>${escapeHtml(application.contribution || "—")}</dd></div><div><dt>Доступность</dt><dd>${escapeHtml(application.availability || "—")}</dd></div></dl><label><span>Мотивировка решения</span><textarea maxlength="5000" placeholder="Не менее пяти символов"></textarea></label><footer><button type="button" data-action="deny">Отклонить</button><button type="button" data-action="approve">Принять в Товарищество</button></footer>`;
       card.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => decideApplication(card, button.dataset.action)));
+      card.querySelector("textarea").value = notes.get(String(application.id)) || "";
       list.append(card);
     });
     selectSurface("review-panel");
@@ -237,16 +247,29 @@
   }
 
   async function bootstrap({ silent = false } = {}) {
+    if (!silent) {
+      selectSurface("loading-card");
+      show("retry-bootstrap", false);
+      byId("loading-card").querySelector("strong").textContent = "Открываем вашу личную заявку";
+      byId("loading-card").querySelector("p").textContent = "Проверяем аккаунт и историю заявления";
+      byId("loading-card").querySelector(".loader").hidden = false;
+    }
     try {
       const payload = await api("/api/admission"); state.csrf = payload.csrf_token || ""; state.questions = payload.questions || []; state.characters = payload.characters || []; state.alreadyMember = Boolean(payload.already_member);
       renderIdentity(payload); if (!silent) show("loading-card", false);
       if (!payload.authenticated) return renderAccountGate(payload);
       if (state.canReview && location.hash === "#review") return renderReviewPanel();
-      if (payload.account_required) return renderAccountGate(payload);
       if (payload.already_senator) return selectSurface("senator-card");
       if (payload.application) return renderStatus(payload.application, payload.events || []);
+      if (payload.account_required) return renderAccountGate(payload);
       if (!silent) selectSurface("route-choice");
-    } catch (error) { if (!silent) { show("loading-card", false); show("account-gate", true); } toast(error.message, "error"); }
+    } catch (error) { if (!silent) {
+      selectSurface("loading-card");
+      byId("loading-card").querySelector("strong").textContent = "Не удалось загрузить личную заявку";
+      byId("loading-card").querySelector("p").textContent = "Это не означает, что аккаунт отсутствует. Повторите подключение.";
+      byId("loading-card").querySelector(".loader").hidden = true;
+      show("retry-bootstrap", true);
+    } toast(error.name === "TimeoutError" ? "Сервер отвечает дольше обычного. Повторите подключение." : error.message, "error"); }
   }
 
   document.querySelectorAll("[data-kind]").forEach((button) => button.addEventListener("click", () => {
@@ -269,5 +292,6 @@
     finally { state.busy = false; byId("submit-form").disabled = false; byId("submit-form").textContent = idleLabel; }
   });
   addEventListener("hashchange", () => { if (location.hash === "#review" && state.canReview) renderReviewPanel(); });
-  bootstrap(); setInterval(() => { if ((state.application || location.hash === "#review") && document.visibilityState === "visible" && !state.busy) bootstrap({ silent: true }); }, 30000);
+  byId("retry-bootstrap").addEventListener("click", () => bootstrap());
+  bootstrap(); setInterval(() => { if ((state.application || location.hash === "#review") && document.visibilityState === "visible" && !state.busy && !byId("review-list").contains(document.activeElement)) bootstrap({ silent: true }); }, 30000);
 })();

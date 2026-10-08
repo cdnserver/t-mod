@@ -298,6 +298,21 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_web_credentials_login
             ON web_credentials(guild_id, login_key);
 
+            CREATE TABLE IF NOT EXISTS account_registrations (
+                browser_hash TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL UNIQUE,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER,
+                display_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'waiting',
+                login_display TEXT NOT NULL DEFAULT '',
+                expires_at INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_account_registrations_expiry
+            ON account_registrations(expires_at);
+
             CREATE TABLE IF NOT EXISTS account_security (
                 guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
                 credential_kind TEXT NOT NULL DEFAULT 'pin',

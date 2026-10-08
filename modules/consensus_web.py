@@ -64,6 +64,7 @@ from modules.atlas_finance_admin_web import register_atlas_finance_admin_routes
 from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
+from modules.account_registration_web import register_account_registration_routes
 from modules.global_log_runtime import emit_global_event, global_log_web_middleware, runtime_health as global_log_runtime_health
 from modules.global_log_web import register_global_log_web_routes
 from modules.legal_web import register_legal_web_routes
@@ -1069,7 +1070,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
         or (path.startswith("/api/global-log") and path != "/api/global-log/client")
     ):
         target_url = GLOBAL_LOG_WEB_PUBLIC_URL
-    elif path in {"/login", "/auth/ticket"}:
+    elif path in {"/login", "/register", "/auth/ticket"}:
         if next_path == "/admin":
             target_url = REACTOR_WEB_PUBLIC_URL
         elif next_path in {"/reactor", "/games"}:
@@ -1449,6 +1450,15 @@ def create_consensus_web_app(
             "source-serif-latin.woff2",
             "login.css",
             "login.js",
+            "register.css",
+            "register.js",
+            "blackbird-public.css",
+            "ibm-plex-sans-latin-400-normal.woff2",
+            "ibm-plex-sans-latin-500-normal.woff2",
+            "ibm-plex-sans-latin-600-normal.woff2",
+            "ibm-plex-sans-cyrillic-400-normal.woff2",
+            "ibm-plex-sans-cyrillic-500-normal.woff2",
+            "ibm-plex-sans-cyrillic-600-normal.woff2",
             "tasks.css",
             "tasks.js",
             "banned.css",
@@ -2468,6 +2478,7 @@ def create_consensus_web_app(
         asset_dir=Path(__file__).resolve().parents[1] / "web" / "sgl",
         authenticate=authenticated_request,
     )
+    register_account_registration_routes(app, bot, guild_id=int(guild_id), asset_dir=_ASSET_DIR)
     register_admission_web_routes(
         app,
         bot,

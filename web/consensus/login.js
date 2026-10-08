@@ -37,6 +37,7 @@ const errors = {
 form.action = `/auth/login?next=${encodeURIComponent(next)}`;
 telegramForm.action = `/auth/telegram?next=${encodeURIComponent(next)}`;
 context.textContent = destinations[next] || "После входа сервис определит доступные вам возможности.";
+document.querySelector("#create-account-link").href = `/register?next=${encodeURIComponent(next)}`;
 if (location.hash === "#telegram-login") {
   telegramLogin.open = true;
   requestAnimationFrame(() => document.querySelector("#telegram-login-code").focus());
