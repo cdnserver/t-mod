@@ -16,7 +16,9 @@ browser echo cancellation cannot guarantee perfect barge-in on loudspeakers.
 **This is not provider-side realtime STT.** OpenRouter currently accepts complete
 audio clips for ElevenLabs Scribe v2, not its realtime WebSocket API. The client
 socket stays open, while each finished utterance is transcribed by OpenRouter.
-Atlas uses its existing scoped retrieval, models and conversation history. Its
+Atlas uses its existing scoped retrieval, models and conversation history in its
+low-latency field path (bounded recent history, low reasoning, legal retrieval
+rescue retained). Voice does not invoke standard-mode planning for everyday turns. Its
 voice prompt requests short, conversational answers without inventing legal norms.
 Complete phrases are synthesized as the answer is generated and played in order.
 

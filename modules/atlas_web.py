@@ -4037,7 +4037,7 @@ def register_atlas_web_routes(
         answer = await atlas_answer_stream(organization_id, question, on_delta=delta,
             on_progress=lambda event: emit({"type":"stage", "stage":"thinking", "label":"Сверяю источники"}),
             server_code=server, faction_code=faction, history=history, memory=[],
-            response_mode="balanced", model_id="atlas-tvr-a", user_profile=profile,
+            response_mode="balanced", model_id="atlas-tvr-a", user_profile=profile, latency_mode="overlay",
             conversation_mode="voice", conversation_name=dashboard.get("call_agent_name", "Atlas"))
         # Revalidate before recording/returning results, including global bans.
         await principal(request)

@@ -33,6 +33,7 @@ class AtlasVoiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 histories = []
                 async def answer(organization, question, **kwargs):
                     self.assertEqual(kwargs["conversation_mode"],"voice")
+                    self.assertEqual(kwargs["latency_mode"],"overlay")
                     self.assertEqual(kwargs["conversation_name"],"Алиса")
                     self.assertEqual(kwargs["server_code"],"phoenix-15")
                     histories.append(kwargs["history"])
