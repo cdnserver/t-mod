@@ -161,14 +161,24 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "tmod_runtime_temporarily_unavailable")
 
     async def test_voice_socket_proxies_control_and_binary_without_url_credentials(self) -> None:
-        ws = await self.gateway.ws_connect("/api/atlas/call/ws")
-        await ws.send_json({"call_token":"ephemeral"})
-        self.assertEqual((await ws.receive_json())["call_token"],"ephemeral")
-        await ws.send_bytes(b"audio")
-        self.assertEqual((await ws.receive()).data,b"audio")
-        await ws.close()
-        await asyncio.sleep(.02)
-        events = list(self.gateway.server.app[web_gateway.EDGE_QUEUE])
+        events = []
+        completed = asyncio.Event()
+        enqueue = web_gateway._queue_edge
+        def observe(app, event):
+            events.append(event)
+            enqueue(app, event)
+            if event["event_type"] == "gateway_voice_session":
+                completed.set()
+        # Socket close completes before the proxy's cleanup event. Wait for
+        # that event, not an arbitrary 20 ms window on a busy build machine.
+        with patch.object(web_gateway, "_queue_edge", side_effect=observe):
+            ws = await self.gateway.ws_connect("/api/atlas/call/ws")
+            await ws.send_json({"call_token":"ephemeral"})
+            self.assertEqual((await ws.receive_json())["call_token"],"ephemeral")
+            await ws.send_bytes(b"audio")
+            self.assertEqual((await ws.receive()).data,b"audio")
+            await ws.close()
+            await asyncio.wait_for(completed.wait(), 3)
         self.assertTrue(any(event["event_type"]=="gateway_voice_session" for event in events))
         self.assertNotIn("ephemeral",str(events))
 
