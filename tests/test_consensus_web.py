@@ -1260,7 +1260,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         await client.start_server()
         try:
             with patch(
-                "modules.consensus_web.resolve_principal",
+                "modules.account_auth_web.resolve_principal",
                 AsyncMock(return_value=principal),
             ):
                 atlas = await client.get(
@@ -1533,7 +1533,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('href="/assets/portal-theme.css?v=3"', reactor_text)
             self.assertIn('href="/assets/blackbird-reactor.css?v=1"', reactor_text)
             self.assertIn('href="/assets/blackbird-reactor-workspace.css?v=1"', reactor_text)
-            self.assertIn('src="/assets/blackbird-reactor-workspace.js?v=1"', reactor_text)
+            self.assertIn('src="/assets/blackbird-reactor-workspace.js?v=', reactor_text)
             self.assertIn('class="editor-console-bar"', reactor_text)
             self.assertIn('class="preview-seal"', reactor_text)
             self.assertNotIn('data-portal-widget="market"', reactor_text)

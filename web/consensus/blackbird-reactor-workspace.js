@@ -24,7 +24,7 @@
   if (!frame || !sidebar || !main || !nav || !hero || !overview || !canvas || !viewHeader) return;
 
   document.documentElement.classList.add("blackbird-reactor", "bb-workspace-ready");
-  document.title = "Личный Реактор — Blackbird";
+  document.title = "Личный Реактор — Технологии Товарищества";
   frame.classList.add("bb-reactor-frame");
   main.classList.add("bb-reactor-main");
   sidebar.hidden = true;

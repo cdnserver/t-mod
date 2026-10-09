@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from collections import defaultdict, deque
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,8 @@ import storage
 from modules.consensus_web import _canonical_surface_location, create_consensus_web_app
 from modules.consensus_web_auth import ConsensusWebPrincipal, account_cookie_domain, create_session_token, _verify
 from modules.account_removal_web import register_account_removal_routes
+from modules.account_auth_web import register_account_auth_routes
+from modules.account_portal_web import register_account_portal_routes
 from persistence import account_removal_repository as removal
 from persistence import account_security_repository as security
 from persistence import web_auth_repository as credentials
@@ -91,6 +94,28 @@ class AccountPortalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual((await response.json())['destination'], '/account-home')
             self.assertEqual((await client.get('/api/account/overview')).status, 200)
+        finally:
+            await client.close()
+
+    async def test_account_routes_work_without_consensus_controller_and_logout_revokes_session(self):
+        app = web.Application()
+        assets = Path(__file__).resolve().parents[1] / 'web' / 'consensus'
+        register_account_auth_routes(app, self.bot, guild_id=77, asset_dir=assets,
+            request_remote=lambda request: request.remote or 'test',
+            login_failures=defaultdict(lambda: deque(maxlen=30)))
+        register_account_portal_routes(app, self.bot, guild_id=77, asset_dir=assets)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.post('/auth/login?client=browser',
+                data={'login': 'sample.account', 'pin': '12345678'},
+                headers={'Origin': str(client.make_url('/')).rstrip('/')})
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())['destination'], '/account-home')
+            self.assertEqual((await client.get('/api/account/overview')).status, 200)
+            response = await client.get('/auth/logout', allow_redirects=False, headers={'Host': 'account.tvr.lat'})
+            self.assertEqual(response.headers['Location'], '/login?next=/account-home')
+            self.assertEqual((await client.get('/api/account/overview')).status, 401)
         finally:
             await client.close()
 
