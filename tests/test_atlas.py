@@ -1306,6 +1306,21 @@ class AtlasAdminTokenWebTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_identity_skips_retrieval_and_uses_selected_name(self) -> None:
+        self.assertEqual(_atlas_task_profile("Как тебя зовут?", mode="balanced").intent, "social")
+        self.assertNotEqual(_atlas_task_profile("Как тебя зовут и как подать жалобу?", mode="balanced").intent, "social")
+        config = AtlasAIConfig(openrouter_key="test", openrouter_url="https://openrouter.test/chat",
+            chat_model="test/model", embedding_model="test/embed", qdrant_url="http://qdrant",
+            qdrant_key="", collection="atlas", referer="", title="Atlas")
+        with patch("modules.atlas_ai.atlas_ai_config", return_value=config), \
+             patch("modules.atlas_ai.atlas_search", AsyncMock()) as search, \
+             patch("modules.atlas_ai._json_request", AsyncMock()) as provider:
+            result = await atlas_answer_stream(77, "Как тебя зовут?", on_delta=AsyncMock(),
+                conversation_mode="voice", conversation_name="Алиса", latency_mode="overlay")
+        self.assertEqual(result["answer"], "Я Алиса, голосовой агент Atlas.")
+        search.assert_not_awaited()
+        provider.assert_not_awaited()
+
     def test_voice_ic_ooc_comparison_is_a_glossary_not_an_incident(self) -> None:
         for question in ("Объясни коротко разницу IC и OOC.", "Чем отличаются ИС и ООС?"):
             with self.subTest(question=question):

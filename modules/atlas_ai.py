@@ -2839,6 +2839,10 @@ _ATLAS_SOCIAL_RE = re.compile(
     r"спасибо|благодарю|до\s+свидания|пока)(?:[\s!?.🙂👋]*)$",
     re.IGNORECASE,
 )
+_ATLAS_IDENTITY_RE = re.compile(
+    r"(?:как\s+(?:тебя|вас)\s+(?:зовут|называть)|какое\s+(?:тво[её]|ваше)\s+имя)[?!.\s]*",
+    re.IGNORECASE,
+)
 _ATLAS_SOCIAL_WITH_NAME_RE = re.compile(
     r"^\s*(?:привет(?:ик)?|здравствуй(?:те)?|салют|хай|hello|здорово|"
     r"доброе\s+(?:утро|день|вечер)|добрый\s+(?:день|вечер))"
@@ -2952,6 +2956,7 @@ def _atlas_task_profile(
     )
     if (
         _ATLAS_SOCIAL_RE.fullmatch(clean)
+        or _ATLAS_IDENTITY_RE.fullmatch(clean)
         or _ATLAS_SOCIAL_WITH_NAME_RE.fullmatch(clean)
         or extended_social
     ):
@@ -5413,6 +5418,8 @@ def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
         return ""
     messages = list(prepared.payload.get("messages") or [])
     content = str(messages[-1].get("content") or "").casefold() if messages else ""
+    if _ATLAS_IDENTITY_RE.fullmatch(content.strip()):
+        return "Я Atlas, ИИ-помощник. Чем помочь?"
     if re.search(r"\b(?:спасибо|благодарю)\b", content):
         return "Пожалуйста!"
     if re.search(r"\b(?:до\s+свидания|пока)\b", content):
@@ -6250,7 +6257,7 @@ async def atlas_answer_stream(
         payload["messages"] = [*messages[:-1], voice_instruction, messages[-1]]
         payload["max_tokens"] = min(420, int(payload.get("max_tokens") or 420))
         prepared = replace(prepared, payload=payload)
-        if re.fullmatch(r"(?:как\s+(?:тебя|вас)\s+(?:зовут|называть)|какое\s+(?:тво[её]|ваше)\s+имя)[?!.\s]*", question.strip(), re.IGNORECASE):
+        if _ATLAS_IDENTITY_RE.fullmatch(question.strip()):
             identity = f"Я {alias}, голосовой агент Atlas."
             await on_delta(identity)
             return _atlas_answer_result(replace(prepared, model_route=_local_social_route(), fallback_model_route=None), identity)
