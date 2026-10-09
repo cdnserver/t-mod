@@ -29,6 +29,8 @@ from modules.atlas_ai import (
     _chunks,
     _compact_overlay_answer,
     _deterministic_exact_lookup,
+    _deterministic_term_reply,
+    _is_core_term_definition,
     _grounded_refusal_fallback,
     _recent_user_dialog_context,
     _response_delivery_contract,
@@ -1304,6 +1306,19 @@ class AtlasAdminTokenWebTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AtlasAITests(unittest.IsolatedAsyncioTestCase):
+    def test_voice_ic_ooc_comparison_is_a_glossary_not_an_incident(self) -> None:
+        for question in ("Объясни коротко разницу IC и OOC.", "Чем отличаются ИС и ООС?"):
+            with self.subTest(question=question):
+                self.assertTrue(_is_core_term_definition(question))
+                prepared = SimpleNamespace(intent="procedural_advice", sources=[],
+                    payload={"messages": [{"role":"user", "content":question}]})
+                answer = _deterministic_term_reply(prepared)
+                self.assertIn("IC —", answer)
+                self.assertIn("OOC —", answer)
+                self.assertNotIn("Уточни", answer)
+                self.assertLessEqual(len(answer.split()), 65)
+        self.assertFalse(_is_core_term_definition("Меня задержали в IC и наказали по OOC. Что делать?"))
+
     @staticmethod
     def _project_rules_source() -> dict[str, object]:
         return {

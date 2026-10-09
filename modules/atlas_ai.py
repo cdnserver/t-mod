@@ -5424,6 +5424,14 @@ def _deterministic_social_reply(prepared: _AtlasAnswerRequest) -> str:
 
 def _is_core_term_definition(question: str) -> bool:
     clean = " ".join(str(question or "").split())
+    # A comparison of the two role-play domains is a glossary question, not
+    # an incident that needs legal evidence or an account of what happened.
+    if (
+        re.search(r"(?<!\w)(?:ic|ис)(?!\w)", clean, re.IGNORECASE)
+        and re.search(r"(?<!\w)(?:ooc|оос)(?!\w)", clean, re.IGNORECASE)
+        and re.search(r"\b(?:разниц\w*|отлич\w*|сравни\w*)\b", clean, re.IGNORECASE)
+    ):
+        return True
     if not re.search(
         r"\b(?:что\s+такое|что\s+значит|что\s+означает|расшифруй|расшифровка)\b",
         clean,
@@ -5442,7 +5450,7 @@ def _is_core_term_definition(question: str) -> bool:
 def _deterministic_term_reply(prepared: _AtlasAnswerRequest) -> str:
     """Give compact, stable definitions for the core Atlas abbreviations."""
 
-    if prepared.intent not in {"general", "legal_analysis"}:
+    if prepared.intent not in {"general", "legal_analysis", "procedural_advice"}:
         return ""
     messages = list(prepared.payload.get("messages") or [])
     last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
@@ -5460,6 +5468,16 @@ def _deterministic_term_reply(prepared: _AtlasAnswerRequest) -> str:
                 return f" [Источник {index}, {title}]"
         return ""
 
+    if (
+        re.search(r"(?<!\w)(?:ic|ис)(?!\w)", lowered)
+        and re.search(r"(?<!\w)(?:ooc|оос)(?!\w)", lowered)
+    ):
+        return (
+            "IC — события, действия и речь персонажа внутри игрового мира. "
+            "OOC — действия и общение игрока вне роли, включая взаимодействие с администрацией. "
+            "Законы штата относятся к IC, правила сервера — к OOC; не смешивайте знания игрока и персонажа."
+            + source_marker("основные правила проекта", "правила проекта")
+        )
     if re.search(r"(?<!\w)(?:ук|уголовн\w*\s+кодекс)(?!\w)", lowered):
         return (
             "УК — Уголовный кодекс штата San Andreas: в нём определены составы преступлений, "
