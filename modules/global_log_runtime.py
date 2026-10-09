@@ -538,7 +538,7 @@ def activity_event(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _request_payload(request: web.Request) -> Any:
-    if request.path.startswith(("/api/account/security", "/api/account-registration")) or request.path == "/auth/login":
+    if request.path.startswith(("/api/account/security", "/api/account-registration")) or request.path in {"/auth/login", "/api/atlas/call/ticket"}:
         return {"omitted": "authentication_secrets"}
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return None
@@ -566,7 +566,7 @@ async def _request_payload(request: web.Request) -> Any:
 
 
 def _response_payload(response: web.StreamResponse, path: str) -> Any:
-    if path.startswith(("/api/account/security", "/api/account-registration")) or path == "/auth/login":
+    if path.startswith(("/api/account/security", "/api/account-registration")) or path in {"/auth/login", "/api/atlas/call/ticket"}:
         return {"omitted": "authentication_secrets"}
     if path.startswith("/api/global-log/events") or path.startswith("/api/global-log/export"):
         return {"omitted": "global_log_result"}

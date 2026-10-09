@@ -22,6 +22,7 @@ def wav() -> bytes:
 class CallSocketTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.revoked = False
+        self.preload_body = False
         self.selected = SimpleNamespace(user_id=72, csrf_token="secret")
         async def authorize(request):
             if self.revoked or request.headers.get("X-Test-Account") != "yes":
@@ -36,7 +37,12 @@ class CallSocketTests(unittest.IsolatedAsyncioTestCase):
             await speak("Я рядом.")
             return 123
         self.brain = AsyncMock(side_effect=brain)
-        app = web.Application()
+        @web.middleware
+        async def observability(request, handler):
+            if self.preload_body:
+                await request.read()
+            return await handler(request)
+        app = web.Application(middlewares=[observability])
         register_call_socket(app, authorize=authorize, dashboard=AsyncMock(return_value={"organization":{"id":7}}),
             brain=self.brain, meter=self.meter, engine=self.engine)
         self.client = TestClient(TestServer(app)); await self.client.start_server()
@@ -88,6 +94,27 @@ class CallSocketTests(unittest.IsolatedAsyncioTestCase):
         await second.send_json({"call_token":token})
         self.assertEqual((await second.receive(timeout=2)).type, WSMsgType.CLOSE)
         await ws.close()
+
+    async def test_name_survives_pre_read_request_and_cached_size_remains_bounded(self):
+        self.preload_body = True
+        headers = {"X-Test-Account":"yes", "X-CSRF-Token":"secret"}
+        invalid = await self.client.post("/api/atlas/call/ticket", headers=headers, json={"agent_name":"<bad>"})
+        self.assertEqual(invalid.status, 400)
+        oversized = await self.client.post("/api/atlas/call/ticket", headers=headers, data=b" "*513)
+        self.assertEqual(oversized.status, 400)
+        response = await self.client.post("/api/atlas/call/ticket", headers=headers, json={"agent_name":"Алиса"})
+        self.assertEqual(response.status, 200)
+        ws = await self.client.ws_connect("/api/atlas/call/ws")
+        await ws.send_json(await response.json())
+        self.assertEqual((await ws.receive_json(timeout=2))["agent_name"], "Алиса")
+        await ws.close()
+
+    async def test_ticket_credentials_are_omitted_from_observability_payloads(self):
+        from modules.global_log_runtime import _request_payload, _response_payload
+        from aiohttp.test_utils import make_mocked_request
+        request = make_mocked_request("POST", "/api/atlas/call/ticket")
+        self.assertEqual(await _request_payload(request), {"omitted":"authentication_secrets"})
+        self.assertEqual(_response_payload(web.json_response({"call_token":"private"}), request.path), {"omitted":"authentication_secrets"})
 
     async def test_arbitrary_origin_is_rejected_before_upgrade(self):
         with self.assertRaises(WSServerHandshakeError) as error:

@@ -34,11 +34,21 @@ def register_call_socket(app: web.Application, *, authorize: Any, dashboard: Any
             raise web.HTTPServiceUnavailable(text="voice_not_configured")
         try:
             content = bytearray()
+            if request.content_length is not None and request.content_length > 512:
+                raise ValueError("call_options_size")
             async with asyncio.timeout(5):
-                async for chunk in request.content.iter_chunked(512):
-                    content.extend(chunk)
-                    if len(content) > 512:
-                        raise ValueError("call_options_size")
+                # Observability middleware may already have read and cached
+                # the body. Reading its exhausted stream would lose the name.
+                cached = getattr(request, "_read_bytes", None)
+                if cached is not None:
+                    content.extend(await request.read())
+                else:
+                    async for chunk in request.content.iter_chunked(512):
+                        content.extend(chunk)
+                        if len(content) > 512:
+                            raise ValueError("call_options_size")
+                if len(content) > 512:
+                    raise ValueError("call_options_size")
             options = json.loads(content) if content else {}
             if not isinstance(options, dict):
                 raise ValueError("call_options_invalid")
