@@ -6,6 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WindowsConsensusLauncherTests(unittest.TestCase):
+    def test_schema_is_prepared_with_writers_stopped_and_failure_is_fatal(self) -> None:
+        launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
+        stopped = launcher.index("docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-api tmod-worker")
+        prepared = launcher.index("docker compose up --no-deps --abort-on-container-exit --exit-code-from tmod-db-migrate tmod-db-migrate")
+        started = launcher.index("docker compose up -d --remove-orphans", prepared)
+        self.assertLess(stopped, prepared)
+        self.assertLess(prepared, started)
+        self.assertIn("exit /b 1", launcher[prepared:started])
+        self.assertIn("application writers were NOT started", launcher[prepared:started])
+
     def test_standard_launcher_configures_and_checks_consensus_panel(self) -> None:
         launcher = (ROOT / "run_windows.bat").read_text(encoding="utf-8")
 

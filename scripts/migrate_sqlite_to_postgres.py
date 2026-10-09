@@ -9,6 +9,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,20 @@ from persistence.postgres_compat import (  # noqa: E402
 
 
 MIGRATION_ID = "sqlite-to-postgresql-v1"
+
+
+def _acquire_migration_lock(pg: Any) -> None:
+    deadline = time.monotonic() + 60
+    while True:
+        with pg.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))", ("tmod-platform-migration-v1",))
+            acquired = bool(cursor.fetchone()[0])
+        pg.commit()
+        if acquired:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("postgres_migration_busy:another_migration_owns_lock")
+        time.sleep(1)
 
 
 def _allow_long_schema_upgrade() -> None:
@@ -164,17 +179,12 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
         # acquiring relation locks in a different order.  A session-scoped
         # advisory lock makes the complete migration a single-writer job.  It
         # is released automatically even if this process is killed.
-        with pg.cursor() as cursor:
-            cursor.execute("SET statement_timeout = 0")
-            cursor.execute(
-                "SELECT pg_advisory_lock(hashtext(%s))",
-                ("tmod-platform-migration-v1",),
-            )
-        pg.commit()
+        _acquire_migration_lock(pg)
         migration_lock_acquired = True
 
         # Build the current schema before importing legacy rows. A second init
         # after import applies data migrations still pending in SQLite.
+        print("[DB MIGRATE] Checking schema revision (unchanged schema skips DDL)", file=sys.stderr, flush=True)
         storage.init_db()
         with pg.cursor() as cursor:
             cursor.execute(
@@ -416,7 +426,9 @@ def migrate(sqlite_path: Path, *, force: bool = False) -> dict[str, Any]:
         # upgrades and validation. Otherwise a second migration job could
         # acquire the lock and enter its first init while this job is still in
         # its final init, recreating the same DDL deadlock at a later stage.
-        storage.init_db()
+        # Importing SQLite overwrites data/markers; explicitly rerun data
+        # upgrades even when the structural revision was already committed.
+        storage.init_db(force=True)
         with storage.connect_readonly() as connection:
             connection.execute("SELECT 1").fetchone()
         if os.getenv("TMOD_MIGRATION_BACKUP_REQUIRED", "true").lower() in {

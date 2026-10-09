@@ -14,6 +14,12 @@ from persistence.core import (
     utc_now_iso,
 )
 from persistence.activity_repository import set_meta
+from persistence.schema_revision import (
+    MARKER as POSTGRES_SCHEMA_MARKER,
+    postgres_schema_current,
+    schema_revision,
+    workspace_open_index_current,
+)
 
 def _backup_before_consensus_reset() -> Path | None:
     """Create a consistent SQLite backup before the one-time destructive reset."""
@@ -124,11 +130,16 @@ def _backup_before_consensus_result_dedup() -> Path | None:
         source.close()
 
 
-def init_db() -> None:
+def init_db(*, force: bool = False) -> None:
     with _db_lock:
         _backup_before_consensus_reset()
         _backup_before_consensus_result_dedup()
     with _db_lock, connect() as con:
+        revision = schema_revision() if _core.postgres_enabled() else ""
+        if revision and not force and postgres_schema_current(con, revision):
+            # No CREATE/ALTER/UPDATE or index locks on a normal runtime restart.
+            con.commit()
+            return
         if _core.postgres_enabled():
             # ``_db_lock`` only serializes callers inside one Python process.
             # During a split-runtime restart the migration job, Discord bot,
@@ -139,6 +150,12 @@ def init_db() -> None:
                 "SELECT pg_advisory_xact_lock(hashtext(?))",
                 ("tmod-schema-init-v1",),
             )
+            # Another process may have completed this exact revision while we
+            # were waiting for its transaction. Recheck under the schema lock.
+            if not force and postgres_schema_current(con, revision):
+                con.commit()
+                return
+            con.execute("SET LOCAL lock_timeout = '15s'")
         con.executescript(
             """
             CREATE TABLE IF NOT EXISTS meta (
@@ -3433,14 +3450,15 @@ def init_db() -> None:
                OR (status IN ('submitted', 'cancelled') AND moderation_status = 'draft')
             """
         )
-        con.execute("DROP INDEX IF EXISTS idx_tvrs_bill_workspaces_one_open")
-        con.execute(
-            """
-            CREATE UNIQUE INDEX idx_tvrs_bill_workspaces_one_open
-            ON tvrs_bill_workspaces(guild_id, author_id)
-            WHERE status IN ('draft', 'review')
-            """
-        )
+        if not workspace_open_index_current(con, postgres=_core.postgres_enabled()):
+            con.execute("DROP INDEX IF EXISTS idx_tvrs_bill_workspaces_one_open")
+            con.execute(
+                """
+                CREATE UNIQUE INDEX idx_tvrs_bill_workspaces_one_open
+                ON tvrs_bill_workspaces(guild_id, author_id)
+                WHERE status IN ('draft', 'review')
+                """
+            )
         con.executescript(
             """
             CREATE TABLE IF NOT EXISTS tvrs_bill_moderation_events (
@@ -4361,6 +4379,8 @@ def init_db() -> None:
         _apply_consensus_v2_reset_in_connection(con, _core.CONSENSUS_V2_RESET_ID)
         _apply_consensus_result_dedup_in_connection(con, _core.CONSENSUS_RESULT_DEDUP_ID)
         set_meta(con, "schema_version", "2026-07-20-control-delivery-v2")
+        if revision:
+            set_meta(con, POSTGRES_SCHEMA_MARKER, revision)
         con.commit()
 
 

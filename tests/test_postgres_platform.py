@@ -45,7 +45,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
         source = (ROOT / "scripts/migrate_sqlite_to_postgres.py").read_text(
             encoding="utf-8"
         )
-        lock = source.index("pg_advisory_lock")
+        lock = source.index("_acquire_migration_lock(pg)")
         initialization = source.index("storage.init_db()", lock)
         unlock = source.index("pg_advisory_unlock", initialization)
         self.assertLess(lock, initialization)
@@ -53,7 +53,7 @@ class PostgresCompatibilityTests(unittest.TestCase):
 
     def test_schema_initialization_is_serialized_across_runtime_processes(self) -> None:
         source = (ROOT / "persistence/schema.py").read_text(encoding="utf-8")
-        initialization = source.index("def init_db() -> None:")
+        initialization = source.index("def init_db(*, force: bool = False) -> None:")
         process_lock = source.index("pg_advisory_xact_lock", initialization)
         schema_start = source.index("con.executescript(", initialization)
         self.assertLess(process_lock, schema_start)

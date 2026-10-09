@@ -283,6 +283,20 @@ rem can otherwise leave a stopped bot carrying the previous Compose mounts and
 rem environment even after the repository was updated. Persistent data and the
 rem PostgreSQL volume are not removed.
 docker compose rm -s -f tmod-db-migrate tmod-discord-bot tmod-web tmod-api tmod-worker >nul 2>nul
+if errorlevel 1 (
+  call :fail "Could not stop application writers before schema preparation"
+  call :pause_if_interactive
+  exit /b 1
+)
+call :stage "DB" "Prepare schema before starting application writers"
+docker compose up --no-deps --abort-on-container-exit --exit-code-from tmod-db-migrate tmod-db-migrate
+if errorlevel 1 (
+  call :fail "Database schema preparation failed; application writers were NOT started"
+  docker compose logs --no-color --tail 60 tmod-db-migrate
+  call :postgres_diagnostics
+  call :pause_if_interactive
+  exit /b 1
+)
 docker compose up -d --remove-orphans
 if errorlevel 1 (
   call :fail "Docker startup failed"

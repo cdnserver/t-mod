@@ -7,11 +7,13 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,11 +22,17 @@ ROOT = Path(__file__).resolve().parents[1]
 def run() -> None:
     if os.getenv("TMOD_POSTGRES_INTEGRATION") != "1":
         raise RuntimeError("TMOD_POSTGRES_INTEGRATION=1 is required")
-    admin_url = os.environ["DATABASE_URL"]
+    sys.path.insert(0, str(ROOT))
+    from persistence.postgres_compat import postgres_settings
+
+    settings = postgres_settings()
+    admin_url = make_conninfo(**settings)
     database = f"tmod_ci_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(admin_url, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
-    target_url = admin_url.rsplit("/", 1)[0] + f"/{database}"
+    target_settings = conninfo_to_dict(admin_url)
+    target_settings["dbname"] = database
+    target_url = make_conninfo(**target_settings)
     try:
         with tempfile.TemporaryDirectory(prefix="tmod-sqlite-") as directory:
             sqlite_path = Path(directory) / "tmod.db"
@@ -69,6 +77,35 @@ def run() -> None:
                 env=postgres_env,
                 check=True,
             )
+            with psycopg.connect(target_url) as verification:
+                index_before = verification.execute(
+                    "SELECT to_regclass('public.idx_tvrs_bill_workspaces_one_open')::oid"
+                ).fetchone()[0]
+            subprocess.run(
+                [sys.executable, "-c", "import storage; storage.init_db(force=True)"],
+                cwd=ROOT, env=postgres_env, check=True, timeout=60,
+            )
+            with psycopg.connect(target_url) as verification:
+                index_after = verification.execute(
+                    "SELECT to_regclass('public.idx_tvrs_bill_workspaces_one_open')::oid"
+                ).fetchone()[0]
+                assert index_before is not None and index_before == index_after, (
+                    "Valid workspace index was unnecessarily rebuilt"
+                )
+            # An active writer blocks CREATE INDEX even with IF NOT EXISTS.
+            # Repeated startup/migration must use the committed revision gate.
+            with psycopg.connect(target_url) as writer:
+                writer.execute("LOCK TABLE market_items IN ROW EXCLUSIVE MODE")
+                started = time.monotonic()
+                subprocess.run(
+                    [sys.executable, "-c", "import storage; storage.init_db()"],
+                    cwd=ROOT, env=postgres_env, check=True, timeout=10,
+                )
+                subprocess.run(
+                    [sys.executable, "scripts/migrate_sqlite_to_postgres.py"],
+                    cwd=ROOT, env=postgres_env, check=True, timeout=10,
+                )
+                print(f"Repeated schema preparation under active writer: {time.monotonic() - started:.2f}s")
             smoke = (
                 "import sqlite3,storage; n=storage.utc_now_iso(); "
                 "c=storage.connect(); c.execute('BEGIN IMMEDIATE'); "
