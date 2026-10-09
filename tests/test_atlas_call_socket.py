@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from aiohttp import web, WSMsgType, WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 from modules.atlas_call_socket import register_call_socket
-from modules.atlas_voice import cost_microusd, pop_voice_phrase, validate_call_wav
+from modules.atlas_voice import call_agent_name, cost_microusd, pop_voice_phrase, validate_call_wav
 
 
 def wav() -> bytes:
@@ -68,6 +68,19 @@ class CallSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_ticket_requires_account_and_csrf(self):
         self.assertEqual((await self.client.post("/api/atlas/call/ticket")).status, 401)
         self.assertEqual((await self.client.post("/api/atlas/call/ticket",headers={"X-Test-Account":"yes"})).status,403)
+
+    async def test_custom_name_is_authenticated_validated_and_returned(self):
+        headers={"X-Test-Account":"yes","X-CSRF-Token":"secret"}
+        for name in ("<script>","","123","a"*41):
+            response=await self.client.post("/api/atlas/call/ticket",headers=headers,json={"agent_name":name})
+            self.assertEqual(response.status,400)
+        response=await self.client.post("/api/atlas/call/ticket",headers=headers,json={"agent_name":"  Алиса  "})
+        ws=await self.client.ws_connect("/api/atlas/call/ws")
+        await ws.send_json(await response.json())
+        self.assertEqual((await ws.receive_json(timeout=2))["agent_name"],"Алиса")
+        await ws.send_json({"type":"greet"});await self.until(ws,"complete")
+        self.assertIn("Алиса",self.engine.speak.call_args.args[0])
+        await ws.close()
 
     async def test_ticket_is_single_use(self):
         ws, token = await self.connect()
@@ -163,6 +176,7 @@ class CallSocketTests(unittest.IsolatedAsyncioTestCase):
         self.engine.transcribe.assert_not_awaited()
 
     def test_audio_and_cost_are_validated(self):
+        self.assertEqual(call_agent_name(" Алиса   Норд "),"Алиса Норд")
         self.assertEqual(validate_call_wav(wav()),1)
         self.assertEqual(cost_microusd("0.0000001"),1)
         for value in (None,"NaN","Infinity",-1,11):

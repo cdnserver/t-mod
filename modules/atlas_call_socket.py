@@ -12,7 +12,7 @@ from collections import OrderedDict, deque
 from typing import Any
 
 from aiohttp import web, WSMsgType
-from modules.atlas_voice import MAX_WAV, VOICES, validate_call_wav
+from modules.atlas_voice import MAX_WAV, VOICES, call_agent_name, validate_call_wav
 from modules.consensus_web_auth import csrf_matches
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,19 @@ def register_call_socket(app: web.Application, *, authorize: Any, dashboard: Any
             raise web.HTTPForbidden()
         if not engine.configured:
             raise web.HTTPServiceUnavailable(text="voice_not_configured")
+        try:
+            content = bytearray()
+            async with asyncio.timeout(5):
+                async for chunk in request.content.iter_chunked(512):
+                    content.extend(chunk)
+                    if len(content) > 512:
+                        raise ValueError("call_options_size")
+            options = json.loads(content) if content else {}
+            if not isinstance(options, dict):
+                raise ValueError("call_options_invalid")
+            name = call_agent_name(options.get("agent_name", "Atlas"))
+        except (ValueError, TypeError, TimeoutError):
+            raise web.HTTPBadRequest(text="voice_agent_name_invalid") from None
         if int(selected.user_id) in users:
             raise web.HTTPConflict(text="call_already_active")
         now = time.monotonic()
@@ -40,7 +53,7 @@ def register_call_socket(app: web.Application, *, authorize: Any, dashboard: Any
                 tickets.pop(key, None)
         while len(tickets) >= 256:
             tickets.popitem(last=False)
-        view = await dashboard(request, selected)
+        view = {**await dashboard(request, selected), "call_agent_name": name}
         token = secrets.token_urlsafe(32)
         tickets[token] = (now + 30, request, selected, view)
         return web.json_response({"call_token": token}, headers={"Cache-Control": "private, no-store"})
@@ -109,7 +122,8 @@ def register_call_socket(app: web.Application, *, authorize: Any, dashboard: Any
             await ws.send_json({"type": "ready", "callId": call_id,
                 "voices": [{"id": key, "label": label} for key, label in VOICES.items()],
                 "default_voice": voice, "max_call_seconds": 1800,
-                "transport": "websocket", "realtime_stt": False})
+                "transport": "websocket", "realtime_stt": False,
+                "agent_name": view["call_agent_name"]})
 
             async def monitor() -> None:
                 deadline = time.monotonic() + 1800
@@ -156,7 +170,7 @@ def register_call_socket(app: web.Application, *, authorize: Any, dashboard: Any
                     async with asyncio.timeout(120):
                         await authorize(auth_request)
                         if audio is None:
-                            await speak("Я на связи. Расскажи, чем могу помочь.", generation, chosen)
+                            await speak(f"Я на связи. Это {view['call_agent_name']}, твой голосовой агент Atlas. Чем могу помочь?", generation, chosen)
                         else:
                             await emit({"type": "stage", "stage": "thinking", "label": "Слушаю вашу реплику"}, generation)
                             result = await engine.transcribe(audio)

@@ -8,6 +8,7 @@ import os
 import re
 import time
 import wave
+import unicodedata
 from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
@@ -16,6 +17,17 @@ from modules.atlas_tts import atlas_tts_spoken_text
 
 VOICES = {"george": "Георг · глубокий", "sarah": "Сара · мягкий", "daniel": "Даниэль · спокойный", "river": "Ривер · нейтральный"}
 MAX_WAV = 960_044  # 30 seconds, mono PCM16 at 16 kHz + WAV header
+
+
+def call_agent_name(value: Any = "Atlas") -> str:
+    if not isinstance(value, str):
+        raise ValueError("voice_agent_name_invalid")
+    name = " ".join(unicodedata.normalize("NFKC", value).split())
+    if not 1 <= len(name) <= 40 or any(not (char.isalpha() or char.isdecimal() or char in " '-") for char in name):
+        raise ValueError("voice_agent_name_invalid")
+    if not any(char.isalpha() for char in name):
+        raise ValueError("voice_agent_name_invalid")
+    return name
 
 
 def pop_voice_phrase(pending: str) -> tuple[str, str] | None:

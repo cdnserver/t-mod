@@ -3253,8 +3253,9 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["model_provider"], "openrouter")
         self.assertEqual(voice_result["answer"], result["answer"])
         self.assertLessEqual(requests[-1]["max_tokens"], 420)
-        self.assertEqual(requests[-1]["messages"][-1]["role"], "system")
-        self.assertIn("голосовой разговор", requests[-1]["messages"][-1]["content"])
+        self.assertEqual(requests[-1]["messages"][-2]["role"], "system")
+        self.assertEqual(requests[-1]["messages"][-1]["role"], "user")
+        self.assertIn("голосовой разговор", requests[-1]["messages"][-2]["content"])
         self.assertNotIn("голосовой разговор", requests[0]["messages"][-1]["content"])
 
     async def test_source_backed_stream_never_leaks_provider_retrieval_refusal(self) -> None:

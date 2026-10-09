@@ -47,6 +47,11 @@ explicit MP3 output and no unsupported `speed` field. Existing explicit overlay
 provider settings are preserved; cached Grok voice preferences are mapped to the
 new default when ElevenLabs is selected.
 
+The call settings allow a custom agent name (1–40 characters, letters/numbers,
+spaces, hyphens and apostrophes). It is saved per account on the client, validated
+again on the server, used in the greeting and supplied to Atlas as a literal
+alias. It does not change the underlying model, its permissions or its AI identity.
+
 ## Authentication and limits
 
 1. Authenticated desktop GET `/api/atlas/call/config` checks Atlas access and balance.

@@ -33,6 +33,7 @@ class AtlasVoiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 histories = []
                 async def answer(organization, question, **kwargs):
                     self.assertEqual(kwargs["conversation_mode"],"voice")
+                    self.assertEqual(kwargs["conversation_name"],"Алиса")
                     self.assertEqual(kwargs["server_code"],"phoenix-15")
                     histories.append(kwargs["history"])
                     await kwargs["on_progress"]({"phase":"retrieval"})
@@ -52,7 +53,7 @@ class AtlasVoiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     async with TestClient(TestServer(app)) as client:
                         config=await client.get("/api/atlas/call/config")
                         self.assertEqual((await config.json())["transport"],"websocket")
-                        ticket=await client.post("/api/atlas/call/ticket",headers={"X-CSRF-Token":"voice-csrf"})
+                        ticket=await client.post("/api/atlas/call/ticket",headers={"X-CSRF-Token":"voice-csrf"},json={"agent_name":"Алиса"})
                         self.assertEqual(ticket.status,200)
                         ws=await client.ws_connect("/api/atlas/call/ws")
                         await ws.send_json(await ticket.json());await ws.receive_json(timeout=3)
