@@ -54,6 +54,8 @@ def state(guild: int, user: int) -> dict:
 
 def session_allowed(guild: int, user: int, payload: dict, *, require_mfa: bool = True) -> bool:
     selected = state(guild, user)
+    if selected["credential_kind"] == "deleted":
+        return False
     version = selected["security_version"]
     if version > 1 and payload.get("av") != version:
         return False

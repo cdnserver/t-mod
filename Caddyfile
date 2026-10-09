@@ -73,6 +73,16 @@ home.tvr.lat {
 	}
 }
 
+account.tvr.lat {
+	handle / {
+		rewrite * /account-home
+		import tmod_backend
+	}
+	handle {
+		import tmod_backend
+	}
+}
+
 senate.tvr.lat {
 	handle / {
 		rewrite * /senate

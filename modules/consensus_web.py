@@ -66,6 +66,8 @@ from modules.games_web import register_games_web_routes
 from modules.sgl_web import register_sgl_web_routes
 from modules.admission_web import register_admission_web_routes
 from modules.account_registration_web import register_account_registration_routes
+from modules.account_portal_web import register_account_portal_routes
+from modules.account_removal_web import register_account_removal_routes
 from modules.global_log_runtime import emit_global_event, global_log_web_middleware, runtime_health as global_log_runtime_health
 from modules.global_log_web import register_global_log_web_routes
 from modules.legal_web import register_legal_web_routes
@@ -1022,14 +1024,15 @@ def _canonical_surface_location(request: web.Request) -> str | None:
     """Keep every public T-Mod surface on its own canonical hostname."""
 
     path = str(request.path or "/")
-    next_path = str(request.query.get("next") or "/")
     consensus_url = CONSENSUS_WEB_PUBLIC_URL or "https://consensus.tvr.lat"
     target_url: str | None = None
 
     def belongs_to(prefix: str) -> bool:
         return path == prefix or path.startswith(f"{prefix}/")
 
-    if path == "/":
+    if path == "/account-home":
+        target_url = "https://account.tvr.lat"
+    elif path == "/":
         target_url = consensus_url
     elif belongs_to("/ecosystem"):
         target_url = ECOSYSTEM_WEB_PUBLIC_URL
@@ -1072,22 +1075,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
     ):
         target_url = GLOBAL_LOG_WEB_PUBLIC_URL
     elif path in {"/login", "/register", "/auth/ticket"}:
-        if next_path == "/admin":
-            target_url = REACTOR_WEB_PUBLIC_URL
-        elif next_path in {"/reactor", "/games"}:
-            target_url = PORTAL_WEB_PUBLIC_URL
-        elif next_path == "/atlas":
-            target_url = ATLAS_APP_PUBLIC_URL
-        elif next_path in {"/atlas-billing", "/account"}:
-            target_url = ATLAS_WEB_PUBLIC_URL
-        elif next_path == "/sgl":
-            target_url = SGL_WEB_PUBLIC_URL
-        elif next_path == "/ovr":
-            target_url = OVR_WEB_PUBLIC_URL
-        elif next_path == "/admission":
-            target_url = ADMISSION_WEB_PUBLIC_URL
-        else:
-            target_url = consensus_url
+        target_url = "https://account.tvr.lat"
     if not target_url:
         return None
 
@@ -1112,6 +1100,7 @@ def _canonical_surface_location(request: web.Request) -> str | None:
             OVR_WEB_PUBLIC_URL,
             ADMISSION_WEB_PUBLIC_URL,
             GLOBAL_LOG_WEB_PUBLIC_URL,
+            "https://account.tvr.lat",
         )
     }
     target_hostname = str(target.hostname or "").lower()
@@ -1464,6 +1453,9 @@ def create_consensus_web_app(
             "login.js",
             "register.css",
             "register.js",
+            "account-home.js",
+            "onboarding-light.css",
+            "onboarding-sound.js",
             "blackbird-public.css",
             "ibm-plex-sans-latin-400-normal.woff2",
             "ibm-plex-sans-latin-500-normal.woff2",
@@ -1491,12 +1483,12 @@ def create_consensus_web_app(
     async def login_page(request: web.Request) -> web.StreamResponse:
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
-            else "/"
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/account-home", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            else "/account-home" if request_public_host(request).split(":", 1)[0].lower() == "account.tvr.lat" else "/"
         )
         principal = await resolve_principal(request, bot, guild_id=int(guild_id))
         if principal is not None:
-            if not principal.guild_member and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
+            if not principal.guild_member and next_path not in {"/atlas", "/atlas-billing", "/account", "/account-home", "/admission"}:
                 raise web.HTTPSeeOther(location="/atlas")
             if next_path != "/admin" or principal.administrator:
                 raise web.HTTPSeeOther(location=next_path)
@@ -1638,7 +1630,7 @@ def create_consensus_web_app(
         mode = "simulation" if request.query.get("mode") == "simulation" else "live"
         destination = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/account-home", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
             else f"/?mode={mode}"
         )
         if destination == "/host" and mode == "simulation":
@@ -1669,7 +1661,7 @@ def create_consensus_web_app(
         while attempts and now - attempts[0] > 10 * 60:
             attempts.popleft()
         allowed_next = {
-            "/admin", "/reactor", "/atlas", "/atlas-billing", "/account",
+            "/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/account-home",
             "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission",
         }
         next_path = str(request.query.get("next") or "/")
@@ -1724,9 +1716,9 @@ def create_consensus_web_app(
                 member = await guild.fetch_member(user_id)
             except discord.DiscordException:
                 member = None
-        if guild is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
+        if guild is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/account-home", "/admission"}:
             raise web.HTTPServiceUnavailable(text="Сервер Discord пока недоступен.")
-        if member is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/admission"}:
+        if member is None and next_path not in {"/atlas", "/atlas-billing", "/account", "/account-home", "/admission"}:
             raise web.HTTPSeeOther(
                 location=f"/login?{urlencode({'next': next_path, 'error': 'membership'})}"
             )
@@ -1778,6 +1770,10 @@ def create_consensus_web_app(
         return response
 
     async def credential_login_impl(request: web.Request) -> web.Response:
+        if request.query.get("client") == "browser":
+            origin = ("https" if request_public_secure(request) else "http") + "://" + request_public_host(request)
+            if request.headers.get("Origin") != origin:
+                return web.json_response({"ok": False, "error": "origin_failed"}, status=403, headers={"Cache-Control": "no-store"})
         remote = _request_remote(request)
         now = asyncio.get_running_loop().time()
         desktop_client = request.query.get("client") == "desktop"
@@ -1786,8 +1782,8 @@ def create_consensus_web_app(
             attempts.popleft()
         next_path = (
             str(request.query.get("next"))
-            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
-            else "/"
+            if request.query.get("next") in {"/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/account-home", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"}
+            else "/account-home" if request.query.get("client") == "browser" else "/"
         )
         if len(attempts) >= 15:
             raise web.HTTPSeeOther(
@@ -1927,7 +1923,7 @@ def create_consensus_web_app(
         ):
             next_path = "/admission"
         if member is None and not desktop_client:
-            if next_path in {"/admission", "/atlas-billing", "/account"}:
+            if next_path in {"/admission", "/atlas-billing", "/account", "/account-home"}:
                 pass
             elif next_path != "/atlas" or "atlas_ai" not in sections:
                 raise web.HTTPSeeOther(
@@ -1986,7 +1982,7 @@ def create_consensus_web_app(
         try:
             response = await credential_login_impl(request)
         except web.HTTPSeeOther as redirect:
-            if request.query.get("client") != "desktop":
+            if request.query.get("client") not in {"desktop", "browser"}:
                 raise
             target = urlsplit(redirect.location)
             error = parse_qs(target.query).get("error", [""])[0]
@@ -1999,11 +1995,12 @@ def create_consensus_web_app(
                 status = 429 if error == "locked" else 401
             return web.json_response({"ok": False, "error": error}, status=status,
                                      headers={"Cache-Control": "no-store"})
-        if request.query.get("client") == "desktop" and response.status == 303:
+        if request.query.get("client") in {"desktop", "browser"} and response.status == 303:
+            destination = response.headers.get("Location", "/account-home")
             response.set_status(200)
             response.headers.pop("Location", None)
             response.content_type = "application/json"
-            response.text = json.dumps({"ok": True})
+            response.text = json.dumps({"ok": True, **({"destination": destination} if request.query.get("client") == "browser" else {})})
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -2525,6 +2522,8 @@ def create_consensus_web_app(
         authenticate=authenticated_request,
     )
     register_account_registration_routes(app, bot, guild_id=int(guild_id), asset_dir=_ASSET_DIR)
+    register_account_portal_routes(app, bot, guild_id=int(guild_id), asset_dir=_ASSET_DIR)
+    register_account_removal_routes(app, guild_id=int(guild_id), authenticate=authenticated_request)
     register_admission_web_routes(
         app,
         bot,

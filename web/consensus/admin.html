@@ -1051,6 +1051,14 @@
               <button class="primary-button" type="submit">Найти</button>
             </form>
 
+            <details id="account-removal-panel" class="panel" hidden>
+              <summary>Удаление аккаунта Товарищества</summary>
+              <p>Удаляются вход, привязка Telegram, персонажи, профиль Медиасети и настройки доступа. Активные сессии отзываются. Платёжные документы, история решений и глобальные блокировки сохраняются. Это не разбан и не удаление всей документальной истории.</p>
+              <form id="account-removal-lookup"><label>Точный логин или Discord ID <input name="lookup" required maxlength="64" autocomplete="off"></label><button type="submit" class="secondary-button">Проверить аккаунт</button></form>
+              <form id="account-removal-confirm" hidden><p id="account-removal-target"></p><label>Для подтверждения введите логин удаляемого аккаунта <input name="confirmation" required maxlength="32" autocomplete="off"></label><label><input name="acknowledged" type="checkbox" required> Понимаю, что это действие нельзя отменить</label><button type="submit" class="secondary-button">Удалить аккаунт без возможности отмены</button></form>
+              <p id="account-removal-result" role="status"></p>
+            </details>
+
             <article class="panel table-panel">
               <header class="panel-head">
                 <div>

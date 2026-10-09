@@ -2803,6 +2803,7 @@ async function loadSgl(offset = appState.offsets.sgl) {
 
 function renderMembers(data) {
   if (!showApplication(data)) return;
+  byId("account-removal-panel").hidden = !appState.administrator;
   appState.rows.members = data.items || [];
   setText("members-count", `${formatNumber(data.total)} участников`);
   const rows = appState.rows.members.map((item) =>
@@ -4371,6 +4372,35 @@ function bindEvents() {
   byId("members-export").addEventListener("click", () =>
     exportCSV("tmod-members", appState.rows.members),
   );
+  let removalTarget = null, removingAccount = false, lookupGeneration = 0;
+  byId("account-removal-lookup").addEventListener("submit", async event => {
+    event.preventDefault(); if (removingAccount) return;
+    const generation = ++lookupGeneration;
+    removalTarget = null; byId("account-removal-confirm").hidden = true;
+    byId("account-removal-result").textContent = "Проверяем аккаунт…";
+    try {
+      const values = new FormData(event.target);
+      const data = await fetchJSON(`/api/admin/members/account-removal?lookup=${encodeURIComponent(String(values.get("lookup") || "").trim())}`);
+      if (generation !== lookupGeneration) return;
+      if (!data.account) { byId("account-removal-result").textContent = "Аккаунт с таким логином или Discord ID не найден."; return; }
+      removalTarget = data.account;
+      byId("account-removal-target").textContent = `Будет удалён аккаунт ${data.account.login} · Discord ${data.account.user_id}.`;
+      byId("account-removal-confirm").reset(); byId("account-removal-confirm").hidden = false;
+      byId("account-removal-result").textContent = "Проверьте личность и подтвердите действие ниже.";
+    } catch { if (generation === lookupGeneration) byId("account-removal-result").textContent = "Не удалось проверить аккаунт. Удаление не выполнено."; }
+  });
+  byId("account-removal-confirm").addEventListener("submit", async event => {
+    event.preventDefault(); if (removingAccount || !removalTarget) return;
+    const values = new FormData(event.target);
+    if (values.get("confirmation") !== removalTarget.login) { byId("account-removal-result").textContent = "Введите точный логин выбранного аккаунта."; return; }
+    removingAccount = true; const button = event.target.querySelector("button"); button.disabled = true;
+    try {
+      const data = await postJSON("/api/admin/members/account-removal", { user_id: removalTarget.user_id, confirmation: String(values.get("confirmation")), acknowledged: values.get("acknowledged") === "on" });
+      byId("account-removal-result").textContent = data.removed ? "Аккаунт удалён. Сессии отозваны; документальная история сохранена." : "Аккаунт уже удалён.";
+      removalTarget = null; byId("account-removal-confirm").hidden = true; void loadMembers();
+    } catch (error) { byId("account-removal-result").textContent = error.payload?.error === "account_self_removal_forbidden" ? "Из админ-центра нельзя удалить собственный аккаунт." : "Удаление не подтверждено. Проверьте аккаунт заново перед повтором."; }
+    finally { removingAccount = false; button.disabled = false; }
+  });
   document.querySelectorAll("[data-media-target][data-media-action]").forEach((button) => {
     button.addEventListener("click", () =>
       sendMediaCommand(button.dataset.mediaTarget, button.dataset.mediaAction),

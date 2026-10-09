@@ -1,9 +1,9 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
-  const allowed = new Set(["/", "/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"]);
+  const allowed = new Set(["/", "/admin", "/reactor", "/atlas", "/atlas-billing", "/account", "/account-home", "/games", "/sgl", "/ovr", "/host", "/tasks", "/admission"]);
   const wanted = new URLSearchParams(location.search).get("next");
-  const next = allowed.has(wanted) ? wanted : "/";
+  const next = allowed.has(wanted) ? wanted : "/account-home";
   for (const id of ["back-login", "finish-login"]) $(id).href = `/login?next=${encodeURIComponent(next)}`;
   let stage = 0, csrf = "", expires = 0, timer, polling = false, busy = false, verified = false, existing = [];
   // Storage may be disabled in a private browser; the HttpOnly cookie still owns the wizard.
@@ -22,7 +22,9 @@
     return result;
   }
   function go(value) {
+    const direction = value < stage ? "back" : "step";
     stage = value; showError("");
+    document.dispatchEvent(new CustomEvent("tvr:stage", { detail: direction }));
     document.querySelectorAll("[data-stage]").forEach(element => { element.hidden = Number(element.dataset.stage) !== value; });
     $("wizard-form").hidden = value === 0;
     $("wizard-loading").hidden = true;
@@ -35,6 +37,7 @@
     heading?.setAttribute("tabindex", "-1"); heading?.focus({ preventScroll: true });
   }
   function success(login) {
+    document.dispatchEvent(new CustomEvent("tvr:stage", { detail: "success" }));
     clearTimeout(timer); $("wizard-form").hidden = true; $("wizard-loading").hidden = true;
     document.querySelectorAll("[data-stage]").forEach(element => { element.hidden = true; });
     $("wizard-success").hidden = false; $("created-login").textContent = login;
@@ -47,7 +50,7 @@
   function addCharacter() {
     if (existing.length + $("new-characters").children.length >= 3) return;
     const row = document.createElement("article"); row.className = "wizard-character";
-    row.innerHTML = '<header><span>Персонаж · Phoenix</span><button type="button" aria-label="Удалить персонажа">Убрать</button></header><label class="field"><span>Имя и фамилия</span><input data-character="nickname" maxlength="48" autocomplete="off" placeholder="Robert Bailey" required></label><label class="field"><span>Статик</span><input data-character="static_id" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" placeholder="263345" required></label>';
+    row.innerHTML = '<header><span>Персонаж · Phoenix</span><button type="button" aria-label="Удалить персонажа">Убрать</button></header><label class="field"><span>Имя и фамилия</span><input data-character="nickname" maxlength="48" autocomplete="off" placeholder="Имя Фамилия" required></label><label class="field"><span>Статик</span><input data-character="static_id" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" placeholder="Ваш статик" required></label>';
     row.querySelector("button").addEventListener("click", () => { row.remove(); updateCharacterButton(); });
     $("new-characters").append(row); updateCharacterButton(); row.querySelector("input").focus();
   }
@@ -79,6 +82,7 @@
     try { const result = await api("start", {}); csrf = result.csrf_token; expires = result.expires_at;
       savedCode.set(result.pairing_code);
       $("pairing-command").textContent = `/master ${result.pairing_code}`; $("pairing").hidden = false; $("start-pairing").hidden = true;
+      document.dispatchEvent(new CustomEvent("tvr:stage", { detail: "step" }));
       void poll();
     } catch (error) { showError(error.message); }
     finally { busy = false; $("start-pairing").disabled = false; }

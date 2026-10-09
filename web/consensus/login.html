@@ -5,32 +5,32 @@
   <title>Аккаунт · Технологии Товарищества</title>
   <meta name="description" content="Единый аккаунт Технологий Товарищества. Вход и создание аккаунта с подтверждением Discord.">
   <link rel="icon" href="/assets/favicon.svg"><link rel="stylesheet" href="/assets/blackbird-public.css?v=1"><link rel="stylesheet" href="/assets/login.css?v=blackbird-1">
-  <script src="/assets/login.js?v=blackbird-1" defer></script>
-</head>
+  <script src="/assets/login.js?v=account-2" defer></script>
+<link rel="stylesheet" href="/assets/onboarding-light.css?v=3"><script defer src="/assets/onboarding-sound.js?v=4"></script></head>
 <body>
   <header class="auth-header"><a class="public-brand" href="https://tvr.lat"><span class="public-sigil" aria-hidden="true">Т</span><span>Технологии Товарищества<small>Единый аккаунт</small></span></a><a class="subtle-link" href="/admission">Товарищество на Phoenix ↗</a></header>
   <main class="login-shell">
     <section class="identity-panel">
       <p class="eyebrow">ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО</p>
       <h1>Свои люди.<br>Общие возможности.</h1>
-      <p class="identity-lead">Один аккаунт для Blackbird и сервисов Товарищества. Ваши персонажи, общение и инструменты — вместе, без повторной настройки.</p>
+      <p class="identity-lead">Один аккаунт для сервисов Технологий Товарищества. Ваши персонажи, общение и инструменты — вместе, без повторной настройки.</p>
       <div class="identity-illustration" aria-hidden="true"><div class="identity-grid"></div><span class="identity-ring ring-a"></span><span class="identity-ring ring-b"></span><span class="identity-ring ring-c"></span><span class="identity-center">Т<span></span></span><i class="identity-point point-a"></i><i class="identity-point point-b"></i></div>
       <div class="identity-details"><div><span>01</span><strong>Привязан к вам</strong><p>Discord подтверждает владельца аккаунта. Персонажи дополняют вашу игровую идентичность.</p></div><div><span>02</span><strong>Без лишних барьеров</strong><p>Для создания аккаунта не нужен мандат сенатора или уровень в Товариществе.</p></div></div>
     </section>
     <section class="credential-panel" aria-labelledby="login-title">
       <div class="credential-topline"><span>АККАУНТ ТОВАРИЩЕСТВА</span><span class="auth-lock" aria-label="Защищённый вход"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></div>
       <div class="credential-head"><h2 id="login-title">Рады видеть вас.</h2><p>Войдите в аккаунт, чтобы продолжить.</p></div>
-      <form id="credential-form" action="/auth/login" method="post">
+      <form id="credential-form" action="/auth/login?next=/account-home" method="post">
         <label class="field"><span>Логин</span><input id="credential-login" name="login" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="Ваш логин"></label>
         <label class="field"><span>PIN или пароль</span><span class="pin-field"><input id="credential-pin" name="pin" type="password" minlength="1" maxlength="128" autocomplete="current-password" required placeholder="Введите PIN или пароль"><button id="pin-visibility" type="button" aria-label="Показать PIN или пароль">◉</button></span></label>
         <output id="login-feedback" class="inline-feedback login-feedback" aria-live="polite" hidden></output>
         <label id="factor-field" class="field" hidden><span id="factor-label">Код подтверждения</span><input name="code" type="password" autocomplete="one-time-code" maxlength="32" id="factor-code"></label><input name="challenge" type="hidden" id="factor-challenge">
         <button class="login-submit button primary" type="submit"><span>Войти в аккаунт</span><i aria-hidden="true">→</i></button>
       </form>
-      <details id="telegram-login" class="telegram-login"><summary><span>Войти с кодом Telegram</span><i aria-hidden="true">＋</i></summary><div class="telegram-login-body"><p>Если Telegram уже привязан, запросите в боте «Код входа в T-Mod». Одноразовый код действует 5 минут.</p><form id="telegram-login-form" action="/auth/telegram" method="post"><label class="field"><span>Код из Telegram</span><input id="telegram-login-code" name="code" type="text" minlength="8" maxlength="8" pattern="[0-9]{8}" inputmode="numeric" autocomplete="one-time-code" required placeholder="8 цифр"></label><button class="login-submit button primary" type="submit"><span>Продолжить</span><i aria-hidden="true">→</i></button></form></div></details>
+      <details id="telegram-login" class="telegram-login"><summary><span>Войти с кодом Telegram</span><i aria-hidden="true">＋</i></summary><div class="telegram-login-body"><p>Если Telegram уже привязан, запросите в боте «Код входа в T-Mod». Одноразовый код действует 5 минут.</p><form id="telegram-login-form" action="/auth/telegram?next=/account-home" method="post"><label class="field"><span>Код из Telegram</span><input id="telegram-login-code" name="code" type="text" minlength="8" maxlength="8" pattern="[0-9]{8}" inputmode="numeric" autocomplete="one-time-code" required placeholder="8 цифр"></label><button class="login-submit button primary" type="submit"><span>Продолжить</span><i aria-hidden="true">→</i></button></form></div></details>
       <div id="login-context" class="login-context" aria-live="polite"><i></i><span><b>Вернёмся туда, где вы остановились</b><small>После входа откроется выбранный сервис.</small></span></div>
       <div class="create-account"><span>Впервые здесь?</span><a id="create-account-link" class="button quiet" href="/register">Создать аккаунт <span aria-hidden="true">↗</span></a><small>Несколько шагов. Понадобится ваш Discord.</small></div>
-      <footer class="credential-footer"><span>Не получается войти?</span><a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noopener noreferrer">Помощь в Discord ↗</a><small>Логин и способ входа также можно настроить командой /account. Дополнительное подтверждение входа пока действует в Blackbird.</small></footer>
+      <footer class="credential-footer"><span>Не получается войти?</span><a href="https://discord.gg/5vAKXdX5sw" target="_blank" rel="noopener noreferrer">Помощь в Discord ↗</a><small>Логин и способ входа также можно настроить командой /account. Дополнительное подтверждение входа действует в поддерживаемом клиенте.</small></footer>
     </section>
   </main>
   <footer class="public-footer auth-footer"><span>Технологии Товарищества</span><nav><a href="https://tvr.lat/legal">Условия и конфиденциальность</a><a href="https://tvr.lat">На главную ↗</a></nav></footer>

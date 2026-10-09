@@ -18,6 +18,9 @@ sys.path.insert(0, str(ROOT))
 
 
 async def main():
+    port = int(os.getenv("TMOD_ONBOARDING_PREVIEW_PORT", "5183"))
+    if not 1024 <= port <= 65535:
+        raise ValueError("Invalid preview port")
     with tempfile.TemporaryDirectory(prefix="tvr-onboarding-preview-") as directory:
         os.environ["TMOD_DATABASE_BACKEND"] = "sqlite"
         os.environ.pop("DATABASE_URL", None)
@@ -44,11 +47,11 @@ async def main():
         csrf = secrets.token_urlsafe(24)
 
         async def lab(request):
-            if request.host != "127.0.0.1:5183":
+            if request.host != f"127.0.0.1:{port}":
                 raise web.HTTPForbidden()
             result = ""
             if request.method == "POST":
-                if request.headers.get("Origin") != "http://127.0.0.1:5183":
+                if request.headers.get("Origin") != f"http://127.0.0.1:{port}":
                     raise web.HTTPForbidden()
                 data = await request.json()
                 if not secrets.compare_digest(str(data.get("csrf", "")), csrf):
@@ -67,8 +70,8 @@ async def main():
         app.router.add_get("/__lab.js", lab_script)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", 5183).start()
-        print("Disposable onboarding preview: http://127.0.0.1:5183/admission · Discord simulation: /__lab", flush=True)
+        await web.TCPSite(runner, "127.0.0.1", port).start()
+        print(f"Disposable onboarding preview: http://127.0.0.1:{port}/admission · Discord simulation: /__lab", flush=True)
         try:
             await asyncio.Event().wait()
         finally:

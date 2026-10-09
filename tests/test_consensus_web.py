@@ -1005,7 +1005,7 @@ class ConsensusWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(games.status, 308)
         self.assertEqual(games.headers["Location"], "https://home.tvr.lat/games/demo-match")
         self.assertEqual(ticket.status, 308)
-        self.assertIn("https://reactor.tvr.lat/auth/ticket?", ticket.headers["Location"])
+        self.assertIn("https://account.tvr.lat/auth/ticket?", ticket.headers["Location"])
         self.assertEqual(canonical.status, 200)
         self.assertEqual(sgl.status, 308)
         self.assertEqual(sgl.headers["Location"], "https://sgl.tvr.lat/sgl")
