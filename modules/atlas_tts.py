@@ -19,8 +19,9 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 
-_DEFAULT_MODEL = "x-ai/grok-voice-tts-1.0"
-_DEFAULT_VOICES = ("ara", "eve", "rex", "sal", "leo")
+_DEFAULT_MODEL = "elevenlabs/eleven-v4-turbo"
+_DEFAULT_VOICES = ("george", "sarah", "daniel", "river")
+_LEGACY_VOICES = ("ara", "eve", "rex", "sal", "leo")
 _VOICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 _CITATION_RE = re.compile(r"\[(?:\d{1,2})(?:\s*,\s*(?:[^\]\n]{1,60}))?\]")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]{1,200})\]\([^\s)]+\)")
@@ -74,13 +75,15 @@ def _tts_api_key() -> str:
 
 
 def _configured_voices() -> tuple[str, ...]:
-    raw = os.getenv("ATLAS_TTS_VOICES", ",".join(_DEFAULT_VOICES))
+    model = os.getenv("ATLAS_TTS_MODEL", _DEFAULT_MODEL)
+    defaults = _DEFAULT_VOICES if model.startswith("elevenlabs/") else _LEGACY_VOICES
+    raw = os.getenv("ATLAS_TTS_VOICES", ",".join(defaults))
     voices: list[str] = []
     for item in raw.split(","):
         voice = item.strip()
         if _VOICE_ID_RE.fullmatch(voice) and voice not in voices:
             voices.append(voice)
-    return tuple(voices) or _DEFAULT_VOICES
+    return tuple(voices) or defaults
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +217,10 @@ class AtlasTTSService:
 
     def voices_payload(self) -> dict[str, Any]:
         labels = {
+            "george": ("Георг", "ElevenLabs · глубокий и тёплый"),
+            "sarah": ("Сара", "ElevenLabs · мягкий и ясный"),
+            "daniel": ("Даниэль", "ElevenLabs · спокойный"),
+            "river": ("Ривер", "ElevenLabs · нейтральный"),
             "ara": ("Ara", "Спокойный полевой голос"),
             "eve": ("Eve", "Ясный и живой"),
             "rex": ("Rex", "Низкий и собранный"),
@@ -280,6 +287,8 @@ class AtlasTTSService:
         if not spoken:
             raise ValueError("atlas_tts_text_required")
         selected_voice = str(voice or self.config.default_voice).strip()
+        if self.config.model.startswith("elevenlabs/") and selected_voice in _LEGACY_VOICES:
+            selected_voice = self.config.default_voice
         if selected_voice not in self.config.voices:
             raise ValueError("atlas_tts_voice_invalid")
         try:
@@ -392,7 +401,8 @@ class AtlasTTSService:
                 "input": text,
                 "voice": voice,
                 "response_format": "mp3",
-                "speed": speed,
+                # v4/v3 reject speed; pace comes from natural phrasing.
+                **({"speed": speed} if not self.config.model.startswith(("elevenlabs/eleven-v4", "elevenlabs/eleven-v3")) else {}),
             },
         ) as response:
             if response.status >= 400:

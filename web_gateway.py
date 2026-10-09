@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
 
 
 UPSTREAM: Final = os.getenv(
@@ -58,6 +58,7 @@ UPSTREAM_SESSION = web.AppKey("upstream_session", ClientSession)
 EDGE_QUEUE = web.AppKey("edge_queue", deque)
 EDGE_TASK = web.AppKey("edge_task", asyncio.Task)
 EDGE_DROPPED = web.AppKey("edge_dropped", int)
+CALL_SOCKETS = web.AppKey("call_sockets", set)
 _FORWARDED_HOST_HEADER = "X-TMod-Forwarded-Host"
 _FORWARDED_PROTO_HEADER = "X-TMod-Forwarded-Proto"
 _HOST_RE = re.compile(
@@ -344,7 +345,52 @@ async def _request_with_fallback(
     return upstream, route_label
 
 
+async def call_socket_proxy(request: web.Request) -> web.StreamResponse:
+    """Only the registered voice path upgrades; never expose an arbitrary tunnel."""
+    if request.method != "GET" or request.query_string:
+        raise web.HTTPBadRequest()
+    headers = {key:value for key,value in _headers(request).items()
+               if not key.lower().startswith("sec-websocket-")}
+    try:
+        async with asyncio.timeout(6):
+            upstream = await request.app[UPSTREAM_SESSION].ws_connect(
+                f"{UPSTREAM}/api/atlas/call/ws", headers=headers,
+                heartbeat=15, max_msg_size=3_000_000)
+    except (ClientError, TimeoutError):
+        return web.json_response({"error":"voice_upstream_unavailable"}, status=503)
+    downstream = web.WebSocketResponse(heartbeat=15, max_msg_size=960_044)
+    request.app[CALL_SOCKETS].add(downstream)
+    tasks: list[asyncio.Task] = []
+    started = time.perf_counter()
+    try:
+        await downstream.prepare(request)
+        async def forward(source, target):
+            async for message in source:
+                if message.type == WSMsgType.TEXT:
+                    await target.send_str(message.data)
+                elif message.type == WSMsgType.BINARY:
+                    await target.send_bytes(message.data)
+                else:
+                    break
+            code = source.close_code or 1000
+            await target.close(code=code if code not in {1005,1006,1015} else 1001)
+        tasks = [asyncio.create_task(forward(downstream,upstream)), asyncio.create_task(forward(upstream,downstream))]
+        await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks: task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        await upstream.close()
+        await downstream.close()
+        request.app[CALL_SOCKETS].discard(downstream)
+        _queue_edge(request.app,{"event_type":"gateway_voice_session", "severity":"info",
+            "summary":"Atlas voice WebSocket closed", "status_code":101,
+            "target_id":request.path, "duration_ms":(time.perf_counter()-started)*1000})
+    return downstream
+
+
 async def proxy(request: web.Request) -> web.StreamResponse:
+    if request.path == "/api/atlas/call/ws" and request.headers.get("Upgrade", "").lower() == "websocket":
+        return await call_socket_proxy(request)
     session = request.app[UPSTREAM_SESSION]
     target, fallback_target, route_label = _route_targets(request)
     started_at = time.perf_counter()
@@ -494,6 +540,7 @@ async def create_app() -> web.Application:
     app = web.Application(client_max_size=upload_mib * 1024 * 1024)
     app[EDGE_QUEUE] = deque()
     app[EDGE_DROPPED] = 0
+    app[CALL_SOCKETS] = set()
 
     async def start(application: web.Application) -> None:
         application[UPSTREAM_SESSION] = ClientSession(
@@ -514,6 +561,9 @@ async def create_app() -> web.Application:
         await application[UPSTREAM_SESSION].close()
 
     app.on_startup.append(start)
+    async def shutdown(application: web.Application) -> None:
+        await asyncio.gather(*(ws.close(code=1001) for ws in list(application[CALL_SOCKETS])))
+    app.on_shutdown.append(shutdown)
     app.on_cleanup.append(stop)
     app.router.add_get("/gateway-health", gateway_health)
     app.router.add_get("/gateway-ready", gateway_ready)

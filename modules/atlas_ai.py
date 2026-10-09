@@ -6189,6 +6189,7 @@ async def atlas_answer_stream(
     user_profile: dict[str, Any] | None = None,
     latency_mode: str = "standard",
     screen_context: str | None = None,
+    conversation_mode: str = "text",
 ) -> dict[str, Any]:
     """Stream provider deltas while preserving the regular Atlas result contract."""
 
@@ -6207,6 +6208,21 @@ async def atlas_answer_stream(
         latency_mode=latency_mode,
         screen_context=screen_context,
     )
+    if conversation_mode == "voice":
+        payload = dict(prepared.payload)
+        payload["messages"] = [*payload["messages"], {"role": "system", "content": (
+            "Сейчас живой голосовой разговор с Atlas. Говори тепло, естественно и спокойно, "
+            "как внимательный собеседник, без театральности и повторных приветствий. "
+            "Обычно 1–3 предложения, 25–65 слов, без Markdown и списков. "
+            "Дай суть сразу; для сложного вопроса предложи продолжить. "
+            "Если неясно — один конкретный уточняющий вопрос. "
+            "Проверяемые факты и нормы бери только из уже проверенных источников: "
+            "назови статью/пункт и важное условие, не придумывай их ради скорости. "
+            "Не произноси URL, библиографические номера и технические детали интерфейса. "
+            "Не выдавай себя за человека; эмоциональность — в живой формулировке, не в ремарках."
+        )}]
+        payload["max_tokens"] = min(420, int(payload.get("max_tokens") or 420))
+        prepared = replace(prepared, payload=payload)
     social_answer = _deterministic_social_reply(prepared)
     if social_answer:
         await on_delta(social_answer)

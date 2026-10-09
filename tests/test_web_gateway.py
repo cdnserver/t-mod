@@ -23,6 +23,16 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
             )
 
         backend.router.add_post("/api/echo", echo)
+        async def call_echo(request: web.Request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            async for message in ws:
+                if message.type == web.WSMsgType.TEXT:
+                    await ws.send_str(message.data)
+                elif message.type == web.WSMsgType.BINARY:
+                    await ws.send_bytes(message.data)
+            return ws
+        backend.router.add_get("/api/atlas/call/ws", call_echo)
 
         async def forwarded_headers(request: web.Request) -> web.Response:
             return web.json_response(
@@ -149,6 +159,18 @@ class WebGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 503)
         payload = await response.json()
         self.assertEqual(payload["error"], "tmod_runtime_temporarily_unavailable")
+
+    async def test_voice_socket_proxies_control_and_binary_without_url_credentials(self) -> None:
+        ws = await self.gateway.ws_connect("/api/atlas/call/ws")
+        await ws.send_json({"call_token":"ephemeral"})
+        self.assertEqual((await ws.receive_json())["call_token"],"ephemeral")
+        await ws.send_bytes(b"audio")
+        self.assertEqual((await ws.receive()).data,b"audio")
+        await ws.close()
+        await asyncio.sleep(.02)
+        events = list(self.gateway.server.app[web_gateway.EDGE_QUEUE])
+        self.assertTrue(any(event["event_type"]=="gateway_voice_session" for event in events))
+        self.assertNotIn("ephemeral",str(events))
 
     async def test_gateway_ready_requires_healthy_upstream(self) -> None:
         response = await self.gateway.get("/gateway-ready")

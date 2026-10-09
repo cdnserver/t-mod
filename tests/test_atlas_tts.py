@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -138,6 +139,41 @@ class AtlasTTSServiceTests(unittest.IsolatedAsyncioTestCase):
             from modules.atlas_tts import atlas_tts_config
 
             self.assertEqual(atlas_tts_config().api_key, "atlas-key")
+
+    def test_elevenlabs_default_and_explicit_legacy_configuration(self) -> None:
+        from modules.atlas_tts import atlas_tts_config
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY":"test"}, clear=True):
+            config = atlas_tts_config()
+            self.assertEqual(config.model,"elevenlabs/eleven-v4-turbo")
+            self.assertEqual(config.default_voice,"george")
+            self.assertIn("sarah",config.voices)
+            with patch.dict("os.environ", {"ATLAS_TTS_MODEL":"x-ai/grok-voice-tts-1.0"}):
+                self.assertEqual(atlas_tts_config().default_voice,"ara")
+
+    async def test_cached_old_overlay_voice_uses_new_provider_default(self) -> None:
+        provider = AsyncMock(return_value=(b"ID3-audio","audio/mpeg","gen"))
+        service = AtlasTTSService(replace(tts_config(), model="elevenlabs/eleven-v4-turbo", voices=("george","sarah"), default_voice="george"), provider_request=provider)
+        try:
+            result = await service.synthesize("Проверка",voice="ara")
+            self.assertFalse(result.fallback)
+            self.assertEqual(provider.call_args.args[1],"george")
+        finally:
+            await service.close()
+
+    async def test_eleven_v4_wire_payload_does_not_send_unsupported_speed(self) -> None:
+        payloads = []
+        async def provider(request):
+            payloads.append(await request.json())
+            return web.Response(body=b"ID3-audio",content_type="audio/mpeg")
+        app=web.Application(); app.router.add_post("/speech",provider)
+        client=TestClient(TestServer(app));await client.start_server()
+        service=AtlasTTSService(replace(tts_config(),model="elevenlabs/eleven-v4-turbo",api_url=str(client.make_url("/speech"))))
+        try:
+            await service._provider_request("Проверка","george",1.04)
+            self.assertNotIn("speed",payloads[0])
+            self.assertEqual(payloads[0]["response_format"],"mp3")
+        finally:
+            await service.close();await client.close()
 
 
 class AtlasTTSWebTests(unittest.IsolatedAsyncioTestCase):

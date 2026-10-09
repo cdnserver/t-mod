@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import time
+from uuid import uuid4
 from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -29,6 +30,8 @@ from modules.atlas_ai import (
     atlas_probe_collection,
     atlas_reset_collection,
 )
+from modules.atlas_voice_web import register_atlas_voice_routes
+from modules.atlas_voice import pop_voice_phrase
 from modules.atlas_catalog import (
     atlas_normalize_knowledge_scope,
 )
@@ -3991,6 +3994,74 @@ def register_atlas_web_routes(
                 "items": _forum_engine_items_view(profile.get("items", [])),
             }
         )
+
+    async def meter_call_audio(selected: ConsensusWebPrincipal, organization_id: int, result: dict[str, Any], action: str) -> None:
+        await asyncio.to_thread(
+            billing_storage.atlas_record_ai_usage,
+            int(selected.user_id), organization_id,
+            request_key=f"call-{action}:{selected.user_id}:{result.get('generation') or uuid4()}",
+            source=f"blackbird-call-{action}" + ("-estimated" if result.get("estimated") else ""), model=result["model"],
+            model_provider="openrouter", usage=result["usage"],
+        )
+
+    async def call_brain(request: web.Request, selected: ConsensusWebPrincipal, dashboard: dict,
+                         question: str, thread_id: int | None, emit: Any, speak: Any) -> int:
+        """Use the same retrieval, scoped history and billing as textual Atlas."""
+        organization_id = int(dashboard["organization"]["id"])
+        profile = dict(dashboard["membership"].get("profile") or {})
+        server, faction = await asyncio.to_thread(storage.atlas_normalize_scope,
+            str(profile.get("server_code") or "phoenix-15"), str(profile.get("faction_code") or "lspd"))
+        history = []
+        if thread_id is not None:
+            thread = await asyncio.to_thread(storage.atlas_thread_messages, organization_id,
+                int(selected.user_id), thread_id, limit=40)
+            history = thread["messages"]
+        full = ""
+        pending = ""
+        spoken = 0
+
+        async def delta(text: str) -> None:
+            nonlocal full, pending, spoken
+            full += text
+            pending += text
+            await emit({"type": "transcript", "role": "assistant", "text": full, "partial": True})
+            while spoken < 1200:
+                segment = pop_voice_phrase(pending)
+                if segment is None:
+                    break
+                phrase, pending = segment
+                if phrase:
+                    await speak(phrase[:1200-spoken])
+                    spoken += len(phrase)
+
+        answer = await atlas_answer_stream(organization_id, question, on_delta=delta,
+            on_progress=lambda event: emit({"type":"stage", "stage":"thinking", "label":"Сверяю источники"}),
+            server_code=server, faction_code=faction, history=history, memory=[],
+            response_mode="balanced", model_id="atlas-tvr-a", user_profile=profile,
+            conversation_mode="voice")
+        # Revalidate before recording/returning results, including global bans.
+        await principal(request)
+        await require_atlas(selected)
+        if not full:
+            await delta(answer["answer"])
+        if pending.strip() and spoken < 1200:
+            await speak(pending.strip()[:1200-spoken])
+        if thread_id is None:
+            thread_id = await asyncio.to_thread(storage.atlas_create_thread, organization_id,
+                int(selected.user_id), question[:100], agent_id="atlas-tvr-a")
+        for role, content in (("user", question), ("assistant", answer["answer"])):
+            kwargs = {key: answer[key] for key in ("project_code", "server_code", "faction_code")}
+            if role == "assistant":
+                kwargs.update({key: answer[key] for key in ("citations", "model", "model_provider", "model_release", "latency_ms")})
+            message_id = await asyncio.to_thread(storage.atlas_add_message, thread_id, role, content, **kwargs)
+        await record_billing_usage(selected, organization_id, request_key=f"call-answer:{message_id}",
+            source="blackbird-call", answer=answer, message_id=message_id)
+        await emit({"type":"transcript", "role":"assistant", "text":answer["answer"], "partial":False})
+        return thread_id
+
+    register_atlas_voice_routes(app, principal=principal, require_desktop=require_desktop_client,
+        require_atlas=require_atlas, require_balance=require_ai_balance,
+        dashboard=user_dashboard, meter=meter_call_audio, brain=call_brain)
 
     app.router.add_get("/atlas", atlas_index)
     app.router.add_get("/atlas/", atlas_index)

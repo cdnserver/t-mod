@@ -3204,8 +3204,11 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await atlas_probe_collection())["status"], "ok")
 
     async def test_openrouter_answer_is_delivered_as_real_sse_deltas(self) -> None:
+        requests = []
         async def completion(request: web.Request) -> web.StreamResponse:
-            self.assertTrue((await request.json())["stream"])
+            payload = await request.json()
+            requests.append(payload)
+            self.assertTrue(payload["stream"])
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             await response.write('data: {"choices":[{"delta":{"content":"Первый "}}]}\n\n'.encode())
@@ -3240,6 +3243,7 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=[]),
             ):
                 result = await atlas_answer_stream(77, "Ответь по частям", on_delta=receive)
+                voice_result = await atlas_answer_stream(77, "Ответь по частям", on_delta=AsyncMock(), conversation_mode="voice")
         finally:
             await server.close()
 
@@ -3247,6 +3251,11 @@ class AtlasAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["answer"], "Первый фрагмент")
         self.assertEqual(result["model"], "test/model")
         self.assertEqual(result["model_provider"], "openrouter")
+        self.assertEqual(voice_result["answer"], result["answer"])
+        self.assertLessEqual(requests[-1]["max_tokens"], 420)
+        self.assertEqual(requests[-1]["messages"][-1]["role"], "system")
+        self.assertIn("голосовой разговор", requests[-1]["messages"][-1]["content"])
+        self.assertNotIn("голосовой разговор", requests[0]["messages"][-1]["content"])
 
     async def test_source_backed_stream_never_leaks_provider_retrieval_refusal(self) -> None:
         async def completion(request: web.Request) -> web.StreamResponse | web.Response:
